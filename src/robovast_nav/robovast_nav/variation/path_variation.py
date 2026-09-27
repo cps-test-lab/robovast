@@ -32,7 +32,7 @@ from robovast.common.variation.base_variation import (SCENARIO_CHANNEL, SIM_CHAN
 from ..data_model import Orientation, Pose, Position
 # `path_length` here always means the length a campaign ASKED for; the measurement of a
 # path in hand is imported under a name that cannot be confused with it.
-from ..path_generator import PathGenerator, path_length as arc_length
+from ..path_generator import PathGenerator, WaypointRefused, path_length as arc_length
 from ..waypoint_generator import WaypointGenerator
 from .. import config_view
 from .nav_base_variation import NavVariation
@@ -388,7 +388,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
             # Generate path considering any existing static objects
             try:
                 path = path_generator.generate_path(waypoints, [])
-            except ValueError as exc:
+            except WaypointRefused as exc:
                 # The two clearance tests are not the same test: the sampler checks a disc
                 # of cells around a candidate, the planner a distance transform of the whole
                 # grid, so a pose close to a wall can pass one and fail the other. That is

@@ -48,6 +48,15 @@ def path_length(path: Optional[List[Position]]) -> float:
                for i in range(1, len(path)))
 
 
+class WaypointRefused(ValueError):
+    """The planner refuses a waypoint: it lies off the map or on an occupied cell.
+
+    The one planner error that belongs to the draw rather than to the planner. A caller that
+    redraws on it catches this type, so a map that did not load or a call without waypoints
+    still ends the composition with its own error.
+    """
+
+
 class PathGenerator:
     """Standalone utility class for generating navigation paths on maps using A* algorithm."""
 
@@ -85,17 +94,9 @@ class PathGenerator:
         self.map.occupancy_grid = inflated_grid
 
     def _load_map(self):
-        """Load the map file and initialize internal data structures."""
-        try:
-            # Load map using shared map_loader utility
-            self.map = load_map(self.map_file_path)
-
-            # Inflate obstacles for robot size
-            self._inflate_obstacles()
-
-        except Exception as e:
-            print(f"Error loading map {self.map_file_path}: {e}")
-            self.map = None
+        """Load the map file and inflate its obstacles by the robot's radius."""
+        self.map = load_map(self.map_file_path)
+        self._inflate_obstacles()
 
     def _heuristic(self, a: Tuple[int, int], b: Tuple[int, int]) -> float:
         """Calculate Manhattan distance heuristic for A*."""
@@ -218,7 +219,7 @@ class PathGenerator:
                 grid_x, grid_y = self.map.world_to_grid(pose.position.x, pose.position.y)
 
                 if not self.map.is_valid_grid_position(grid_x, grid_y):
-                    raise ValueError(f"Invalid waypoint grid position: ({grid_x}, {grid_y})")
+                    raise WaypointRefused(f"Invalid waypoint grid position: ({grid_x}, {grid_y})")
 
                 grid_waypoints.append((grid_x, grid_y))
 
