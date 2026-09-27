@@ -62,6 +62,9 @@ class FakeRunner:
     def close(self):
         self.closed = True
 
+    def image_digest(self):
+        return "example.org/scenery_builder@sha256:aaaa"
+
 
 class FakeRunnerWithExpose(FakeRunner):
     def __init__(self, *a, **kw):
@@ -133,6 +136,12 @@ def test_failed_command_keeps_returncode_cmd_and_output(serve, tmp_path):
     assert ei.value.returncode == 3
     assert ei.value.cmd == ["scenery", "x"]
     assert ei.value.output == "mesh is not manifold"
+
+
+def test_the_image_digest_crosses_the_process_boundary(serve, tmp_path):
+    """A cache in the worker keys on the image the parent's runner runs."""
+    runner = serve(lambda spec: FakeRunner(spec, str(tmp_path)))(SPEC)
+    assert runner.image_digest() == "example.org/scenery_builder@sha256:aaaa"
 
 
 def test_other_failures_cross_as_runtime_error(serve, tmp_path):
