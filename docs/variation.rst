@@ -69,7 +69,8 @@ See :ref:`the destination reference <config-variation-destination>` for the full
 :ref:`the sut channel <sut-channel>` for what a config source is and how a format addresses
 one.
 
-The variation types below are available by default.
+The **General** variation types below come with the core package; the **Navigation** ones
+with its ``nav`` extra (``pip install "robovast[nav]"``).
 
 General
 -------
