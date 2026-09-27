@@ -13,7 +13,7 @@ export class BufferOwner {
   /** The file whose text the buffer holds, or null while none does. */
   private holds: FileKey | null = null
 
-  /** A read of `key` has started: until it lands, the buffer belongs to no file. */
+  /** A read has started: until it lands, the buffer belongs to no file. */
   begin(): void {
     this.holds = null
   }

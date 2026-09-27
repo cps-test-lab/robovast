@@ -2,9 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { BufferOwner, failureText } from './bufferOwner'
 import { RobovastError } from '@/lib/robovastClient'
 
-// The config editor autosaves its buffer to the selected file. Selecting another file whose read
-// fails used to leave the previous file's text in the buffer under the new path, and the next
-// keystroke wrote it there -- replacing the file the read could not show with a different one.
+// The config editor autosaves its buffer to the selected file. When another file is selected and
+// its read fails, the buffer still holds the previous file's text, which must never be written there.
 describe('BufferOwner', () => {
   const a = { id: 'ws-1', path: 'a.vast' }
   const b = { id: 'ws-1', path: 'b.vast' }
