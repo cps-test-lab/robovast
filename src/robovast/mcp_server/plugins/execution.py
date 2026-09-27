@@ -139,7 +139,8 @@ def _attach_objective_history(result: dict, client, campaign_id: str) -> None:
         return
     best = batches[-1].best_so_far
     since = 0
-    for b in reversed(batches):
+    # A batch still running has not yet been a round without improvement.
+    for b in reversed([b for b in batches if b.complete]):
         if b.best_so_far != best:
             break
         since += 1

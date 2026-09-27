@@ -150,7 +150,8 @@ CREATE TABLE IF NOT EXISTS batch (
     dir         TEXT,
     created_at  REAL,
     asked       INTEGER,         -- parameter sets the strategy PROPOSED for this batch
-    recalls_recorded INTEGER     -- 1: its recalled cells have unit rows; NULL: written before they could
+    recalls_recorded INTEGER,    -- 1: its recalled cells have unit rows; NULL: written before they could
+    complete    INTEGER          -- 1: all its units are recorded; NULL: running or interrupted
 );
 CREATE TABLE IF NOT EXISTS unit (
     id            INTEGER PRIMARY KEY,
@@ -528,8 +529,33 @@ ALTER TABLE batch ADD COLUMN recalls_recorded INTEGER;
 ALTER TABLE unit ADD COLUMN recalled_from INTEGER REFERENCES unit(id);
 """
 
+# 14 -> 15: whether a batch recorded all of its units.
+#
+# A batch row is opened before its cells run and its units are recorded as they are scored,
+# so an interrupted batch leaves a row with some of its units. ``complete`` is set once the
+# last one -- recalled cells included -- is recorded; a resume replays only complete batches
+# and finishes the one that is not (``search.history.unfinished_batch``).
+#
+# Backfilled where the record decides it: a batch that is not its campaign's last was
+# followed by another, which the loop opens only after telling the strategy this one, and a
+# batch the campaign's recorded ``batches`` count covers was finished by that count's
+# definition. A last batch neither covers stays NULL; a resume re-asks it and runs whatever
+# cells it lacks, none if it had them all.
+#
+# ``_BATCH_COMPLETE_BEFORE_15`` is that rule as a condition on a ``batch`` row, shared with
+# :func:`read_batch_objectives`, which reads a store without migrating it.
+_BATCH_COMPLETE_BEFORE_15 = (
+    "(batch.idx < (SELECT MAX(later.idx) FROM batch later "
+    "WHERE later.campaign_id = batch.campaign_id) "
+    "OR batch.idx < COALESCE((SELECT c.batches FROM campaign c "
+    "WHERE c.id = batch.campaign_id), 0))")
+_MIGRATION_ADD_BATCH_COMPLETE = f"""
+ALTER TABLE batch ADD COLUMN complete INTEGER;
+UPDATE batch SET complete = 1 WHERE {_BATCH_COMPLETE_BEFORE_15};
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -553,6 +579,7 @@ _MIGRATIONS = [
     _MIGRATION_ADD_UNIT_CHANNELS,
     _MIGRATION_ADD_ORIGIN_CONFIG_VERSION,
     _MIGRATION_ADD_RECALLED,
+    _MIGRATION_ADD_BATCH_COMPLETE,
 ]
 
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
@@ -746,6 +773,17 @@ class CampaignStore:
         )
         self._conn.commit()
         return cur.lastrowid
+
+    def complete_batch(self, batch_id: int) -> None:
+        """Mark *batch_id* complete: every unit it will have is recorded.
+
+        That includes its recalled cells, so it is stamped ``recalls_recorded`` too, which
+        matters for a batch opened before schema 14 and finished by a resume. A search batch
+        is marked before its strategy is told it.
+        """
+        self._conn.execute(
+            "UPDATE batch SET complete = 1, recalls_recorded = 1 WHERE id = ?", (batch_id,))
+        self._conn.commit()
 
     def record_unit(
         self,
@@ -1343,6 +1381,9 @@ def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
     A batch where every unit is one of those comes back with ``n_scored = 0`` and ``None``
     statistics — a gap, which a reader must not confuse with a batch that scored zero.
 
+    ``complete`` is false for a batch still running or interrupted: its counts are what it
+    has recorded so far, not what it ended with.
+
     ``best_so_far`` is folded here rather than stored, because it is the only figure that
     depends on the objective's *direction*; ``min``/``max``/``mean`` are raw, so no reader
     has to know the direction to interpret a field name.
@@ -1392,6 +1433,11 @@ def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
                 "AVG(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS mean "
                 "FROM batch b LEFT JOIN unit u ON u.batch_id = b.id "
                 "GROUP BY b.idx ORDER BY b.idx").fetchall()
+            batch_columns = {c[1] for c in conn.execute("PRAGMA table_info(batch)")}
+            complete = "batch.complete" if "complete" in batch_columns \
+                else _BATCH_COMPLETE_BEFORE_15
+            complete_by_idx = dict(conn.execute(
+                f"SELECT batch.idx, {complete} FROM batch").fetchall())
     except sqlite3.Error:
         return {**empty, "unavailable": "no_store"}  # pre-batch/unit schema, or unreadable
 
@@ -1412,6 +1458,7 @@ def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
             "max": r["hi"] if scored else None,
             "mean": r["mean"] if scored else None,
             "best_so_far": best,
+            "complete": bool(complete_by_idx.get(r["idx"])),
         })
     return {"objective_name": row["name"], "direction": row["direction"] or "maximize",
             "batches": batches, "unavailable": None}

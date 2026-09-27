@@ -40,6 +40,10 @@ not run again: the loop tells the strategy what it scored then, and records the 
 from that unit, so it tells the strategy the same answer the live run did, read from the
 same row. A batch recorded before a recall had a row has its recalled cells read off the
 proposals the replay re-asks (:meth:`RecordedBatch.with_recalls`).
+
+Only a ``complete`` batch is replayed. A batch interrupted before it recorded all of its
+units is the campaign's last, and :func:`unfinished_batch` reads what it did record, so the
+resumed loop can re-ask it, run only the cells it lacks and tell the strategy the whole of it.
 """
 
 import json
@@ -199,8 +203,49 @@ def _evaluation(row) -> Evaluation:
     )
 
 
+@dataclass(frozen=True)
+class UnfinishedBatch:
+    """A search's last batch, interrupted before it recorded all of its units.
+
+    Attributes:
+        batch_id: its row, which the rest of its units are recorded into.
+        idx: its index.
+        asked: how many parameter sets it proposed; ``None`` for a row written before
+            ``batch.asked`` existed, where the loop asked for ``search.per_batch``.
+        units: ``paramset_id`` -> ``(status, evaluation)`` for every cell it recorded as run
+            or tried; ``evaluation`` is ``None`` unless the status is ``evaluated``.
+        recalled: the ``paramset_id`` of every cell it recorded as recalled.
+    """
+
+    batch_id: int
+    idx: int
+    asked: Optional[int]
+    units: dict = field(default_factory=dict)
+    recalled: frozenset = frozenset()
+
+
+def unfinished_batch(store, campaign_row_id: int) -> Optional[UnfinishedBatch]:
+    """The last batch of *campaign_row_id* when it is not ``complete``, else ``None``."""
+    batches = store.batches(campaign_row_id)
+    if not batches or batches[-1]["complete"]:
+        return None
+    batch = batches[-1]
+    units, recalled = {}, set()
+    for row in store.units(batch["id"]):
+        if row["status"] == "recalled":
+            recalled.add(row["paramset_id"])
+        else:
+            units[row["paramset_id"]] = (
+                row["status"], _evaluation(row) if row["status"] == "evaluated" else None)
+    return UnfinishedBatch(batch_id=batch["id"], idx=batch["idx"], asked=batch["asked"],
+                           units=units, recalled=frozenset(recalled))
+
+
 def recorded_batches(store, campaign_row_id: int) -> list:
-    """Every batch of *campaign_row_id*, in execution order.
+    """Every complete batch of *campaign_row_id*, in execution order.
+
+    An incomplete last batch is left out (:func:`unfinished_batch`). An incomplete batch
+    followed by another is a store that contradicts itself, and raises.
 
     Reads through the store's own ``batches``/``units`` accessors rather than SQL of its
     own: those already answer "in execution order", which is the property the replay
@@ -212,7 +257,14 @@ def recorded_batches(store, campaign_row_id: int) -> list:
     """
     out = []
     by_unit: dict = {}
-    for batch in store.batches(campaign_row_id):
+    batches = store.batches(campaign_row_id)
+    for position, batch in enumerate(batches):
+        if not batch["complete"]:
+            if position == len(batches) - 1:
+                break
+            raise ValueError(
+                f"batch {batch['idx']} is not complete, but batch "
+                f"{batches[position + 1]['idx']} follows it")
         rows = store.units(batch["id"])
         evaluations, recalled = [], []
         for row in rows:
