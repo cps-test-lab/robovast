@@ -27,6 +27,7 @@ extra to use it.
 """
 
 import logging
+import math
 from typing import Literal, Optional
 
 import numpy as np
@@ -103,11 +104,15 @@ def measure_value(spec: MeasureSpec, raw, name: str) -> float:
                 f"declare (have: {spec.values})") from None
         return index + 0.5
     try:
-        return float(raw)
+        value = float(raw)
     except (TypeError, ValueError):
         raise ValueError(
             f"measure '{name}' is numeric (low/high) but got {raw!r}; declare "
             f"'values' if it is categorical") from None
+    if not math.isfinite(value):
+        # The archive would refuse it too, without naming the measure.
+        raise ValueError(f"measure '{name}' got {raw!r}; an archive coordinate must be finite")
+    return value
 
 
 class ArchiveConfig(BaseModel):
