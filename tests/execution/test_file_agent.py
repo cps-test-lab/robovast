@@ -114,7 +114,8 @@ def test_a_campaign_stages_the_script_into_its_transient_dir(tmp_path):
     out = tmp_path / "campaign"
     execution.prepare_campaign_configs(str(out), {
         "vast": str(tmp_path / "s.vast"), "scenario_file": str(tmp_path / "s.osc"),
-        "configs": [{"name": "c1", "config": {}}], "execution": {"runs": 1}}, cluster=True)
+        "configs": [{"name": "c1", "config": {}, "_config_block": {"name": "c1"},
+                     "_read_files": []}], "execution": {"runs": 1}}, cluster=True)
     staged = out / "_transient" / execution.FILE_AGENT_SCRIPT
     assert staged.read_bytes() == Path(file_agent.__file__).read_bytes()
 

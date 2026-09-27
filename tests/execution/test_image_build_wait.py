@@ -22,6 +22,7 @@ from click.testing import CliRunner
 
 from robovast.client import cli as client_cli
 from robovast.execution.image_build_wait import wait_for_image_builds
+from robovast.execution.wait_exit import ImageWaitExit
 
 
 class _Status:
@@ -69,7 +70,7 @@ def _run(*build_ids, extra=()):
 def test_a_built_image_exits_zero(service):
     service({"b1": ['pulling', 'pip', 'succeeded']})
     result = _run("b1")
-    assert result.exit_code == 0
+    assert result.exit_code == ImageWaitExit.BUILT
     assert "✓ built" in result.output
 
 
@@ -80,7 +81,7 @@ def test_a_failed_build_exits_one_and_says_what_to_change(service):
     service({"b1": ['pip', 'failed']},
             error=_Error("pip", "no matching distribution", entry="nav2-smac"))
     result = _run("b1")
-    assert result.exit_code == 1
+    assert result.exit_code == ImageWaitExit.FAILED
     assert "nav2-smac" in result.output
     assert "fixable_by=agent" in result.output
 
@@ -89,7 +90,7 @@ def test_it_waits_for_every_id(service):
     """A project builds one image per container that adds packages. Returning when the
     first finishes would call the rest built."""
     seen = service({"b1": ['succeeded'], "b2": ['pip', 'pip', 'succeeded']})
-    assert _run("b1", "b2").exit_code == 0
+    assert _run("b1", "b2").exit_code == ImageWaitExit.BUILT
     assert seen.count("b2") >= 3
 
 
@@ -97,7 +98,7 @@ def test_one_failure_among_several_fails_the_wait(service):
     service({"b1": ['succeeded'], "b2": ['failed']},
             error=_Error("apt", "package not found"))
     result = _run("b1", "b2")
-    assert result.exit_code == 1
+    assert result.exit_code == ImageWaitExit.FAILED
     assert "✓ built" in result.output   # the one that worked is still reported
     assert "b2 failed" in result.output
 
@@ -106,7 +107,7 @@ def test_a_timeout_is_its_own_exit_code(service):
     """Distinct from failure: the build is still going and can be waited on again."""
     service({"b1": ['pip']})
     result = _run("b1", extra=("--timeout", "0.05"))
-    assert result.exit_code == 2
+    assert result.exit_code == ImageWaitExit.STOPPED_WAITING
 
 
 def test_waiting_for_nothing_is_refused():
@@ -183,6 +184,6 @@ def test_a_blocked_build_reports_why_on_the_first_poll(service):
             error=_Error("builder-pod", "the build pod cannot start -- ImagePullBackOff",
                          fixable_by="infra"))
     result = _run("b1")
-    assert result.exit_code == 1
+    assert result.exit_code == ImageWaitExit.FAILED
     assert "ImagePullBackOff" in result.output
     assert "fixable_by=infra" in result.output
