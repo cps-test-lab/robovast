@@ -266,7 +266,7 @@ def test_the_route_answers_rows_and_a_cursor(transport):
 def test_the_watch_wakes_on_a_write(tmp_path):
     logs = tmp_path / "job" / "logs"
     logs.mkdir(parents=True)
-    watch = job_log.LogWatch(tmp_path / "job")
+    watch = job_log.watch(tmp_path / "job")
     try:
         (logs / "system.log").write_text("x\n")
         started = time.monotonic()
