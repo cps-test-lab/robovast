@@ -1859,9 +1859,10 @@ def _cluster_env(namespace, config_name, config_kwargs, kube_context=None,
     The service (the cluster mode) reconstructs the same cluster config the controller
     uses -- the provider's scheduling answers and its ``-o`` options -- from these.
 
-    ``kube_context`` records the context this service was deployed with, so the
-    in-pod driver can resolve per-cluster resource lists (keyed by context name)
-    — in-cluster there is no kubeconfig context to fall back on.
+    ``kube_context`` records the context this service was deployed with -- the one
+    named, else the kubeconfig's current one (:func:`deploy_service` resolves it) -- so
+    the in-pod driver can resolve per-cluster resource lists (keyed by context name):
+    in-cluster there is no kubeconfig context to fall back on.
     """
     import json
     env = [{"name": "ROBOVAST_NAMESPACE", "value": namespace}]
@@ -2384,6 +2385,15 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     rbac = client.RbacAuthorizationV1Api()
     apps = client.AppsV1Api()
     dr = "All" if dry_run else None
+    # The context this deploy ran against, named or not, is what the service resolves
+    # per-cluster resource lists with: in-cluster it has no kubeconfig to ask, and a launch
+    # carries no context of its own. With no --context that is the kubeconfig's current one.
+    from .cluster_context import get_active_kube_context  # pylint: disable=import-outside-toplevel
+    recorded_context = kube_context or get_active_kube_context()
+    if not recorded_context:
+        logger.warning("No Kubernetes context could be determined for this deploy, so the "
+                       "service records none and refuses per-cluster resource lists. Pass "
+                       "--context to record one.")
 
     # Anything the caller did not state is RECOVERED, never defaulted. `upgrade` passes none
     # of the storage or placement arguments, so reading "not passed" as "unpinned, on a
@@ -2432,7 +2442,7 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     manifests = service_manifests(
         namespace=namespace, image=image, env=env, job_node_labels=job_node_labels,
         config_name=config_name, config_kwargs=config_kwargs,
-        kube_context=kube_context, pull_secret=pull_secret,
+        kube_context=recorded_context, pull_secret=pull_secret,
         auth_token=auth_token,
         ingress_host=ingress_host,
         ingress_class=ingress_class, tls_secret=tls_secret, issuer=issuer,
