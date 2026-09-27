@@ -156,6 +156,31 @@ def test_a_job_tag_cannot_reach_outside_the_campaigns_documents(client):
         assert resp.status_code == 400, (tag, resp.text)
 
 
+def test_a_cells_file_cannot_name_another_campaigns_cell(client, root):
+    """``config_file`` names a cell of this campaign: a name that steps out of it would
+    read another campaign's inputs under the token of this one."""
+    _campaign(root, _OTHER)
+    for config_name in (f"../{_OTHER}/cell-a", "cell-a/..", ".", ".."):
+        resp = client.get(Routes.campaign_inputs(_CAMPAIGN),
+                          params={"job": ["job-1"],
+                                  "config_file": [f"{config_name}:campaign.vast"]})
+        assert resp.status_code == 400, (config_name, resp.text)
+    resp = client.get(Routes.campaign_inputs(_CAMPAIGN),
+                      params={"job": ["job-1"],
+                              "config_file": [f"cell-a:../../{_OTHER}/cell-a/_config/campaign.vast"]})
+    assert resp.status_code == 400, resp.text
+
+
+def test_a_cells_file_cannot_lead_out_of_its_campaign_through_a_link(client, root):
+    """A one-segment name is still a way out when the cell is a symlink to another
+    campaign's cell: the file is refused where it resolves, not by how it is spelled."""
+    _campaign(root, _OTHER)
+    (root / _CAMPAIGN / "cell-b").symlink_to(root / _OTHER / "cell-a")
+    resp = client.get(Routes.campaign_inputs(_CAMPAIGN),
+                      params={"job": ["job-1"], "config_file": ["cell-b:campaign.vast"]})
+    assert resp.status_code == 400, resp.text
+
+
 def test_outputs_stream_into_the_campaign_and_the_driver_keeps_its_log(client, root):
     payload = _tar([("cell-a/1/test.xml", b"<testsuite/>"),
                     ("cell-a/1/logs/system.log", b"ran\n"),
