@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 from robovast.client import file_address
-from robovast.client.safe_path import safe_join
+from robovast.client.safe_path import UnsafePathError, check_segment, safe_join
 from robovast.common import file_view
 from robovast.common.config import (EXPLORER_SCOPES, SCENARIO_CONTAINER,
                                     SIMULATION_CONTAINER)
@@ -4335,14 +4335,18 @@ class ServiceBase(RobovastInterface):
         Two guards shared by the local and cluster transports before anything is
         removed:
 
-        * The id must match the campaign naming pattern — this blocks a traversal
-          value like ``..`` from ever reaching the ``rmtree`` / bucket delete and
-          taking out the results root or an unrelated bucket (``ValueError`` → 400).
+        * The id must be one directory name matching the campaign naming pattern. The
+          pattern alone lets a separator through (``../x-<stamp>``, ``/elsewhere/x-<stamp>``),
+          and :meth:`campaign_dir` honours an absolute id (``ValueError`` → 400).
         * No live in-memory driver entry may exist — the authoritative "still
           running here" signal. Stop the campaign first (``RuntimeError`` → 409).
         """
         from robovast.common.execution import is_campaign_dir
-        if not campaign_id or not is_campaign_dir(campaign_id):
+        try:
+            valid = is_campaign_dir(check_segment(campaign_id))
+        except UnsafePathError:
+            valid = False
+        if not valid:
             raise ValueError(
                 f"Refusing to delete {campaign_id!r}: not a valid campaign id.")
         with self._lock:
@@ -5051,11 +5055,14 @@ class ServiceBase(RobovastInterface):
         whichever service serves it.
 
         Campaigns all live under the shared results root (see :meth:`_campaigns_root`);
-        an absolute id is honoured as-is, for analysis of an arbitrary folder.
+        an absolute id is honoured as-is, for analysis of an arbitrary folder. A relative
+        id is one directory name (:func:`~robovast.client.safe_path.check_segment`), since
+        every reader here confines its path against the campaign's directory alone.
+        ``ValueError`` for one that is not.
         """
         if os.path.isabs(campaign_id):
             return Path(campaign_id)
-        return self._campaigns_root() / campaign_id
+        return self._campaigns_root() / check_segment(campaign_id)
 
     # -- results data query (eval viewer) -----------------------------------
 
