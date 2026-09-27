@@ -65,18 +65,15 @@ def _stage_input_dir(src_dir, dst_dir):
                 pass
 
 
-#: The file types scenery_builder reads: a model, and the files a model ``import``s.
 _MODEL_SUFFIXES = (".fpm", ".variation")
 
 
 def cache_inputs(model_file_path):
-    """Every file a build of *model_file_path* reads, for the cache key.
+    """The model files a build of *model_file_path* can read, for the cache key.
 
-    The model plus every model file in its directory tree: a ``.variation`` imports ``.fpm``
-    files by a path relative to it, which is why the whole directory is staged for the
-    container, and an edited import has to invalidate the cache as an edited entry file
-    does. The key covers the tree :func:`_stage_input_dir` stages, and every model file in
-    it rather than the ones an import names, so the key needs no parser of its own.
+    Every model file in the tree :func:`_stage_input_dir` stages, since an import is a path
+    relative to the importing file; all of them rather than the imported ones, so the key
+    needs no model parser.
     """
     directory = os.path.dirname(model_file_path)
     models = sorted(
@@ -271,10 +268,8 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
             progress_update_callback(f"✓ Using cached output for {variation}")
             all_map_dirs.append(cached_file)
         else:
-            # Stage the whole directory containing the variation file into the
-            # workspace so the container can read it at the same absolute path.
-            # The .variation file references siblings (e.g. ``import "rooms.fpm"``),
-            # so the entire directory must be present.
+            # Stage the whole directory: a .variation imports other model files by
+            # relative path.
             input_dir = os.path.join(temp_base, variation, "input")
             _stage_input_dir(os.path.dirname(variation_file_path), input_dir)
             staged_input = os.path.join(input_dir, os.path.basename(variation_file))

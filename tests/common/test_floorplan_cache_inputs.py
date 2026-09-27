@@ -1,12 +1,7 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
 
-"""The floorplan cache is keyed on every file the build reads, not on the entry file alone.
-
-A ``.variation`` imports sibling ``.fpm`` files, and the whole directory is staged for the
-container because of that, so an edited ``rooms.fpm`` must invalidate the cache just as an
-edited ``.variation`` does.
-"""
+"""The floorplan cache is keyed on every model file a build can import."""
 
 import os
 import time
