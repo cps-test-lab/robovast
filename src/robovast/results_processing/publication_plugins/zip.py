@@ -166,18 +166,14 @@ def _merge_zip_metadata(campaign_dir: Path, zip_metadata: Dict[str, Any]) -> byt
 
 
 def _load_vast_metadata(vast_path: str) -> Dict[str, Any]:
-    """Return the ``metadata`` section from a .vast file path.
+    """Return the ``metadata`` section of the campaign's .vast, or ``{}`` when it has none.
 
-    Returns an empty dict if the file cannot be read or ``metadata`` is absent.
+    Read by the config loader as an archived campaign is read (bases merged, migrated in
+    memory). Raises when the file cannot be read: an archive named from a template whose
+    values could not be looked up is not the archive that was asked for.
     """
-    try:
-        with open(vast_path, "r", encoding="utf-8") as fh:
-            data = yaml.safe_load(fh)
-        if isinstance(data, dict):
-            return data.get("metadata") or {}
-    except Exception:  # pylint: disable=broad-except
-        pass
-    return {}
+    from robovast.common.common import load_config  # pylint: disable=import-outside-toplevel
+    return load_config(vast_path, upgrade=True).get("metadata") or {}
 
 
 def _resolve_filename(template: str, campaign_name: str, vast_metadata: Dict[str, Any]) -> str:
