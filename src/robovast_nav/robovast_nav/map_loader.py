@@ -130,6 +130,31 @@ class Map:
         return not self.occupancy_grid[grid_y, grid_x]
 
 
+def _image_path(map_config: dict, map_dir: str) -> str:
+    """The image a map YAML names, relative paths resolved against *map_dir*."""
+    image_file = map_config.get("image", "")
+    if not image_file:
+        raise ValueError("Map YAML missing required 'image' field")
+    return image_file if os.path.isabs(image_file) else os.path.join(map_dir, image_file)
+
+
+def map_files(map_file_path: str) -> List[str]:
+    """The map YAML and the image it names: every file :func:`load_map` reads, for a cache key.
+
+    Raises:
+        FileNotFoundError: If the YAML or its image does not exist
+        ValueError: If the YAML names no image
+    """
+    with open(map_file_path, "r", encoding="utf-8") as f:
+        map_config = yaml.safe_load(f)
+    if not isinstance(map_config, dict):
+        raise ValueError(f"Invalid or empty map YAML file: {map_file_path}")
+    image_file = _image_path(map_config, os.path.dirname(map_file_path))
+    if not os.path.exists(image_file):
+        raise FileNotFoundError(f"Map image file not found: {image_file}")
+    return [map_file_path, image_file]
+
+
 def load_map(map_file_path: str) -> Map:
     """
     Load a ROS2 navigation map from a YAML file.
@@ -165,15 +190,7 @@ def load_map(map_file_path: str) -> Map:
         if map_config is None:
             raise ValueError(f"Invalid or empty map YAML file: {map_file_path}")
 
-        # Get map parameters with defaults
-        image_file = map_config.get("image", "")
-        if not image_file:
-            raise ValueError("Map YAML missing required 'image' field")
-
-        # Handle relative paths
-        if not os.path.isabs(image_file):
-            image_file = os.path.join(map_dir, image_file)
-
+        image_file = _image_path(map_config, map_dir)
         resolution = map_config.get("resolution", 0.05)
         origin = map_config.get("origin", [0.0, 0.0, 0.0])
 

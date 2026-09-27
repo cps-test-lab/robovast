@@ -39,11 +39,9 @@ logger = logging.getLogger(__name__)
 
 
 class RunArtifactError(Exception):
-    """A run file could not be reached, with the address in the message.
+    """A run file could not be reached, with the address in the message."""
 
-    Raised rather than returned: the tools here hand back an image, which has no result dict
-    to carry an ``{"error": ...}`` in.
-    """
+    include_traceback = False
 
 
 def run_address(campaign_id: str, config_name, run_id, *parts) -> str:
