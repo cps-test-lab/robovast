@@ -3,9 +3,9 @@
 
 """A fault in the placer or the planner ends the composition; it is not an infeasible draw.
 
-``VariationInfeasibleError`` is the one exception a search drops a draw for. Retrying a
-``TypeError`` ten times and raising it as that type recorded a bug as "this draw cannot be
-realized", and a search went on spending its budget around it.
+``VariationInfeasibleError`` is the one exception a search drops a draw for, so a bug
+raised as that type reads as "this draw cannot be realized" and a search spends its budget
+around it instead of stopping on it.
 """
 
 import pytest
