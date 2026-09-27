@@ -38,7 +38,7 @@ from robovast.service.interface import (ActionResult, BuildImageRequest,
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, DeleteCampaignsRequest,
                                         DeleteCampaignsResponse, EditFileRequest,
-                                        ERROR_CODE_HEADER, FileListing,
+                                        ERROR_CODE_HEADER, NEXT_STEP_HEADER, FileListing,
                                         FileMeta, FileText, ImageBuildRef, ImageBuildStatus,
                                         ImportCampaignRequest,
                                         ListCampaignsRequest, ListCampaignsResponse,
@@ -128,7 +128,8 @@ class HTTPTransport(RobovastInterface):
                            # exception type itself cannot cross this boundary, and a client
                            # that has to act on which failure this was would otherwise have
                            # to match on the sentence.
-                           code=(resp.headers.get(ERROR_CODE_HEADER) or "").strip())
+                           code=(resp.headers.get(ERROR_CODE_HEADER) or "").strip(),
+                           next_step=(resp.headers.get(NEXT_STEP_HEADER) or "").strip())
 
     # First arg is the URL *route*; **params are query params — named `route` (not
     # `path`) so an endpoint whose query param is itself `path` (workspace file
