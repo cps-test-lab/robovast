@@ -32,6 +32,8 @@ from urllib.parse import urlencode
 from fastmcp import FastMCP
 
 from robovast.client.campaign_report import status_report
+from robovast.client.image_report import build_status_report
+from robovast.client.service_report import resource_usage_report
 from robovast.execution.wait_exit import CampaignWaitExit, ImageWaitExit
 from robovast.mcp_server import results_resolver, service_access
 from robovast.mcp_server.lacks import lacks
@@ -752,7 +754,7 @@ def get_resource_usage() -> dict:
     if client is None:
         return {"error": NO_SERVICE}
     try:
-        return client.resource_usage().model_dump()
+        return resource_usage_report(client)
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -858,33 +860,6 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
         return error_result(e)
 
 
-def _status_next_step(status) -> str:
-    """What to do about the build state just reported.
-
-    Four phases, four different actions, and the caller is here *because* it is deciding
-    between them: a build still running wants a wait rather than a second build; a *blocked*
-    one wants neither, since its pod is not running and its inputs are not the problem; a
-    failed one wants the diagnosis rather than a retry of identical inputs; a finished one
-    wants the run.
-    """
-    if status.phase == "blocked":
-        # Not done, but telling the caller to wait is what wasted its time last: the builder
-        # pod cannot start, so no amount of waiting or rebuilding produces an image, and
-        # get_image_build_log has nothing in it either.
-        return ("the build pod cannot start -- read error_detail above; it names the image "
-                "or the capacity at fault. Nothing in the project's build: section is "
-                "involved, and the build fails on its own shortly if this does not clear")
-    if not status.done:
-        return (f"run in the background: vast image wait {status.build_id} --interval 5 "
-                f"({ImageWaitExit.summary()})")
-    if status.phase == "failed":
-        return (f"read error_detail above, then "
-                f"get_image_build_log(build_id='{status.build_id}', summarize=True) "
-                f"for the builder's own output")
-    return ("the image is ready — start_campaign(...) to run it, or "
-            "exec_in_container(...) to look inside it")
-
-
 def get_image_build_status(build_id: str) -> dict:
     """Poll an image build. ``error_detail`` says what to change.
 
@@ -918,13 +893,7 @@ def get_image_build_status(build_id: str) -> dict:
     if client is None:
         return {"error": "no robovast-service reachable"}
     try:
-        s = client.get_image_build_status(build_id)
-        out = {"build_id": s.build_id, "tag": s.tag, "phase": s.phase,
-               "done": s.done, "cached": s.cached, "image_ref": s.image_ref,
-               "next_step": _status_next_step(s)}
-        if s.error is not None:
-            out["error_detail"] = s.error.model_dump()
-        return out
+        return build_status_report(client, build_id)
     except Exception as e:  # noqa: BLE001
         return error_result(e)
 
