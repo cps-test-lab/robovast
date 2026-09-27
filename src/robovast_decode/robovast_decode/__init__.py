@@ -33,4 +33,5 @@ except PackageNotFoundError:  # a source tree that was never installed
 #: The version of what a reader addresses: table names, column names and types, views.
 #: 2: a field declared as an array is a list column; a sequence of messages is one list per
 #: leaf field; laser scans are tables.
-DATA_CONTRACT = 2
+#: 3: campaign.batch has recalls_recorded and complete; campaign.unit has recalled_from.
+DATA_CONTRACT = 3
