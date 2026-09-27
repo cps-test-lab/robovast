@@ -201,9 +201,7 @@ class NullService(ServiceBase):
 
     def version(self) -> VersionInfo:
         return self._version_info(backend=self.IMPLEMENTATION, can_build_images=False,
-                                  can_schedule=self._queues_campaigns(),
-                                  results_root=str(self._campaigns_root()),
-                                  sources_root=str(self.store.registry.root))
+                                  can_schedule=self._queues_campaigns())
 
     def upgrade_info(self) -> UpgradeInfo:
         return UpgradeInfo(supported=False,
