@@ -500,7 +500,8 @@ def build_export(campaign_dir: Path, campaign_id: str, export_id: str, request: 
     payload = json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8") + b"\n"
     name = export_file_name(campaign_id, export_id)
     tmp = path / (name + ".incoming")
-    with tarfile.open(tmp, "w:gz") as tar:
+
+    def members(tar: tarfile.TarFile) -> None:
         _add_bytes(tar, EXPORT_FILE, payload)
         for entry in written.values():
             tar.add(str(scratch / entry["file"]), arcname=entry["file"], recursive=False)
@@ -510,6 +511,12 @@ def build_export(campaign_dir: Path, campaign_id: str, export_id: str, request: 
             source = (scratch / "bags" / bag.rel if request.bags == "sqlite3" and bag.rosbag2
                       else bag.path)
             add_tree(tar, source, f"{campaign_id}/{bag.rel}")
+
+    # Through the archive's pigz pipe, on every core: a CSV export can be gigabytes of text.
+    from robovast.execution.campaign_archive import iter_tar  # pylint: disable=import-outside-toplevel
+    with open(tmp, "wb") as fh:
+        for chunk in iter_tar(members):
+            fh.write(chunk)
     os.replace(tmp, path / name)
     shutil.rmtree(scratch, ignore_errors=True)
     manifest["bytes"] = os.path.getsize(path / name)
