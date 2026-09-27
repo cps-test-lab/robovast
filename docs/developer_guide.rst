@@ -2674,7 +2674,7 @@ series converging on that pivot, so a notch moves millimeters once you are close
 never be passed through — flying the eye *and* the pivot along the cursor ray keeps the radius, and
 with it the step size, constant. The same change makes a fixed far plane visible, so ``viewport.ts``
 sizes the frustum each frame to enclose the world's bounding sphere — measured from the *scene*, not
-from the pivot, which the wheel now carries along and which is therefore constant by design.
+from the pivot, which the wheel carries along and which is therefore constant by design.
 **Extractability rule: files in this directory import only
 ``three`` — never ``@/…``** (see its README) — it is shared-candidate code, so all
 robovast-specific wiring lives in the consumer, ``frontend/ui/src/panels/Scene3DPanel.tsx``, which
