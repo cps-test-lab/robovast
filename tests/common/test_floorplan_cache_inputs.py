@@ -4,8 +4,8 @@
 """The floorplan cache is keyed on every file the build reads, not on the entry file alone.
 
 A ``.variation`` imports sibling ``.fpm`` files, and the whole directory is staged for the
-container because of that. Keyed on the ``.variation`` alone, an edited ``rooms.fpm`` left
-the cache valid and the campaign composed on the previous map.
+container because of that, so an edited ``rooms.fpm`` must invalidate the cache just as an
+edited ``.variation`` does.
 """
 
 import os

@@ -73,9 +73,9 @@ def cache_inputs(model_file_path):
     """Every file a build of *model_file_path* reads, for the cache key.
 
     The model plus every model file beside it: a ``.variation`` imports sibling ``.fpm``
-    files, which is why the whole directory is staged for the container, and a key that
-    covered only the entry file served the previous map after an import was edited. Every
-    sibling rather than the ones an import names, so the key needs no parser of its own.
+    files, which is why the whole directory is staged for the container, and an edited
+    import has to invalidate the cache as an edited entry file does. Every sibling rather
+    than the ones an import names, so the key needs no parser of its own.
     """
     directory = os.path.dirname(model_file_path)
     siblings = sorted(
@@ -272,8 +272,7 @@ def generate_floorplan_variations(base_path, variation_files, num_variations, se
             # Stage the whole directory containing the variation file into the
             # workspace so the container can read it at the same absolute path.
             # The .variation file references siblings (e.g. ``import "rooms.fpm"``),
-            # so the entire directory must be present (the previous docker wrapper
-            # bind-mounted the containing directory for the same reason).
+            # so the entire directory must be present.
             input_dir = os.path.join(temp_base, variation, "input")
             _stage_input_dir(os.path.dirname(variation_file_path), input_dir)
             staged_input = os.path.join(input_dir, os.path.basename(variation_file))
