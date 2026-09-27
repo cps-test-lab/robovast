@@ -539,18 +539,19 @@ function buildSkinnedMesh(
 
 export async function loadScene(sceneUrl: string): Promise<SceneModel> {
   const baseUrl = new URL(sceneUrl, window.location.href).href
-  const [scene, bin] = await Promise.all([
-    fetch(sceneUrl).then((r) => {
-      if (!r.ok) throw new Error(`Failed to fetch ${sceneUrl} (${r.status} ${r.statusText}).`)
-      return r.json() as Promise<SceneDescriptor>
-    }),
-    fetch(new URL('scene.bin', baseUrl).href).then((r) => {
-      if (!r.ok) throw new Error(`Failed to fetch scene.bin (${r.status} ${r.statusText}).`)
-      return r.arrayBuffer()
-    }),
-  ])
-
+  const binRequest = fetch(new URL('scene.bin', baseUrl).href).then((r) => {
+    if (!r.ok) throw new Error(`Failed to fetch scene.bin (${r.status} ${r.statusText}).`)
+    return r.arrayBuffer()
+  })
+  // The descriptor is checked before scene.bin is awaited, so a document of another format is
+  // refused by name rather than by its missing sibling; that rejection is then not the one reported.
+  binRequest.catch(() => {})
+  const scene = await fetch(sceneUrl).then((r) => {
+    if (!r.ok) throw new Error(`Failed to fetch ${sceneUrl} (${r.status} ${r.statusText}).`)
+    return r.json() as Promise<SceneDescriptor>
+  })
   checkSceneFormat(scene, sceneUrl)
+  const bin = await binRequest
 
   const loader = new TextureLoader()
   // Clones made before the image arrives share the Source but carry their own upload state, so the
