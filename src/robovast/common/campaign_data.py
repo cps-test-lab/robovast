@@ -544,7 +544,7 @@ _OUTCOME_FILENAME = "outcome.json"
 #: is then the one record that says what the tree is: every other file there, the archived
 #: ``outcome.json`` included, came out of the archive and describes the campaign that was
 #: archived, not the part of it that landed.
-_IMPORTING_FILENAME = "importing.json"
+IMPORT_MARKER_FILENAME = "importing.json"
 
 
 #: Postprocessing's own provenance record, relative to the campaign directory. Written by
@@ -636,7 +636,7 @@ def write_import_marker(campaign_root: Path, **facts) -> None:
     """
     exec_dir = Path(campaign_root) / "_execution"
     exec_dir.mkdir(parents=True, exist_ok=True)
-    (exec_dir / _IMPORTING_FILENAME).write_text(
+    (exec_dir / IMPORT_MARKER_FILENAME).write_text(
         json.dumps({"started_at": datetime.now(timezone.utc).isoformat(), **facts},
                    indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -647,7 +647,7 @@ def read_import_marker(campaign_dir: Path) -> Optional[dict]:
     A marker whose contents cannot be read still marks: it is its presence that says the
     import did not conclude, so an unreadable one reads as an empty record.
     """
-    path = Path(campaign_dir) / "_execution" / _IMPORTING_FILENAME
+    path = Path(campaign_dir) / "_execution" / IMPORT_MARKER_FILENAME
     if not path.is_file():
         return None
     try:
@@ -659,7 +659,7 @@ def read_import_marker(campaign_dir: Path) -> Optional[dict]:
 
 def clear_import_marker(campaign_root: Path) -> None:
     """Remove ``_execution/importing.json``: the import concluded, however it ended."""
-    path = Path(campaign_root) / "_execution" / _IMPORTING_FILENAME
+    path = Path(campaign_root) / "_execution" / IMPORT_MARKER_FILENAME
     try:
         path.unlink()
     except FileNotFoundError:

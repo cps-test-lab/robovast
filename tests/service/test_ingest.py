@@ -203,8 +203,9 @@ def test_a_missing_execution_record_degrades_rather_than_failing(tmp_path, campa
 
 
 def test_the_importers_own_log_is_not_an_execution_record(tmp_path, campaign):
-    """An import claims ``_execution/`` and opens its log there before extracting, so an
-    archive without ``_execution/`` arrives with one holding only the importer's files."""
+    """An import claims ``_execution/``, marks it as under way and opens its log there before
+    extracting, so an archive without ``_execution/`` arrives with one holding only the
+    importer's files."""
     shutil.rmtree(campaign / "_execution")
     target = claim_campaign_dir(tmp_path / "results", campaign.name)
     (target / "_execution" / "import.log").write_text("importing\n", encoding="utf-8")

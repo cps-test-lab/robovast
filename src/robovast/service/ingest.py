@@ -385,15 +385,19 @@ def _check_layout(campaign_dir: Path) -> dict:
     different answers -- registering a half-campaign would make every later reader fail on it
     instead of the import saying so once.
     """
+    from robovast.common.campaign_data import \
+        IMPORT_MARKER_FILENAME  # pylint: disable=import-outside-toplevel
     from robovast.common.migrations.archive import \
         ARCHIVE_STAMP  # pylint: disable=import-outside-toplevel
 
     if not campaign_dir.is_dir():
         return _stage(STAGE_FAILED, f"{campaign_dir} is not a directory")
     missing = [name for name in ("_config", "_execution") if not (campaign_dir / name).is_dir()]
-    # The importer's log and report and the archive's layout stamp all sit in ``_execution/``,
-    # so a directory holding only those is an execution record the archive lacked.
-    importer_records = {Path(ARCHIVE_STAMP).name, "import.log", "import.json"}
+    # The importer's log, report and under-way marker and the archive's layout stamp all sit
+    # in ``_execution/``, so a directory holding only those is an execution record the archive
+    # lacked.
+    importer_records = {Path(ARCHIVE_STAMP).name, "import.log", "import.json",
+                        IMPORT_MARKER_FILENAME}
     if ("_execution" not in missing
             and {e.name for e in (campaign_dir / "_execution").iterdir()} <= importer_records):
         missing.append("_execution")
