@@ -171,6 +171,10 @@ share = "robovast.execution.share_cli:share"
 # the `robovast.execution_backends` group (see service/serve_backends.py), which the
 # `robovast-cluster` distribution populates; the core alone serves nothing and says so.
 
+# `vast doctor`'s checks for what the core needs on this machine (Docker).
+[tool.poetry.plugins."robovast.doctor_checks"]
+docker = "robovast.common.cli.doctor:doctor_checks"
+
 [tool.poetry.plugins."robovast.share_providers"]
 nextcloud = "robovast.execution.share_providers.nextcloud:NextcloudShareProvider"
 gcs = "robovast.execution.share_providers.gcs:GcsShareProvider"
