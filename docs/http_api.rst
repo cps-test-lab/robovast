@@ -77,8 +77,9 @@ naming the reason once it failed; ``GET .../inputs`` is what a job pod extracts 
 ``/config``, with the campaign's ``_config/`` and ``_transient/`` flattened, only the
 named jobs' own documents (``job=<tag>``, required) taken from the per-job ones, and a
 cell's own files (``config_file=<config>:<rel>``) landing on top; ``PUT .../outputs`` takes a
-pod's output tree into the campaign, last writer wins, with what the driver owns -- the
-campaign's own store, its logs -- refused per member and named in the reply; and
+pod's output tree into the campaign, last writer wins, with what the service owns -- the
+campaign's own store and its ``_config/``, ``_transient/`` and ``_execution/`` -- refused
+per member and named in the reply; and
 ``GET``/``PUT /data/staged/{slot}`` move the scratch trees the service stages for a build
 or exec pod. Every stream a pod reads is a plain tar, and an upload may be plain or
 gzipped: the reader detects it. These are **control routes, not writes under** ``/results``, so that space

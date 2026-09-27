@@ -25,9 +25,12 @@ import subprocess
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from importlib.resources import files
+from pathlib import Path
 from pprint import pformat
 
 import yaml
+
+from robovast.client.safe_path import UnsafePathError, check_segment, is_inside, safe_join
 
 
 # The node label is computed IN THE CONTAINER by ``execution/data/collect_sysinfo.py``,
@@ -2203,12 +2206,25 @@ def create_job_links(campaign_dir) -> int:
     Idempotent: an existing ``job`` entry is replaced. Missing manifest is a
     no-op (single-config campaigns have none). Returns the number of links
     created.
+
+    Every link and its target must stay inside the campaign; the manifest is checked whole
+    before anything is removed or linked, and ``UnsafePathError`` names an entry that leads
+    out.
     """
-    links = read_job_links(campaign_dir)
+    root = Path(campaign_dir).resolve()
+    placed = []
+    for link_rel, target in read_job_links(campaign_dir).items():
+        link_dir = safe_join(root, os.path.dirname(link_rel) or ".")
+        link_path = link_dir / check_segment(os.path.basename(link_rel))
+        if (not isinstance(target, str) or os.path.isabs(target)
+                or not is_inside(root, link_dir / target)):
+            raise UnsafePathError(
+                f"{JOB_LINKS_MANIFEST} entry {link_rel!r} points outside the campaign: "
+                f"{target!r}")
+        placed.append((link_path, target))
     created = 0
-    for link_rel, target in links.items():
-        link_path = os.path.join(campaign_dir, link_rel)
-        os.makedirs(os.path.dirname(link_path), exist_ok=True)
+    for link_path, target in placed:
+        os.makedirs(link_path.parent, exist_ok=True)
         # Replace any existing entry so re-runs are idempotent.
         if os.path.islink(link_path) or os.path.exists(link_path):
             try:

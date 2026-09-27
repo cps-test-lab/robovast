@@ -1783,7 +1783,7 @@ class OutputsIngested(BaseModel):
     files: int = 0
     bytes: int = 0
     #: Members refused rather than written -- a path leaving the tree, a hard link, a
-    #: file only the driver writes. Named, so a pod whose output vanished can read why.
+    #: path only the service writes. Named, so a pod whose output vanished can read why.
     refused: list[str] = Field(default_factory=list)
     #: Files whose delivered range did not start where the file ends here; the sender
     #: sends each of them whole next time.
@@ -3630,10 +3630,10 @@ class RobovastInterface(ABC):
 
         The last writer wins, member by member: the containers of one pod share an
         output tree and each contributes its own files to it. Refused with a
-        ``KeyError`` for a campaign that is not here and a ``ValueError`` for one that has
-        ended -- outputs arriving after the verdict would change a record nothing reads
-        again. What a pod never writes -- the campaign's own store, the driver's logs --
-        is refused per member and reported, never written.
+        ``KeyError`` for a campaign that is not here; one that has ended still takes it, since
+        a stop tears pods down while they flush. What a pod never writes -- the campaign's
+        own store, its ``_config/``, ``_transient/`` and ``_execution/`` -- is refused per
+        member and reported, never written.
         """
 
     @abstractmethod
