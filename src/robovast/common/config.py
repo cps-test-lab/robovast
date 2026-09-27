@@ -259,11 +259,7 @@ class ResourcesConfig(BaseModel):
     cpu_limit: Optional[Union[int, float, str,
                               list[dict[str, Union[int, float, str]]]]] = None
     memory_limit: Optional[Union[str, list[dict[str, str]]]] = None
-    #: Whole GPUs for this container. Omit it and the container running the simulator gets
-    #: one wherever the cluster advertises GPUs, so the common case needs nothing here;
-    #: ``0`` opts out on a cluster that has them. A real field rather than an undeclared key
-    #: because pydantic's default ``extra='ignore'`` was dropping it from the model, so the
-    #: documented option only worked where the raw mapping happened to be read.
+    #: Whole GPUs for this container. Omitted, it gets none, whatever the cluster advertises.
     gpu: Optional[Union[int, list[dict[str, int]]]] = None
 
     @field_validator('cpu', 'cpu_limit')
@@ -289,6 +285,37 @@ class ResourcesConfig(BaseModel):
                     check(value)
         else:
             check(v)
+        return v
+
+    @field_validator('memory', 'memory_limit')
+    @classmethod
+    def validate_memory_quantity(cls, v):
+        """The annotation accepts any string; a spelling Kubernetes does not read (``"4GB"``)
+        would otherwise be refused by the API server for every Job of the batch."""
+        def check(value):
+            if to_bytes(value) is None:
+                raise ValueError(
+                    f'memory {value!r} is not a memory quantity: use bytes with a binary '
+                    '("16Gi", "512Mi") or decimal ("4G") unit')
+
+        if v is None:
+            return v
+        if isinstance(v, list):
+            for entry in v:
+                for value in entry.values():
+                    check(value)
+        else:
+            check(v)
+        return v
+
+    @field_validator('gpu')
+    @classmethod
+    def validate_gpu_count(cls, v):
+        values = [value for entry in v for value in entry.values()] if isinstance(v, list) \
+            else [v]
+        for value in values:
+            if value is not None and value < 0:
+                raise ValueError(f'gpu {value!r} is not a GPU count: use 0 or more')
         return v
 
     @model_validator(mode="after")
