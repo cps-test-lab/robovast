@@ -116,6 +116,7 @@ def test_every_client_module_imports_without_the_core(without_core, module):
 @pytest.mark.parametrize("argv", [
     ["--help"], ["login", "--help"], ["logout", "--help"], ["doctor", "--help"],
     ["workspace", "--help"], ["files", "--help"], ["campaign", "wait", "--help"],
+    ["workspace", "list", "--help"], ["image", "status", "--help"],
     ["--version"],
     # The launch path: `workspace run` is the verb this whole distribution exists to
     # make reachable, and it is the client's own -- no entry point in between.
