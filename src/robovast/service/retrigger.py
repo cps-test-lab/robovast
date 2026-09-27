@@ -467,15 +467,13 @@ def strip_archived_kubernetes_keys(vast_path) -> list[str]:
     name. The lenient read already dropped them from the config it was reconstructed from, so
     the file has to agree, or the relaunch fails on a key the source campaign ran without.
     """
-    from ruamel.yaml import YAML  # pylint: disable=import-outside-toplevel
-
     from robovast.common.config import \
         archived_kubernetes_drops  # pylint: disable=import-outside-toplevel
+    from robovast.common.migrations import \
+        round_trip_yaml  # pylint: disable=import-outside-toplevel
 
     vast_path = Path(vast_path)
-    ruamel = YAML()
-    ruamel.preserve_quotes = True
-    ruamel.width = 4096
+    ruamel = round_trip_yaml()
     with open(vast_path, "r", encoding="utf-8") as handle:
         documents = list(ruamel.load_all(handle))
     if not documents or documents[0] is None:

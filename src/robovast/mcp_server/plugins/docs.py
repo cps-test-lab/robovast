@@ -64,6 +64,14 @@ def _find_docs_dir() -> Path | None:
     return None
 
 
+class DirectiveUnresolved(RuntimeError):
+    """A directive in a page could not be expanded.
+
+    Raised rather than written into the page: a placeholder in the text reads as the page's
+    content, and the cause would reach nobody but a debug log.
+    """
+
+
 def _autodoc_to_rst(directive: str, target: str, options: dict[str, str]) -> str:
     """Resolve a single Sphinx autodoc directive to plain RST text."""
     try:
@@ -137,8 +145,8 @@ def _autodoc_to_rst(directive: str, target: str, options: dict[str, str]) -> str
             return "\n".join(lines)
 
     except Exception as e:
-        logger.debug("autodoc resolution failed for %s %s: %s", directive, target, e)
-        return f"*[{directive}:: {target} — could not resolve: {e}]*"
+        raise DirectiveUnresolved(
+            f".. {directive}:: {target} could not be resolved: {type(e).__name__}: {e}") from e
 
     return f"*[unsupported directive: {directive}]*"
 
@@ -148,8 +156,10 @@ _DIRECTIVE_RE = re.compile(
     re.MULTILINE,
 )
 
+# The bare form, as docs/_ext/mcp_tools.py declares it: the listing is registry-driven, so
+# the directive names nothing.
 _MCP_TOOLS_RE = re.compile(
-    r"^\.\.\s+mcp-tools::\s+(\S+)\s*$",
+    r"^\.\.\s+mcp-tools::\s*$",
     re.MULTILINE,
 )
 
@@ -192,18 +202,21 @@ def _render_literalinclude(rel_path: str, options: dict[str, str], base_dir: Pat
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError as e:
-        return f"*[literalinclude:: {rel_path} — could not read: {e}]*"
+        raise DirectiveUnresolved(
+            f".. literalinclude:: {rel_path} could not be read: {e}") from e
     after = options.get("start-after")
     if after:
         start = next((i for i, line in enumerate(lines) if after in line), None)
         if start is None:
-            return f"*[literalinclude:: {rel_path} — no line holds {after!r}]*"
+            raise DirectiveUnresolved(
+                f".. literalinclude:: {rel_path}: no line holds {after!r}")
         lines = lines[start + 1:]
     before = options.get("end-before")
     if before:
         end = next((i for i, line in enumerate(lines) if before in line), None)
         if end is None:
-            return f"*[literalinclude:: {rel_path} — no line holds {before!r}]*"
+            raise DirectiveUnresolved(
+                f".. literalinclude:: {rel_path}: no line holds {before!r}")
         lines = lines[:end]
     spec = options.get("lines")
     if spec:
@@ -234,20 +247,26 @@ def _strip_inline_roles(text: str) -> str:
     return _INLINE_ROLE_RE.sub(_repl, text)
 
 
-def _resolve_mcp_tools_directive(target: str) -> str:
-    """Expand a ``.. mcp-tools::`` directive into a plain-text tool listing."""
+def _resolve_mcp_tools_directive() -> str:
+    """Expand ``.. mcp-tools::`` into a plain-text listing of every registered tool.
+
+    The same registry the Sphinx directive renders, so the page an agent reads through
+    ``search_docs`` lists what the server it is talking to registers.
+    """
     try:
-        module_path, attr = target.rsplit(".", 1)
-        mod = importlib.import_module(module_path)
-        tools = getattr(mod, attr)
+        from robovast.mcp_server.registry import \
+            load_registered_tool_details  # pylint: disable=import-outside-toplevel
         lines = []
-        for fn in tools:
-            doc = (fn.__doc__ or "").strip().split("\n")[0]
-            lines.append(f"- ``{fn.__name__}``: {doc}")
+        for plugin_name, tools in sorted(load_registered_tool_details().items()):
+            if not tools:
+                continue
+            lines += [f"**{plugin_name}**", ""]
+            lines += [f"- ``{t['name']}``: {t['summary']}" for t in tools]
+            lines.append("")
         return "\n".join(lines)
     except Exception as e:
-        logger.debug("mcp-tools resolution failed for %s: %s", target, e)
-        return f"*[mcp-tools:: {target} — could not resolve: {e}]*"
+        raise DirectiveUnresolved(
+            f".. mcp-tools:: could not be resolved: {type(e).__name__}: {e}") from e
 
 
 def _resolve_directives(text: str, base_dir: Path) -> str:
@@ -258,9 +277,12 @@ def _resolve_directives(text: str, base_dir: Path) -> str:
     example snippets travel with the doc), tool listings are rendered, and
     cross-reference roles are reduced to their display text. *base_dir* is the
     directory the document lives in, used to resolve ``literalinclude`` paths.
+
+    Raises:
+        DirectiveUnresolved: for the first directive that cannot be expanded.
     """
     def _replace_mcp_tools(m: re.Match) -> str:
-        return _resolve_mcp_tools_directive(m.group(1)) + "\n"
+        return _resolve_mcp_tools_directive() + "\n"
 
     text = _MCP_TOOLS_RE.sub(_replace_mcp_tools, text)
 
@@ -439,6 +461,9 @@ _docs_dir: Path | None = _find_docs_dir()
 _doc_files: dict[str, Path] = {}
 _doc_meta: dict[str, str] = {}
 _doc_content: dict[str, str] = {}
+#: page name -> why its directives could not be expanded. Such a page is searched as written
+#: and refused when read, with this reason.
+_doc_unresolved: dict[str, str] = {}
 #: page name -> which corpus it came from, so a listing says where an answer is from.
 _doc_source: dict[str, str] = {}
 
@@ -457,8 +482,13 @@ for _name, (_path, _kind, _from) in _sources.items():
     if _kind == "roqsim":
         _doc_meta[_name] = _extract_title(_text) or _name
         # Only robovast's own pages carry directives this resolver knows how to expand.
-        _doc_content[_name] = (
-            _resolve_directives(_text, _path.parent) if _from == "robovast" else _text)
+        _doc_content[_name] = _text
+        if _from == "robovast":
+            try:
+                _doc_content[_name] = _resolve_directives(_text, _path.parent)
+            except DirectiveUnresolved as _e:
+                _doc_unresolved[_name] = str(_e)
+                logger.warning("documentation page %r: %s", _name, _e)
     else:
         _doc_meta[_name] = _extract_md_title(_text) or _name
         _doc_content[_name] = _text
@@ -547,6 +577,13 @@ def _listing_row(name: str, title: str, source: str = "") -> dict:
 # -- Tool functions ----------------------------------------------------------
 
 
+def _refuse_unresolved(name: str) -> None:
+    """Raise for a page whose directives could not be expanded, naming why."""
+    if name in _doc_unresolved:
+        raise DirectiveUnresolved(
+            f"documentation page {name!r} cannot be served: {_doc_unresolved[name]}")
+
+
 def _no_docs() -> dict:
     """The reply when no docs were loaded.
 
@@ -607,8 +644,9 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
     """RoboVAST's documentation, and the simulator's and OpenSCENARIO DSL's alongside it.
 
     Args:
-        query: Case-insensitive search term. Returns matching excerpts with 2 lines of
-            context, grouped by page; adjacent matches share one excerpt.
+        query: Case-insensitive words, all required: pages are ranked by them, and an
+            excerpt is a line holding every one, with 2 lines of context; adjacent
+            matches share one excerpt.
         page: Read this page in full (a ``name`` from the listing).
         limit: Maximum excerpts **per page** (``0`` = every one, which on a common term
             is megabytes). Narrow the term or read the page instead of raising this.
@@ -618,12 +656,15 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
             carries them.
 
     Returns:
+        A listing or search names any page whose directives could not be expanded under
+        ``unresolved``; reading one is refused with the reason.
         Listing (neither argument): ``{pages, total}`` of ``{name, title}``.
         Search: ``{results, total, matching_lines_total, truncated}`` — each result
         ``{page, title, matches, matching_lines, excerpts_total, truncated}``, where
         ``matches`` are the excerpts returned and ``matching_lines`` is how many lines
         of that page matched at all. ``truncated`` marks a page whose excerpts were
         capped, so a narrowed read is never mistaken for the whole answer.
+        ``pages_without_a_matching_line`` names pages holding every word, never on one line.
         Page: ``{page, title, content}``. Or ``{error}``.
     """
     if not _doc_files:
@@ -649,6 +690,7 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
                                  f"image's could not be read: {upstream_error}"}
             return {"error": f"unknown documentation page {page!r}; available: "
                              f"{', '.join(sorted(texts))}"}
+        _refuse_unresolved(page)
         return {"page": page, "title": titles[page], "content": texts[page]}
 
     if not query:
@@ -658,6 +700,8 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
         out = {"pages": pages, "total": len(pages)}
         if upstream_error:
             out["incomplete"] = upstream_error
+        if _doc_unresolved:
+            out["unresolved"] = dict(_doc_unresolved)
         return out
 
     # Which pages, and in what order: BM25 over the corpus, so the first result is the best one
@@ -670,13 +714,20 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
     words = [w.lower() for w in query.split() if w]
 
     results = []
+    spread = []
     matching_lines_total = 0
     truncated = False
     for name in ranked:
         lines = texts[name].splitlines()
+        # A line is a hit when it holds EVERY word, as the ranking requires of a page. Any
+        # one word of "campaign wait" is on thousands of lines, so matching either would
+        # bury the few that answer the question under the ones that merely mention a word.
         hits = [i for i, line in enumerate(lines)
-                if any(w in line.lower() for w in words)]
+                if all(w in line.lower() for w in words)]
         if not hits:
+            # The page holds every word, just never on one line: named rather than
+            # dropped, so a reply with no excerpts from it does not read as "not there".
+            spread.append(name)
             continue
         matches, excerpts_total = _excerpts(lines, hits, limit)
         matching_lines_total += len(hits)
@@ -687,6 +738,8 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
                         "truncated": cut})
     out = {"results": results, "total": len(results),
            "matching_lines_total": matching_lines_total, "truncated": truncated}
+    if spread:
+        out["pages_without_a_matching_line"] = spread
     if len(_json.dumps(out)) > _REPLY_BUDGET_CHARS:
         # Excerpts from every page that matched a common term are a sample, not an answer, and
         # the sample costs more than the pages it samples. Named instead, best first, so the
@@ -704,6 +757,9 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
         # Loudly, in the reply: a search that quietly dropped the world format and the plugin
         # reference still returns results, and "no match" would read as "no such thing".
         out["incomplete"] = upstream_error
+    if _doc_unresolved:
+        # Those pages were searched as written, directives unexpanded.
+        out["unresolved"] = dict(_doc_unresolved)
     if matching_lines_total > _COMMON_TERM_LINES:
         # A term this common is not answered by more excerpts of it. Say so, since the
         # reply otherwise reads as "here is what the docs say about X" when it is a
@@ -750,6 +806,7 @@ class DocsPlugin:
                 raise ValueError(
                     f"Unknown documentation page {name!r}. Available: {available}"
                 )
+            _refuse_unresolved(name)
             return _doc_content[name]
 
         # Register each page as a static resource so clients can discover them
@@ -758,11 +815,12 @@ class DocsPlugin:
             _uri = f"docs://{_page_name}"
             _title = _doc_meta.get(_page_name, _page_name)
 
-            def _make_resource(content: str):
+            def _make_resource(name: str, content: str):
                 def _resource_fn() -> str:
+                    _refuse_unresolved(name)
                     return content
                 return _resource_fn
 
             mcp.resource(_uri, name=_title, description=f"RoboVAST docs: {_title}")(
-                _make_resource(_page_content)
+                _make_resource(_page_name, _page_content)
             )

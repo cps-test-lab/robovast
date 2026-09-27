@@ -3538,16 +3538,13 @@ class KubernetesBackend(ExecutionBackend):
         an unreachable API or a missing permission records the machines with no facts
         rather than ending the run.
         """
+        from . import kube_client  # pylint: disable=import-outside-toplevel
         try:
-            # Both members are set by the mixin this class is composed with, which the
-            # linter does not follow. Scoped to this block, so a real typo elsewhere in the
-            # method is still an error.
-            # pylint: disable=no-member
-            self._init_k8s_clients()
-            v1 = client.CoreV1Api(self.k8s_api_client)
-            nodes = (v1.list_node().items or [])
+            nodes = (kube_client.core_v1_client(context=self.kube_context).list_node().items
+                     or [])
         except Exception as exc:  # pylint: disable=broad-except
-            logger.debug("Could not read node facts: %s", exc)
+            logger.warning("Could not read the cluster's nodes, so this campaign's runs are "
+                           "recorded without their machines' facts: %s", exc)
             return {}
         facts = {}
         for node in nodes:

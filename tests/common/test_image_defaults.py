@@ -72,6 +72,17 @@ def test_a_tag_floats_only_where_ci_moves_it(reference, floats):
     assert is_floating_image_tag(reference) is floats
 
 
+@pytest.mark.parametrize("tag, warns", [("latest", True), ("next", True), ("2.2.0", False)])
+def test_resolving_to_any_floating_tag_warns(monkeypatch, caplog, tag, warns):
+    """A branch tag moves on every push as ``latest`` does, so a run against it is as
+    unreproducible, and the person starting it is told either way."""
+    monkeypatch.setenv("ROBOVAST_PROJECT", "ghcr.io/example-org")
+    monkeypatch.setenv("ROBOVAST_PROJECT_TAG", tag)
+    with caplog.at_level("WARNING", logger="robovast.common.execution"):
+        resolve_family_image(f"family:{MEMBER_ROQSIM}")
+    assert any("floating tag" in r.message for r in caplog.records) is warns
+
+
 def test_a_pinned_tag_wins_over_the_default(monkeypatch):
     monkeypatch.setenv("ROBOVAST_PROJECT", "ghcr.io/example-org")
     monkeypatch.setenv("ROBOVAST_PROJECT_TAG", "dev")
