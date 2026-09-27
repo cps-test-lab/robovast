@@ -1686,7 +1686,7 @@
         "type": "object"
       },
       "HealthFinding": {
-        "description": "One thing a run's **simulator** reported wrong about itself, while it was running.\n\nThe cross-repo contract, and the whole of it. RoboVAST learns exactly one word --\n``level`` -- and passes ``check`` and ``detail`` through untouched, so there is no\nper-check knowledge anywhere in RoboVAST and any simulator shipping a command with this\ncontract is understood. See\n:meth:`~robovast.common.simulators.SimulatorBackend.health_command` for who is asked and\n:ref:`mcp-liveness` for the document it prints.\n\n``level`` decides what happens, and only these two mean anything here:\n\n* ``error`` \u2014 the run is not doing what it was started to do. Ends a ``vast campaign wait``\n  (exit 5), because nobody would otherwise be told: a run whose simulator is wedged\n  still holds ``running`` for its whole life.\n* ``warn`` \u2014 worth reporting, never worth ending a wait for. Surfaces on\n  ``get_job_state`` and on the campaign's own exit.\n\n``check`` is a stable slug the simulator owns, and it is what makes \"at most once\" mean\nsomething: the waiter fires on a *new* slug, so a check that keeps firing is one fault\nrather than a stream of exits.",
+        "description": "One thing a run's **simulator** reported wrong about itself, while it was running.\n\nThe cross-repo contract, and the whole of it. RoboVAST learns exactly one word --\n``level`` -- and passes ``check`` and ``detail`` through untouched, so there is no\nper-check knowledge anywhere in RoboVAST and any simulator shipping a command with this\ncontract is understood. See\n:meth:`~robovast.common.simulators.SimulatorBackend.health_command` for who is asked and\n:ref:`mcp-liveness` for the document it prints.\n\n``level`` decides what happens, and only these two mean anything here:\n\n* ``error`` \u2014 the run is not doing what it was started to do. Ends a ``vast campaign wait``\n  (as ``HEALTH_FINDING``), because nobody would otherwise be told: a run whose simulator\n  is wedged still holds ``running`` for its whole life.\n* ``warn`` \u2014 worth reporting, never worth ending a wait for. Surfaces on\n  ``get_job_state`` and on the campaign's own exit.\n\n``check`` is a stable slug the simulator owns, and it is what makes \"at most once\" mean\nsomething: the waiter fires on a *new* slug, so a check that keeps firing is one fault\nrather than a stream of exits.",
         "properties": {
           "check": {
             "title": "Check",
@@ -5274,6 +5274,21 @@
             "title": "Packaged",
             "type": "boolean"
           },
+          "warnings": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warnings"
+          },
           "world": {
             "default": "",
             "title": "World",
@@ -5291,6 +5306,7 @@
           "inputs",
           "overridable",
           "packaged",
+          "warnings",
           "world"
         ],
         "title": "WorldDescription",
@@ -8162,6 +8178,56 @@
           }
         },
         "summary": "Campaign Screenshot",
+        "tags": [
+          "results"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/screenshots/{name}": {
+      "get": {
+        "description": "A render ``POST .../screenshot`` kept, fetched again by the name it was kept under.\n\nKept for a bounded time and count (``robovast.service.screenshot``); a 404 once it is\ngone. Its bytes never change under its name, so it is served as immutable.",
+        "operationId": "campaign_screenshot_frame_campaigns__campaign_id__screenshots__name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Campaign Screenshot Frame",
         "tags": [
           "results"
         ]

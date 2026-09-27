@@ -149,7 +149,8 @@ CREATE TABLE IF NOT EXISTS batch (
     idx         INTEGER NOT NULL,
     dir         TEXT,
     created_at  REAL,
-    asked       INTEGER          -- parameter sets the strategy PROPOSED for this batch
+    asked       INTEGER,         -- parameter sets the strategy PROPOSED for this batch
+    recalls_recorded INTEGER     -- 1: its recalled cells have unit rows; NULL: written before they could
 );
 CREATE TABLE IF NOT EXISTS unit (
     id            INTEGER PRIMARY KEY,
@@ -165,7 +166,8 @@ CREATE TABLE IF NOT EXISTS unit (
     result_dir    TEXT,
     created_at    REAL,
     n_reps        INTEGER,         -- repetitions ALLOCATED to this cell; n_samples is what came back
-    channels_json TEXT             -- {scenario, sim, sut}: what each variation channel resolved to
+    channels_json TEXT,            -- {scenario, sim, sut}: what each variation channel resolved to
+    recalled_from INTEGER REFERENCES unit(id)  -- status 'recalled': the unit that measured this cell
 );
 CREATE TABLE IF NOT EXISTS job (
     id           INTEGER PRIMARY KEY,
@@ -511,8 +513,23 @@ ALTER TABLE campaign ADD COLUMN origin_config_version_from    INTEGER;
 ALTER TABLE campaign ADD COLUMN origin_config_migration_steps TEXT;
 """
 
+# 13 -> 14: the cells a search batch RECALLED rather than ran.
+#
+# A cell an earlier batch measured is not run again; the strategy is told what it scored
+# then, and the replay on a resume tells it the same. A recalled cell is a ``unit`` row with
+# status ``'recalled'`` and ``recalled_from`` naming the unit that measured it, carrying no
+# objectives of its own.
+#
+# ``batch.recalls_recorded`` separates a batch that recalled nothing from one written before
+# a recall had a row: NULL on every batch recorded before this step, whose replay reads its
+# recalls off the proposals it re-asks (``search.history.RecordedBatch.with_recalls``).
+_MIGRATION_ADD_RECALLED = """
+ALTER TABLE batch ADD COLUMN recalls_recorded INTEGER;
+ALTER TABLE unit ADD COLUMN recalled_from INTEGER REFERENCES unit(id);
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -535,6 +552,7 @@ _MIGRATIONS = [
     _MIGRATION_ADD_UNIT_N_REPS,
     _MIGRATION_ADD_UNIT_CHANNELS,
     _MIGRATION_ADD_ORIGIN_CONFIG_VERSION,
+    _MIGRATION_ADD_RECALLED,
 ]
 
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
@@ -717,10 +735,13 @@ class CampaignStore:
         draws with the same values are one cell, composed and recorded once, and a replay
         that asked for the rows would rewind the strategy's stream (see
         :func:`robovast.search.history.recorded_batches`).
+
+        Every batch opened here records its recalled cells (:meth:`record_recall`), so it is
+        stamped ``recalls_recorded``: that is what tells a replay it has the whole batch.
         """
         cur = self._conn.execute(
-            "INSERT INTO batch (campaign_id, idx, dir, created_at, asked) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO batch (campaign_id, idx, dir, created_at, asked, recalls_recorded) "
+            "VALUES (?, ?, ?, ?, ?, 1)",
             (campaign_id, idx, batch_dir, time.time(), asked),
         )
         self._conn.commit()
@@ -771,6 +792,39 @@ class CampaignStore:
                 n_reps,
                 json.dumps(channels, default=str) if channels else None,
             ),
+        )
+        self._conn.commit()
+        return cur.lastrowid
+
+    def record_recall(self, batch_id: int, paramset_id: str, params: dict) -> int:
+        """Record that *batch_id* re-proposed a cell an earlier batch measured.
+
+        The row points at the unit that measured the cell -- the first ``evaluated`` one of
+        this campaign with that ``paramset_id``, which is the evaluation the loop recalls --
+        and carries nothing of its outcome: no config name, result directory, objectives or
+        runs, and ``n_reps`` 0 because the batch allocated it nothing. Readers that count
+        cells, runs or objectives therefore pass over it, and the replay reads the answer
+        from the unit it names.
+
+        Raises ``LookupError`` when the campaign has no such unit: a recall of a cell nobody
+        measured would tell a replay an answer that does not exist.
+        """
+        source = self._conn.execute(
+            "SELECT u.id FROM unit u JOIN batch b ON u.batch_id = b.id "
+            "WHERE b.campaign_id = (SELECT campaign_id FROM batch WHERE id = ?) "
+            "AND u.paramset_id = ? AND u.status = 'evaluated' ORDER BY u.id LIMIT 1",
+            (batch_id, paramset_id)).fetchone()
+        if source is None:
+            raise LookupError(
+                f"batch {batch_id} recalls parameter set {paramset_id!r}, but no unit of its "
+                f"campaign evaluated it")
+        cur = self._conn.execute(
+            "INSERT INTO unit (batch_id, paramset_id, config_name, params_json, "
+            "objectives_json, measures_json, n_samples, status, result_dir, created_at, "
+            "n_reps, recalled_from) "
+            "VALUES (?, ?, '', ?, '{}', '{}', 0, 'recalled', '', ?, 0, ?)",
+            (batch_id, paramset_id, json.dumps(params, default=str), time.time(),
+             source[0]),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -1327,8 +1381,11 @@ def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
                 # removed the unmeasured units from `n_units`, so n_scored == n_units always and
                 # the coverage loss this exists to surface could never be seen. Here `n_units`
                 # is every cell the batch had and `n_scored` only the ones that yielded the
-                # objective, so `7/8` reads as what it is: one cell that produced nothing.
-                "SELECT b.idx AS idx, COUNT(u.id) AS n_units, "
+                # objective, so `7/8` reads as what it is: one cell that produced nothing. A
+                # recalled cell is not one the batch had: an earlier batch measured it, and
+                # counting it here would report a shortfall where nothing was lost.
+                "SELECT b.idx AS idx, "
+                "COUNT(CASE WHEN u.status IS NOT 'recalled' THEN u.id END) AS n_units, "
                 "COUNT(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS n_scored, "
                 "MIN(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS lo, "
                 "MAX(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS hi, "

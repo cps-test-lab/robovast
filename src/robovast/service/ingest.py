@@ -123,7 +123,7 @@ def _checked_campaign_name(name: str) -> str:
     return name
 
 
-def read_campaign_id(archive_path) -> str:
+def read_campaign_id(archive_path, *, fits_in=None) -> str:
     """The campaign id an archive holds, read from its member list alone.
 
     Known before anything is extracted, which is what lets an import be a *tracked*
@@ -133,18 +133,47 @@ def read_campaign_id(archive_path) -> str:
 
     ``ValueError`` -- the interface's vocabulary for "this input is wrong", mapped to 400 by
     the HTTP layer -- when the archive is not exactly one campaign.
+
+    Given *fits_in*, the directory the archive would be extracted under, an archive whose
+    members take more than that filesystem has room for above its free-space reserve --
+    each member at least one block, a file its size rounded up to whole blocks -- raises
+    :class:`~robovast.common.errors.InsufficientStorageError` (507). The compressed size
+    bounds nothing: a crafted archive packs a terabyte of zeros, or a million empty
+    entries, into kilobytes.
     """
     archive_path = Path(archive_path)
     try:
         with tarfile.open(archive_path, 'r:*') as tar:
-            tops = _top_level_entries(tar.getnames())
+            members = tar.getmembers()
     except (tarfile.TarError, OSError) as e:
         raise ValueError(f"could not read {archive_path.name}: {e}") from e
+    tops = _top_level_entries(m.name for m in members)
+    if fits_in is not None:
+        _check_room(archive_path, members, fits_in)
     if len(tops) != 1:
         raise ValueError(
             f"archive holds {len(tops)} top-level entries; expected one campaign "
             f"directory: {sorted(tops)[:5]}")
     return _checked_campaign_name(tops.pop())
+
+
+def _check_room(archive_path: Path, members, fits_in) -> None:
+    """Refuse an archive whose *members* would take more than *fits_in* has room for."""
+    from robovast.common.disk_reserve import (  # pylint: disable=import-outside-toplevel
+        block_bytes, room_bytes)
+    from robovast.common.errors import \
+        InsufficientStorageError  # pylint: disable=import-outside-toplevel
+
+    block = block_bytes(fits_in)
+    unpacked = block * sum(max(1, -(-(m.size if m.isfile() else 0) // block))
+                           for m in members)
+    room = room_bytes(fits_in)
+    if unpacked > room:
+        gb = 1000 ** 3
+        raise InsufficientStorageError(
+            f"{archive_path.name} unpacks to {unpacked / gb:.1f} GB, and the results volume "
+            f"has {room / gb:.1f} GB free above its reserve. Nothing was extracted; delete "
+            f"campaigns no longer needed, then import it again.")
 
 
 def claim_campaign_dir(results_root, campaign_id: str, *, force: bool = False) -> Path:
@@ -222,6 +251,7 @@ def ingest_campaign(campaign_dir, *, rebuild_store: bool = False) -> dict:
     stages["layout"] = _check_layout(campaign_dir)
     stages["config"] = _check_config(campaign_dir)
     stages["completeness"] = _check_completeness(campaign_dir)
+    stages["environment"] = _check_environment(campaign_dir)
     stages["campaign_store"] = _ingest_store(campaign_dir, rebuild=rebuild_store)
     stages["tables"] = _check_tables(campaign_dir)
     blocking = sorted(name for name, stage in stages.items()
@@ -431,6 +461,84 @@ def _check_config(campaign_dir: Path) -> dict:
         return _stage(STAGE_FAILED, found.message, recovery=recovery[found.state])
     return _stage(STAGE_FAILED, found.message, version=found.version,
                   recovery=recovery[found.state])
+
+
+def _check_environment(campaign_dir: Path) -> dict:
+    """What the campaign's ``.vast`` names that this deployment does not have.
+
+    Degraded, never blocking: the campaign lists and displays without any of it; only
+    postprocessing, which a raw import chains straight away, and a re-run need it. Names are
+    checked, never loaded, so no code from the archive runs here. Postprocessing installs the
+    ``plugins:`` packages before it runs and they may provide a missing entry point, so the
+    detail says that rather than guessing.
+    """
+    from importlib.metadata import entry_points  # pylint: disable=import-outside-toplevel
+
+    from robovast.common.config_plugins import \
+        is_installed  # pylint: disable=import-outside-toplevel
+    from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
+        read_vast, upgrade_config)
+    from robovast.common.plugin_ref import (  # pylint: disable=import-outside-toplevel
+        file_ref_path, is_file_ref)
+    from robovast.common.results_utils import \
+        campaign_vast_or_none  # pylint: disable=import-outside-toplevel
+    from robovast.results_processing.campaign_tables import \
+        is_decoder_command  # pylint: disable=import-outside-toplevel
+
+    vast_path = campaign_vast_or_none(campaign_dir)
+    config = None
+    if vast_path is not None:
+        try:
+            config, _ = upgrade_config(read_vast(vast_path))
+        except Exception:  # pylint: disable=broad-except -- the config stage says why
+            config = None
+    if not isinstance(config, dict):
+        return _stage(STAGE_ABSENT, "the configuration could not be read (see the config "
+                                    "stage), so what it needs cannot be listed")
+
+    def names(entries):
+        for entry in entries or ():
+            name = next(iter(entry), None) if isinstance(entry, dict) else entry
+            if isinstance(name, str):
+                yield name
+
+    results = config.get("results_processing") or {}
+    # (what, entry-point group, names, whether a ./file.py:Class ref is accepted there)
+    wanted = (
+        ("variation types", "robovast.variation_types",
+         {name for cfg in config.get("configuration") or () if isinstance(cfg, dict)
+          for name in names(cfg.get("variations"))}, True),
+        ("postprocessing commands", "robovast.postprocessing_commands",
+         {name for name in names(results.get("postprocessing"))
+          if not is_decoder_command(name)}, True),
+        ("metadata processors", "robovast.metadata_processing",
+         set(names(results.get("metadata_processing"))), False),
+        ("health checks", "robovast.health_checks",
+         set(names(results.get("health_checks"))), True),
+    )
+
+    missing, file_refs = [], set()
+    for what, group, wanted_names, takes_file_refs in wanted:
+        installed = {ep.name for ep in entry_points(group=group)}
+        if takes_file_refs:
+            file_refs |= {name for name in wanted_names if is_file_ref(name)}
+        if gone := sorted(name for name in wanted_names - installed
+                          if not (takes_file_refs and is_file_ref(name))):
+            missing.append(f"{what} {', '.join(gone)}")
+    if gone := sorted(ref for ref in file_refs
+                      if not (vast_path.parent / (file_ref_path(ref) or ref)).is_file()):
+        missing.append(f"local plugins {', '.join(gone)} (not in the archive's _config/)")
+    specs = [s for s in config.get("plugins") or () if isinstance(s, str) and s.strip()]
+    if gone := sorted(s for s in specs if not is_installed(s)):
+        missing.append(f"plugin packages {', '.join(gone)} (postprocessing installs these "
+                       f"from the campaign's plugins: before it runs, and they may provide "
+                       f"what is listed above)")
+    if missing:
+        return _stage(STAGE_DEGRADED,
+                      "not installed here: " + "; ".join(missing) + ". The campaign lists "
+                      "and displays; postprocessing and a re-run need them.",
+                      recovery="install the packages that provide them on this service")
+    return _stage(STAGE_OK, "every plugin the configuration names is installed here")
 
 
 def _ingest_store(campaign_dir: Path, *, rebuild: bool) -> dict:

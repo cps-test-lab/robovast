@@ -11,10 +11,12 @@ The two properties worth defending: a *degraded* ingest is still usable and must
 away to keep a boolean clean, and every non-ok stage has to name what to do about it.
 """
 
+import io
 import json
 import os
 import shutil
 import sqlite3
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -23,7 +25,8 @@ import yaml
 from robovast.common.store import _MIGRATIONS, SCHEMA_VERSION
 from robovast.service.ingest import (STAGE_ABSENT, STAGE_DEGRADED, STAGE_FAILED, STAGE_MIGRATED,
                                      STAGE_NEWER, STAGE_OK, blocking_summary, ingest_campaign,
-                                     missing_for_import, missing_for_import_in)
+                                     missing_for_import, missing_for_import_in,
+                                     read_campaign_id)
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
 
@@ -233,7 +236,7 @@ def test_every_stage_carries_an_actionable_detail(campaign):
     """A verdict a reader cannot act on is not worth returning."""
     report = ingest_campaign(campaign)
     assert set(report["stages"]) == {"archive", "layout", "config", "completeness",
-                                     "campaign_store", "tables"}
+                                     "environment", "campaign_store", "tables"}
     for name, stage in report["stages"].items():
         assert stage["detail"].strip(), f"{name} has no detail"
 
@@ -368,6 +371,140 @@ def test_a_snapshot_import_is_degraded_and_says_what_is_missing(campaign):
     stage = report["stages"]["completeness"]
     assert stage["verdict"] == "degraded"
     assert "3/20 runs" in stage["detail"]
+
+
+def _bomb(tmp_path, unpacked: int) -> Path:
+    """One campaign whose single file unpacks to *unpacked* bytes of zeros -- kilobytes packed."""
+    out = tmp_path / "bomb.tar.gz"
+    with tarfile.open(out, "w:gz") as tar:
+        tar.add(_FIXTURES / "v1-campaign-2025-03-04-101500",
+                arcname="bomb-2026-01-01-000000")
+        info = tarfile.TarInfo("bomb-2026-01-01-000000/zeros.bin")
+        info.size = unpacked
+        tar.addfile(info, io.BytesIO(bytes(unpacked)))
+    return out
+
+
+def test_an_archive_that_unpacks_past_the_room_above_the_reserve_is_refused(
+        tmp_path, monkeypatch):
+    """The compressed size says nothing about what extraction writes: the member sizes the
+    index already carries are summed and held to the room above the reserve, before a byte
+    is written. Only when asked -- reading an id alone stays a read of the index."""
+    from robovast.common.errors import InsufficientStorageError
+    archive = _bomb(tmp_path, 4 * 1024 * 1024)
+    assert archive.stat().st_size < 1024 * 1024
+    monkeypatch.setattr("robovast.common.disk_reserve.room_bytes", lambda _path: 1024 * 1024)
+
+    with pytest.raises(InsufficientStorageError, match="unpacks to .* GB free above its reserve"):
+        read_campaign_id(archive, fits_in=tmp_path / "results")
+    assert read_campaign_id(archive) == "bomb-2026-01-01-000000"
+
+    monkeypatch.setattr("robovast.common.disk_reserve.room_bytes", lambda _path: 10 ** 9)
+    assert read_campaign_id(archive, fits_in=tmp_path / "results") == "bomb-2026-01-01-000000"
+
+
+def test_an_archive_of_many_empty_entries_is_held_to_the_blocks_they_take(tmp_path, monkeypatch):
+    """Sizes of zero still take a block each: an archive of empty entries is charged for them."""
+    from robovast.common.errors import InsufficientStorageError
+    out = tmp_path / "entries.tar.gz"
+    with tarfile.open(out, "w:gz") as tar:
+        tar.add(_FIXTURES / "v1-campaign-2025-03-04-101500",
+                arcname="entries-2026-01-01-000000")
+        for i in range(2000):
+            info = tarfile.TarInfo(f"entries-2026-01-01-000000/empty/{i}")
+            info.type = tarfile.DIRTYPE if i % 2 else tarfile.REGTYPE
+            tar.addfile(info)
+    monkeypatch.setattr("robovast.common.disk_reserve.block_bytes", lambda _path: 4096)
+    monkeypatch.setattr("robovast.common.disk_reserve.room_bytes", lambda _path: 2000 * 4096 - 1)
+
+    with pytest.raises(InsufficientStorageError, match="unpacks to"):
+        read_campaign_id(out, fits_in=tmp_path / "results")
+
+
+# -- what the configuration needs from this deployment -----------------------
+
+def _vast(campaign) -> Path:
+    return next((campaign / "_config").glob("*.vast"))
+
+
+def _declare(campaign, **sections):
+    """Add *sections* to the campaign's frozen ``.vast`` (the version-1 fixture's)."""
+    vast = _vast(campaign)
+    raw = yaml.safe_load(vast.read_text(encoding="utf-8"))
+    for key, value in sections.items():
+        if key == "variations":
+            raw.setdefault("configuration", [{"name": "cfg"}])[0]["variations"] = value
+        elif key in ("postprocessing", "metadata_processing", "health_checks"):
+            raw.setdefault("results_processing", {})[key] = value
+        else:
+            raw[key] = value
+    vast.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+
+def test_what_the_configuration_names_and_this_deployment_lacks_is_degraded_by_name(campaign):
+    """A raw import chains postprocessing straight away, so what it would lack is named in the
+    import report. Never blocking: the campaign lists without any of it."""
+    _declare(campaign,
+             variations=[{"NoSuchVariation": {}}, {"ParameterVariationList": {}}],
+             postprocessing=["rosbags_tf_to_csv", {"no_such_command": {}},
+                             "./missing.py:Step"],
+             plugins=["robovast-no-such-plugin==1.0"])
+    stage = ingest_campaign(campaign)["stages"]["environment"]
+    assert stage["verdict"] == STAGE_DEGRADED
+    for name in ("NoSuchVariation", "no_such_command", "./missing.py:Step",
+                 "robovast-no-such-plugin==1.0"):
+        assert name in stage["detail"]
+    for present in ("ParameterVariationList", "rosbags_tf_to_csv"):
+        assert present not in stage["detail"]
+
+
+def test_a_configuration_this_deployment_can_run_is_ok(campaign):
+    _declare(campaign, variations=[{"ParameterVariationList": {}}],
+             postprocessing=["rosbags_tf_to_csv"])
+    assert ingest_campaign(campaign)["stages"]["environment"]["verdict"] == STAGE_OK
+
+
+def test_a_configuration_that_cannot_be_parsed_is_reported_not_raised(campaign):
+    """The config stage refuses such a file by name; the environment stage must not turn that
+    refusal into an exception that loses the whole report."""
+    _vast(campaign).write_text("version: [unclosed\n", encoding="utf-8")
+    report = ingest_campaign(campaign)
+    assert report["stages"]["config"]["verdict"] == STAGE_FAILED
+    assert report["stages"]["environment"]["verdict"] == STAGE_ABSENT
+
+
+def test_no_configuration_is_not_reported_as_needing_nothing(campaign):
+    _vast(campaign).unlink()
+    assert ingest_campaign(campaign)["stages"]["environment"]["verdict"] == STAGE_ABSENT
+
+
+def test_what_a_raw_import_postprocessing_runs_is_checked_in_full(campaign):
+    """Postprocessing also runs the metadata processors and the health checks the campaign
+    declares, and a health check that is not installed is skipped rather than failing -- so
+    the import report is the one place that says it will not run."""
+    (_vast(campaign).parent / "check.py").write_text("class Check: pass\n", encoding="utf-8")
+    _declare(campaign,
+             postprocessing=["rosbags_to_cvs"],
+             metadata_processing=["no_such_processor"],
+             health_checks=["no_such_check", "./check.py:Check", "./absent.py:Check"])
+    stage = ingest_campaign(campaign)["stages"]["environment"]
+    assert stage["verdict"] == STAGE_DEGRADED
+    for name in ("rosbags_to_cvs", "no_such_processor", "no_such_check", "./absent.py:Check"):
+        assert name in stage["detail"]
+    assert "./check.py:Check" not in stage["detail"]
+
+
+def test_a_config_that_is_not_a_mapping_blocks_the_import_by_name(campaign):
+    """A .vast whose document is a list parses as YAML but holds no configuration. The config
+    stage refuses it and says why, rather than the import raising and reporting nothing."""
+    vast_path = next((campaign / "_config").glob("*.vast"))
+    vast_path.write_text("- a list\n- not a mapping\n", encoding="utf-8")
+    report = ingest_campaign(campaign)
+    stage = report["stages"]["config"]
+    assert stage["verdict"] == STAGE_FAILED
+    assert "not a mapping" in stage["detail"]
+    assert report["ok"] is False and "config" in report["blocking"]
+    assert report["stages"]["environment"]["verdict"] == STAGE_ABSENT
 
 
 # -- the archive layout ------------------------------------------------------
