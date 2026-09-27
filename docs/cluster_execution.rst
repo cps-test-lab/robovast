@@ -31,8 +31,8 @@ two same-day ``<name>-<timestamp>`` campaigns apart in the monitor and the web U
 Repetitions come from the ``.vast``'s ``execution.runs`` unless ``--runs`` overrides
 them. Internally:
 
-1. **Launch** — The client pushes the project to a workspace and calls
-   ``create_campaign``. The service starts a :class:`CampaignController` in a
+1. **Launch** — With ``--push`` the client first syncs the directory into the
+   workspace; it then calls ``create_campaign``. The service starts a :class:`CampaignController` in a
    worker thread over ``KubernetesBackend``. No per-campaign controller pod is
    created; the service is the driver.
 
@@ -154,7 +154,7 @@ Available cluster configs (``--list``):
 
 Setup acts on the *cluster*, not on a project: it reads no ``.vast`` and runs from any
 directory. What it needs beyond its flags comes from the environment — ``./.env``, then the
-user's — including which nodes the cluster's pods may use, ``ROBOVAST_JOB_NODE_LABELS``
+user's — including which nodes campaign jobs may use, ``ROBOVAST_JOB_NODE_LABELS``
 (:ref:`below <cluster-node-labels>`).
 
 The setup command:
@@ -764,11 +764,12 @@ stays silent, and an unreachable ntfy server never affects the campaign. Pick a
 different topic per user so notifications don't cross over; each message carries
 its campaign id so concurrent campaigns sharing a topic stay distinguishable.
 
-For an **in-cluster** service the ntfy config is read from your ``.env`` at
-``setup`` time and injected into the service pod (as a Kubernetes Secret, exactly
+For an **in-cluster** service the ntfy config is read from your ``.env`` by
+``setup`` and injected into the service pod (as a Kubernetes Secret, exactly
 like the share credentials), so changing the topic means ``vast service upgrade``,
 which rebuilds that Secret from the environment and rolls the pod. A ``vast serve``
-started by hand reads the ``.env`` live.
+started by hand reads the ``.env`` when it starts, so it picks a change up when
+restarted.
 
 
 Experiment image builds (registry)
