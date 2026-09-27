@@ -216,16 +216,12 @@ def _mesh_command(mesh_format):
 def _occ_grid_command(laser_height):
     """Build the scenery_builder ``occ-grid`` sub-command.
 
-    ``laser_height`` is the height the floorplan is SLICED at to make the grid, and it is a
-    property of the robot that will localize in it -- a TurtleBot 4's RPLIDAR sits at 0.2 m,
-    scenery_builder's default is 0.7 m. Not a detail: regenerating the metamorphic dataset's
-    hexagon at the default reproduced its ``.pgm`` in every respect except 441 of 25232 cells
-    (1.75%), because a floorplan's geometry is height-dependent. A campaign whose map came out
-    of this pipeline and whose robot's scanner is not at 0.7 m therefore has to be able to say
-    so; without it the map nav2 localizes in silently stops being the map the environment was
-    measured with.
+    ``laser_height`` is the height the floorplan is sliced at to make the grid, a property of
+    the robot that localizes in it: scenery_builder's default is 0.7 m, a TurtleBot 4's
+    RPLIDAR sits at 0.2 m. A floorplan's geometry depends on height, so a grid sliced at any
+    other height than the robot's scanner is not the map that scanner sees.
 
-    Omitted when unset, so an image predating the flag still works and the default is
+    Omitted when unset, so an image without the flag still runs and the default is
     scenery_builder's rather than a second one maintained here.
     """
     if laser_height is None:
