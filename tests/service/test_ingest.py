@@ -385,6 +385,27 @@ def test_a_snapshot_import_is_degraded_and_says_what_is_missing(campaign):
     assert "3/20 runs" in stage["detail"]
 
 
+def test_an_export_is_refused_as_an_export_and_told_which_archive_imports(tmp_path):
+    """An export (``vast campaign export``) holds ``export.json`` and ``tables/`` beside the
+    campaign's records, so it is not one campaign directory -- but it is the other archive
+    this system writes of a campaign, and the refusal says so and names the download that
+    imports, rather than counting its members."""
+    source = _FIXTURES / "v1-campaign-2025-03-04-101500"
+    export = tmp_path / "export.tar.gz"
+    with tarfile.open(export, "w:gz") as tar:
+        manifest = tarfile.TarInfo("export.json")
+        manifest.size = 2
+        tar.addfile(manifest, io.BytesIO(b"{}"))
+        tables = tarfile.TarInfo("tables/runs.parquet")
+        tables.size = 1
+        tar.addfile(tables, io.BytesIO(b"x"))
+        tar.add(source, arcname=source.name)
+
+    with pytest.raises(ValueError, match="is an export") as refused:
+        read_campaign_id(export)
+    assert "vast campaign download" in str(refused.value)
+
+
 def _bomb(tmp_path, unpacked: int) -> Path:
     """One campaign whose single file unpacks to *unpacked* bytes of zeros -- kilobytes packed."""
     out = tmp_path / "bomb.tar.gz"
