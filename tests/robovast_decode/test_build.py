@@ -69,7 +69,8 @@ def test_a_table_laid_out_under_another_contract_is_built_again(campaign):
     report = build(str(campaign), tables=["rosbag2_collision"])
     assert report.built == {"rosbag2_collision": ["cfg/0"]}
     assert report.skipped == {"_recording": ["cfg/0"]}, "the report's own entry is current"
-    assert _manifest(campaign)["tables"]["rosbag2_collision"]["runs"]["cfg/0"]["contract"] == DATA_CONTRACT
+    rebuilt = _manifest(campaign)["tables"]["rosbag2_collision"]["runs"]["cfg/0"]
+    assert rebuilt["contract"] == DATA_CONTRACT
 
 
 def test_a_required_frame_that_never_resolves_fails_its_table_only(campaign):
