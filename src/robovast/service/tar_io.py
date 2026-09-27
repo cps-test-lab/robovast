@@ -124,10 +124,8 @@ def extract_stream(stream, dest_root, *, deny=()) -> Extracted:
             try:
                 _place(tar, member, rel, root, target, out)
             except (FileExistsError, NotADirectoryError):
-                # The tree has another shape where the member wants to go: a file, or a
-                # symlink to nothing, where a directory is needed. That is this member's
-                # conflict, and no reason to lose the ones after it; an error of the disk
-                # itself (full, unwritable) still ends the extraction.
+                # A file or a dangling symlink where a directory is needed refuses this
+                # member only; an error of the disk itself still ends the extraction.
                 out.refused.append(member.name)
     return out
 
