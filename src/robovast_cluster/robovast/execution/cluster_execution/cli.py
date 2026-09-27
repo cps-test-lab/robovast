@@ -30,7 +30,6 @@ import click
 from robovast.client.errors import handle_cli_exception
 from robovast.execution.cluster_execution import data_paths
 from robovast.client.service_target import detected_service_url
-from robovast.client.service_target import target_options
 from robovast.client.status import (Phase, Status, budget_positions, stall_report,
                                     stopping_soon_report)
 
@@ -858,7 +857,10 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
 @click.command('jobs-cleanup')
 @click.option('--campaign', '-i', default=None,
               help='Clean only jobs for this campaign (e.g. campaign-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
-@target_options
+@click.option('--namespace', '-n', default='default', show_default=True,
+              help='Namespace the robovast-service runs in.')
+@click.option('--context', '-x', default=None, metavar='NAME',
+              help='Kubernetes context to use (default: active context in kubeconfig).')
 def run_cleanup(campaign, namespace, context):
     """Clean up jobs and pods from a cluster run.
 
