@@ -2451,13 +2451,17 @@ class ServiceError(OSError):
 
     include_traceback = False
 
-    def __init__(self, status: int, detail: str, url: str = "", code: str = ""):
+    def __init__(self, status: int, detail: str, url: str = "", code: str = "",
+                 next_step: str = ""):
         self.status = status
         self.detail = detail
         self.url = url
         #: The refusal's class, from :data:`ERROR_CODE_HEADER`; ``""`` when the service
         #: named none. What a caller branches on, the detail being what it prints.
         self.code = code
+        #: The command that moves the caller forward, from :data:`NEXT_STEP_HEADER`;
+        #: ``""`` when there is none.
+        self.next_step = next_step
         super().__init__(detail)
 
 
@@ -2492,6 +2496,10 @@ class ServiceUnreachable(OSError):
 #: every refusal the service composes, and one shape for all of them is worth more than a
 #: second shape for the handful that carry a code.
 ERROR_CODE_HEADER = "x-robovast-error"
+
+#: Header carrying an :class:`~robovast.common.errors.ActionableError`'s ``next_step``: the
+#: literal command that moves the caller forward. Absent when the refusal has none.
+NEXT_STEP_HEADER = "x-robovast-next-step"
 
 #: No command can be run in a container on this deployment --
 #: :class:`~robovast.common.errors.ExecPathUnavailable` crossing HTTP. Every code is a fact
