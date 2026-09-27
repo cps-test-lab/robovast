@@ -1017,7 +1017,7 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
     never again. The cost is a few seconds during which the API is unavailable.
 
     RBAC reconciliation is not decoration: a version needing a permission the last one
-    did not — as ``/usage`` once needed a cluster-scoped ClusterRole — would otherwise
+    did not — a route that reads a cluster-scoped resource, say — would otherwise
     deploy and then fail at runtime with a 403, which reads as a bug rather than as a
     missed migration.
 
@@ -1332,10 +1332,9 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
 def cluster_token(namespace, kube_context, quiet):
     """Show the access token, and what to hand users along with it.
 
-    Setup deliberately prints the token only once, so reading it back meant a
-    ``kubectl get secret ... | base64 -d`` incantation -- which every operator then
-    keeps in their shell history, and which needs kubectl syntax to answer a RoboVAST
-    question.
+    Setup deliberately prints the token only once; the alternative way to read it back is
+    a ``kubectl get secret ... | base64 -d`` incantation, which lands in shell history and
+    needs kubectl syntax to answer a RoboVAST question.
 
     The token is **per cluster**: an instance mints its own, and one instance's token is
     simply wrong at another. That is the failure this command is most likely to prevent,
