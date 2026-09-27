@@ -133,10 +133,11 @@ export function useCampaignImport(
     },
   })
 
-  // The import we started has left its live phases, so its stage report has been written.
-  // Fetched once, on that transition, rather than polled: `_execution/import.json` is only
-  // interesting after the fact, and a campaign that failed has had its directory removed, so
-  // there is deliberately no retry — the card's own failure box is the answer in that case.
+  // The import we started has left its live phases, so its stage report is written if it ever
+  // will be. Fetched once, on that transition, rather than polled: `_execution/import.json` is
+  // only interesting after the fact, and an import that failed before its stage checks (the
+  // fetch, the extraction) writes none, so there is deliberately no retry — the campaign's own
+  // failure box is the answer in that case.
   const settled = useSettledImport(campaigns, started?.id)
   useEffect(() => {
     if (!settled) return
@@ -147,9 +148,9 @@ export function useCampaignImport(
         if (live) setReport(JSON.parse(file.content) as IngestReport)
       })
       .catch((e: unknown) => {
-        // No report to show -- a failed import takes its directory with it, and the campaign
-        // card reports that failure. What this panel owes is that the import is over, and why
-        // there is no report, rather than "Importing …" for good.
+        // No report to show: the campaign's card says how the import ended. What this panel
+        // owes is that the import is over, and why there is no report, rather than
+        // "Importing …" for good.
         if (live) setReportUnread(e instanceof Error ? e.message : String(e))
       })
     return () => {
