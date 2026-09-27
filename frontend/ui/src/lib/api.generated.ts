@@ -2130,6 +2130,11 @@ export interface components {
         BatchObjective: {
             /** Best So Far */
             best_so_far: number | null;
+            /**
+             * Complete
+             * @default false
+             */
+            complete: boolean;
             /** Idx */
             idx: number;
             /** Max */
@@ -2827,7 +2832,7 @@ export interface components {
             description: string;
             /** Failed */
             failed: {
-                [key: string]: unknown;
+                [key: string]: string;
             };
             /**
              * Kind

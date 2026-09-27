@@ -236,7 +236,9 @@ Marker rules:
    generation is *not* short in this case — a recalled evaluation is a real answer to a real
    proposal. A recalled cell costs no runs and is not counted as a new evaluation, so
    neither a ``runs`` nor an ``evaluations`` budget is spent on it; ``batches`` still
-   advances, which is what ends a search that has stopped finding anything new.
+   advances, which is what ends a search that has stopped finding anything new. The
+   batch records it as a ``unit`` row with status ``recalled`` whose ``recalled_from``
+   names the unit that measured it; the row carries no objectives or runs of its own.
 
 Strategies
 ----------
@@ -346,7 +348,7 @@ ways can this fail?", not just "what is the single worst case". Use it for
 ``strategy_parameters``:
 
 * ``archive.type`` — ``grid`` (per-measure ``bins``) or ``cvt`` (``cells``
-  centroids; preferred for more than ~2 measures).
+  centroids, placed from ``search.seed``; preferred for more than ~2 measures).
 * ``archive.measures`` — the behavior axes, ``{name: {low, high, bins}}``; each
   name must be a measure the extractor returns (``bins`` applies to ``grid``).
   Enforced, and fatally: a cell is placed by all of its axes at once, so one the
@@ -537,6 +539,9 @@ Its cells are read the way a finished search's are:
 The per-batch objective trajectory is served from ``campaign.db`` directly
 (``GET /campaigns/{id}/search/history``, and ``objective_history`` on the campaign status),
 so it needs no postprocessing at all and is available while the search is still running.
+Each batch carries ``complete``: false while it runs, or after an interruption until the
+resume finishes it, so its counts are what it has recorded so far. ``batches_since_improvement``
+counts complete batches only.
 
 A **second** stop, once the campaign has reached ``postprocessing``, cancels that instead:
 the runs and their results are kept and only the derived data is missing, which
@@ -548,11 +553,11 @@ Surviving a service restart
 ---------------------------
 
 A search whose service process goes away — a pod replacement, an eviction, an OOM — is
-picked back up by the next one, at the batch boundary it reached. **Nothing about the
-strategy is serialized.** The campaign's ``batch`` and ``unit`` rows already record what it
-proposed and what each proposal scored, so a fresh strategy is re-driven through the exact
-``ask``/``tell`` sequence the first one saw (``SearchStrategy.resume``), and from there it
-carries on identically.
+picked back up by the next one, and carries on as if it had not been interrupted, including
+in the middle of a batch. **Nothing about the strategy is serialized.** The campaign's
+``batch`` and ``unit`` rows already record what it proposed and what each proposal scored,
+so a fresh strategy is re-driven through the exact ``ask``/``tell`` sequence the first one
+saw (``SearchStrategy.resume``), and from there it carries on identically.
 ``campaign.db`` is published at each batch boundary for this reason: those rows are the
 checkpoint.
 
@@ -565,6 +570,33 @@ was **proposed** — the batch row's ``asked`` — not what came back, and not t
 ``unit`` rows either: a draw the variation pipeline could not realize, or one whose runs
 were all lost, costs a proposal and produces no evaluation, and a repeated draw costs a
 proposal and produces no row of its own.
+
+What is told back is what the live batch told: its ``evaluated`` cells, then its
+``recalled`` ones, each read from the unit its ``recalled_from`` names. A recalled cell is
+an answer the strategy was given, so a replay that left it out would hand the strategy a
+shorter generation than it saw — ``optuna`` would close that trial as failed — and the
+resumed search would propose differently from there.
+
+A batch recorded before store schema 14 has no row for a recalled cell. Its replay reads
+them off the proposals it re-asks: every distinct one an earlier batch measured is a cell
+the live loop recalled, so such a campaign resumes exactly too.
+
+Only a **complete** batch is replayed: one whose row is marked ``complete``, which the loop
+sets once the batch's last unit, recalled cells included, is recorded and before the
+strategy is told. A batch interrupted before that holds only some of its units, and
+replaying it as it stands would tell the strategy a short batch it was never told —
+``optuna`` would close the missing trials as failed and ``qd`` would close the generation
+incomplete. It is the campaign's last batch, and the resumed loop finishes it instead: it
+asks the strategy again, which after the replay proposes the same cells, keeps the units
+already recorded, runs the cells that are missing and tells the strategy the whole batch.
+Neither a recorded cell nor a run that already has a verdict is run again.
+If the re-ask proposes anything the batch did not record, the resume stops with an error
+rather than finish the batch with another batch's cells.
+
+A batch recorded before store schema 15 is complete when a later batch follows it, since
+the loop opens the next batch only after telling the strategy this one, or when the
+campaign's recorded ``batches`` count covers it. A last batch that neither rule covers is
+finished on resume as above, which runs nothing when it already had every cell.
 
 Two conditions, both checked before the campaign is re-launched:
 

@@ -546,20 +546,9 @@ def test_every_retired_name_stays_out_of_the_vocabulary():
 
 
 def test_every_tool_returns_a_dict_or_an_image():
-    """One error convention: ``{"error": …}`` in the result dict.
-
-    Four coexisted. ``list_docs``/``list_examples`` were typed ``list[dict] | str`` and
-    returned a bare *sentence* when the directory was missing; ``list_plugins`` returned
-    a one-element list holding an error dict, so a listing's shape doubled as a refusal;
-    and the nav tools raised, which reaches an MCP client as a broken server rather than
-    as an answer. A caller could not write one branch that handled failure.
-
-    The three image tools are the stated exception — an ``Image`` has nowhere to put an
-    ``error`` key, so they raise. That they SAY so is
-    :func:`test_a_tool_that_raises_says_so_where_a_model_reads_it`, because a docstring
-    section is not the same thing as text a model receives. An image tool that also says
-    where the image is kept returns a ``ToolResult`` holding the ``Image`` and that dict,
-    and raises the same way.
+    """One error convention: ``{"error": …}`` in the result dict, which is what the
+    registry answers for anything a tool raises -- so a tool's own result is a dict, or an
+    image (alone, or in a ``ToolResult`` with a dict saying where it is kept).
     """
     from fastmcp.tools import ToolResult
     from fastmcp.utilities.types import Image
@@ -583,37 +572,15 @@ def test_a_shared_parameter_name_keeps_one_type():
     assert not mixed, f"parameters with more than one type across tools: {mixed}"
 
 
-def test_a_tool_that_raises_says_so_where_a_model_reads_it():
-    """A tool that breaks the ``{"error": …}`` convention must break it *in the open*.
-
-    FastMCP ships only the docstring's summary: ``Args:`` descriptions travel with the
-    JSON schema, and ``Returns:``/``Raises:`` are dropped. So the two image tools
-    documented "raises RunArtifactError" in a section no model ever sees, and the test
-    above asserted they "say so in their docstrings" -- true of the source, false of the
-    surface. A caller was told, everywhere else, that failure arrives as a dict.
-
-    Checked against the description FastMCP actually sends, not against the docstring,
-    since that gap is the whole defect.
-    """
-    import asyncio  # noqa: PLC0415
-
-    async def _tools():
-        return await create_server().list_tools()
-
-    fns = {fn.__name__: fn
-           for mod in _registered_plugin_modules().values()
-           for fn in getattr(mod, "_TOOLS", [])}
-    silent = []
-    for tool in asyncio.run(_tools()):
-        fn = fns.get(tool.name)
-        doc = inspect.getdoc(fn) or "" if fn else ""
-        if not re.search(r"^Raises:$", doc, re.MULTILINE):
-            continue
-        if "rais" not in (tool.description or "").lower():
-            silent.append(tool.name)
-    assert not silent, (
-        f"tools that raise but do not say so in the description a model receives: "
-        f"{silent}. A `Raises:` section is dropped before it reaches any client.")
+def test_no_tool_documents_that_it_raises():
+    """A registered tool answers what it raises as ``{"error": …}``, so a ``Raises:``
+    section would tell a reader of the source the opposite of what a caller receives."""
+    documented = sorted(
+        fn.__name__
+        for mod in _registered_plugin_modules().values()
+        for fn in getattr(mod, "_TOOLS", [])
+        if re.search(r"^Raises:$", inspect.getdoc(fn) or "", re.MULTILINE))
+    assert not documented, f"tools documenting a raise: {documented}"
 
 
 #: Budget for the tool surface, in approximate tokens. Every description and schema is
@@ -826,6 +793,35 @@ def test_no_tool_description_carries_its_own_args_or_returns_section():
         "arguments serves its whole docstring, so what it returns belongs in prose (say "
         "the fields that change what a caller does) or in the docs -- not in a Returns: "
         "section, which is sent verbatim to every caller on every request.")
+
+
+#: A passage this long that appears twice in one description is a paragraph pasted twice,
+#: not a phrase two sentences share: an address template or a tool name is far shorter.
+_REPEATED_PASSAGE = 80
+
+
+def test_no_tool_description_says_the_same_thing_twice():
+    """A description is sent on every request, so a paragraph that survives in two
+    versions is paid for twice per turn -- and the two drift, so a reader is told two
+    things about one field."""
+    import asyncio
+
+    async def _tools():
+        return await create_server().list_tools()
+
+    repeated = {}
+    for tool in asyncio.run(_tools()):
+        text = re.sub(r"\s+", " ", tool.description or "")
+        first_seen: dict[str, int] = {}
+        for start in range(max(0, len(text) - _REPEATED_PASSAGE)):
+            passage = text[start:start + _REPEATED_PASSAGE]
+            earlier = first_seen.setdefault(passage, start)
+            if start - earlier >= _REPEATED_PASSAGE:
+                repeated[tool.name] = passage
+                break
+    assert not repeated, (
+        f"descriptions that repeat a passage: {repeated}. Keep the one version that is "
+        "complete and delete the other.")
 
 
 def test_the_tool_surface_stays_within_its_token_budget():

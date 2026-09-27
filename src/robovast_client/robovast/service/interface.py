@@ -772,6 +772,9 @@ class BatchObjective(BaseModel):
     max: Optional[float] = None
     mean: Optional[float] = None
     best_so_far: Optional[float] = None
+    #: False while the batch is running, or when it was interrupted and not yet resumed: its
+    #: counts are what it has recorded so far.
+    complete: bool = False
 
 
 class SearchHistory(BaseModel):
@@ -1268,7 +1271,7 @@ class ServiceSetting(BaseModel):
     #: Why THIS caller got no value though the setting is set: ``"secret"`` (a credential;
     #: never shown to anyone, in any form), ``"server_only"`` (registry details, which do
     #: not cross this interface -- see ``RegistryConfig``), ``"host_path"`` (shown to a
-    #: loopback caller only, as ``VersionInfo.results_root`` is), or ``"unclassified"``.
+    #: loopback caller only), or ``"unclassified"``.
     #: ``None`` when :attr:`value` stands, and when the setting is simply unset.
     withheld: Optional[str] = None
 
@@ -1780,7 +1783,7 @@ class OutputsIngested(BaseModel):
     files: int = 0
     bytes: int = 0
     #: Members refused rather than written -- a path leaving the tree, a hard link, a
-    #: file only the driver writes. Named, so a pod whose output vanished can read why.
+    #: path only the service writes. Named, so a pod whose output vanished can read why.
     refused: list[str] = Field(default_factory=list)
     #: Files whose delivered range did not start where the file ends here; the sender
     #: sends each of them whole next time.
@@ -2204,8 +2207,9 @@ class DataTable(BaseModel):
     #: For a built-per-run table: how many runs it covers, and for how many it is built.
     runs: Optional[int] = None
     built: Optional[int] = None
-    #: Runs whose build failed, keyed by run, with the reason (at most a sample of them).
-    failed: dict = Field(default_factory=dict)
+    #: Runs the table has no rows for, or only the rows from before a topic stopped decoding
+    #: (counted in ``built``), keyed by run, with the reason (at most a sample of them).
+    failed: dict[str, str] = Field(default_factory=dict)
     description: str = ""
     column_notes: dict = Field(default_factory=dict)
 
@@ -2457,6 +2461,27 @@ class ServiceError(OSError):
         super().__init__(detail)
 
 
+class ServiceUnreachable(OSError):
+    """No robovast-service answered at the URL a client was given.
+
+    Not a refusal: nothing answered, so there is no status and no ``detail``. What a
+    caller needs is the address it tried and the socket-level reason, in one sentence --
+    ``requests`` wraps that reason in two layers of pool and retry bookkeeping, and the
+    resulting paragraph, printed with the frames it was raised through, read as a crash
+    in the client rather than as a service that is down.
+
+    ``include_traceback = False``, as for :class:`ServiceError`: the frames are the HTTP
+    transport's and name nothing the reader can act on.
+    """
+
+    include_traceback = False
+
+    def __init__(self, url: str, reason: str):
+        self.url = url
+        self.reason = reason
+        super().__init__(f"no robovast-service answered at {url}: {reason}")
+
+
 #: Header naming the CLASS of a refusal, for the few whose class a caller must act on
 #: rather than print. The message says what happened and is written for a person; a client
 #: that has to *behave* differently -- degrade to "unchecked", report the deployment rather
@@ -2512,6 +2537,32 @@ class UnsupportedOperation(ServiceError):
         sentence = f"{operation} is not supported {where}"
         super().__init__(self.STATUS, f"{sentence}. {hint}" if hint else sentence,
                          code=UNSUPPORTED_OPERATION)
+
+
+#: A text read of a binary file -- :class:`BinaryFile` crossing HTTP.
+BINARY_FILE = "binary_file"
+
+
+class BinaryFile(ServiceError, ValueError):
+    """A text read refused because the file is binary.
+
+    ``url`` is the route that serves the file's bytes, relative to the service's origin. A
+    ``ValueError`` like any refused input, so the app answers ``400``, with
+    :data:`BINARY_FILE` in :data:`ERROR_CODE_HEADER`; the HTTP transport raises this class
+    again from that code, so a caller catches one type wherever the service runs.
+    """
+
+    STATUS = 400
+
+    def __init__(self, address: str, detail: str = ""):
+        name = address.rstrip("/").rsplit("/", 1)[-1]
+        super().__init__(
+            self.STATUS,
+            detail or (f"{name} is a binary file — read it as bytes (GET the address "
+                       "without 'as=text', or 'vast files get'), or download the "
+                       "campaign archive."),
+            url=Routes.file(address), code=BINARY_FILE)
+        self.address = address
 
 
 API_VERSION = "0"
@@ -3106,8 +3157,8 @@ class RobovastInterface(ABC):
         Line-based paging happens **server-side**, so a caller reading 100 lines of a
         log on the cluster transfers 100 lines, not the file.
 
-        Raises ``ValueError`` on a malformed address or a binary file (→ 400) and
-        ``KeyError`` when the file does not exist (→ 404).
+        Raises :class:`BinaryFile` on a binary file and ``ValueError`` on a malformed
+        address (both → 400), and ``KeyError`` when the file does not exist (→ 404).
         """
 
     @abstractmethod
@@ -3579,10 +3630,10 @@ class RobovastInterface(ABC):
 
         The last writer wins, member by member: the containers of one pod share an
         output tree and each contributes its own files to it. Refused with a
-        ``KeyError`` for a campaign that is not here and a ``ValueError`` for one that has
-        ended -- outputs arriving after the verdict would change a record nothing reads
-        again. What a pod never writes -- the campaign's own store, the driver's logs --
-        is refused per member and reported, never written.
+        ``KeyError`` for a campaign that is not here; one that has ended still takes it, since
+        a stop tears pods down while they flush. What a pod never writes -- the campaign's
+        own store, its ``_config/``, ``_transient/`` and ``_execution/`` -- is refused per
+        member and reported, never written.
         """
 
     @abstractmethod

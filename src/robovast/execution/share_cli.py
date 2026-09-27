@@ -57,7 +57,7 @@ from pathlib import Path
 
 import click
 
-from robovast.client.errors import handle_cli_exception
+from robovast.client.errors import describe_cli_exception, handle_cli_exception
 from robovast.common import fmt_size as _fmt_size
 from robovast.common import make_transfer_progress_callback
 from robovast.execution.share_providers import (load_share_provider_plugins,
@@ -96,6 +96,16 @@ def share():
 # ---------------------------------------------------------------------------
 # Shared resolution
 # ---------------------------------------------------------------------------
+
+def _refuse_if_any_failed(failed: int, total: int, what: str) -> None:
+    """Exit 1 once a verb that acts on several things has reported every one of them.
+
+    Each failure was already printed on its own line as it happened; this is the verb's
+    status, so a script sees that not everything landed.
+    """
+    if failed:
+        raise click.ClickException(f"{failed} of {total} {what}; see above.")
+
 
 def _provider():
     """Instantiate the configured share provider, or raise a usable ``UsageError``.
@@ -380,7 +390,7 @@ def _download_each(provider, out_dir, force, wanted, *, kind):
     One implementation for both kinds: resume, progress and the atomic rename are
     properties of a share transfer, not of what is being transferred.
     """
-    downloaded = skipped = 0
+    downloaded = skipped = failed = 0
     for object_name, label, base in wanted:
         dest = out_dir / base
         if dest.exists() and not force:
@@ -410,7 +420,8 @@ def _download_each(provider, out_dir, force, wanted, *, kind):
         except Exception as exc:  # noqa: BLE001
             # The .part file is left where it is: the next run resumes from it.
             sys.stdout.write("\n")
-            handle_cli_exception(exc)
+            click.echo(f"  {label}  ✗  {describe_cli_exception(exc)}", err=True)
+            failed += 1
             continue
         finally:
             sys.stdout.write("\n")
@@ -425,7 +436,10 @@ def _download_each(provider, out_dir, force, wanted, *, kind):
     parts = [f"✓ Downloaded {downloaded} {kind} archive(s)"]
     if skipped:
         parts.append(f"{skipped} skipped")
+    if failed:
+        parts.append(f"{failed} failed")
     click.echo("  ".join(parts))
+    _refuse_if_any_failed(failed, len(wanted), f"{kind} archive(s) did not download")
 
 
 @share.command(name='upload')
@@ -466,7 +480,7 @@ def upload_cmd(archives, as_workspace, new_name, force):
 
     existing = {name for _o, name, _v, _s in _archives(provider)} if not force else set()
 
-    uploaded = 0
+    uploaded = failed = 0
     for path in archives:
         # A ClickException here (not a tar, or not one campaign) aborts the whole run
         # rather than being skipped: it means the file you named is not what you think,
@@ -491,7 +505,8 @@ def upload_cmd(archives, as_workspace, new_name, force):
             raise
         except Exception as exc:  # noqa: BLE001
             sys.stdout.write("\n")
-            handle_cli_exception(exc)
+            click.echo(f"  {campaign_id}  ✗  {describe_cli_exception(exc)}", err=True)
+            failed += 1
             continue
         finally:
             sys.stdout.write("\n")
@@ -501,6 +516,7 @@ def upload_cmd(archives, as_workspace, new_name, force):
 
     click.echo()
     click.echo(f"✓ Uploaded {uploaded} archive(s) to {share_type}.")
+    _refuse_if_any_failed(failed, len(archives), "archive(s) did not upload")
 
 
 def _upload_workspaces(provider, share_type, archives, new_name, force):
@@ -512,7 +528,7 @@ def _upload_workspaces(provider, share_type, archives, new_name, force):
         raise click.UsageError("--name names one archive, so pass one file with it.")
     existing = {slug for _o, slug, _s in _workspace_archives(provider)} if not force else set()
 
-    uploaded = 0
+    uploaded = failed = 0
     for path in archives:
         base = os.path.basename(path)
         slug = workspace_slug(new_name, "") if new_name else parse_workspace_archive_name(base)
@@ -536,7 +552,8 @@ def _upload_workspaces(provider, share_type, archives, new_name, force):
             raise
         except Exception as exc:  # noqa: BLE001
             sys.stdout.write("\n")
-            handle_cli_exception(exc)
+            click.echo(f"  {slug}  ✗  {describe_cli_exception(exc)}", err=True)
+            failed += 1
             continue
         finally:
             sys.stdout.write("\n")
@@ -546,6 +563,7 @@ def _upload_workspaces(provider, share_type, archives, new_name, force):
 
     click.echo()
     click.echo(f"✓ Uploaded {uploaded} workspace archive(s) to {share_type}.")
+    _refuse_if_any_failed(failed, len(archives), "workspace archive(s) did not upload")
 
 
 def _read_archive_identity(tarfile_mod, path):
@@ -607,8 +625,7 @@ def _read_archive_identity(tarfile_mod, path):
 
 @share.command(name='remove')
 @click.option('--campaign', '-i', 'campaigns', multiple=True,
-              help='Campaign to remove (globs such as "nav-2026-03-09-*" are allowed). '
-                   'Repeatable.')
+              help='Campaign to remove; a glob such as nav-* names several. Repeatable.')
 @click.option('--workspace', '-w', 'workspaces', multiple=True,
               help='Workspace slug to remove (globs allowed). Repeatable.')
 @click.option('--variant', type=click.Choice(list(SHARE_VARIANTS)), default=None,
@@ -650,7 +667,7 @@ def remove_cmd(campaigns, workspaces, variant, yes):
             click.echo()
             click.confirm(f"Remove {len(matched)} workspace archive(s) from {share_type}?",
                           abort=True)
-        removed = 0
+        removed = failed = 0
         for object_name, slug, _size in matched:
             click.echo(f"  {slug}  removing...")
             try:
@@ -660,12 +677,14 @@ def remove_cmd(campaigns, workspaces, variant, yes):
             except (click.UsageError, click.ClickException):  # pylint: disable=try-except-raise
                 raise
             except Exception as exc:  # noqa: BLE001
-                handle_cli_exception(exc)
+                click.echo(f"  {slug}  ✗  {describe_cli_exception(exc)}", err=True)
+                failed += 1
                 continue
             click.echo(f"  {slug}  ✓ removed")
             removed += 1
         click.echo()
         click.echo(f"✓ Removed {removed} workspace archive(s) from {share_type}.")
+        _refuse_if_any_failed(failed, len(matched), "workspace archive(s) were not removed")
         return
 
     click.echo(f"Listing campaigns on {share_type}...")
@@ -703,7 +722,7 @@ def remove_cmd(campaigns, workspaces, variant, yes):
         click.confirm(f"Remove {len(matched)} campaign archive(s) from {share_type}?",
                       abort=True)
 
-    removed = 0
+    removed = failed = 0
     for object_name, campaign_id, _variant, _size in matched:
         click.echo(f"  {campaign_id}  removing...")
         try:
@@ -715,13 +734,15 @@ def remove_cmd(campaigns, workspaces, variant, yes):
         except (click.UsageError, click.ClickException):  # pylint: disable=try-except-raise
             raise
         except Exception as exc:  # noqa: BLE001
-            handle_cli_exception(exc)
+            click.echo(f"  {campaign_id}  ✗  {describe_cli_exception(exc)}", err=True)
+            failed += 1
             continue
         click.echo(f"  {campaign_id}  ✓ removed")
         removed += 1
 
     click.echo()
     click.echo(f"✓ Removed {removed} campaign archive(s) from {share_type}.")
+    _refuse_if_any_failed(failed, len(matched), "campaign archive(s) were not removed")
 
 
 # ---------------------------------------------------------------------------
@@ -839,7 +860,7 @@ def import_cmd(campaigns, as_workspace, new_name, force, rebuild_store):
                     info = client.create_workspace(CreateWorkspaceRequest(
                         name=new_name, from_share=slug))
                 except Exception as exc:  # noqa: BLE001 - one bad name must not skip the rest
-                    click.echo(f"  ✗ {slug}: {exc}", err=True)
+                    click.echo(f"  ✗ {slug}: {describe_cli_exception(exc)}", err=True)
                     failed = True
                     continue
                 click.echo(f"  ✓ {info.workspace_id}  ({info.name})")
@@ -867,7 +888,7 @@ def import_cmd(campaigns, as_workspace, new_name, force, rebuild_store):
                 ref = client.import_campaign(ImportCampaignRequest(
                     share_archive=campaign_id, force=force, rebuild_store=rebuild_store))
             except Exception as exc:  # noqa: BLE001 - one bad name must not skip the rest
-                click.echo(f"  ✗ {campaign_id}: {exc}", err=True)
+                click.echo(f"  ✗ {campaign_id}: {describe_cli_exception(exc)}", err=True)
                 failed = True
                 continue
             click.echo(f"  ✓ {ref.campaign_id}" + (f"  ({ref.note})" if ref.note else ""))

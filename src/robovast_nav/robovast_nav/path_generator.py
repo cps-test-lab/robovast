@@ -69,7 +69,7 @@ class PathGenerator:
             robot_diameter: Diameter of the robot in meters (used for obstacle inflation)
         """
         self.map_file_path = map_file_path
-        self.map: Optional[Map] = None
+        self.map: Map
         self.robot_diameter = robot_diameter
         self.robot_radius = robot_diameter / 2.0
 
@@ -77,9 +77,6 @@ class PathGenerator:
 
     def _inflate_obstacles(self):
         """Inflate obstacles in the occupancy grid by the robot's radius."""
-        if self.map is None or self.map.occupancy_grid is None:
-            return
-
         # Compute the number of pixels to inflate
         inflation_radius_px = int(np.ceil(self.robot_radius / self.map.resolution))
 
@@ -199,8 +196,8 @@ class PathGenerator:
         Returns:
             List of Position objects forming a valid path, or None if no path exists
         """
-        if self.map is None or self.map.occupancy_grid is None or not waypoints:
-            raise ValueError("Occupancy grid not loaded or no waypoints provided.")
+        if not waypoints:
+            raise ValueError("No waypoints provided.")
 
         if len(waypoints) < 2:
             raise ValueError("At least two waypoints are required to generate a path.")
@@ -366,7 +363,7 @@ class PathGenerator:
         Args:
             obstacles: List of StaticObject instances to add as obstacles
         """
-        if self.map is None or self.map.occupancy_grid is None or not obstacles:
+        if not obstacles:
             return
 
         for obstacle in obstacles:
@@ -406,7 +403,7 @@ class PathGenerator:
 
     def get_costmap_with_obstacles(
         self, obstacles: List[StaticObject] = None
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray:
         """
         Generate a costmap that includes dynamic obstacles.
 
@@ -414,11 +411,8 @@ class PathGenerator:
             obstacles: Optional list of dynamic obstacles to include
 
         Returns:
-            Costmap as numpy array where 0=free, 255=occupied, or None if no map loaded
+            Costmap as numpy array where 0=free, 255=occupied
         """
-        if self.map is None or self.map.occupancy_grid is None:
-            return None
-
         # Create a copy of the occupancy grid to avoid modifying the original
         original_grid = self.map.occupancy_grid.copy()
 

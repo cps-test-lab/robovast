@@ -16,7 +16,8 @@ import pytest
 import requests
 
 from robovast.service.http_client import HTTPTransport
-from robovast.service.interface import EditFileRequest, ServiceError, WriteFileRequest
+from robovast.service.interface import (BINARY_FILE, ERROR_CODE_HEADER, BinaryFile,
+                                        EditFileRequest, ServiceError, WriteFileRequest)
 
 
 class _Resp:
@@ -172,6 +173,18 @@ def test_a_refusal_carries_the_services_own_message(monkeypatch):
     assert "Client Error" not in str(excinfo.value)
 
 
+def test_a_binary_file_refusal_is_raised_as_its_class(monkeypatch):
+    resp = _Resp(status_code=400, payload={"detail": "bag.mcap is a binary file"})
+    resp.headers = {ERROR_CODE_HEADER: BINARY_FILE}
+    monkeypatch.setattr(requests.Session, "get", lambda self, *a, **kw: resp)
+
+    with pytest.raises(BinaryFile) as excinfo:
+        HTTPTransport("http://svc").read_file("/results/camp-1/bag.mcap")
+
+    assert excinfo.value.url == "/results/camp-1/bag.mcap"
+    assert str(excinfo.value) == "bag.mcap is a binary file"
+
+
 def test_a_refusal_is_still_an_oserror(monkeypatch):
     """``requests.HTTPError`` was one (via ``IOError``), and callers rely on that.
 
@@ -250,3 +263,21 @@ def test_a_screenshot_nobody_kept_has_no_name(monkeypatch):
     frame = HTTPTransport("http://svc").campaign_screenshot("camp-1", "cfg", "0")
     screenshot.discard(Path(frame.path))
     assert frame.name == ""
+
+
+def test_a_service_that_does_not_answer_is_one_sentence():
+    """A refused connection arrives from ``requests`` as a paragraph of pool and retry
+    bookkeeping; what a caller needs is the address and the socket's reason, as a refusal
+    rather than a bug."""
+    from robovast.service.interface import ServiceUnreachable
+
+    with pytest.raises(ServiceUnreachable) as raised:
+        HTTPTransport("http://127.0.0.1:1").version()
+    message = str(raised.value)
+    assert message.startswith("no robovast-service answered at http://127.0.0.1:1: ")
+    assert "Connection refused" in message
+    assert "\n" not in message
+    assert "HTTPConnectionPool" not in message
+    assert raised.value.include_traceback is False
+    assert isinstance(raised.value, OSError)
+    assert isinstance(raised.value.__cause__, requests.exceptions.ConnectionError)

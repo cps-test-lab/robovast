@@ -54,7 +54,7 @@ from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 from robovast.client import file_address
-from robovast.client.safe_path import safe_join
+from robovast.client.safe_path import UnsafePathError, check_segment, safe_join
 from robovast.common import file_view
 from robovast.common.config import (EXPLORER_SCOPES, SCENARIO_CONTAINER,
                                     SIMULATION_CONTAINER)
@@ -66,7 +66,7 @@ from robovast.common.store import read_campaign_created_at, read_campaign_descri
 from robovast.execution.control_server import (STOP_RUNS,
                                                ControllerState, Phase, Status, failure_detail,
                                                is_terminal, stop_checker)
-from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRef,
+from robovast.service.interface import (ActionResult, BinaryFile, CampaignOrigin, CampaignRef,
                                         CampaignDeletion, CampaignTablesCleared,
                                         DeleteCampaignsRequest, ExportRef, ExportStatus,
                                         DeleteCampaignsResponse, OutputsIngested,
@@ -86,7 +86,7 @@ from robovast.service.interface import (ActionResult, CampaignOrigin, CampaignRe
                                         ValidationReport, VariationTypeInfo, VariationTypeParam,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
-from robovast.common.disk_reserve import reserve_disabled
+from robovast.common.disk_reserve import refuse_unless_room, reserve_disabled
 from robovast.common.query_limits import query_limits
 from robovast.service.storage_reserve import storage_refusal
 
@@ -912,6 +912,9 @@ class ServiceBase(RobovastInterface):
         different id. Anything else is refused rather than flattened: an archive with two
         top-level entries is not one of ours, and guessing which to take would seed a
         project from half of something.
+
+        An archive that would unpack past the workspaces volume's room above the reserve is
+        refused before anything is written.
         """
         import tarfile  # pylint: disable=import-outside-toplevel
 
@@ -927,6 +930,8 @@ class ServiceBase(RobovastInterface):
             provider.download_archive(object_name, str(staged))
             with tarfile.open(staged, "r:gz") as tar:
                 members = tar.getmembers()
+                refuse_unless_room(object_name, members, project_dir, "the workspaces volume",
+                                   "free space there, then create the workspace again")
                 # `./` is not a top-level entry: `tar` writes it for the archive root, so an
                 # archive rolled by hand carries one and reading it as the project's
                 # directory would nest the whole tree one level down -- silently, which is
@@ -1083,8 +1088,10 @@ class ServiceBase(RobovastInterface):
     def read_file(self, address: str, lines: int = 200, offset: int = 0) -> FileText:
         namespace, owner, rel, target = self._address_target(address)
         self._require_file(address, target)
-        return FileText(address=file_address.format_address(namespace, owner, rel),
-                        **file_view.read_text_page(target, lines, offset))
+        address = file_address.format_address(namespace, owner, rel)
+        if file_view.is_binary(target):
+            raise BinaryFile(address)
+        return FileText(address=address, **file_view.read_text_page(target, lines, offset))
 
     def read_file_bytes(self, address: str) -> bytes:
         _, _, _, target = self._address_target(address)
@@ -1555,8 +1562,8 @@ class ServiceBase(RobovastInterface):
                 owned = archive.resolve().parent == staged_root
             except OSError:
                 owned = False
-            return (read_campaign_id(archive), lambda _log: (archive, owned),
-                    not _archive_has_metrics(archive))
+            return (read_campaign_id(archive, fits_in=self._campaigns_root()),
+                    lambda _log: (archive, owned), not _archive_has_metrics(archive))
 
         object_name, campaign_id, variant = self._find_share_archive(request.share_archive)
 
@@ -1649,6 +1656,8 @@ class ServiceBase(RobovastInterface):
         """
         from robovast.client.logging_config import (  # pylint: disable=import-outside-toplevel
             add_campaign_log_handler, remove_campaign_log_handler)
+        from robovast.common.campaign_data import \
+            clear_import_marker  # pylint: disable=import-outside-toplevel
         from robovast.service.ingest import (  # pylint: disable=import-outside-toplevel
             blocking_summary, claim_campaign_dir, extract_archive, ingest_campaign,
             read_campaign_id)
@@ -1672,7 +1681,9 @@ class ServiceBase(RobovastInterface):
             # and reports `config, layout` -- the archive's own symptom -- under an id that
             # is not the one that failed. Reading the id costs the tar's index, which the
             # upload path already pays (`_resolve_import_source`); this closes the other.
-            inner = read_campaign_id(archive)
+            # With the room to unpack it: a share archive's size is known only now, and a
+            # staged upload's free space may have been taken since the request admitted it.
+            inner = read_campaign_id(archive, fits_in=self._campaigns_root())
             if inner != campaign_id:
                 raise RuntimeError(
                     f"the archive fetched for {campaign_id} holds campaign {inner!r}. "
@@ -1681,7 +1692,8 @@ class ServiceBase(RobovastInterface):
                     f"would then mean what it says.")
             logger.info("extracting %s into %s ...", Path(archive).name,
                         self._campaigns_root())
-            extract_archive(archive, self._campaigns_root(), remove_archive=owned)
+            extract_archive(archive, self._campaigns_root(), campaign_id,
+                            remove_archive=owned)
             report = ingest_campaign(target, rebuild_store=request.rebuild_store)
             for name, stage in report["stages"].items():
                 logger.info("  %-15s %-10s %s", name, stage["verdict"], stage["detail"])
@@ -1709,6 +1721,9 @@ class ServiceBase(RobovastInterface):
             state.set_phase(Phase.FAILED)
             return
         finally:
+            # Concluded either way: what landed is the campaign, or the failure is
+            # recorded. Only a process that dies before this leaves the marker behind.
+            clear_import_marker(target)
             remove_campaign_log_handler(handler)
 
         self._postprocess_after_import(state, campaign_id, target)
@@ -4328,14 +4343,18 @@ class ServiceBase(RobovastInterface):
         Two guards shared by the local and cluster transports before anything is
         removed:
 
-        * The id must match the campaign naming pattern — this blocks a traversal
-          value like ``..`` from ever reaching the ``rmtree`` / bucket delete and
-          taking out the results root or an unrelated bucket (``ValueError`` → 400).
+        * The id must be one directory name matching the campaign naming pattern. The
+          pattern alone lets a separator through (``../x-<stamp>``, ``/elsewhere/x-<stamp>``)
+          (``ValueError`` → 400).
         * No live in-memory driver entry may exist — the authoritative "still
           running here" signal. Stop the campaign first (``RuntimeError`` → 409).
         """
         from robovast.common.execution import is_campaign_dir
-        if not campaign_id or not is_campaign_dir(campaign_id):
+        try:
+            valid = is_campaign_dir(check_segment(campaign_id))
+        except UnsafePathError:
+            valid = False
+        if not valid:
             raise ValueError(
                 f"Refusing to delete {campaign_id!r}: not a valid campaign id.")
         with self._lock:
@@ -4933,7 +4952,7 @@ class ServiceBase(RobovastInterface):
                     sut=convert_dataclasses_to_dict(c.get("sut", {})),
                     internals=convert_dataclasses_to_dict(
                         {k: v for k, v in c.items()
-                         if k.startswith("_") and k != "_config_block"}),
+                         if k.startswith("_") and k not in ("_config_block", "_read_files")}),
                     contribution=_config_view_contribution(c, vast_dir),
                     previews=_config_previews(c, remotes))
                  for c in shown]
@@ -5043,12 +5062,19 @@ class ServiceBase(RobovastInterface):
         (:mod:`robovast.service.endpoint_plugin`), so a plugin reads the same tree
         whichever service serves it.
 
-        Campaigns all live under the shared results root (see :meth:`_campaigns_root`);
-        an absolute id is honoured as-is, for analysis of an arbitrary folder.
+        Campaigns all live under the shared results root (see :meth:`_campaigns_root`),
+        and an id is one directory name there
+        (:func:`~robovast.client.safe_path.check_segment`), since every reader here confines
+        its path against the campaign's directory alone. ``ValueError`` for one that is
+        not; an absolute id is refused by name, since a caller of the service may read its
+        campaigns and no other folder on its host.
         """
         if os.path.isabs(campaign_id):
-            return Path(campaign_id)
-        return self._campaigns_root() / campaign_id
+            raise ValueError(
+                f"{campaign_id!r} is a folder, not a campaign id: the service reads only "
+                "the campaigns in its results tree. An absolute campaign folder is read "
+                "by the MCP tools only when they run without a service.")
+        return self._campaigns_root() / check_segment(campaign_id)
 
     # -- results data query (eval viewer) -----------------------------------
 
@@ -5069,10 +5095,13 @@ class ServiceBase(RobovastInterface):
         ``WHERE campaign_id = ...`` answers about this campaign rather than a corpus.
 
         *campaigns* is the deliberate way out, for a comparison: name every campaign the
-        query may see and it may see them.
+        query may see and it may see them. Each is held to :meth:`campaign_dir` as
+        *campaign_id* is.
         """
         from robovast.results_processing.data_query import query_data_db
         from robovast.service.interface import DataQueryResult
+        for other in campaigns or []:
+            self.campaign_dir(other)
         result = query_data_db(self.campaign_dir(campaign_id), sql, max_rows,
                                max_bytes=max_bytes, campaigns=campaigns,
                                campaign_id=campaign_id)
@@ -5544,6 +5573,10 @@ class ServiceBase(RobovastInterface):
         del campaign_id  # scopes the route, but a cache entry belongs to a world, not a campaign
         from robovast.service import scene_cache
         key, _, rel = str(path).partition("/")
+        try:
+            check_segment(key)
+        except UnsafePathError:
+            key = ""
         if not key or not rel:
             raise KeyError(f"scene asset path must be '<key>/<file>', got {path!r}")
         scene_cache.touch(key)

@@ -40,6 +40,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 import yaml
 
+from robovast_decode import DATA_CONTRACT
 from robovast_decode.layout import STORE
 from robovast_decode.runs import RUNS_TABLE
 from robovast_decode.tables import (cache_root, campaign_table_path, manifest_lock, read_manifest,
@@ -85,9 +86,25 @@ def _exported_campaign(export_dir: str) -> str:
     campaign-level table -- linked, not copied -- and from then on the export reads exactly
     as the campaign directory it came from does: nothing is built for a table the export
     carries, and a table it does not carry is built from the records where they suffice.
+
+    Only an export written under this reader's data contract is opened. A table the export
+    carries is served as it is and never rebuilt -- an export made without its recordings
+    has nothing to rebuild it from -- so one laid out under another contract would be
+    entered under this contract's number and read as the table it is not. The export
+    says which contract it follows (``export.json``), and a mismatch is refused by number.
     """
     with open(os.path.join(export_dir, EXPORT_FILE), encoding="utf-8") as fh:
         export = json.load(fh)
+    contract = export.get("data_contract")
+    if contract != DATA_CONTRACT:
+        written = (f"under data contract {contract}" if contract is not None
+                   else "before the data contract was numbered")
+        raise ValueError(
+            f"{export_dir} was exported {written}, by robovast-decode "
+            f"{export.get('decoder', 'of an unrecorded version')}; this reader follows "
+            f"contract {DATA_CONTRACT}, and a table laid out under another contract is not "
+            f"the table its name promises. Export the campaign again from a current service, "
+            f"or read its tables/ files directly with pandas or DuckDB.")
     campaign_dir = os.path.join(export_dir, export["campaign_id"])
     if not os.path.isfile(os.path.join(campaign_dir, STORE)):
         raise FileNotFoundError(
@@ -341,8 +358,8 @@ def _report(problems: List[Problem]) -> None:
     if problems:
         shown = "\n  ".join(str(p) for p in problems[:10])
         more = f"\n  ... {len(problems) - 10} more" if len(problems) > 10 else ""
-        warnings.warn(f"{len(problems)} table(s) could not be built for some runs; the "
-                      f"answer leaves them out:\n  {shown}{more}", stacklevel=3)
+        warnings.warn(f"{len(problems)} table(s) are missing or incomplete for some runs; "
+                      f"the answer leaves out what they lack:\n  {shown}{more}", stacklevel=3)
 
 
 def open_data(path: str, **options):

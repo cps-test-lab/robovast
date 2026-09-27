@@ -76,7 +76,29 @@ def _print_version(ctx, param, value):  # pylint: disable=unused-argument
     ctx.exit()
 
 
-@click.group()
+class _RootGroup(click.Group):
+    """The root group, which reports a verb's failure when the verb did not.
+
+    Every verb that reaches a service can fail on the way -- a connection refused, a
+    workspace name that matches nothing -- and a verb with no handler of its own would
+    let that escape as a raw interpreter traceback. One handler here, over every verb any
+    distribution attaches, reports the failure the way :func:`handle_cli_exception`
+    reports it everywhere else: a refusal as its message, a bug with its type and frames,
+    and exit code 1 either way. Click's own exceptions and exits pass through, as they are
+    click's to render.
+    """
+
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except (click.ClickException, click.Abort, click.exceptions.Exit):
+            raise
+        except Exception as e:  # noqa: BLE001 - every verb's failure, reported once
+            handle_cli_exception(e)
+            return None
+
+
+@click.group(cls=_RootGroup)
 @click.option('--log-level', '-l',
               type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], case_sensitive=False),
               help='Set logging level (overrides project configuration)',
@@ -100,9 +122,9 @@ def cli(ctx):
     results go. A campaign runs a *workspace's* project (``vast workspace run``); the
     local verbs take the file as an argument (``vast config list my.vast``).
 
-    Every command reads ``./.env`` first, so anything RoboVAST takes from the
-    environment (share credentials, registry, ntfy, ``ROBOVAST_*_IMAGE``, …) can
-    be kept there instead of exported by hand.
+    Every command reads ``./.env`` first, then ``~/.config/robovast/env``, so anything
+    RoboVAST takes from the environment (share credentials, registry, ntfy,
+    ``ROBOVAST_*_IMAGE``, …) can be kept there instead of exported by hand.
 
     \b
     Examples:
@@ -411,14 +433,14 @@ def workspace_update(workspace, directory, excludes, prune, include_results, nam
 
 
 @workspace.command('download')
-@click.argument('workspace_id')
+@click.argument('workspace_id', metavar='WORKSPACE')
 @click.argument('directory', type=click.Path(file_okay=False))
 @click.option('--overwrite', is_flag=True,
               help='Replace local files that already exist. Off by default: pulling over an '
                    'edited copy of the same project would lose those edits irrecoverably.')
 @target_options
 def workspace_download(workspace_id, directory, overwrite, namespace, context):
-    """Fetch every file in WORKSPACE_ID into DIRECTORY.
+    """Fetch every file in WORKSPACE (an id or a name) into DIRECTORY.
 
     The other direction of ``workspace init`` / ``update``, so a project can be taken off a
     remote service and worked on locally -- and so a workspace somebody else authored can be
@@ -444,16 +466,30 @@ def workspace_download(workspace_id, directory, overwrite, namespace, context):
 
 
 @workspace.command('list')
+@click.option('--json', 'as_json', is_flag=True,
+              help='Print the listing as one JSON object, the fields the MCP '
+                   'list_workspaces tool returns.')
 @target_options
-def workspace_list(namespace, context):
-    """List workspaces (newest first)."""
+def workspace_list(as_json, namespace, context):
+    """List workspaces (newest first), with the campaigns running out of each.
+
+    ``--json`` prints ``{workspaces, total}`` on stdout and the target on stderr.
+    """
+    import json as json_mod
+
+    from robovast.client.workspace_report import workspace_listing
     with service_client(namespace, context) as (client, target):
-        _echo_target(target)
-        workspaces = client.list_workspaces().workspaces
-        if not workspaces:
-            click.echo("(none)")
-        for w in workspaces:
-            click.echo(f"{w.workspace_id}  {w.name or '-':20}  {w.created_at or ''}")
+        _echo_target(target, err=as_json)
+        listing = workspace_listing(client)
+    if as_json:
+        click.echo(json_mod.dumps(listing))
+        return
+    if not listing["workspaces"]:
+        click.echo("(none)")
+    for w in listing["workspaces"]:
+        running = w["running_campaigns"]
+        click.echo(f"{w['workspace_id']}  {w['name'] or '-':20}  {w['created_at'] or ''}"
+                   + (f"  [running: {', '.join(running)}]" if running else ""))
 
 
 @workspace.command('world')
@@ -469,7 +505,7 @@ def workspace_list(namespace, context):
 @click.option('--json', 'as_json', is_flag=True, help='Print the raw description as JSON.')
 @target_options
 def workspace_world(workspace, path, targets, entities, as_json, namespace, context):  # pylint: disable=redefined-outer-name
-    """Describe the world this campaign's simulator will load.
+    """Describe the world a campaign of this workspace's project will load.
 
     The other half of authoring a ``sim:`` override: ``vast workspace world`` says what the
     world *offers* — which components an override can address, and with ``--targets`` which model
@@ -487,7 +523,7 @@ def workspace_world(workspace, path, targets, entities, as_json, namespace, cont
 
     from robovast.service.project_push import _resolve_workspace_id
     with service_client(namespace, context) as (client, target):
-        _echo_target(target)
+        _echo_target(target, err=as_json)
         wid = _resolve_workspace_id(client, workspace)
         described = client.describe_world(wid, path, targets, entities)
         if as_json:
@@ -1016,7 +1052,7 @@ def install_completion():
 def image():
     """Build the derived images a project's containers declare.
 
-    Mirrors the ``build_experiment_image`` MCP tools and drives the same interface.
+    Mirrors the ``build_experiment_image`` MCP tool and drives the same interface.
     Registry-free: you name a project; the service builds every container in
     ``execution.containers`` that adds ``system_packages``, ``python_packages`` or
     ``ros_packages``,
@@ -1150,17 +1186,31 @@ def image_wait(build_ids, interval, timeout, namespace, context):
 
 @image.command('status')
 @click.argument('build_id')
+@click.option('--json', 'as_json', is_flag=True,
+              help='Print the status as one JSON object, the fields the MCP '
+                   'get_image_build_status tool returns.')
 @target_options
-def image_status(build_id, namespace, context):
-    """Show an image build's status."""
+def image_status(build_id, as_json, namespace, context):
+    """Show an image build's status and what to do next.
+
+    ``--json`` prints the status on stdout and the target on stderr.
+    """
+    import json as json_mod
+
+    from robovast.client.image_report import build_status_report
     with service_client(namespace, context) as (client, target):
-        _echo_target(target)
-        s = client.get_image_build_status(build_id)
-        click.echo(f"{s.build_id}: phase={s.phase} done={s.done} cached={s.cached} "
-                   f"image={s.image_ref}")
-        if s.error:
-            click.echo(f"  error [{s.error.phase}] {s.error.message} "
-                       f"(entry={s.error.entry!r}, fixable_by={s.error.fixable_by})")
+        _echo_target(target, err=as_json)
+        s = build_status_report(client, build_id)
+    if as_json:
+        click.echo(json_mod.dumps(s))
+        return
+    click.echo(f"{s['build_id']}: phase={s['phase']} done={s['done']} cached={s['cached']} "
+               f"image={s['image_ref']}")
+    error = s.get("error_detail")
+    if error:
+        click.echo(f"  error [{error['phase']}] {error['message']} "
+                   f"(entry={error['entry']!r}, fixable_by={error['fixable_by']})")
+    click.echo(f"  next  {s['next_step']}")
 
 
 @image.command('log')

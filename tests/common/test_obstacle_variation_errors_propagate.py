@@ -54,10 +54,10 @@ def test_a_planner_error_that_is_not_a_refused_waypoint_ends_the_composition(var
 
     class _NoGrid(_Path):
         def generate_path(self, *_args, **_kwargs):
-            raise ValueError("Occupancy grid not loaded or no waypoints provided.")
+            raise ValueError("No waypoints provided.")
 
     monkeypatch.setattr(mod, 'PathGenerator', _NoGrid)
-    with pytest.raises(ValueError, match="Occupancy grid not loaded") as exc:
+    with pytest.raises(ValueError, match="No waypoints provided") as exc:
         variation._generate_obstacles_for_config([], _stated_config(),
                                                  variation.parameters.obstacle_configs)
     assert not isinstance(exc.value, mod.VariationInfeasibleError)
