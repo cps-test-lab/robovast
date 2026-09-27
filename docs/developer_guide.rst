@@ -1495,6 +1495,10 @@ Then register the class as an entry point in ``pyproject.toml``:
 
 The plugin is picked up automatically the next time the server starts.
 
+A tool need not catch what it cannot answer: whatever it raises reaches the caller as the
+one error document (:ref:`mcp-errors`). Catch only an exception the tool turns into a
+different answer.
+
 A call the tool rejects — an unknown or missing argument — is answered with the arguments
 the tool does take. Where a tool lacks an argument a caller will reach for on purpose,
 declare why with :func:`robovast.mcp_server.lacks.lacks`, and the reason is added to that
