@@ -179,7 +179,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             out["note"] = ref.note
         return out
     except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+        return error_result(e)
 
 
 def get_campaign_status(campaign_id: str) -> dict:
