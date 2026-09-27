@@ -22,7 +22,7 @@ import click
 
 from robovast.client.errors import describe_cli_exception, handle_cli_exception
 from robovast.client.service_target import echo_target as _echo_target
-from robovast.client.service_target import service_client, target_options
+from robovast.client.service_target import service_client
 from robovast.client.tail import tail_rows
 from robovast.execution.wait_exit import CampaignWaitExit, documents_exit_codes
 
@@ -67,8 +67,7 @@ def _campaign_to_act_on(client, campaign):
 
 @campaign.command()
 @click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
-@target_options
-def stop(campaign, namespace, context):
+def stop(campaign):
     """Ask a running campaign to stop.
 
     Goes through the robovast-service, which drives the campaign in-process, so the
@@ -77,7 +76,7 @@ def stop(campaign, namespace, context):
     is running.
     """
     try:
-        with service_client(namespace, context) as (client, target):
+        with service_client() as (client, target):
             _echo_target(target)
             campaign_id = campaign or _sole_running_campaign(client)
             if campaign_id is None:
@@ -107,8 +106,7 @@ def stop(campaign, namespace, context):
 @click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
 @click.option('--reason', default=None, metavar='TEXT',
               help='Why you stopped it — stored with the run and shown in the results')
-@target_options
-def stop_job(job_name, campaign, reason, namespace, context):
+def stop_job(job_name, campaign, reason):
     """Stop ONE running job; the rest of the campaign keeps going.
 
     For a job that is visibly wedged and will not exit on its own. This is not how a
@@ -119,7 +117,7 @@ def stop_job(job_name, campaign, reason, namespace, context):
     as neither passes nor failures.
     """
     try:
-        with service_client(namespace, context) as (client, target):
+        with service_client() as (client, target):
             _echo_target(target)
             campaign_id = _campaign_to_act_on(client, campaign)
             result = client.stop_job(campaign_id, job_name, reason, "cli")
@@ -146,8 +144,7 @@ def stop_job(job_name, campaign, reason, namespace, context):
               help='What to follow -- topic names in the ROS shape; empty lists the topics')
 @click.option('--max-seconds', default=30, show_default=True, type=int,
               help='How long to follow before the service ends the tap')
-@target_options
-def tap(job_name, campaign, selection, max_seconds, namespace, context):
+def tap(job_name, campaign, selection, max_seconds):
     """Follow what ONE running job's simulator publishes now, for a bounded time.
 
     The stream form of the job's state: the simulator's own following command runs in the
@@ -161,7 +158,7 @@ def tap(job_name, campaign, selection, max_seconds, namespace, context):
     """
     from robovast.service.interface import TapEnd
     try:
-        with service_client(namespace, context) as (client, target):
+        with service_client() as (client, target):
             _echo_target(target)
             campaign_id = _campaign_to_act_on(client, campaign)
             names = [name for name in selection.split(",") if name.strip()]
@@ -183,7 +180,7 @@ def tap(job_name, campaign, selection, max_seconds, namespace, context):
         handle_cli_exception(e)
 
 
-def _set_scheduling(campaign, namespace, context, *, priority=None, paused=None,
+def _set_scheduling(campaign, *, priority=None, paused=None,
                     what: str = "") -> None:
     """Shared body of the three scheduling verbs: one interface call, one line back.
 
@@ -192,7 +189,7 @@ def _set_scheduling(campaign, namespace, context, *, priority=None, paused=None,
     fact about a campaign and setting either must not disturb the other.
     """
     try:
-        with service_client(namespace, context) as (client, target):
+        with service_client() as (client, target):
             _echo_target(target)
             campaign_id = _campaign_to_act_on(client, campaign)
             result = client.set_campaign_scheduling(campaign_id, priority, paused)
@@ -214,8 +211,7 @@ def _set_scheduling(campaign, namespace, context, *, priority=None, paused=None,
 @campaign.command(context_settings={'ignore_unknown_options': True})
 @click.argument('value', type=int)
 @click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
-@target_options
-def priority(value, campaign, namespace, context):
+def priority(value, campaign):
     """Set which campaign the queue admits first. Higher goes first; 0 is normal.
 
     For getting a short campaign through while a long one is running: demote the long one
@@ -228,28 +224,26 @@ def priority(value, campaign, namespace, context):
 
     Needs a service that queues campaigns against each other; one with no queue refuses.
     """
-    _set_scheduling(campaign, namespace, context, priority=value, what="Re-queued")
+    _set_scheduling(campaign, priority=value, what="Re-queued")
 
 
 @campaign.command()
 @click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
-@target_options
-def pause(campaign, namespace, context):
+def pause(campaign):
     """Stop admitting new runs for a campaign; ``resume`` starts them again.
 
     The runs it has already started finish normally and their results are kept: this holds
     back what is queued, so the campaign drains rather than stopping, and the cluster is free
     for something else within one run's length. It keeps the priority it will resume at.
     """
-    _set_scheduling(campaign, namespace, context, paused=True, what="Paused")
+    _set_scheduling(campaign, paused=True, what="Paused")
 
 
 @campaign.command()
 @click.argument('campaign', metavar='[CAMPAIGN]', required=False, default=None)
-@target_options
-def resume(campaign, namespace, context):
+def resume(campaign):
     """Admit runs again for a paused campaign, at the priority it was paused at."""
-    _set_scheduling(campaign, namespace, context, paused=False, what="Resumed")
+    _set_scheduling(campaign, paused=False, what="Resumed")
 
 
 @campaign.command()
@@ -265,8 +259,7 @@ def resume(campaign, namespace, context):
               help='Rows whose message or logger matches this case-insensitive regex')
 @click.option('--json', 'as_json', is_flag=True,
               help='One JSON object per row instead of the rendered line')
-@target_options
-def log(campaign, follow, phase, min_level, grep, as_json, namespace, context):
+def log(campaign, follow, phase, min_level, grep, as_json):
     """Print a campaign's infrastructure log, as rows.
 
     The same rows the web UI and MCP show -- every phase of the campaign in the order it
@@ -280,7 +273,7 @@ def log(campaign, follow, phase, min_level, grep, as_json, namespace, context):
     a client-only install could not reach anyway.
     """
     try:
-        with service_client(namespace, context) as (client, target):
+        with service_client() as (client, target):
             _echo_target(target, err=as_json)
             campaign_id = _campaign_to_act_on(client, campaign)
             filters = {"phase": phase, "min_level": min_level, "grep": grep}
@@ -356,9 +349,7 @@ def _report_rerunnable(client, label, campaign_id, *, exit_when_blocked):
                    'finish by hand. For a config no ladder step can carry forward, or a '
                    'campaign whose launch record lacks an image digest: launched from the '
                    'workspace, it resolves and records its images afresh.')
-@target_options
-def rerun(campaign_id, check_only, force, to_workspace,  # pylint: disable=redefined-outer-name
-          namespace, context):
+def rerun(campaign_id, check_only, force, to_workspace):  # pylint: disable=redefined-outer-name
     """Launch a NEW campaign from what CAMPAIGN_ID recorded. The source is not modified.
 
     Reuses the frozen config and exactly the image digests the source's launch recorded --
@@ -374,7 +365,7 @@ def rerun(campaign_id, check_only, force, to_workspace,  # pylint: disable=redef
     you understand -- every axis but a missing image digest, which leaves nothing to replay.
     """
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             if check_only:
                 _report_rerunnable(client, label, campaign_id, exit_when_blocked=True)
                 return
@@ -438,9 +429,8 @@ def _materialize_work_order(client, campaign_id: str, workspace_name: str):
               help='Seconds between status polls.')
 @click.option('--timeout', type=float, default=None,
               help='Give up after this many seconds (default: wait indefinitely).')
-@target_options
 @documents_exit_codes(CampaignWaitExit)
-def wait(campaign, interval, timeout, namespace, context):
+def wait(campaign, interval, timeout):
     """Block until CAMPAIGN is over; the exit code says how it ended, or why the wait did.
 
     {exit_codes}
@@ -504,7 +494,7 @@ def wait(campaign, interval, timeout, namespace, context):
         return stalled and previous is False
 
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             _echo_target(label)
             status = wait_for_campaign_status(
                 campaign, client=client, interval=interval, timeout=timeout,
@@ -594,8 +584,7 @@ def wait(campaign, interval, timeout, namespace, context):
 @click.option('--json', 'as_json', is_flag=True,
               help='Print the listing as one JSON object, the fields the MCP '
                    'list_campaigns tool returns.')
-@target_options
-def list_cmd(limit, sort_key, descending, as_json, namespace, context):
+def list_cmd(limit, sort_key, descending, as_json):
     """List campaigns this service knows about: live ones first, then newest first.
 
     The size column is what the results occupy, measured once when the campaign ended;
@@ -614,7 +603,7 @@ def list_cmd(limit, sort_key, descending, as_json, namespace, context):
         from robovast.service.interface import \
             ListCampaignsRequest  # pylint: disable=import-outside-toplevel
 
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             _echo_target(label, err=as_json)
             listing = campaign_listing(client, ListCampaignsRequest(
                 limit=limit, sort=sort_key, order='desc' if descending else 'asc'))
@@ -666,8 +655,7 @@ def _queue_standing(entry: dict) -> str:
 @click.option('--json', 'as_json', is_flag=True,
               help='Print the status as one JSON object, the fields the MCP '
                    'get_campaign_status tool returns.')
-@target_options
-def status_cmd(campaign, as_json, namespace, context):  # pylint: disable=redefined-outer-name
+def status_cmd(campaign, as_json):  # pylint: disable=redefined-outer-name
     """Print a campaign's phase and progress once, and exit.
 
     The single-read counterpart to ``vast campaign wait``: use this for a campaign you are
@@ -681,7 +669,7 @@ def status_cmd(campaign, as_json, namespace, context):  # pylint: disable=redefi
     from robovast.client.campaign_report import \
         status_report  # pylint: disable=import-outside-toplevel
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             _echo_target(label, err=as_json)
             campaign_id = _campaign_to_act_on(client, campaign)
             report = status_report(client, campaign_id)
@@ -709,8 +697,7 @@ def status_cmd(campaign, as_json, namespace, context):  # pylint: disable=redefi
 @click.option('--force', is_flag=True, help='Replace a campaign of the same id already there.')
 @click.option('--rebuild-store', is_flag=True,
               help='Reconstruct campaign.db from the results tree (the recovery for a corrupt one).')
-@target_options
-def import_cmd(archive, force, rebuild_store, namespace, context):
+def import_cmd(archive, force, rebuild_store):
     """Take a campaign archive into the service, and postprocess it if it needs it.
 
     ARCHIVE is a ``.tar.gz`` on *this* machine -- one ``vast campaign download`` or ``vast
@@ -744,7 +731,7 @@ def import_cmd(archive, force, rebuild_store, namespace, context):
 
     path = Path(archive)
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             _echo_target(label)
             click.echo(f"uploading {path.name} ({fmt_size(path.stat().st_size)}) ...")
             staged = push_campaign_archive(client, path)
@@ -770,8 +757,7 @@ def import_cmd(archive, force, rebuild_store, namespace, context):
                    "give, for every run, before the campaign-end pass.")
 @click.option('--skip', 'skip_plugins', multiple=True, metavar='PLUGIN',
               help='Skip a postprocessing plugin (repeatable).')
-@target_options
-def postprocess_cmd(campaign, force, replay, skip_plugins, namespace, context):
+def postprocess_cmd(campaign, force, replay, skip_plugins):
     """(Re)run analysis postprocessing for CAMPAIGN.
 
     Runs the campaign's own postprocessing steps, builds the tables it declares, grades it
@@ -789,7 +775,7 @@ def postprocess_cmd(campaign, force, replay, skip_plugins, namespace, context):
     from robovast.service.interface import \
         RunPostprocessingRequest  # pylint: disable=import-outside-toplevel
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             _echo_target(label)
             campaign_id = _campaign_to_act_on(client, campaign)
             res = client.run_postprocessing(RunPostprocessingRequest(
@@ -812,8 +798,7 @@ def tables_group():
 @click.argument('campaign', metavar='CAMPAIGN')
 @click.option('--table', 'tables', multiple=True, metavar='TABLE',
               help='Build only this table (repeatable); every table when omitted.')
-@target_options
-def tables_build_cmd(campaign, tables, namespace, context):
+def tables_build_cmd(campaign, tables):
     """Build CAMPAIGN's tables for every run now, in the background.
 
     Never needed for an answer: a table is built the first time a query, a panel or an
@@ -824,7 +809,7 @@ def tables_build_cmd(campaign, tables, namespace, context):
     from robovast.service.interface import \
         BuildCampaignTablesRequest  # pylint: disable=import-outside-toplevel
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             _echo_target(label)
             res = client.build_campaign_tables(BuildCampaignTablesRequest(
                 campaign_id=campaign, tables=list(tables)))
@@ -837,11 +822,10 @@ def tables_build_cmd(campaign, tables, namespace, context):
 
 @tables_group.command('clear')
 @click.argument('campaign', metavar='CAMPAIGN')
-@target_options
-def tables_clear_cmd(campaign, namespace, context):
+def tables_clear_cmd(campaign):
     """Remove CAMPAIGN's built tables to free storage; each is built again on use."""
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             _echo_target(label)
             res = client.clear_campaign_tables(campaign)
     except Exception as e:  # noqa: BLE001
@@ -853,8 +837,7 @@ def tables_clear_cmd(campaign, namespace, context):
 @campaign.command('delete')
 @click.argument('campaigns', metavar='CAMPAIGN...', nargs=-1, required=True)
 @click.option('--yes', '-y', is_flag=True, help='Skip the confirmation prompt.')
-@target_options
-def delete_cmd(campaigns, yes, namespace, context):
+def delete_cmd(campaigns, yes):
     """Permanently delete one or more CAMPAIGNs wholesale.
 
     Removes each campaign's directory under the service's results root, plus, on a cluster
@@ -878,7 +861,7 @@ def delete_cmd(campaigns, yes, namespace, context):
         click.echo("Aborted.")
         return
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             _echo_target(label)
             res = client.delete_campaigns(DeleteCampaignsRequest(campaign_ids=ids))
     except Exception as e:  # noqa: BLE001
@@ -906,8 +889,7 @@ def delete_cmd(campaigns, yes, namespace, context):
 @click.option('--extract', 'extract', is_flag=True,
               help='Extract while downloading into <output>/<campaign-id>/ and keep no '
                    'archive: the tree robovast-data opens, in one step')
-@target_options
-def download_cmd(campaigns, output, force, extract, namespace, context):
+def download_cmd(campaigns, output, force, extract):
     """Download campaign archives from the service, one ``.tar.gz`` each.
 
     That is the whole command: it fetches ``<campaign-id>.tar.gz`` and stops. Nothing is
@@ -946,7 +928,7 @@ def download_cmd(campaigns, output, force, extract, namespace, context):
 
     written = skipped = failed = 0
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             click.echo(f"Downloading {len(campaigns)} campaign archive(s) from {label} ...")
             for campaign_id in campaigns:
                 dest = out_dir / (campaign_id if extract else f"{campaign_id}.tar.gz")
@@ -1020,8 +1002,7 @@ def download_cmd(campaigns, output, force, extract, namespace, context):
                    "and every run's own files ship by default.")
 @click.option('--output', '-o', 'output', default=None, type=click.Path(dir_okay=False),
               help='Where to write the file [default: <campaign>-export-<id>.tar.gz here]')
-@target_options
-def export_cmd(campaign_id, tables, fmt, bags, records, output, namespace, context):
+def export_cmd(campaign_id, tables, fmt, bags, records, output):
     """Export CAMPAIGN as one ``.tar.gz``: its tables as files, its records, its bags.
 
     The service builds the export -- every table it names for every run, then the file --
@@ -1043,7 +1024,7 @@ def export_cmd(campaign_id, tables, fmt, bags, records, output, namespace, conte
         tables=[t.strip() for t in tables.split(',') if t.strip()] if tables is not None else None,
         format=fmt, bags=bags, records=records)
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             _echo_target(label)
             ref = client.create_export(campaign_id, request)
             click.echo(f"Export {ref.export_id} of {campaign_id} started ...", err=True)
