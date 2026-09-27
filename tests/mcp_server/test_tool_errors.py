@@ -6,6 +6,7 @@ import asyncio
 import errno
 import functools
 import importlib
+import inspect
 import pkgutil
 
 import pytest
@@ -18,7 +19,14 @@ from robovast.service.interface import ServiceError, ServiceUnreachable
 
 
 def _raising(fn, exc):
-    """A stand-in for tool *fn* -- same name, signature and annotations -- raising *exc*."""
+    """A stand-in for tool *fn* -- same name, signature, annotations and sync or async --
+    raising *exc*."""
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def async_tool(*_args, **_kwargs):
+            raise exc
+        return async_tool
+
     @functools.wraps(fn)
     def tool(*_args, **_kwargs):
         raise exc
@@ -85,8 +93,9 @@ _CASES = {
 }
 
 
-def test_the_plugins_register_tools():
-    assert len(list(_plugin_modules())) > 5
+def test_the_stand_ins_cover_sync_and_async_tools():
+    tools = [fn for module in _plugin_modules() for fn in module._TOOLS]
+    assert {inspect.iscoroutinefunction(fn) for fn in tools} == {True, False}
 
 
 @pytest.mark.parametrize("case", sorted(_CASES))
