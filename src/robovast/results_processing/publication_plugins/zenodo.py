@@ -56,7 +56,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-import yaml
 
 from robovast.common.progress import make_transfer_progress_callback
 from robovast.results_processing.publication_plugins.base import BasePublicationPlugin
@@ -202,13 +201,11 @@ def _upload_file(base: str, record_id: int, filename: str, file_path: Path, toke
 
 
 def _load_vast_data(vast_path: str) -> Dict[str, Any]:
-    """Return the parsed .vast file as a dict, or empty dict on failure."""
-    try:
-        with open(vast_path, "r", encoding="utf-8") as fh:
-            data = yaml.safe_load(fh)
-        return data if isinstance(data, dict) else {}
-    except Exception:  # pylint: disable=broad-except
-        return {}
+    """The campaign's .vast as the config loader reads an archived one: bases merged,
+    migrated in memory to the current version. Raises when it cannot be read -- a record
+    published without the metadata it was configured with is not a successful upload."""
+    from robovast.common.common import load_config  # pylint: disable=import-outside-toplevel
+    return load_config(vast_path, upgrade=True)
 
 
 def _create_deposition(base: str, token: str) -> dict:
@@ -605,6 +602,9 @@ class Zenodo(BasePublicationPlugin):
             return True, "No artifacts to upload.", []
 
         base = _base_url(sandbox)
+        # Read before anything is created or uploaded, so an unreadable .vast stops the
+        # publication rather than leaving a deposition behind without its metadata.
+        vast_data = _load_vast_data(_vast_file) if _vast_file else None
 
         # ------------------------------------------------------------------ #
         # Resolve record_id: config → project file → create new
@@ -729,9 +729,8 @@ class Zenodo(BasePublicationPlugin):
         # Update Zenodo metadata from .vast file
         # ------------------------------------------------------------------ #
         meta_msg = ""
-        if _vast_file and os.path.isfile(_vast_file):
+        if vast_data is not None:
             try:
-                vast_data = _load_vast_data(_vast_file)
                 updated_fields = _update_zenodo_metadata(
                     base, record_id, token, vast_data, deposition, overwrite
                 )
