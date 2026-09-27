@@ -1007,19 +1007,18 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
     It fails, non-zero, if that pod does not take over: an image it cannot pull, a node it
     cannot be scheduled on, or a container that crash-loops. The reason Kubernetes gave is
     printed as soon as it appears, so a stuck upgrade names its cause in seconds instead of
-    looking like a hang -- and "✓ upgraded and ready" now means it. Use ``--timeout`` for a
+    looking like a hang -- and "✓ upgraded and ready" means it. Use ``--timeout`` for a
     registry slow enough to need longer.
 
     Without ``--no-restart`` it always restarts the pod, even when nothing appears to
-    have changed. That is the
-    point: an image ref that is a floating tag, or a change confined to the Secrets,
+    have changed. That is the point: an image ref that is a floating tag, or a change confined to the Secrets,
     leaves the Deployment spec byte-identical, and Kubernetes then rolls nothing while
     this command reports success. It also makes the restart the *only* way the env
     Secrets are re-read -- the pod loads them through ``envFrom`` at container start and
     never again. The cost is a few seconds during which the API is unavailable.
 
     RBAC reconciliation is not decoration: a version needing a permission the last one
-    did not — as ``/usage`` once needed a cluster-scoped ClusterRole — would otherwise
+    did not — a route that reads a cluster-scoped resource, say — would otherwise
     deploy and then fail at runtime with a 403, which reads as a bug rather than as a
     missed migration.
 
@@ -1028,8 +1027,8 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
     node aliases — and stops before the Deployment is touched. The API server evaluates
     RBAC per request, a node label is the node's own state, a route is the gateway's own
     state and the tailnet node is a Deployment of its own, so a permission the running
-    version is missing can be granted without a version change and without the API blip. That is the
-    difference between fixing a missed migration and rolling a service: it is the only way
+    version is missing can be granted without a version change and without the API blip.
+    That is the difference between fixing a missed migration and rolling a service: it is the only way
     to do the former while a campaign is in flight, because the campaign controller lives in
     the pod a roll would replace. It does *not* move the image and does *not* re-read the env
     Secrets — for either of those, run the command without the flag.
@@ -1334,10 +1333,9 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
 def cluster_token(namespace, kube_context, quiet):
     """Show the access token, and what to hand users along with it.
 
-    Setup deliberately prints the token only once, so reading it back meant a
-    ``kubectl get secret ... | base64 -d`` incantation -- which every operator then
-    keeps in their shell history, and which needs kubectl syntax to answer a RoboVAST
-    question.
+    Setup deliberately prints the token only once; the alternative way to read it back is
+    a ``kubectl get secret ... | base64 -d`` incantation, which lands in shell history and
+    needs kubectl syntax to answer a RoboVAST question.
 
     The token is **per cluster**: an instance mints its own, and one instance's token is
     simply wrong at another. That is the failure this command is most likely to prevent,

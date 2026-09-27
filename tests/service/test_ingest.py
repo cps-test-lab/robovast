@@ -203,8 +203,9 @@ def test_a_missing_execution_record_degrades_rather_than_failing(tmp_path, campa
 
 
 def test_the_importers_own_log_is_not_an_execution_record(tmp_path, campaign):
-    """An import claims ``_execution/`` and opens its log there before extracting, so an
-    archive without ``_execution/`` arrives with one holding only the importer's files."""
+    """An import claims ``_execution/``, marks it as under way and opens its log there before
+    extracting, so an archive without ``_execution/`` arrives with one holding only the
+    importer's files."""
     shutil.rmtree(campaign / "_execution")
     target = claim_campaign_dir(tmp_path / "results", campaign.name)
     (target / "_execution" / "import.log").write_text("importing\n", encoding="utf-8")
@@ -368,7 +369,6 @@ def test_a_snapshot_import_is_degraded_and_says_what_is_missing(campaign):
     campaign only in what is absent — so the marker the archiver wrote is the campaign
     saying so itself.
     """
-    import json
 
     from robovast.execution.campaign_archive import SNAPSHOT_MEMBER
 
@@ -383,6 +383,27 @@ def test_a_snapshot_import_is_degraded_and_says_what_is_missing(campaign):
     stage = report["stages"]["completeness"]
     assert stage["verdict"] == "degraded"
     assert "3/20 runs" in stage["detail"]
+
+
+def test_an_export_is_refused_as_an_export_and_told_which_archive_imports(tmp_path):
+    """An export (``vast campaign export``) holds ``export.json`` and ``tables/`` beside the
+    campaign's records, so it is not one campaign directory -- but it is the other archive
+    this system writes of a campaign, and the refusal says so and names the download that
+    imports, rather than counting its members."""
+    source = _FIXTURES / "v1-campaign-2025-03-04-101500"
+    export = tmp_path / "export.tar.gz"
+    with tarfile.open(export, "w:gz") as tar:
+        manifest = tarfile.TarInfo("export.json")
+        manifest.size = 2
+        tar.addfile(manifest, io.BytesIO(b"{}"))
+        tables = tarfile.TarInfo("tables/runs.parquet")
+        tables.size = 1
+        tar.addfile(tables, io.BytesIO(b"x"))
+        tar.add(source, arcname=source.name)
+
+    with pytest.raises(ValueError, match="is an export") as refused:
+        read_campaign_id(export)
+    assert "vast campaign download" in str(refused.value)
 
 
 def _bomb(tmp_path, unpacked: int) -> Path:

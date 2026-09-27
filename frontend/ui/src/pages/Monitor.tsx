@@ -667,6 +667,11 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   const nodesSkipped = Object.entries(status.data?.nodes_skipped ?? {})
     .map(([node, why]) => [node, String(why)] as const)
     .sort(([a], [b]) => a.localeCompare(b))
+  // What a running job's simulator reports about itself, at the level the CLI's wait acts
+  // on. Sorted by job so the hover lists the same rows in the same order on every poll.
+  const healthErrors = (status.data?.health ?? [])
+    .filter((f) => f.level === 'error')
+    .sort((a, b) => a.job_name.localeCompare(b.job_name) || a.check.localeCompare(b.check))
   const progressAgeS = status.data?.progress_age_s ?? null
   const progressDeadline = status.data?.progress_deadline_s
   // The live step marker, for the phases that have no progress bar of their own. Postprocessing
@@ -1047,6 +1052,26 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
               {nodesSkipped.length} node(s) left out
             </Typography>
           ) : null}
+          {/* A simulator saying "sim time is not advancing" is true within a minute, where a stall
+              shows only once a run is past its budget: the earlier warning, on which `vast campaign
+              wait` exits too. Nothing acts on it; the hover carries which job and check, and what
+              the simulator said, which is what decides whether to stop the job. */}
+          {healthErrors.length ? (
+            <Typography
+              variant="caption"
+              color="error.main"
+              noWrap
+              title={
+                `A running job's simulator reported something wrong about itself:\n` +
+                healthErrors.map((f) => `${f.job_name}: ${f.check} — ${f.detail}`).join('\n') +
+                (status.data?.health_skipped?.length
+                  ? `\n\nChecks that did not run:\n${status.data.health_skipped.join('\n')}`
+                  : '')
+              }
+            >
+              {healthErrors.length} health error(s)
+            </Typography>
+          ) : null}
           {/* A fixed column while FOLDED, a shrink-to-fit label while open: campaign ids carry a
               user-supplied name, so their widths vary by a factor of three, and a page of folded
               cards without a column would sit its timestamp and its meter at a different x on
@@ -1405,6 +1430,7 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
             status={status.data}
             campaignId={id}
             jobs={jobs.data}
+            jobsError={jobs.error ? (jobs.error as Error).message : null}
             liveOnly
             newest={newest}
             quotaCpu={usage.data?.cpu_capacity ?? null}
@@ -1725,7 +1751,7 @@ export function Monitor({
         <CircularProgress size={24} />
       ) : !data.campaigns.length ? (
         <Alert severity="info" variant="outlined">
-          No campaigns yet — start one from the Launcher.
+          No campaigns yet — start one with the launcher above.
         </Alert>
       ) : !shown.length ? (
         // An empty list under a filter is not an empty deployment, and has to say which it is.

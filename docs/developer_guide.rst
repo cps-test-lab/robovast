@@ -1789,6 +1789,11 @@ separate steps so the importer can open the campaign's ``import.log`` once the d
 claimed. The extraction confines every member to the campaign's own directory: an archive
 is untrusted input, and a member that resolves to a sibling campaign -- through ``..``, a
 symlink or a hard link -- fails the import naming the member rather than landing there.
+Claiming also marks the directory as an import under way
+(``_execution/importing.json``), and the importer clears the mark once the import has
+concluded either way; :func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`
+reports a tree still carrying it as a failed import, ahead of the archived ``outcome.json``
+that would otherwise describe the whole campaign over a partial tree.
 :func:`~robovast.service.ingest.ingest_campaign` registers what came out and reports
 **per stage** (``archive``, ``layout``, ``config``, ``completeness``, ``environment``,
 ``campaign_store``, ``tables``), since a campaign archive carries three version surfaces of its

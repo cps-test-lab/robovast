@@ -520,7 +520,7 @@ export function ringLabelWidth(label: string): number {
   return em * RING.fontSize
 }
 
-// Renders one campaign's live Status — the browser analog of what `vast cluster monitor` prints:
+// Renders one campaign's live Status — the browser analog of what `vast campaign status` prints:
 // phase, run-level progress within the current batch, batch counter, and each budget/stopping
 // criterion. Purely presentational; the caller supplies the (polled) Status and, optionally, the
 // (polled) live jobs listing.
@@ -529,6 +529,7 @@ export function StatusView({
   status,
   campaignId,
   jobs,
+  jobsError = null,
   liveOnly = false,
   newest = true,
   quotaCpu,
@@ -545,6 +546,10 @@ export function StatusView({
   // for any caller that only holds one.
   campaignId?: string
   jobs?: ListJobsResponse
+  // Why the jobs listing could not be read, when it could not: the service's sentence. Shown
+  // in place of the list, because an empty list here reads as "nothing is running", and a
+  // listing that failed says nothing of the kind.
+  jobsError?: string | null
   // Monitor cares only about jobs still meaningful right now: it drops completed ones
   // from both the count summary and the jobs list (the Launcher lists everything).
   liveOnly?: boolean
@@ -799,6 +804,8 @@ export function StatusView({
                 resultsBytes={resultsBytes}
                 selected
               />
+            ) : jobsError ? (
+              <ErrorText>could not list the jobs: {jobsError}</ErrorText>
             ) : (
               <JobsSection
                 campaignId={cid}
