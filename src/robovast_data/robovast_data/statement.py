@@ -33,7 +33,7 @@ exactly what will run -- no second parser with its own idea of the grammar.
     (``CAST(CAST("timestamp" AS REAL) * <hz> AS INTEGER)``), where it moves every bucket boundary
     by half a bucket and the chart still looks fine. It becomes
     ``CAST(trunc(CAST(x AS DOUBLE)) AS BIGINT)``, through ``DOUBLE`` because ``trunc`` has no
-    text form.
+    text form; an integer beyond 2**53 is therefore rounded to the nearest double.
 
   Nothing else is translated. A spelling DuckDB rejects outright is left to fail, because its
   author sees the error and fixes the query.
