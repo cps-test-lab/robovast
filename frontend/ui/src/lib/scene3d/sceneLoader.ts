@@ -2,7 +2,7 @@
 // can be extracted into a package other projects consume too (see README.md in this directory).
 //
 // Loads a scene descriptor (scene.json + scene.bin, produced by a simulator backend's scene
-// exporter -- see docs/run_capture.rst) into a three.js Group, and returns a
+// exporter -- see docs/simulators.rst) into a three.js Group, and returns a
 // jointMap that animates hinge/slide joints -- covering the whole scene (robot + environment), not
 // just the articulated robot.
 //
@@ -103,16 +103,13 @@ type SceneTexture =
 
 /** The format a roqsim web scene descriptor states in its `format` field. */
 export const SCENE_FORMAT = 'roqsim.web_scene'
-/**
- * The highest descriptor version this loader reads. A descriptor stating a newer one was written to
- * a contract this code has not seen, so it is refused rather than drawn with the keys that happen to
- * overlap. An unstamped descriptor is the layout every exporter wrote before the stamp: version 1.
- */
+/** The highest descriptor version this loader reads; an unstamped descriptor is version 1. */
 export const SCENE_VERSION = 1
 
 /**
- * Refuse a descriptor this loader cannot read, naming what it states and what is read. Another
- * format is refused too: a simulator's own scene manifest shares the `scene.json` file name.
+ * Refuse a descriptor this loader cannot read, naming what it states and what is read. A newer
+ * version would otherwise be drawn with whatever keys overlap, and a simulator's own scene manifest
+ * shares the `scene.json` file name.
  */
 export function checkSceneFormat(scene: { format?: unknown; version?: unknown }, url: string): void {
   if (scene.format !== undefined && scene.format !== SCENE_FORMAT) {

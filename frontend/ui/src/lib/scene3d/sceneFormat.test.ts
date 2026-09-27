@@ -1,7 +1,4 @@
-// The descriptor states what it is: roqsim stamps `format`/`version` on scene.json. A descriptor
-// written to a later contract is refused by name rather than drawn with the keys that happen to
-// overlap, and so is a different document that shares the file name. An unstamped descriptor is the
-// layout every exporter wrote before the stamp, and still loads.
+// A descriptor of another format or a newer version is refused by name; an unstamped one loads.
 import { describe, expect, it } from 'vitest'
 
 import { SCENE_FORMAT, SCENE_VERSION, checkSceneFormat } from './sceneLoader'
