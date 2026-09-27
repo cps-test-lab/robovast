@@ -28,6 +28,11 @@ compress, so gzip there buys almost no size and costs a core per stream -- a sin
 ``gzip`` caps a transfer near 70 MB/s where the plain tar runs at disk speed, and on the
 pod side that core is taken from the scenario it belongs to.
 
+Every campaign archive carries :data:`~robovast.common.migrations.archive.ARCHIVE_STAMP`,
+the layout it was written in, added as the stream is written (:func:`add_archive_stamp`). A
+stamp already in the tree -- one an import left -- is never copied: the archive says what
+*this* robovast wrote, whatever the campaign arrived as.
+
 All of them read a **local directory** -- the campaign's home is the service's results
 tree. Symlinks (the ``<config>/<run>/job`` links) are preserved as
 symlink members (``dereference=False``) and not recursed into, so the archive is
@@ -97,8 +102,27 @@ def add_snapshot_marker(tar: tarfile.TarFile, campaign_id: str, **facts) -> None
     tar.addfile(info, io.BytesIO(payload))
 
 
+def add_archive_stamp(tar: tarfile.TarFile, campaign_id: str) -> None:
+    """Add the archive layout stamp for *campaign_id* under its campaign directory."""
+    from robovast.common.migrations.archive import (  # pylint: disable=import-outside-toplevel
+        ARCHIVE_STAMP, archive_stamp)
+    payload = archive_stamp(campaign_id)
+    info = tarfile.TarInfo(name=f"{campaign_id}/{ARCHIVE_STAMP}")
+    info.size = len(payload)
+    info.mtime = int(time.time())
+    tar.addfile(info, io.BytesIO(payload))
+
+
+def _is_stamp(rel: str) -> bool:
+    """Whether campaign-relative *rel* is the layout stamp, which is written, never copied."""
+    from robovast.common.migrations.archive import \
+        ARCHIVE_STAMP  # pylint: disable=import-outside-toplevel
+    return rel == ARCHIVE_STAMP
+
+
 def _make_filter(exclude, on_member=None):
-    """Return a ``tarfile.add`` filter dropping any member under an *exclude* name.
+    """Return a ``tarfile.add`` filter dropping the layout stamp and any member under an
+    *exclude* name.
 
     Excluding a *directory* prunes its whole subtree: ``tarfile.add`` does not
     recurse into a member whose filter returns ``None``. That is how the campaign's
@@ -113,13 +137,13 @@ def _make_filter(exclude, on_member=None):
     for a number the first walk has in hand.
     """
     exclude = frozenset(exclude or ())
-    if not exclude and on_member is None:
-        return None
 
     def _filter(tarinfo):
         # tarinfo.name is the arcname (``<campaign>/<rel>``); drop the member if any
-        # path component matches an excluded name.
+        # path component matches an excluded name, and the stamp, which is written anew.
         if exclude and exclude.intersection(tarinfo.name.split("/")):
+            return None
+        if _is_stamp(tarinfo.name.partition("/")[2]):
             return None
         if on_member is not None:
             # Directories and symlinks carry size 0, so this counts file payload only --
@@ -158,7 +182,7 @@ def campaign_source_bytes(campaign_root: str, exclude=DEFAULT_EXCLUDE) -> int:
             if entry.name in exclude:
                 continue
             child = f"{rel}/{entry.name}" if rel else entry.name
-            if entry.is_symlink():
+            if entry.is_symlink() or _is_stamp(child):
                 continue
             if entry.is_dir(follow_symlinks=False):
                 stack.append((entry.path, child))
@@ -172,7 +196,7 @@ def campaign_source_bytes(campaign_root: str, exclude=DEFAULT_EXCLUDE) -> int:
 
 def _add_campaign_tree(tar: tarfile.TarFile, campaign_root: str, exclude,
                        on_member=None) -> None:
-    """Add the whole campaign tree under ``<campaign-id>/`` into *tar*.
+    """Add the whole campaign tree under ``<campaign-id>/`` into *tar*, then its stamp.
 
     Relies on the TarFile's ``dereference=False`` (the default) so ``job`` symlinks
     are stored as symlink members and not followed/recursed.
@@ -180,6 +204,7 @@ def _add_campaign_tree(tar: tarfile.TarFile, campaign_root: str, exclude,
     arcname = os.path.basename(os.path.normpath(campaign_root))
     tar.add(campaign_root, arcname=arcname,
             filter=_make_filter(exclude, on_member))
+    add_archive_stamp(tar, arcname)
 
 
 class _LiveFile(io.RawIOBase):
@@ -252,6 +277,8 @@ def _add_live_tree(tar: tarfile.TarFile, campaign_root: str, exclude) -> None:
             if entry.name in exclude:
                 continue
             child = f"{arc}/{entry.name}"
+            if _is_stamp(child.partition("/")[2]):
+                continue
             try:
                 if entry.is_symlink() or entry.is_dir(follow_symlinks=False):
                     # Both are payload-free members: a symlink is stored as a link (the
@@ -397,6 +424,7 @@ def iter_campaign_tar(campaign_root: str, exclude=DEFAULT_EXCLUDE, chunk_size: i
 
     def _add(tar):
         _add_live_tree(tar, campaign_root, exclude)
+        add_archive_stamp(tar, campaign_id)
         if snapshot is not None:
             add_snapshot_marker(tar, campaign_id, **snapshot)
 

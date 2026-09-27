@@ -12,6 +12,7 @@ away to keep a boolean clean, and every non-ok stage has to name what to do abou
 """
 
 import io
+import json
 import os
 import shutil
 import sqlite3
@@ -23,9 +24,9 @@ import yaml
 
 from robovast.common.store import _MIGRATIONS, SCHEMA_VERSION
 from robovast.service.ingest import (STAGE_ABSENT, STAGE_DEGRADED, STAGE_FAILED, STAGE_MIGRATED,
-                                     STAGE_NEWER, STAGE_OK, blocking_summary, ingest_campaign,
-                                     missing_for_import, missing_for_import_in,
-                                     read_campaign_id)
+                                     STAGE_NEWER, STAGE_OK, blocking_summary,
+                                     claim_campaign_dir, ingest_campaign, missing_for_import,
+                                     missing_for_import_in, read_campaign_id)
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
 
@@ -201,6 +202,18 @@ def test_a_missing_execution_record_degrades_rather_than_failing(tmp_path, campa
     assert report["ok"] is True, "degraded must not block: the campaign is still usable"
 
 
+def test_the_importers_own_log_is_not_an_execution_record(tmp_path, campaign):
+    """An import claims ``_execution/`` and opens its log there before extracting, so an
+    archive without ``_execution/`` arrives with one holding only the importer's files."""
+    shutil.rmtree(campaign / "_execution")
+    target = claim_campaign_dir(tmp_path / "results", campaign.name)
+    (target / "_execution" / "import.log").write_text("importing\n", encoding="utf-8")
+    shutil.copytree(campaign, target, dirs_exist_ok=True)
+    report = ingest_campaign(target)
+    assert report["stages"]["layout"]["verdict"] == STAGE_DEGRADED
+    assert "_execution" in report["stages"]["layout"]["detail"]
+
+
 def test_a_store_indexing_no_runs_is_degraded_not_ok(campaign):
     """A campaign that lists and reports nothing is the shape of an archive stripped of its run
     directories. Passing that as `ok` would read as "checked, all fine"."""
@@ -234,8 +247,8 @@ def test_the_tables_stage_builds_nothing(campaign):
 def test_every_stage_carries_an_actionable_detail(campaign):
     """A verdict a reader cannot act on is not worth returning."""
     report = ingest_campaign(campaign)
-    assert set(report["stages"]) == {"layout", "config", "completeness", "environment",
-                                     "campaign_store", "tables"}
+    assert set(report["stages"]) == {"archive", "layout", "config", "completeness",
+                                     "environment", "campaign_store", "tables"}
     for name, stage in report["stages"].items():
         assert stage["detail"].strip(), f"{name} has no detail"
 
@@ -504,3 +517,48 @@ def test_a_config_that_is_not_a_mapping_blocks_the_import_by_name(campaign):
     assert "not a mapping" in stage["detail"]
     assert report["ok"] is False and "config" in report["blocking"]
     assert report["stages"]["environment"]["verdict"] == STAGE_ABSENT
+
+
+# -- the archive layout ------------------------------------------------------
+
+def _stamp(campaign, **fields):
+    from robovast.common.migrations.archive import ARCHIVE_STAMP
+    (campaign / ARCHIVE_STAMP).write_text(json.dumps(fields), encoding="utf-8")
+
+
+def test_an_archive_without_a_stamp_is_the_current_layout_and_is_left_unstamped(campaign):
+    from robovast.common.migrations.archive import ARCHIVE_LAYOUT, ARCHIVE_STAMP
+    report = ingest_campaign(campaign)
+    assert report["ok"] is True
+    stage = report["stages"]["archive"]
+    assert stage["verdict"] == STAGE_OK
+    assert stage["version"] == ARCHIVE_LAYOUT
+    assert not (campaign / ARCHIVE_STAMP).exists()
+
+
+def test_an_archive_at_the_current_layout_is_ok(campaign):
+    from robovast.common.migrations.archive import ARCHIVE_LAYOUT
+    _stamp(campaign, layout=ARCHIVE_LAYOUT)
+    report = ingest_campaign(campaign)
+    assert report["stages"]["archive"]["verdict"] == STAGE_OK
+    assert report["ok"] is True
+
+
+def test_an_archive_from_a_newer_layout_is_newer_and_named(campaign):
+    """Somebody's data from a newer robovast still lists; the stage says which layout and
+    which robovast wrote it, rather than refusing or passing it silently."""
+    from robovast.common.migrations.archive import ARCHIVE_LAYOUT
+    _stamp(campaign, layout=ARCHIVE_LAYOUT + 1, robovast="99.0.0")
+    report = ingest_campaign(campaign)
+    stage = report["stages"]["archive"]
+    assert stage["verdict"] == STAGE_NEWER
+    assert f"layout {ARCHIVE_LAYOUT + 1}" in stage["detail"] and "99.0.0" in stage["detail"]
+    assert f"up to {ARCHIVE_LAYOUT}" in stage["detail"]
+    assert report["ok"] is True
+
+
+def test_a_stamp_that_states_no_layout_blocks_the_import(campaign):
+    _stamp(campaign, layout="one")
+    report = ingest_campaign(campaign)
+    assert report["ok"] is False and report["blocking"] == ["archive"]
+    assert "'one'" in report["stages"]["archive"]["detail"]

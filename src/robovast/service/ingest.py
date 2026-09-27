@@ -19,9 +19,9 @@ it worked.
 
 A downloaded campaign -- from a colleague, or from a published dataset -- has to become
 something this deployment can list, display and re-run. That is not one operation, so
-"succeeded" is not one bit: a campaign archive carries a schema ladder of its own beyond the
-``.vast``'s version (``campaign.db``'s ``user_version``), and each can independently be older,
-newer, absent or corrupt.
+"succeeded" is not one bit: a campaign archive carries three ladders -- its layout
+(``_execution/archive.json``), the ``.vast``'s version and ``campaign.db``'s ``user_version``
+-- and each can independently be older, newer, absent or corrupt.
 
 So ingestion reports per stage, and every stage that is not ``ok`` carries a recovery action.
 The interesting property is that most of the failure modes are *recoverable*, and only saying
@@ -241,10 +241,13 @@ def ingest_campaign(campaign_dir, *, rebuild_store: bool = False) -> dict:
     has to reach around this function to do.
     """
     campaign_dir = Path(campaign_dir)
-    stages = {
-        "layout": _check_layout(campaign_dir),
-        "config": _check_config(campaign_dir),
-    }
+    # First: every other stage reads records whose paths and formats the layout decides.
+    stages = {"archive": _migrate_archive(campaign_dir)}
+    if stages["archive"]["verdict"] == STAGE_FAILED:
+        return {"campaign_id": campaign_dir.name, "ok": False, "blocking": ["archive"],
+                "stages": stages}
+    stages["layout"] = _check_layout(campaign_dir)
+    stages["config"] = _check_config(campaign_dir)
     stages["completeness"] = _check_completeness(campaign_dir)
     stages["environment"] = _check_environment(campaign_dir)
     stages["campaign_store"] = _ingest_store(campaign_dir, rebuild=rebuild_store)
@@ -311,6 +314,32 @@ def missing_for_import_in(campaign_root) -> list:
     return missing_for_import(["_config"] + [f"_config/{p.name}" for p in config.iterdir()])
 
 
+def _migrate_archive(campaign_dir: Path) -> dict:
+    """Bring the extracted tree to the archive layout this robovast reads.
+
+    No stamp is the baseline layout. A newer layout is ``newer``, as a
+    newer ``.vast`` or store is, and not blocking: the campaign still lists, but its records
+    may be misread, so the stage names the layout and the robovast that wrote it. An
+    unreadable stamp or a failing step blocks: nothing after it knows what the tree holds.
+    """
+    from robovast.common.migrations.archive import (  # pylint: disable=import-outside-toplevel
+        ARCHIVE_LAYOUT, ArchiveLayoutError, ArchiveTooNew, upgrade_archive)
+
+    try:
+        found, applied = upgrade_archive(campaign_dir)
+    except ArchiveTooNew as e:
+        return _stage(STAGE_NEWER,
+                      f"{e} The campaign is registered as it is, and records this robovast "
+                      f"does not know may be misread.", recovery="upgrade robovast")
+    except ArchiveLayoutError as e:
+        return _stage(STAGE_FAILED, str(e),
+                      recovery="re-export the campaign from the service that holds it")
+    if not applied:
+        return _stage(STAGE_OK, f"archive layout {found}", version=found)
+    return _stage(STAGE_MIGRATED, f"archive layout {found} migrated to {ARCHIVE_LAYOUT}",
+                  version=found, steps=applied)
+
+
 def _check_layout(campaign_dir: Path) -> dict:
     """Is this a campaign directory at all?
 
@@ -318,9 +347,18 @@ def _check_layout(campaign_dir: Path) -> dict:
     different answers -- registering a half-campaign would make every later reader fail on it
     instead of the import saying so once.
     """
+    from robovast.common.migrations.archive import \
+        ARCHIVE_STAMP  # pylint: disable=import-outside-toplevel
+
     if not campaign_dir.is_dir():
         return _stage(STAGE_FAILED, f"{campaign_dir} is not a directory")
     missing = [name for name in ("_config", "_execution") if not (campaign_dir / name).is_dir()]
+    # The importer's log and report and the archive's layout stamp all sit in ``_execution/``,
+    # so a directory holding only those is an execution record the archive lacked.
+    importer_records = {Path(ARCHIVE_STAMP).name, "import.log", "import.json"}
+    if ("_execution" not in missing
+            and {e.name for e in (campaign_dir / "_execution").iterdir()} <= importer_records):
+        missing.append("_execution")
     if "_config" in missing:
         return _stage(STAGE_FAILED,
                       "no _config/ directory, so this is not a campaign this deployment can "
