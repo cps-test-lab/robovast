@@ -20,7 +20,7 @@ import sys
 
 import click
 
-from robovast.client.errors import handle_cli_exception
+from robovast.client.errors import describe_cli_exception, handle_cli_exception
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
 from robovast.client.tail import tail_rows
@@ -937,10 +937,10 @@ def download_cmd(campaigns, output, force, extract, namespace, context):
     Writes into the current directory unless ``-o`` says otherwise -- an archive is a
     file, not a results tree, so a results directory is the wrong home for it.
 
-    One campaign that fails does not stop the others: each is reported on its own line and
-    the exit summary counts what landed. A thin single-archive copy cannot do several,
-    resume past a failure, or show progress on a multi-gigabyte transfer, so this is the
-    one implementation.
+    One campaign that fails does not stop the others: each is reported on its own line, the
+    exit summary counts what landed, and the command exits 1 when any campaign did not. A
+    thin single-archive copy cannot do several, resume past a failure, or show progress on
+    a multi-gigabyte transfer, so this is the one implementation.
     """
     import time  # pylint: disable=import-outside-toplevel
     from pathlib import Path  # pylint: disable=import-outside-toplevel
@@ -953,7 +953,7 @@ def download_cmd(campaigns, output, force, extract, namespace, context):
     out_dir = Path(output) if output else Path.cwd()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    written = skipped = 0
+    written = skipped = failed = 0
     try:
         with service_client(namespace, context) as (client, label):
             click.echo(f"Downloading {len(campaigns)} campaign archive(s) from {label} ...")
@@ -982,7 +982,8 @@ def download_cmd(campaigns, output, force, extract, namespace, context):
                     raise
                 except Exception as exc:  # noqa: BLE001
                     sys.stdout.write("\n")
-                    handle_cli_exception(exc)
+                    click.echo(f"  {campaign_id}  ✗  {describe_cli_exception(exc)}", err=True)
+                    failed += 1
                     continue
                 finally:
                     sys.stdout.write("\n")
@@ -1003,7 +1004,12 @@ def download_cmd(campaigns, output, force, extract, namespace, context):
     parts = [f"✓ Downloaded {written} {'campaign(s)' if extract else 'archive(s)'}"]
     if skipped:
         parts.append(f"{skipped} skipped")
+    if failed:
+        parts.append(f"{failed} failed")
     click.echo("  ".join(parts))
+    if failed:
+        raise click.ClickException(
+            f"{failed} of {len(campaigns)} campaign(s) did not download; see above.")
 
 
 @campaign.command('export')
