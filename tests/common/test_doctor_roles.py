@@ -7,8 +7,8 @@ RoboVAST; a user with a URL and a token needs none of them.
 
 The client checks come first, and when they all pass the operator prerequisites drop to
 advisory: still listed, still with their remedies, but not a failure. When the client half
-is *not* working, deploying is the likely intent and they stay fatal -- unless cluster
-support is not installed, in which case the cluster binaries are not asked for at all.
+is *not* working, deploying is the likely intent and they stay fatal. Without cluster support
+installed its checks are not there to report, and one advisory line says why.
 """
 
 import pytest
@@ -18,18 +18,12 @@ from robovast.client import doctor as doc
 
 @pytest.fixture
 def operator_checks(monkeypatch):
-    """Pin the operator half so the tests are about fatality, not about this machine.
-
-    Cluster support is pinned installed along with the rest: `run_checks` consults it to decide
-    whether the operator half applies, so leaving it to the real import would make these
-    tests pass or fail on whether `robovast-cluster` happens to be in the environment.
-    """
-    monkeypatch.setattr(doc, "cluster_installed", lambda: True)
+    """Pin the operator half so the tests are about fatality, not about this machine."""
     monkeypatch.setattr(doc, "check_python", lambda: doc.Check("python", True, "3.12"))
-    monkeypatch.setattr(doc, "check_tools", lambda flavor="": [
-        doc.Check("kubectl", False, "not on PATH", "Install kubectl")])
-    monkeypatch.setattr(doc, "check_cluster", lambda context=None: [
-        doc.Check("kubeconfig", False, "none", "Point kubectl at a cluster")])
+    monkeypatch.setattr(doc, "plugin_checks", lambda options: ([
+        doc.Check("kubectl", False, "not on PATH", "Install kubectl"),
+        doc.Check("kubeconfig", False, "none", "Point kubectl at a cluster")], []))
+    monkeypatch.setattr(doc, "check_cluster_support", lambda: [])
 
 
 def _client(monkeypatch, ok: bool):
@@ -76,41 +70,33 @@ def test_a_client_failure_is_always_fatal(monkeypatch, operator_checks):
     assert {"login", "service", "vast on PATH"} <= {c.name for c in _fatal(doc.run_checks())}
 
 
+def test_the_cli_options_reach_the_plugins(monkeypatch):
+    """`--flavor`, `-x` and `-n` are what the plugins were asked about."""
+    seen = []
+    monkeypatch.setattr(doc, "check_client", lambda: [])
+    monkeypatch.setattr(doc, "plugin_checks", lambda options: seen.append(options) or ([], []))
+    doc.run_checks(flavor="gcp", context="ctx", namespace="ns")
+    assert seen == [doc.DoctorOptions(flavor="gcp", context="ctx", namespace="ns")]
+
+
 @pytest.fixture
 def no_cluster(monkeypatch):
-    """A client-only install: nothing to import, and `check_cluster` reporting that.
-
-    `check_tools` is pinned to *failing* binaries so the tests below are about whether it
-    is consulted at all, not about what happens to be on this machine's PATH.
-    """
-    monkeypatch.setattr(doc, "cluster_installed", lambda: False)
+    """A client-only install: no plugin contributes anything, and no cluster package."""
     monkeypatch.setattr(doc, "check_python", lambda: doc.Check("python", True, "3.12"))
-    monkeypatch.setattr(doc, "check_cluster", lambda context=None: [
-        doc.Check("cluster support", False, "not installed",
-                  "Install it to deploy or operate a cluster of your own.",
-                  optional=True)])
-    monkeypatch.setattr(doc, "check_tools", lambda flavor="": [
-        doc.Check("kubectl", False, "not on PATH", "Install kubectl"),
-        doc.Check("helm", False, "not on PATH", "Install helm")])
+    monkeypatch.setattr(doc, "plugin_checks", lambda options: ([], []))
+    monkeypatch.setattr(doc, "_installed", lambda name: False)
 
 
-def test_no_cluster_support_and_no_login_does_not_demand_cluster_binaries(
-        monkeypatch, no_cluster):
-    """Without cluster support installed, deploying cannot be the intent, whatever the
-    login says, so kubectl and helm are not asked for."""
+def test_no_cluster_support_and_no_login_fails_only_the_client_half(monkeypatch, no_cluster):
+    """Without cluster support installed, deploying cannot be the intent."""
     _client(monkeypatch, False)
     checks = doc.run_checks()
-
-    reported = {c.name for c in checks}
-    assert not reported & {"kubectl", "helm"}, (
-        "a client-only install was asked for the binaries `vast cluster setup` "
-        "shells out to, and it has no `setup` to shell out")
     assert {c.name for c in _fatal(checks)} == {"login", "service", "vast on PATH"}, (
         "only the client half may be fatal here -- that is the user's real problem")
 
 
 def test_missing_cluster_support_is_still_reported(monkeypatch, no_cluster):
-    """Dropping the binaries must not drop the verdict that explains why they are gone."""
+    """No cluster rows must not drop the verdict that explains why they are gone."""
     _client(monkeypatch, False)
     support = next(c for c in doc.run_checks() if c.name == "cluster support")
     assert support.status == "warn" and support.fix, "advisory is not silent, and names a remedy"
@@ -122,23 +108,13 @@ def test_python_is_still_checked_without_cluster_support(monkeypatch, no_cluster
     assert "python" in {c.name for c in doc.run_checks()}
 
 
-def test_installed_cluster_support_still_gets_the_full_operator_half(monkeypatch, operator_checks):
-    """The other direction: the fix must not silence an operator who *can* act on it."""
-    _client(monkeypatch, False)
-    assert {"kubectl", "kubeconfig"} <= {c.name for c in _fatal(doc.run_checks())}
-
-
 def test_a_failing_optional_client_check_does_not_make_the_operator_half_fatal(
         monkeypatch):
     """`Check.optional` means advisory. One must not decide the operator verdict.
 
-    The operator checks are reported as advisory when the client half is usable, and
-    fatal when it is not. Counting an optional client failure as "not usable" turns a
-    user whose only problem is advisory -- "this service has no registry configured",
-    say -- into four red ✗ for kubectl, helm and a kubeconfig they will never need.
-
-    Latent until something returns one: no client check is optional today, which is why
-    the bug sat in `all(c.ok for c in client)` unnoticed.
+    Counting an optional client failure as "not usable" would turn a user whose only
+    problem is advisory -- "this service has no registry configured", say -- into red rows
+    for kubectl, helm and a kubeconfig they will never need.
     """
 
     monkeypatch.setattr(doc, "check_client", lambda: [
@@ -146,11 +122,10 @@ def test_a_failing_optional_client_check_does_not_make_the_operator_half_fatal(
         doc.Check("image builds", False, "unavailable on this service",
                   "run 'vast service upgrade'", optional=True),
     ])
-    monkeypatch.setattr(doc, "check_cluster", lambda ctx=None: [
-        doc.Check("kubeconfig", False, "no kubeconfig"),
-    ])
+    monkeypatch.setattr(doc, "plugin_checks", lambda options: (
+        [doc.Check("kubeconfig", False, "no kubeconfig")], []))
+    monkeypatch.setattr(doc, "check_cluster_support", lambda: [])
     monkeypatch.setattr(doc, "check_python", lambda: doc.Check("python", True, "3.12"))
-    monkeypatch.setattr(doc, "check_tools", lambda flavor=None: [])
 
     checks = doc.run_checks()
 
