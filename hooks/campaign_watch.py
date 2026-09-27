@@ -184,10 +184,10 @@ def check(_payload, path):
 def _reports_trouble(response):
     """True when a tool's own reply carries one of the two things that end a wait early.
 
-    The two, and only these two: `stalled: true` (exit 4) and an `error`-level health finding
-    (exit 5). Both are read from what the tool already returned -- never computed here, never
-    fetched -- so this stays what the file promises, pure bookkeeping with no robovast import
-    and no service call.
+    The two, and only these two: `stalled: true` (`CampaignWaitExit.STALLED`) and an
+    `error`-level health finding (`CampaignWaitExit.HEALTH_FINDING`). Both are read from what
+    the tool already returned -- never computed here, never fetched -- so this stays what the
+    file promises, pure bookkeeping with no robovast import and no service call.
 
     Two shapes, because two tools report findings: `get_campaign_status` lists the error-level
     ones at the top level, while `get_job_state` passes the simulator's whole document through
@@ -207,7 +207,7 @@ def rearm(payload, path):
     """A campaign reported as wedged is unattended again, so let the guard stop once more.
 
     `delegated` marks a campaign handed off at *launch*, which is right for a waiter that
-    will see it out -- but `vast campaign wait` now exits 4 on a stall and 5 on an error-level
+    will see it out -- but `vast campaign wait` exits early on a stall and on an error-level
     health finding, leaving the campaign alive and still marked handed-off. Without this the turn
     guard is spent and the agent can stop silently on a wedged campaign, which is the exact
     failure it exists to prevent.
