@@ -125,7 +125,8 @@ the meaning of a status is uniform across every route:
    * - ``409``
      - ``RuntimeError`` — the request conflicts with current state (stopping a campaign
        that is not running; importing over a campaign that is already here, or one that
-       is busy with another operation).
+       is busy with another operation). Also an ``ActionableError`` whose state is not
+       there yet: an image not built, a helper container nothing here provides.
    * - ``422``
      - A notebook or visualization failed to render.
    * - ``501``
@@ -161,6 +162,11 @@ HTTP boundary drops, and a client that has to *behave* differently (report the d
 rather than the image, degrade a check to "unchecked") would otherwise have to match on the
 sentence, which then nobody may reword. ``ServiceError.code`` carries it; the body stays
 FastAPI's ``{"detail": ...}`` for every refusal, coded or not.
+
+A refusal that knows the command which moves the caller forward -- build the image, wait
+for the build, clear the service cache -- carries it in an ``x-robovast-next-step`` header.
+``ServiceError.next_step`` carries it on the client side, and the MCP tools hand it back as
+``next_step`` beside ``error``, as they do when they run inside the service.
 
 Streaming
 =========

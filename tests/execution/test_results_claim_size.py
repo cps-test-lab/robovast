@@ -119,6 +119,7 @@ def test_a_deployment_with_no_claim_is_told_so_instead_of_reporting_a_resize():
         service_deploy.grow_results_claim(core, "default", "1Ti")
 
 
-def test_an_unreadable_size_is_refused_naming_what_was_read():
+@pytest.mark.parametrize("value", ["plenty", "inf", "NaN"])
+def test_an_unreadable_size_is_refused_naming_what_was_read(value):
     with pytest.raises(ValueError, match="not a storage size"):
-        service_deploy.parse_quantity("plenty")
+        service_deploy.parse_quantity(value)
