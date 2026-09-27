@@ -208,8 +208,10 @@ class TransformBuffer:
     table has, and an equivalent-looking walk can fail differently.
     """
 
-    #: ``tf2``'s bound on a quaternion's squared norm before a transform is refused.
-    QUATERNION_TOLERANCE = 10e-6
+    #: ``tf2``'s bound on how far a quaternion's squared norm may be from one
+    #: (``QUATERNION_NORMALIZATION_TOLERANCE`` in ``buffer_core.cpp``); tf2 accepts a
+    #: deviation strictly below it.
+    QUATERNION_TOLERANCE = 10e-3
 
     def __init__(self, cache_time: int = DEFAULT_CACHE_TIME):
         self.cache_time = cache_time
@@ -224,7 +226,7 @@ class TransformBuffer:
             return False
         if any(math.isnan(x) for x in (*translation, *rotation)):
             return False
-        if abs(_dot(rotation, rotation) - 1.0) > self.QUATERNION_TOLERANCE:
+        if abs(_dot(rotation, rotation) - 1.0) >= self.QUATERNION_TOLERANCE:
             return False
         self._known.update((child, parent))
         cache = self._frames.get(child)
