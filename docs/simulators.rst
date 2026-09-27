@@ -140,6 +140,13 @@ Hooks, all optional except as noted:
 ``CONFIG_CLASS`` / ``SUPPORTED_SHAPES``
    A pydantic model for the backend's own keys, and which shapes it serves. An
    unsupported shape is refused at validation time, naming what *is* supported.
+``DOTTED_ROOT``
+   The backend key a bare dotted ``sim:`` path lands under, or ``None`` for no short form
+   (:ref:`varying the simulator <sim-channel>`).
+``ASSET_ENTRY_POINT_GROUPS``
+   Entry-point groups whose providers supply the simulator's assets: which of the
+   distributions a run records (version, and commit for a VCS install) its results name as
+   asset providers.
 ``sim_document(cfg, execution)``
    The part of ``cfg`` that travels as a file rather than on the command line — a nested
    override tree, written per job and read by whatever ``containers`` puts in argv. ``None``
@@ -362,9 +369,10 @@ family member, which is the only one carrying roqsim *and* the RoboVAST contract
 (the ``org.robovast.compat-version`` label, scenario-execution, the ``/out`` mount):
 
 - ``mode: ros2`` — a ``simulation`` container of its own, running
-  ``roqsim sim <config> --headless --pacing realtime``. Nothing a campaign owns contains roqsim, so the
-  GL packages, the ``mujoco`` pin and the ``roqsim`` package list leave the ``.vast``
-  entirely.
+  ``roqsim sim <config> --headless --pacing realtime``, plus ``--override`` when the
+  configuration has overrides (:ref:`below <sim-channel>`). Nothing a campaign owns contains
+  roqsim, so the GL packages, the ``mujoco`` pin and the ``roqsim`` package list leave the
+  ``.vast`` entirely.
 - ``mode: base`` — the same image as the ``scenario`` container, because a stepped
   simulator shares the scenario's process.
 
@@ -380,9 +388,10 @@ simulator, and ``roqsim state`` reads a moment or a range of that recording rath
 following anything.
 
 Its own keys are ``config`` (a world YAML beside the ``.vast``, or a package ref such as
-``roqsim_scenes:depot``) and ``adapter``. It is ``config`` rather than ``world`` because the
-file is roqsim's whole configuration — physics, plugins, robot, sensors and its
-``extends`` chain — and "world" understates what a campaign selects.
+``roqsim_scenes:depot``), ``overrides`` (what the ``sim:`` channel below writes into) and
+``adapter`` (the stepped shape's ``SimulationInterface``). It is ``config`` rather than
+``world`` because the file is roqsim's whole configuration — physics, plugins, robot, sensors
+and its ``extends`` chain — and "world" understates what a campaign selects.
 
 .. _sim-channel:
 
