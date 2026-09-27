@@ -169,6 +169,17 @@ def test_what_is_not_here_is_a_streamerror_then_eof(standalone, root, campaign_i
     assert LiveCampaigns.for_root(root).active() == []
 
 
+def test_a_run_key_cannot_name_a_directory_beside_the_campaign(standalone, root):
+    """``..`` as the configuration would resolve to ``<results root>/<run_id>``."""
+    _open_run(root)
+    (root / "0").mkdir()
+    for run in ("../0", "./0"):
+        seen = _stream(standalone, _CAMPAIGN, run, _TABLES)
+        assert [event for event, _ in seen] == ["streamerror", "eof"], run
+        assert "<config>/<run_id>" in json.loads(seen[0][1])
+    assert LiveCampaigns.for_root(root).active() == []
+
+
 def test_a_subscriber_that_falls_behind_is_dropped_with_the_reason(root, monkeypatch):
     monkeypatch.setattr(service_live, "QUEUE_MAX", 1)
     _, bag = _open_run(root)

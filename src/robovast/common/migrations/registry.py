@@ -16,9 +16,17 @@ def surfaces() -> list:
     """
     from robovast.common import store  # pylint: disable=import-outside-toplevel
 
+    from . import archive as archive_ladder  # pylint: disable=import-outside-toplevel
     from . import config as config_ladder  # pylint: disable=import-outside-toplevel
 
     return [
+        {
+            "name": "campaign_archive",
+            "current": archive_ladder.ARCHIVE_LAYOUT,
+            "baseline": archive_ladder.BASELINE_ARCHIVE_LAYOUT,
+            "steps": len(archive_ladder._MIGRATIONS),  # pylint: disable=protected-access
+            "where": "robovast/common/migrations/archive/",
+        },
         {
             "name": "vast_config",
             "current": config_ladder.SUPPORTED_CONFIG_VERSION,

@@ -267,7 +267,7 @@ is visible, rather than through a fallback that renders something misleading.
 The descriptor is ``scene.json`` + ``scene.bin`` + one ``tex_<i>.png`` per image texture, in one
 directory: the loader fetches the binary and the textures as **relative siblings** of
 ``scene.json``, which is why the file address space preserves path segments. The format is
-defined by its producer, ``roqsim/export_web.py``, and its full field list lives there. Two notes
+defined by its producer, ``roqsim/export_web.py``, and its full field list lives there. Three notes
 matter to a *second* producer:
 
 * It is a plain scene graph -- bodies with rest transforms and a parent index, named joints
@@ -276,6 +276,9 @@ matter to a *second* producer:
 * ``joints[].qposadr`` is **optional and legacy**. It names an index into MuJoCo's state vector,
   and the reference loader has never read it: animation is addressed entirely by joint *name*.
   A new producer should omit it.
+* It states what it is with ``format: "roqsim.web_scene"`` and a ``version``. The panel refuses
+  another format or a version newer than it reads, naming both, so a descriptor written to a later
+  contract is an error rather than a plausible drawing; an unstamped descriptor is version 1.
 
 **Names are the whole addressing scheme.** A recording drives the scene by body name
 (``sim_poses``) and by joint name (``joint_states``), in the joint's own unit; no index crosses
