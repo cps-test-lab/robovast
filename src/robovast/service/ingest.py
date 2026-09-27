@@ -157,10 +157,28 @@ def read_campaign_id(archive_path, *, fits_in=None) -> str:
         refuse_unless_room(archive_path.name, members, fits_in, "the results volume",
                            "delete campaigns no longer needed, then import it again")
     if len(tops) != 1:
+        if _is_export(tops):
+            raise ValueError(
+                f"{archive_path.name} is an export -- the campaign's tables as files beside "
+                f"its records -- which is the campaign to read, not the campaign to import: "
+                f"open it with robovast-data, or import the campaign's download "
+                f"('vast campaign download') instead.")
         raise ValueError(
             f"archive holds {len(tops)} top-level entries; expected one campaign "
             f"directory: {sorted(tops)[:5]}")
     return _checked_campaign_name(tops.pop())
+
+
+def _is_export(tops) -> bool:
+    """Whether *tops* are an export's members: its manifest and its tables beside the campaign.
+
+    Named rather than counted among the "several top-level entries" refusals, because an
+    export is the other archive this system writes of a campaign, and the person holding
+    one is told which of the two imports.
+    """
+    from robovast.service.exports import (  # pylint: disable=import-outside-toplevel
+        EXPORT_FILE, TABLES_MEMBER)
+    return EXPORT_FILE in tops and TABLES_MEMBER in tops
 
 
 def claim_campaign_dir(results_root, campaign_id: str, *, force: bool = False) -> Path:
@@ -174,7 +192,17 @@ def claim_campaign_dir(results_root, campaign_id: str, *, force: bool = False) -
     Creates the campaign's ``_execution/`` directory, because the importer's log lives there
     and it must be open before the slow part starts -- an import whose account of itself only
     begins after the download is an import with no account of the download.
+
+    Marks the directory as an import under way (``_execution/importing.json``), for the
+    importer to clear once the import has concluded. An archive carries the archived
+    campaign's own ``outcome.json``, so a tree an import died in the middle of would
+    otherwise reconstruct as that campaign -- finished, with every run the record counts
+    -- while holding whichever members had landed. The marker is what makes such a tree
+    read as the failed import it is (:func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`).
     """
+    from robovast.common.campaign_data import \
+        write_import_marker  # pylint: disable=import-outside-toplevel
+
     root = Path(results_root)
     root.mkdir(parents=True, exist_ok=True)
     target = root / _checked_campaign_name(campaign_id)
@@ -186,6 +214,7 @@ def claim_campaign_dir(results_root, campaign_id: str, *, force: bool = False) -
                 f"with force to replace it.")
         shutil.rmtree(target)
     (target / "_execution").mkdir(parents=True, exist_ok=True)
+    write_import_marker(target)
     return target
 
 
@@ -374,15 +403,19 @@ def _check_layout(campaign_dir: Path) -> dict:
     different answers -- registering a half-campaign would make every later reader fail on it
     instead of the import saying so once.
     """
+    from robovast.common.campaign_data import \
+        IMPORT_MARKER_FILENAME  # pylint: disable=import-outside-toplevel
     from robovast.common.migrations.archive import \
         ARCHIVE_STAMP  # pylint: disable=import-outside-toplevel
 
     if not campaign_dir.is_dir():
         return _stage(STAGE_FAILED, f"{campaign_dir} is not a directory")
     missing = [name for name in ("_config", "_execution") if not (campaign_dir / name).is_dir()]
-    # The importer's log and report and the archive's layout stamp all sit in ``_execution/``,
-    # so a directory holding only those is an execution record the archive lacked.
-    importer_records = {Path(ARCHIVE_STAMP).name, "import.log", "import.json"}
+    # The importer's log, report and under-way marker and the archive's layout stamp all sit
+    # in ``_execution/``, so a directory holding only those is an execution record the archive
+    # lacked.
+    importer_records = {Path(ARCHIVE_STAMP).name, "import.log", "import.json",
+                        IMPORT_MARKER_FILENAME}
     if ("_execution" not in missing
             and {e.name for e in (campaign_dir / "_execution").iterdir()} <= importer_records):
         missing.append("_execution")

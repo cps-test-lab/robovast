@@ -155,6 +155,17 @@ def push_campaign_archive(client, path: Path) -> str:
     return str(path)
 
 
+class NoSuchWorkspace(ValueError):
+    """A workspace reference that names nothing, or names more than one.
+
+    A ``ValueError``, so every caller that treats a bad reference as bad input keeps
+    doing so; ``include_traceback = False`` because the message is the whole report --
+    the frames would show the lookup, not the typo.
+    """
+
+    include_traceback = False
+
+
 def _resolve_workspace_id(client, ref: str) -> str:
     """Resolve a workspace id-or-name to a concrete ``workspace_id``.
 
@@ -166,9 +177,9 @@ def _resolve_workspace_id(client, ref: str) -> str:
         return ref
     matches = [w for w in client.list_workspaces().workspaces if w.name == ref]
     if not matches:
-        raise ValueError(f"no workspace named {ref!r}")
+        raise NoSuchWorkspace(f"no workspace named {ref!r}")
     if len(matches) > 1:
-        raise ValueError(
+        raise NoSuchWorkspace(
             f"workspace name {ref!r} is ambiguous ({len(matches)} matches); "
             "use the ws-… id")
     return matches[0].workspace_id
