@@ -69,9 +69,7 @@ def iter_messages(bag_dir: str, topic: str, start: Optional[float] = None,
         channel_id = None
         for record in tail.read():
             if isinstance(record, Schema):
-                if record.encoding in ("ros2msg", "ros2idl") and record.data:
-                    catalog.add_definition(record.name, record.encoding,
-                                           record.data.decode("utf-8", errors="replace"))
+                catalog.add_schema(record)
                 continue
             if isinstance(record, Channel):
                 if record.topic == topic:
@@ -115,9 +113,7 @@ def nearest_message(bag_dir: str, topic: str, t: Optional[float] = None,
         channel_id = None
         for record in tail.read():
             if isinstance(record, Schema):
-                if record.encoding in ("ros2msg", "ros2idl") and record.data:
-                    catalog.add_definition(record.name, record.encoding,
-                                           record.data.decode("utf-8", errors="replace"))
+                catalog.add_schema(record)
                 continue
             if isinstance(record, Channel):
                 if record.topic == topic:

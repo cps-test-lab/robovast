@@ -1641,8 +1641,8 @@ allocations. See :ref:`cluster-execution` for the full syntax.
        scenario:
          resources:
            cpu:
-             - gcp-c4: 4      # 4 CPUs on the gcp-c4 cluster
-             - minikube: 8    # 8 CPUs on the one-node deployment
+             - cloud.example: 4   # 4 CPUs where the service's context is cloud.example
+             - minikube: 8        # 8 CPUs on the one-node deployment
 
 .. note::
 
