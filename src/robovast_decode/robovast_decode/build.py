@@ -319,11 +319,10 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
         complete = _complete(run, role, bag_dir)
         written = []
         for handler in todo:
-            name = type(handler).__name__
-            if name in decoded.failed:
+            if handler in decoded.failed:
                 for table in handler.tables():
                     if wanted_tables is None or table in wanted_tables:
-                        report.failed.setdefault(table, {})[run_key] = decoded.failed[name]
+                        report.failed.setdefault(table, {})[run_key] = decoded.failed[handler]
                 continue
             for table, buf in handler.buffers.items():
                 if wanted_tables is not None and table not in wanted_tables:
