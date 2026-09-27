@@ -12,15 +12,17 @@ from those tags would hand a replay configurations made by other bytes. Three th
 - the recorded digests are part of the composition cache key, so a replay never reuses an entry
   composed from tags;
 - a step served from a cache -- a composition, an up-to-date input generator -- still has its
-  helper images fixed, because the replay of that campaign recomposes and runs them.
+  helper images fixed, because checking the cache resolves them and the replay of that
+  campaign recomposes and runs them.
 """
 
 import pytest
 
-from robovast.common.config_generation import (_build_generate_cache_key, _fix_aux_images,
-                                               set_aux_image_fixer)
+from robovast.common.config_generation import (_build_generate_cache_key,
+                                               _cached_entry_is_current, set_aux_image_fixer)
 from robovast.common.errors import CampaignConfigError
 from robovast.common.execution import resolve_family_images_in_containers
+from robovast.common.input_generation import run_input_generators
 from robovast.execution.backends import RunOptions
 from robovast.execution.controller import _replayed_pins
 
@@ -105,40 +107,59 @@ def test_a_replay_never_shares_a_cache_entry_with_a_composition_from_tags(tmp_pa
 
 def test_a_cached_composition_hands_its_helper_images_to_the_campaigns_fixer():
     """No helper runs for a cache hit, and a replay of the campaign recomposes and runs one --
-    so the images the entry was composed with are fixed like a started helper's."""
+    so checking the entry fixes the images it was composed with, like a started helper's."""
     fixed = []
-    token = set_aux_image_fixer(lambda spec: fixed.append(
-        (spec.container_name(), spec.image)))
+
+    def fixer(spec):
+        fixed.append((spec.container_name(), spec.image))
+        return SIM_DIGEST
+
+    token = set_aux_image_fixer(fixer)
     try:
-        _fix_aux_images({"aux_containers": ["aux-robovast-roqsim"],
-                         "aux_container_images": {"aux-robovast-roqsim":
-                                                  "family:robovast-roqsim"}})
+        assert _cached_entry_is_current(
+            {"aux_containers": ["aux-robovast-roqsim"],
+             "aux_container_images": {"aux-robovast-roqsim": "family:robovast-roqsim"},
+             "aux_image_digests": {"aux-robovast-roqsim": "sha256:" + "a" * 64}})
     finally:
         token.var.reset(token)
 
     assert fixed == [("aux-robovast-roqsim", "family:robovast-roqsim")]
 
 
-def test_without_a_campaign_nothing_is_fixed():
-    """A CLI run or a preview registers no fixer, and a hit then fixes nothing."""
-    _fix_aux_images({"aux_container_images": {"aux-robovast-roqsim": "family:robovast-roqsim"}})
-
-
-def test_an_up_to_date_generator_still_fixes_its_helper_image():
+def test_an_up_to_date_generator_still_fixes_its_helper_image(tmp_path):
     """A generator's cache is not archived with its campaign, so a replay regenerates and runs
     the helper an up-to-date entry skipped."""
-    from robovast.common.input_generation import _fix_declared_container
-    from robovast.common.variation.container_runner import ContainerSpec
+    (tmp_path / "gen.py").write_text(
+        "import os\n"
+        "from robovast.common.input_generation import BaseInputGenerator, write_manifest\n"
+        "from robovast.common.variation.container_runner import ContainerSpec\n"
+        "class G(BaseInputGenerator):\n"
+        "    @classmethod\n"
+        "    def get_required_container(cls, parameters):\n"
+        "        return ContainerSpec(image='registry.example.com/team/gen:1')\n"
+        "    def __call__(self, vast_dir, out_dir, **kw):\n"
+        "        open(os.path.join(out_dir, 'x'), 'w').write('x')\n"
+        "        write_manifest(out_dir, [os.path.join(vast_dir, 'gen.py')])\n")
+    entries = [{"./gen.py:G": {"out": "files/x"}}]
 
-    class _Generator:
-        @staticmethod
-        def get_required_container(params):
-            return ContainerSpec(image=params["image"])
+    class _Runner:
+        workspace = str(tmp_path)
+
+        def close(self):
+            pass
 
     fixed = []
-    token = set_aux_image_fixer(lambda spec: fixed.append(spec.image))
+
+    def fixer(spec):
+        fixed.append(spec.image)
+        return "registry.example.com/team/gen@sha256:" + "c" * 64
+
+    token = set_aux_image_fixer(fixer)
     try:
-        _fix_declared_container(_Generator, {"image": "registry.example.com/team/gen:1"})
+        run_input_generators(str(tmp_path), entries,
+                             container_runner_factory=lambda spec: _Runner())
+        fixed.clear()
+        assert run_input_generators(str(tmp_path), entries)[0]["cached"] is True
     finally:
         token.var.reset(token)
 

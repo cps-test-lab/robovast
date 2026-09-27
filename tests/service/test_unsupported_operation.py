@@ -16,7 +16,6 @@ from fastapi.testclient import TestClient
 from robovast.client import campaign_cli
 from robovast.execution.cluster_execution.cluster_service import ClusterService
 from robovast.mcp_server import service_access
-from robovast.mcp_server.plugins import execution as execution_tools
 from robovast.service.app import build_app
 from robovast.service.http_client import HTTPTransport
 from robovast.service.interface import (ERROR_CODE_HEADER, UNSUPPORTED_OPERATION,
@@ -149,9 +148,10 @@ def test_an_mcp_tool_answers_with_the_sentence_as_its_error(monkeypatch):
             del request
             raise UnsupportedOperation("priority", "null", hint="re-run without it")
 
+    from tests.mcp_server.conftest import registered_tools
     monkeypatch.setattr(service_access, "service_client", lambda: _NoQueueService())
-    out = execution_tools.start_campaign(workspace_id="ws-1", config_path="demo.vast",
-                                         description="d", priority=1)
+    out = registered_tools()["start_campaign"].fn(
+        workspace_id="ws-1", config_path="demo.vast", description="d", priority=1)
     assert out == {"error": "priority is not supported by the null implementation. "
                            "re-run without it"}
 
