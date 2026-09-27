@@ -41,7 +41,8 @@ from robovast.execution.campaign_archive import JOB_DOCUMENT_SUFFIXES
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
 from .config import SIMULATION_CONTAINER, Ros2RecordingConfig, recording_config
-from .config_identifier import compute_config_identifier, hash_file_content, hash_run_files
+from .config_identifier import (compute_config_identifier, hash_file_content, hash_run_files,
+                                variation_refs)
 from .sut_channel import SUT_CONFIG_FILE
 from .sut_channel import source_paths as sut_source_paths
 from .errors import CampaignConfigError, missing_input_error
@@ -1766,6 +1767,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     campaign_data_for_dump.pop("_output_dir", None)
     for c in campaign_data_for_dump.get("configs", []):
         c.pop("_config_block", None)
+        c.pop("_read_files", None)
 
     # Save scenario variations as YAML in _transient subdirectory
     scenario_variations_path = os.path.join(campaign_transient_dir, "configurations.yaml")
@@ -1879,17 +1881,15 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
         run_config_dir = os.path.join(out_dir, config_data.get("name"), "_config")
 
         # Compute and write config identifier for merge-campaigns
-        config_block = config_data.get("_config_block", {})
-        variation_type_names = [
-            v["name"] for v in config_data.get("_variations", [])
-        ]
+        config_block = config_data["_config_block"]
         config_identifier, sub_identifier = compute_config_identifier(
             vast_file_path,
             config_block,
             run_files_hash,
             scenario_file_hash,
-            variation_type_names,
+            variation_refs(config_block),
             sut_sources_hash,
+            read_files=config_data["_read_files"],
         )
         config_yaml_path = os.path.join(run_config_dir, "config.yaml")
         os.makedirs(run_config_dir, exist_ok=True)
