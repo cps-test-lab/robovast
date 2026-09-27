@@ -246,9 +246,8 @@ def test_no_advice_when_the_pool_was_never_measured():
     """NULL is a campaign recorded before the monitor sampled the pool, or a runtime with no
     /dev/shm. Neither is "used none of it", so neither may produce a size.
 
-    The empty-list case is a campaign with no ``resource_usage`` at all: the query fails and
-    ``data_access.rows`` hands back ``[]``, which has to read as "nothing to say" rather than
-    take out the whole summary the advice is one key of.
+    The empty-list case is a campaign with no ``resource_usage`` at all, which has to read as
+    "nothing to say" rather than take out the whole summary the advice is one key of.
     """
     assert A.shm_advice(_measured(None, None), _shm("1Gi")) == []
     assert A.shm_advice([], _shm("1Gi")) == []
