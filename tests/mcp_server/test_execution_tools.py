@@ -242,6 +242,7 @@ def test_force_without_from_campaign_is_refused_not_ignored(service):
     {"campaign_name": "again"},
     {"upload_to_share": True},
     {"description": "retrying the flake"},
+    {"image_project_tag": "2.2.0"},
 ])
 def test_from_campaign_refuses_arguments_it_would_have_to_ignore(service, kwargs):
     """A retrigger takes these from the record, so accepting them would answer a different
@@ -253,6 +254,22 @@ def test_from_campaign_refuses_arguments_it_would_have_to_ignore(service, kwargs
     assert next(iter(kwargs)) in out["error"]
     # Refused before anything was launched.
     assert not any(call[0] == "retrigger_campaign" for call in service.calls)
+
+
+def test_service_start_passes_the_image_tag(service):
+    """The tag the CLI's --image-project-tag sets, reaching the same request field: without it
+    an MCP-started campaign could only resolve family images at the service's own tag."""
+    execution.start_campaign(workspace_id="ws-1", image_project_tag="2.2.0")
+    _name, req = service.calls[-1]
+    assert req.image_project_tag == "2.2.0"
+    # The project is left to the service's default: the tag alone is what was asked for.
+    assert req.image_project == ""
+
+
+def test_start_without_an_image_tag_leaves_it_to_the_service(service):
+    execution.start_campaign(workspace_id="ws-1")
+    _name, req = service.calls[-1]
+    assert req.image_project_tag == ""
 
 
 def test_service_start_passes_description(service):
