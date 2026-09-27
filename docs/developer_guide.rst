@@ -1661,11 +1661,20 @@ Schema
   reaches it through the run dir's ``job`` symlink. ``job_dir`` is campaign-relative (``_jobs/batch-0/job-3``), or the
   run's own directory for an older layout that wrote sysinfo beside the run.
 * **batch** — one ask/tell round (search), or the single batch (``idx=0``) of a
-  batch-mode campaign.
+  batch-mode campaign. ``asked`` is how many parameter sets the strategy proposed, and
+  ``recalls_recorded`` is 1 on every batch whose recalled cells have rows (NULL on one
+  written before schema 14).
 * **unit** — one evaluated parameter set (search) or one configuration (batch):
   the sampled ``params``, ``objectives``/``measures`` (JSON; ``{}`` for batch),
   and the ``result_dir``. ``n_samples`` and the aggregate ``status`` are roll-ups
-  of the unit's ``run`` rows, kept for convenience.
+  of the unit's ``run`` rows, kept for convenience. A search cell re-proposed after an
+  earlier batch measured it is a ``recalled`` row whose ``recalled_from`` names the unit
+  that measured it, with no outcome of its own.
+
+These rows are also a search's checkpoint: ``search.history.recorded_batches`` reads them
+back into the ``ask``/``tell`` sequence a resumed strategy is re-driven through
+(:doc:`search`, "Surviving a service restart"), and the live loop builds what it tells from
+the same ``RecordedBatch`` type, so what a replay tells is what the live run told.
 * **run** — one repetition of a unit (schema v2+). Mirrors that run's
   ``test.xml``: ``status`` (``passed``/``failed``/``error``/``unknown``),
   ``passed`` (0/1), ``errors``/``failures``/``tests``, ``duration_s``,

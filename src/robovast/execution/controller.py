@@ -788,6 +788,14 @@ class CampaignController:
             logger.info("Resuming search after %d recorded batch(es): %d evaluation(s), "
                         "%d run(s) already spent.",
                         position.batches, position.evaluations, position.runs)
+            unknown = [i for i, b in enumerate(batches) if b.recalls_unknown]
+            if unknown:
+                logger.warning(
+                    "Batch(es) %s were recorded before a recalled cell had a row of its own, "
+                    "and asked for more cells than they recorded. Any cell they recalled from "
+                    "an earlier batch is missing from the replay, so the resumed strategy "
+                    "may propose differently from the uninterrupted search.",
+                    ", ".join(str(i) for i in unknown))
         return position
 
     def _campaign_age(self, campaign_id: int) -> float:
@@ -851,6 +859,7 @@ class CampaignController:
         because :meth:`_run_search` needs it on the path where this does NOT return.
         """
         from robovast.search.compose import distinct_draws
+        from robovast.search.history import RecordedBatch
         from robovast.search.stopping import StopResult, StopSnapshot
         batch_idx = self._batches_done
         result = None
@@ -891,7 +900,14 @@ class CampaignController:
             # measured it or an earlier one did. A recalled cell is a real answer to a
             # real proposal -- it is what that cell measured -- so withholding it would
             # hand back a short generation carrying less than the campaign knows.
-            self.strategy.tell(scored + recalled)
+            #
+            # Recorded before it is told, as a row naming the unit that measured it: a
+            # resume re-tells the strategy what this batch told it, and reads that from
+            # these rows. The told list is built by the same `RecordedBatch` the replay
+            # builds, so the two cannot order it differently.
+            for ev in recalled:
+                self.store.record_recall(batch_id, ev.params.id, ev.params.values)
+            self.strategy.tell(RecordedBatch(evaluations=scored, recalled=recalled).told)
             batch_idx += 1
             # Published immediately, so an abort anywhere after this counts this batch.
             self._batches_done = batch_idx

@@ -121,13 +121,18 @@ class SearchStrategy(ABC):
         costs a proposal and produces no evaluation. :meth:`tell` already copes with a
         short generation, and this relies on exactly that contract rather than adding one.
 
+        What is told is ``batch.told``: the batch's scored evaluations and then the ones it
+        recalled -- cells an earlier batch measured, which the live loop did not run again
+        but did tell the strategy about. Leaving those out hands the strategy a shorter
+        generation than it saw live, and it proposes something else from there.
+
         A resumed search reproduces the original only if the strategy is seeded --
         ``search.seed``. Without it a fresh process re-seeds from entropy, and the replay
         rebuilds a *different* search; the caller checks that before getting here.
         """
         for batch in batches:
             self.ask(batch.asked)
-            self.tell(batch.evaluations)
+            self.tell(batch.told)
 
 
 def build_strategy(cfg: SearchConfig, vast_dir: str = "") -> SearchStrategy:

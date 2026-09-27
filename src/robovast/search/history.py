@@ -33,6 +33,12 @@ A draw the variation pipeline could not realize (``composition_failed``) or whos
 was lost (``no_sample``) costs a proposal but produces no evaluation, so a replay that
 counted only the evaluations would under-advance the strategy's sequence and every
 parameter set after it would differ.
+
+What is told back is not only what the batch scored. A cell an earlier batch measured is
+not run again: the loop tells the strategy what it scored then, and records the cell as a
+``recalled`` row naming the unit that measured it. The replay reads the told evaluation
+from that unit, so it tells the strategy the same answer the live run did, read from the
+same row.
 """
 
 import json
@@ -48,16 +54,36 @@ class RecordedBatch:
 
     Attributes:
         asked: how many parameter sets the strategy proposed for this batch.
-        evaluations: those that were scored, in the order they were recorded.
-        reps: repetitions ALLOCATED to each recorded cell, in the same order -- every unit
-            row, not only the scored ones, because a draw that composed to nothing still
-            occupied the plan its allocation reserved. ``None`` for a row written before
-            the allocation was recorded, where it was the campaign's ``execution.runs``.
+        evaluations: those this batch scored, in the order they were recorded.
+        recalled: the evaluations of cells an earlier batch measured and this one
+            re-proposed, in the order it recalled them. Each is the object the earlier
+            batch's ``evaluations`` holds, not a copy.
+        reps: repetitions ALLOCATED to each cell this batch ran or tried to, in record
+            order -- not only the scored ones, because a draw that composed to nothing still
+            occupied the plan its allocation reserved, and not the recalled ones, which were
+            allocated nothing. ``None`` for a row written before the allocation was
+            recorded, where it was the campaign's ``execution.runs``.
+        recalls_unknown: the batch was recorded before a recalled cell had a row, and it
+            asked for more than it recorded -- so it may have recalled cells that
+            ``recalled`` cannot hold, and a replay of it can tell the strategy less than
+            the live run did. A batch that asked for no more than it recorded recalled
+            nothing, however old.
     """
 
     asked: int = 0
     evaluations: list = field(default_factory=list)
+    recalled: list = field(default_factory=list)
     reps: list = field(default_factory=list)
+    recalls_unknown: bool = False
+
+    @property
+    def told(self) -> list:
+        """What the strategy was told for this batch: the scored cells, then the recalled.
+
+        The live loop tells exactly this, built by this property, so the order a replay
+        tells in is the order the live run told in by construction.
+        """
+        return self.evaluations + self.recalled
 
 
 @dataclass(frozen=True)
@@ -168,14 +194,32 @@ def recorded_batches(store, campaign_row_id: int) -> list:
     Reads through the store's own ``batches``/``units`` accessors rather than SQL of its
     own: those already answer "in execution order", which is the property the replay
     depends on and the only one that would be silently wrong if it were re-derived here.
+
+    A ``recalled`` row resolves to the evaluation of the unit it names, which an earlier
+    batch recorded and this walk has therefore already read. One that names no unit read so
+    far is a store that contradicts itself, and raises rather than tell a replay less.
     """
     out = []
+    by_unit: dict = {}
     for batch in store.batches(campaign_row_id):
         rows = store.units(batch["id"])
+        evaluations, recalled = [], []
+        for row in rows:
+            if row["status"] == "evaluated":
+                by_unit[row["id"]] = _evaluation(row)
+                evaluations.append(by_unit[row["id"]])
+            elif row["status"] == "recalled":
+                source = by_unit.get(row["recalled_from"])
+                if source is None:
+                    raise ValueError(
+                        f"unit {row['id']} of batch {batch['idx']} recalls unit "
+                        f"{row['recalled_from']}, which no earlier batch evaluated")
+                recalled.append(source)
+        asked = _asked(batch, rows)
         out.append(RecordedBatch(
-            asked=_asked(batch, rows),
-            evaluations=[_evaluation(r) for r in rows if r["status"] == "evaluated"],
-            reps=[_reps(r) for r in rows]))
+            asked=asked, evaluations=evaluations, recalled=recalled,
+            reps=[_reps(r) for r in rows if r["status"] != "recalled"],
+            recalls_unknown=batch["recalls_recorded"] is None and asked > len(rows)))
     return out
 
 
