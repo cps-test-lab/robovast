@@ -246,6 +246,7 @@ def ingest_campaign(campaign_dir, *, rebuild_store: bool = False) -> dict:
         "config": _check_config(campaign_dir),
     }
     stages["completeness"] = _check_completeness(campaign_dir)
+    stages["environment"] = _check_environment(campaign_dir)
     stages["campaign_store"] = _ingest_store(campaign_dir, rebuild=rebuild_store)
     stages["tables"] = _check_tables(campaign_dir)
     blocking = sorted(name for name, stage in stages.items()
@@ -415,6 +416,84 @@ def _check_config(campaign_dir: Path) -> dict:
         return _stage(STAGE_FAILED, found.message, recovery=recovery[found.state])
     return _stage(STAGE_FAILED, found.message, version=found.version,
                   recovery=recovery[found.state])
+
+
+def _check_environment(campaign_dir: Path) -> dict:
+    """What the campaign's ``.vast`` names that this deployment does not have.
+
+    Degraded, never blocking: the campaign lists and displays without any of it; only
+    postprocessing, which a raw import chains straight away, and a re-run need it. Names are
+    checked, never loaded, so no code from the archive runs here. Postprocessing installs the
+    ``plugins:`` packages before it runs and they may provide a missing entry point, so the
+    detail says that rather than guessing.
+    """
+    from importlib.metadata import entry_points  # pylint: disable=import-outside-toplevel
+
+    from robovast.common.config_plugins import \
+        is_installed  # pylint: disable=import-outside-toplevel
+    from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
+        read_vast, upgrade_config)
+    from robovast.common.plugin_ref import (  # pylint: disable=import-outside-toplevel
+        file_ref_path, is_file_ref)
+    from robovast.common.results_utils import \
+        campaign_vast_or_none  # pylint: disable=import-outside-toplevel
+    from robovast.results_processing.campaign_tables import \
+        is_decoder_command  # pylint: disable=import-outside-toplevel
+
+    vast_path = campaign_vast_or_none(campaign_dir)
+    config = None
+    if vast_path is not None:
+        try:
+            config, _ = upgrade_config(read_vast(vast_path))
+        except Exception:  # pylint: disable=broad-except -- the config stage says why
+            config = None
+    if not isinstance(config, dict):
+        return _stage(STAGE_ABSENT, "the configuration could not be read (see the config "
+                                    "stage), so what it needs cannot be listed")
+
+    def names(entries):
+        for entry in entries or ():
+            name = next(iter(entry), None) if isinstance(entry, dict) else entry
+            if isinstance(name, str):
+                yield name
+
+    results = config.get("results_processing") or {}
+    # (what, entry-point group, names, whether a ./file.py:Class ref is accepted there)
+    wanted = (
+        ("variation types", "robovast.variation_types",
+         {name for cfg in config.get("configuration") or () if isinstance(cfg, dict)
+          for name in names(cfg.get("variations"))}, True),
+        ("postprocessing commands", "robovast.postprocessing_commands",
+         {name for name in names(results.get("postprocessing"))
+          if not is_decoder_command(name)}, True),
+        ("metadata processors", "robovast.metadata_processing",
+         set(names(results.get("metadata_processing"))), False),
+        ("health checks", "robovast.health_checks",
+         set(names(results.get("health_checks"))), True),
+    )
+
+    missing, file_refs = [], set()
+    for what, group, wanted_names, takes_file_refs in wanted:
+        installed = {ep.name for ep in entry_points(group=group)}
+        if takes_file_refs:
+            file_refs |= {name for name in wanted_names if is_file_ref(name)}
+        if gone := sorted(name for name in wanted_names - installed
+                          if not (takes_file_refs and is_file_ref(name))):
+            missing.append(f"{what} {', '.join(gone)}")
+    if gone := sorted(ref for ref in file_refs
+                      if not (vast_path.parent / (file_ref_path(ref) or ref)).is_file()):
+        missing.append(f"local plugins {', '.join(gone)} (not in the archive's _config/)")
+    specs = [s for s in config.get("plugins") or () if isinstance(s, str) and s.strip()]
+    if gone := sorted(s for s in specs if not is_installed(s)):
+        missing.append(f"plugin packages {', '.join(gone)} (postprocessing installs these "
+                       f"from the campaign's plugins: before it runs, and they may provide "
+                       f"what is listed above)")
+    if missing:
+        return _stage(STAGE_DEGRADED,
+                      "not installed here: " + "; ".join(missing) + ". The campaign lists "
+                      "and displays; postprocessing and a re-run need them.",
+                      recovery="install the packages that provide them on this service")
+    return _stage(STAGE_OK, "every plugin the configuration names is installed here")
 
 
 def _ingest_store(campaign_dir: Path, *, rebuild: bool) -> dict:

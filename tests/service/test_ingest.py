@@ -234,8 +234,8 @@ def test_the_tables_stage_builds_nothing(campaign):
 def test_every_stage_carries_an_actionable_detail(campaign):
     """A verdict a reader cannot act on is not worth returning."""
     report = ingest_campaign(campaign)
-    assert set(report["stages"]) == {"layout", "config", "completeness", "campaign_store",
-                                     "tables"}
+    assert set(report["stages"]) == {"layout", "config", "completeness", "environment",
+                                     "campaign_store", "tables"}
     for name, stage in report["stages"].items():
         assert stage["detail"].strip(), f"{name} has no detail"
 
@@ -418,3 +418,76 @@ def test_an_archive_of_many_empty_entries_is_held_to_the_blocks_they_take(tmp_pa
 
     with pytest.raises(InsufficientStorageError, match="unpacks to"):
         read_campaign_id(out, fits_in=tmp_path / "results")
+
+
+# -- what the configuration needs from this deployment -----------------------
+
+def _vast(campaign) -> Path:
+    return next((campaign / "_config").glob("*.vast"))
+
+
+def _declare(campaign, **sections):
+    """Add *sections* to the campaign's frozen ``.vast`` (the version-1 fixture's)."""
+    vast = _vast(campaign)
+    raw = yaml.safe_load(vast.read_text(encoding="utf-8"))
+    for key, value in sections.items():
+        if key == "variations":
+            raw.setdefault("configuration", [{"name": "cfg"}])[0]["variations"] = value
+        elif key in ("postprocessing", "metadata_processing", "health_checks"):
+            raw.setdefault("results_processing", {})[key] = value
+        else:
+            raw[key] = value
+    vast.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+
+def test_what_the_configuration_names_and_this_deployment_lacks_is_degraded_by_name(campaign):
+    """A raw import chains postprocessing straight away, so what it would lack is named in the
+    import report. Never blocking: the campaign lists without any of it."""
+    _declare(campaign,
+             variations=[{"NoSuchVariation": {}}, {"ParameterVariationList": {}}],
+             postprocessing=["rosbags_tf_to_csv", {"no_such_command": {}},
+                             "./missing.py:Step"],
+             plugins=["robovast-no-such-plugin==1.0"])
+    stage = ingest_campaign(campaign)["stages"]["environment"]
+    assert stage["verdict"] == STAGE_DEGRADED
+    for name in ("NoSuchVariation", "no_such_command", "./missing.py:Step",
+                 "robovast-no-such-plugin==1.0"):
+        assert name in stage["detail"]
+    for present in ("ParameterVariationList", "rosbags_tf_to_csv"):
+        assert present not in stage["detail"]
+
+
+def test_a_configuration_this_deployment_can_run_is_ok(campaign):
+    _declare(campaign, variations=[{"ParameterVariationList": {}}],
+             postprocessing=["rosbags_tf_to_csv"])
+    assert ingest_campaign(campaign)["stages"]["environment"]["verdict"] == STAGE_OK
+
+
+def test_a_configuration_that_cannot_be_parsed_is_reported_not_raised(campaign):
+    """The config stage refuses such a file by name; the environment stage must not turn that
+    refusal into an exception that loses the whole report."""
+    _vast(campaign).write_text("version: [unclosed\n", encoding="utf-8")
+    report = ingest_campaign(campaign)
+    assert report["stages"]["config"]["verdict"] == STAGE_FAILED
+    assert report["stages"]["environment"]["verdict"] == STAGE_ABSENT
+
+
+def test_no_configuration_is_not_reported_as_needing_nothing(campaign):
+    _vast(campaign).unlink()
+    assert ingest_campaign(campaign)["stages"]["environment"]["verdict"] == STAGE_ABSENT
+
+
+def test_what_a_raw_import_postprocessing_runs_is_checked_in_full(campaign):
+    """Postprocessing also runs the metadata processors and the health checks the campaign
+    declares, and a health check that is not installed is skipped rather than failing -- so
+    the import report is the one place that says it will not run."""
+    (_vast(campaign).parent / "check.py").write_text("class Check: pass\n", encoding="utf-8")
+    _declare(campaign,
+             postprocessing=["rosbags_to_cvs"],
+             metadata_processing=["no_such_processor"],
+             health_checks=["no_such_check", "./check.py:Check", "./absent.py:Check"])
+    stage = ingest_campaign(campaign)["stages"]["environment"]
+    assert stage["verdict"] == STAGE_DEGRADED
+    for name in ("rosbags_to_cvs", "no_such_processor", "no_such_check", "./absent.py:Check"):
+        assert name in stage["detail"]
+    assert "./check.py:Check" not in stage["detail"]
