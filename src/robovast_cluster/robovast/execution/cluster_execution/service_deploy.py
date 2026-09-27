@@ -893,8 +893,8 @@ def _kubectl(namespace, kube_context) -> str:
 def _next_step(signal, namespace, kube_context) -> str:
     """The one thing to do about *signal*, as a runnable command.
 
-    Four states, four different actions -- the same reason ``_status_next_step`` in the MCP
-    layer branches rather than offering one generic hint: a credential fault wants the
+    Four states, four different actions -- the same reason ``image_report.build_next_step``
+    branches rather than offering one generic hint: a credential fault wants the
     config checked, a crash-loop wants the dead container's log, and telling either to
     "inspect the pod" is a dead end for the reader who already did.
 
