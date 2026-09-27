@@ -86,24 +86,8 @@ def detected_service_url():
     return url or ''
 
 
-def target_options(func):
-    """Add the target switches every service-touching command shares.
-
-    No flag opens a ``kubectl port-forward`` for the call. There is one way in — the
-    service on the conventional local port, or the one ``vast login`` stored — so an
-    operator uses the same path as everybody else.
-    """
-    func = click.option(
-        '--context', '-x', default=None, metavar='NAME',
-        help='Kubernetes context, when a command has to name one.')(func)
-    func = click.option(
-        '--namespace', '-n', default='default', show_default=True,
-        help='Namespace the robovast-service runs in.')(func)
-    return func
-
-
 @contextlib.contextmanager
-def service_client(namespace='default', context=None):
+def service_client():
     """Yield ``(client, label)`` for the resolved service, or raise if none answers.
 
     See the module docstring for the two ways in. Every caller prints the resolved
@@ -114,10 +98,10 @@ def service_client(namespace='default', context=None):
     implementation to switch to -- which is what makes a command mean the same thing
     against every service, and on a client-only install as on a full one.
 
-    *namespace* and *context* are accepted and unused here; commands still take them for
-    the Kubernetes operations they perform themselves.
+    It takes no Kubernetes context or namespace, and so neither does a verb that only
+    talks to the service: the address is resolved, never named per call. A verb that
+    drives a cluster itself declares its own ``--context``/``--namespace``.
     """
-    del namespace, context
     # The factory lives in http_client, which is part of this distribution.
     # `robovast.service.client` is core's re-export of it, and importing through there
     # made every client command need the core installed -- while still failing only at

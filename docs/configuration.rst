@@ -822,7 +822,9 @@ for what a source is.
 Execution Section
 -----------------
 
-The ``execution`` section specifies how and where tests are executed.
+The ``execution`` section specifies how and where tests are executed. A key it does not
+declare is refused by name, so a misspelling fails validation instead of running the campaign
+without it.
 
 .. _config-containers:
 
@@ -1460,7 +1462,7 @@ inside it.
 
 Fractional cores are worth the trouble on the cluster, where a campaign's throughput is
 ``quota // pod_request``: rounding a sidecar that measures 0.3 cores up to a whole one is
-paid on **every job of the sweep**. The Monitor's **Details** panel measures what each
+paid on **every job of the sweep**. The Campaigns page's **Details** panel measures what each
 container actually used and suggests the number to type here (see :doc:`web_ui`). A
 millicore declaration goes into the Job as written.
 
@@ -1658,8 +1660,8 @@ allocations. See :ref:`cluster-execution` for the full syntax.
        scenario:
          resources:
            cpu:
-             - gcp-c4: 4      # 4 CPUs on the gcp-c4 cluster
-             - minikube: 8    # 8 CPUs on the one-node deployment
+             - cloud.example: 4   # 4 CPUs where the service's context is cloud.example
+             - minikube: 8        # 8 CPUs on the one-node deployment
 
 .. note::
 

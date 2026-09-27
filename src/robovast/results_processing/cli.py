@@ -213,8 +213,8 @@ def backfill_provenance_cmd(results_dir, write, force):
 
 @results.command(name='merge-campaigns')
 @click.argument('merged_campaign_dir', type=click.Path())
-@click.option('--results-dir', '-r', default=None,
-              help='Source directory containing run-\\* directories (uses project results directory if not specified)')
+@click.option('--results-dir', '-r', required=True, type=click.Path(exists=True, file_okay=False),
+              help='Directory holding the campaign directories to merge.')
 def merge_results_cmd(merged_campaign_dir, results_dir):
     """Merge campaign directories with identical configs into one merged_campaign_dir.
 

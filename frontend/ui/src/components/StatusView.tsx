@@ -520,7 +520,7 @@ export function ringLabelWidth(label: string): number {
   return em * RING.fontSize
 }
 
-// Renders one campaign's live Status — the browser analog of what `vast cluster monitor` prints:
+// Renders one campaign's live Status — the browser analog of what `vast campaign status` prints:
 // phase, run-level progress within the current batch, batch counter, and each budget/stopping
 // criterion. Purely presentational; the caller supplies the (polled) Status and, optionally, the
 // (polled) live jobs listing.
@@ -530,7 +530,6 @@ export function StatusView({
   campaignId,
   jobs,
   jobsError = null,
-  hideLog = false,
   liveOnly = false,
   newest = true,
   quotaCpu,
@@ -551,9 +550,6 @@ export function StatusView({
   // in place of the list, because an empty list here reads as "nothing is running", and a
   // listing that failed says nothing of the kind.
   jobsError?: string | null
-  // The Launcher hides the campaign log — it's a launch confirmation, not a viewer;
-  // the full log lives in Monitor.
-  hideLog?: boolean
   // Monitor cares only about jobs still meaningful right now: it drops completed ones
   // from both the count summary and the jobs list (the Launcher lists everything).
   liveOnly?: boolean
@@ -781,7 +777,7 @@ export function StatusView({
           The panel is a ternary, not two hidden divs: an unselected Log tab that stayed mounted
           would hold its EventSource open invisibly. The cost is that switching back re-opens the
           stream; the jobs' expansion state survives because StatusView owns it. */}
-      {cid && !hideLog ? (
+      {cid ? (
         <Box>
           <Tabs
             value={tab}

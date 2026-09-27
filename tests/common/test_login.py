@@ -38,6 +38,16 @@ def _runner():
     return CliRunner()
 
 
+def test_the_login_and_the_user_env_share_one_directory(monkeypatch, tmp_path):
+    """One place for a user's settings: the user-level ``.env`` is read from the directory
+    the login is kept in, resolved by the same rule, however that rule is set."""
+    from robovast.common.env_file import user_env_file
+    monkeypatch.delenv("ROBOVAST_CONFIG", raising=False)
+    monkeypatch.delenv("ROBOVAST_ENV_FILE", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert login.config_path().parent == user_env_file().parent == tmp_path / "xdg" / "robovast"
+
+
 def test_nothing_stored_reads_as_logged_out():
     assert login.load() == {}
     assert login.credentials() == ("", "", "")

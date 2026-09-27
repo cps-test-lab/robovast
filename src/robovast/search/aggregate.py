@@ -23,9 +23,9 @@ choice, not a formality, and the obvious answer is usually the wrong one:
   nearly tipped over average to "comfortable". For a safety margin the interesting
   statistic is the bad tail, not the centre.
 * **On a quality-diversity archive the mean collapses the spread the archive exists to
-  map.** Measured on a quadrotor QD campaign: behaviour measures averaged over five
-  runs filled 3 of 512 cells, because averaging pulled every cell toward the middle of
-  the behaviour space before the archive ever saw it.
+  map.** Behaviour measures averaged over several runs fill only a small fraction of
+  the cells, because averaging pulls every cell toward the middle of the behaviour
+  space before the archive ever sees it.
 
 So ``worst`` is the default here and ``mean`` must be asked for by name. This module is
 deliberately tiny and has no notion of what is being measured -- an extractor knows that
