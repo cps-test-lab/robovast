@@ -41,8 +41,8 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 from robovast.client import file_address
-from robovast.common.errors import (STORAGE_FULL_DETAIL, InsufficientStorageError,
-                                    is_storage_full)
+from robovast.common.errors import (STORAGE_FULL_DETAIL, ActionableError,
+                                    InsufficientStorageError, is_storage_full)
 from robovast.service import auth, event_log, service_log, settings_report
 from robovast.service.workspaces import default_workspaces_root
 from robovast.service.interface import (ActionResult, ArrowQueryRequest,
@@ -54,8 +54,8 @@ from robovast.service.interface import (ActionResult, ArrowQueryRequest,
                                         CreateWorkspaceRequest, DataDescribe, DataQueryResult,
                                         DeleteCampaignsRequest, DeleteCampaignsResponse,
                                         EditFileRequest, ERROR_CODE_HEADER,
-                                        EXEC_PATH_UNAVAILABLE, UNSUPPORTED_OPERATION,
-                                        BINARY_FILE, BinaryFile,
+                                        EXEC_PATH_UNAVAILABLE, NEXT_STEP_HEADER,
+                                        UNSUPPORTED_OPERATION, BINARY_FILE, BinaryFile,
                                         UnsupportedOperation,
                                         ExecRequest, ExecResult, ExecStopResult,
                                         ExportRef, ExportRequest, ExportStatus,
@@ -101,6 +101,15 @@ REFUSAL_MAX_TRACKED = 512
 # pylint: disable-next=wrong-import-position
 from robovast.service.interface import (  # noqa: F401
     DEFAULT_PORT)  # re-exported: callers import it from here
+
+
+def _next_step_headers(e: ActionableError) -> "dict[str, str] | None":
+    """The header naming *e*'s next command, or ``None`` when it has none.
+
+    The exception cannot cross HTTP, so its ``next_step`` travels beside the detail and the
+    transport puts it back on the :class:`ServiceError` a caller receives.
+    """
+    return {NEXT_STEP_HEADER: e.next_step} if e.next_step else None
 
 
 def _sse_pull_limiter():
@@ -467,7 +476,14 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         except InsufficientStorageError as e:
             # The same status as a write that already failed for lack of space, with the
             # meter and the amounts: new work is declined before the disk is full.
-            raise HTTPException(status_code=507, detail=str(e)) from e
+            raise HTTPException(status_code=507, detail=str(e),
+                                headers=_next_step_headers(e)) from e
+        except ActionableError as e:
+            # The request is fine and the state it needs is not there yet -- an image not
+            # built, a helper container nothing provides here -- and the error names the
+            # command that changes that.
+            raise HTTPException(status_code=409, detail=str(e),
+                                headers=_next_step_headers(e)) from e
         except BinaryFile as e:
             raise HTTPException(status_code=e.status, detail=str(e),
                                 headers={ERROR_CODE_HEADER: BINARY_FILE}) from e
@@ -2371,7 +2387,8 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     Every request needs the shared token; when none is configured one is minted and
     printed as a clickable login URL, so there is no unauthenticated mode to start by
     accident. Binds ``127.0.0.1`` by default all the same — publishing the service is a
-    deliberate act (``vast cluster setup --ingress-host``, which insists on TLS).
+    deliberate act (``vast cluster setup --ingress-host``, which needs TLS unless given
+    ``--insecure-http``).
 
     ``mount_mcp`` (default on) puts the MCP server on this same port, so one URL reaches
     the web UI, the REST API and the tools together.

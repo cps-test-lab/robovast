@@ -21,7 +21,7 @@ bindings:
 
 * the **service** HTTP endpoints (:mod:`robovast.service.app`, FastAPI, OpenAPI
   at ``/docs``);
-* the **client** :class:`robovast.service.client.RobovastClient`;
+* the **client** :func:`robovast.service.client.RobovastClient`;
 * the **MCP tools** and **``vast`` CLI** commands, which wrap the client.
 
 Campaign status reuses :class:`robovast.client.status.Status` verbatim — the live state
@@ -55,7 +55,7 @@ that matters — can decline what it does not.
    * - ``robovast-cluster``
      - the service implementation (Kubernetes), its cluster-config plugins, the deploy and operator
        commands
-     - ``kubernetes``, ``boto3``, ``google-cloud-storage``
+     - ``kubernetes``, ``bcrypt``
    * - ``robovast-nav`` / ``robovast-sim-roqsim``
      - navigation variation types and panels; the roqsim simulator backend
      - per package
@@ -183,7 +183,7 @@ running campaign is a property of the implementation, answered in its own
 ``_shutdown_running_campaigns``: ``ClusterService`` leaves its Jobs running, because they
 outlive any one service process and the next one adopts them
 (:doc:`cluster_execution`). Stopping a campaign is ``stop``; exiting the service
-is not, and it never was a good way to say it — the cooperative stop persists a
+is not — the cooperative stop persists a
 terminal ``outcome.json``, and a campaign that has recorded an ending is one no
 successor will pick up again.
 
@@ -235,11 +235,11 @@ campaign has none, reads as not postprocessed, and asks for the re-run that sett
 tables stay queryable in the meantime: a query builds what it names from the records whether
 or not the campaign has been postprocessed.
 
-Winding down is a race against uvicorn's graceful-shutdown deadline, so the signal
-handler raises a process-wide flag (:mod:`robovast.common.shutdown`) *before* the
-clock starts, and the layers that would otherwise fight the teardown consult it. The
-SSE streams do not *wait* for their
-next pull either: a watchdog closes the stream the moment shutdown is announced and
+Winding down is a race against uvicorn's graceful-shutdown deadline, and an SSE stream
+only ends when its client disconnects, so every stream polls uvicorn's own
+``should_exit`` (probed through ``app.state.should_exit``), which its signal handler sets
+*before* the clock starts. Nor does a stream *wait* for its next pull: a watchdog closes
+the stream the moment shutdown is announced and
 abandons the worker thread, because a pull that returns after the deadline gets its
 response task canceled and the cancellation logged as an "Exception in ASGI
 application" traceback with the server already gone.
@@ -303,7 +303,7 @@ and container specs, so the long-lived service carries no MuJoCo). A backend the
 by returning a **question**, :class:`~robovast.common.simulators.ContainerQuery`: a command and
 the image to run it in, whose one line of JSON RoboVAST reads.
 
-Four rules make those answers trustworthy, and each of them was a bug first:
+Four rules make those answers trustworthy:
 
 * **In the image the campaign runs.** Which world a ref even names depends on what is
   *installed*, so a query answered in a fixed base image describes a different world -- or none,
@@ -313,13 +313,13 @@ Four rules make those answers trustworthy, and each of them was a bug first:
   a second copy would be free to disagree with it.
 * **An unanswerable question says so.** ``WorldQueryUnavailable`` names which reason it is -- no
   backend, an unbuilt ``build:<tag>``, no container runner here, a command that failed. A
-  pre-check that logged this at debug and carried on was indistinguishable from a check that
-  passed, which is how a misspelled plugin key reached the container after the image pull.
+  pre-check that logged this at debug and carried on would be indistinguishable from a check
+  that passed, and a misspelled plugin key would first surface in the container.
 * **Half an answer beats none.** A simulator that exits non-zero having still *printed* a payload
   answered what it could, and that payload is taken. A world whose model does not compile in the
   image (a ``*_ros`` world described where the colcon-packaged bridge does not resolve) can still
-  say which plugin keys it has -- that half needs no build -- and discarding the reply cost the
-  campaign a check it could have had. The rule is generic: nothing here knows which half was lost,
+  say which plugin keys it has -- that half needs no build -- and discarding the reply would
+  cost the campaign a check it could have had. The rule is generic: nothing here knows which half was lost,
   because the simulator says so in the payload's own ``errors``, and each half that goes unchecked
   is warned about by name.
 * **A container runner is not implied.** The query runs a container, and in-cluster a container
@@ -418,8 +418,8 @@ imported in a process that may have no kubeconfig. Reaching for one belongs insi
 
 That indirection is what lets the cluster implementation ship as its own distribution,
 ``robovast-cluster`` (``src/robovast_cluster/``), rather than as part of the core. An
-install without it carries no ``kubernetes``, ``boto3`` or ``google-cloud-storage`` at
-all, and still validates, composes, stores workspaces and processes results. Declining
+install without it carries no ``kubernetes`` at all, and still validates, composes, stores
+workspaces and processes results. Declining
 it is a supported configuration for everything but running a service.
 
 .. _refuse-by-name:
@@ -523,9 +523,8 @@ scenario* logs to a file inside the container and the result carries ``log_path`
 of that output.
 
 **A running campaign is never a target.** There is no code path from this operation to a
-job's container or pod. An earlier draft made exec'ing a live campaign "safe" by annotating
-its log; that was an admission the operation was wrong rather than a fix. To inspect a live
-stack, the caller starts that stack in its own exec container.
+job's container or pod. To inspect a live stack, the caller starts that stack in its own exec
+container.
 
 **One container, so there is no state to manage.** At most one exists at a time, under a
 fixed name (``robovast-exec``). That removes
@@ -546,8 +545,8 @@ pod plus ``pods/exec``. Its ``exec_in`` captures a command's output once it is o
 tap on a live job is built on (:mod:`robovast.service.tap`). Everything
 else — validation, staging, limits, the lifetime state machine — is shared, as are the
 pod primitives both in-cluster users need (``wait_pod_ready``, ``wait_pod_gone``,
-``exec_stream`` in ``robovast.execution.cluster_execution.kube_client``; they live in ``common`` because the execution
-engine may not import ``robovast.service``).
+``exec_stream`` in ``robovast.execution.cluster_execution.kube_client``; they live beside the
+execution engine because it may not import ``robovast.service``).
 
 **The diagnostic stages the way a run stages.** In-cluster, ``/config`` is written as a
 staged tree on the service's disk and fetched from its data plane by an init container on
@@ -1057,7 +1056,7 @@ three:
   rather than in the UI, so the served list and the view cannot disagree; a campaign that
   declares the type itself keeps its own entry. The frontend normalizes the result against each
   panel type's registry defaults (``frontend/ui/src/lib/panels/parsePanels.ts``).
-* **Registry + host** — panel plugins self-register (``frontend/ui/src/lib/dashboard/registry.ts``);
+* **Registry + host** — panel plugins self-register (``frontend/ui/src/lib/panels/registry.ts``);
   ``PanelHost`` resolves each spec's anchor/size to CSS and mounts the component. Adding a
   panel is one ``registerPanel`` call.
 * **Shared panel kit** — ``@robovast/panel-kit`` (``frontend/panel-kit/``) holds the panel contract
@@ -1075,12 +1074,15 @@ three:
   rest subscribe. It is an external store, so the ~display-rate ``t`` updates while playing
   don't re-render the tree.
 * **Data seam** — ``DataProvider`` (declared in ``frontend/panel-kit/src/dataProvider.ts``, implemented
-  by ``dbDataProvider`` in ``frontend/ui/src/lib/dashboard/dataProvider.ts``) is how a panel gets
+  by ``dbDataProvider`` in ``frontend/ui/src/lib/panels/dataProvider.ts``) is how a panel gets
   rows/frames by table + time, decoupled from transport. It reads one run's rows through the
   ``query``/``describe`` endpoints, plus the dedicated
   ``costmap`` endpoint for grids. The interface (``nearest`` / ``series`` / ``timeRange`` /
-  ``has`` / ``fetchRun``) is shaped so a future ``liveDataProvider`` over a live topic buffer
-  drops in without touching any panel.
+  ``has`` / ``fetchRun``) names no transport, so a panel reads a finished run and one still
+  recording alike. For a recording run the host's ``LiveDataProvider`` extends it with
+  ``subscribeLive``: the rows that land after the history a query gave, over one live
+  subscription per run (``frontend/ui/src/lib/panels/liveFeed.ts``). The extension is the
+  host's, not the kit's, so a panel that wants those rows asks ``isLiveProvider`` first.
 
 **Camera delivery.** A recorded video is the one panel input that never passes through the data
 seam: the panel resolves a ``videos`` row to a URL (``DataProvider.runFileUrl``) and puts it in a
@@ -1148,7 +1150,7 @@ The interface surface
 ---------------------
 
 The operation contract (Phase 0 + workspaces + postprocessing shown; data-query
-lives in the ``run_data`` MCP plugin):
+lives in the ``results`` MCP plugin):
 
 * **Workspaces** — ``create_workspace`` / ``list_workspaces`` / ``get_workspace``
   / ``delete_workspace`` / ``create_upload``. A workspace's *files* are not separate
@@ -1208,13 +1210,13 @@ lives in the ``run_data`` MCP plugin):
   ``*_panels_source`` visualization editor). Both overwrite the edited block in the
   campaign's own ``_config/<name>.vast`` in place. ``run_postprocessing`` dispatches the
   re-run in the background and returns at once (watch the campaign view for progress).
-* **Data query** (MCP ``run_data``) — ``describe_campaign_data`` /
+* **Data query** (MCP ``results``) — ``describe_campaign_data`` /
   ``query_campaign_data_sql``.
 
 **New disk-consuming work is admitted against a free-space reserve.** ``create_campaign``,
-``retrigger_campaign``, ``build_image``, ``create_archive_upload``, ``import_campaign`` and
-``run_postprocessing`` each call ``ServiceBase._admit_storage`` first (``ClusterService``'s
-own ``build_image`` and ``run_postprocessing`` call it too). It reads
+``retrigger_campaign``, ``create_archive_upload``, ``import_campaign``,
+``run_postprocessing``, ``build_campaign_tables`` and ``create_export`` each call
+``ServiceBase._admit_storage`` first, and so does ``ClusterService.build_image``. It reads
 ``ResourceUsage.storage_refusal``, which ``resource_usage`` computes once from the
 ``disk`` and ``results`` readings it already takes (:mod:`robovast.service.storage_reserve`), so the
 refusal and the meters are one measurement. With the reserve set to ``0`` nothing is read; a
@@ -1263,9 +1265,8 @@ published dataset's config? — does not arise rather than being answered.
 
 **``family:<member>`` mirrors ``build:<tag>``.** Both are symbolic refs core resolves late
 from context the author does not hold, and both fail loudly if one reaches a container spec
-unresolved. The alternative considered was a rewrite pass that matched family
-repositories in already-concrete refs and moved them to another project. It was
-rejected: it needs a
+unresolved. A rewrite pass that matched family repositories in already-concrete refs and
+moved them to another project would need a
 whitelist of names to match, and anything a whitelist can match by mistake it can
 *redirect* by mistake — a campaign's own ``sut`` image silently pulled from somewhere the
 author never named. A prefix marker cannot do that, because writing it is a request.
@@ -1287,12 +1288,11 @@ exist *before* composition (the images are what the campaign then runs in). So
 ``extract_build_specs`` calls ``apply_backend`` itself, and therefore has to resolve what that
 contributes itself: ``image_project`` rides ``CreateCampaignRequest`` → ``RunOptions`` →
 ``_start_build_images`` / ``_resolve_built_images`` → ``extract_build_specs``.
-Missing this was asymmetric, which is what hid it: a container taking the default member was
-resolved on the composition path, so ``sut`` and ``scenario`` built correctly while the one
-container declaring a ``backend:`` carried ``family:robovast-roqsim`` into its Dockerfile's
-``FROM``. Docker read that as repository ``family``, tag ``robovast-roqsim``, and the campaign
-died in BuildKit with a registry ``insufficient_scope`` — a credentials error three layers from
-the cause. ``generate_dockerfile`` now refuses either prefix outright, so the promise that an
+Getting this wrong is asymmetric and so hard to see: a container taking the default member is
+resolved on the composition path either way, and only a container declaring a ``backend:``
+would carry ``family:robovast-roqsim`` into its Dockerfile's ``FROM``, which Docker reads as
+repository ``family``, tag ``robovast-roqsim`` — a registry credentials error three layers from
+the cause. ``generate_dockerfile`` refuses either prefix outright, so the promise that an
 unresolved ref fails loudly holds for a build and not only for a pod spec.
 
 Resolving into the campaign data — rather than at each point of use — is what makes
@@ -1354,7 +1354,7 @@ concurrent with the build itself — at submit. A campaign that builds inherits 
 those fire points are on the build and not on the caller.
 
 The **family** images are warmed from a different place and for a different reason:
-``vast cluster setup`` / ``upgrade``, which is both the moment every node is cold for the
+``vast cluster setup`` / ``vast service upgrade``, which is both the moment every node is cold for the
 whole family — a tag bump or a moved project means the next campaign pays a full pull of
 ``robovast-roqsim``, the largest image there is — and the moment it is free, since the pod is
 being restarted anyway so nothing is mid-campaign. It resolves from the caller's own
@@ -1396,9 +1396,8 @@ Three properties of the **Job** shape, and each replaces machinery rather than a
 * **Idempotent by name.** The Job name is derived from the image ref, so a duplicate create is
   a 409 meaning "already warming". No in-process record, and a service restart changes nothing —
   the same trick ``build_id_for`` uses to make a resubmit idempotent.
-* **It terminates itself.** ``ttlSecondsAfterFinished`` is *not* sufficient, and assuming it was
-  would have reproduced a bug this codebase already paid for: TTL starts only once a Job is
-  terminal, and with ``backoffLimit: 0`` a pod wedged in ``ImagePullBackOff`` leaves both
+* **It terminates itself.** ``ttlSecondsAfterFinished`` is *not* sufficient: TTL starts only
+  once a Job is terminal, and with ``backoffLimit: 0`` a pod wedged in ``ImagePullBackOff`` leaves both
   counters at zero and the Job ``active`` forever. That is precisely why the build path carries a
   ``blocked``-phase probe. A prewarm has nobody watching it, so it gets
   ``activeDeadlineSeconds`` instead of a watcher.
@@ -1423,7 +1422,7 @@ campaign-completion hook — the first is the placement limit below, and the sec
 prewarmed copy just as readily. Warming at view time is no better, since ``AuxPodSession``
 creates a pod with that image immediately anyway and a second pod would race the same pull for
 no gain. So the honest answer is that this particular latency needs multi-node warming rather
-than another fire point — which the family DaemonSet now provides for a campaign that ran a
+than another fire point — which the family DaemonSet provides for a campaign that ran a
 family image directly, and still does not for one that built its own.
 
 Two further things it deliberately does not do. It does **not** fire on the restart branch of

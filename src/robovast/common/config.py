@@ -60,10 +60,6 @@ def collect_var_refs(node: Any) -> set:
     return {name} if name is not None else set()
 
 
-class GeneralConfig(BaseModel):
-    model_config = ConfigDict(extra='allow')
-
-
 class VariationConfig(BaseModel):
     pass
     # model_config = ConfigDict(extra='forbid')
@@ -960,6 +956,9 @@ def _drop_archived_kubernetes_keys(config: dict) -> dict:
 
 
 class ExecutionConfig(BaseModel):
+    # A key this block does not declare is refused: the backend reads the raw block, so a
+    # misspelled one would run the campaign as if it had not been written.
+    model_config = ConfigDict(extra='forbid')
     #: Settings for the Kubernetes backend. See :class:`KubernetesConfig`.
     kubernetes: Optional[KubernetesConfig] = None
     #: Every container this campaign runs, keyed by name -- the one namespace shared by
@@ -1029,6 +1028,12 @@ class ExecutionConfig(BaseModel):
     # this default exists to avoid. A campaign that needs more says a bigger number, and
     # ``get_campaign_summary`` reports the measured peak to size it from.
     shm_size: str = DEFAULT_SHM_SIZE
+    #: UID the run's containers run as; the backend uses ``1000`` when it is unset.
+    run_as_user: Optional[int] = None
+    #: Script sourced (``source <pre_command>``) before each run, in the scenario container.
+    pre_command: Optional[str] = None
+    #: Executable run after the scenario, passed to scenario-execution as ``--post-run``.
+    post_command: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -2194,8 +2199,8 @@ class RepetitionsConfig(BaseModel):
     ``execution.runs`` gives every cell the same number of repetitions. That is the
     right default and the wrong one in the same campaign: a cell whose runs all agree
     was decided by the first one, while a cell on a failure boundary is exactly where
-    more samples buy something. Measured on a quadrotor search: 3 of 32 configurations
-    produced a mixed outcome over 5 repetitions, so 145 of 160 runs bought one bit each.
+    more samples buy something. Typically few cells are on a boundary, so most of a
+    fixed count buys one bit per cell.
 
     This is a **policy layer, not a strategy**: it is applied between ``ask()`` and
     composition, so it composes with every strategy instead of being one of them. A
@@ -2237,16 +2242,16 @@ class RepetitionsConfig(BaseModel):
                 f"repetitions max ({self.max}) must be >= min ({self.min})")
         if self.seed_parameter is not None or self.paired:
             # Refused rather than accepted-and-ignored. Pairing needs repetition i of every cell
-            # to draw the same noise, and neither channel available today delivers that:
+            # to draw the same noise, and neither available channel delivers that:
             #
             #   - a simulator override document is written per CONFIG, so every repetition of a
-            #     cell would read one seed and stop varying -- strictly worse than the present
-            #     behaviour, where an unseeded run draws its own;
+            #     cell would read one seed and stop varying -- worse than an unseeded run,
+            #     which draws its own;
             #   - the simulator's own episode counter cannot stand in for it: every run is its
             #     own job and its own simulator process, so each one counts from the first
             #     episode and "episode i" is not "repetition i".
             #
-            # What it needs is a per-run seed on the execution backend. Until that exists, saying
+            # What it needs is a per-run seed on the execution backend. Without one, saying
             # 'paired' would claim a comparison the data cannot support.
             raise ValueError(
                 "repetitions 'paired'/'seed_parameter' need a per-run seed, which no execution "
@@ -2529,7 +2534,6 @@ class ConfigV1(BaseModel):
             "Declared here only so the key is discoverable and a raw file validates; the "
             "loader resolves and removes it, so nothing downstream ever sees it."))
     metadata: Optional[dict[str, Any]] = None
-    general: Optional[GeneralConfig] = None
     plugins: Optional[list[str]] = Field(
         default=None,
         description=(
@@ -2649,13 +2653,35 @@ def _drop_unknown_configuration_keys(config: dict) -> dict:
     return {**config, "configuration": cleaned}
 
 
+def _drop_unknown_execution_keys(config: dict) -> dict:
+    """A copy of *config* with keys ``execution`` does not declare removed, each logged.
+
+    Serves :func:`validate_config`'s lenient mode only, for the reason
+    :func:`_drop_unknown_configuration_keys` gives: an archived campaign ran with such a key
+    ignored. ``local`` is left for :func:`_drop_archived_local`, which names it.
+    """
+    execution = config.get("execution")
+    if not isinstance(execution, dict):
+        return config
+    known = set(ExecutionConfig.model_fields) | {"local"}
+    extra = [k for k in execution if k not in known]
+    if not extra:
+        return config
+    logger.warning(
+        "execution declares %s, which is not an execution key; the campaign ran with it "
+        "ignored and it is dropped here too. Valid keys: %s",
+        ", ".join(repr(k) for k in extra), ", ".join(sorted(ExecutionConfig.model_fields)))
+    return {**config, "execution": {k: v for k, v in execution.items() if k not in extra}}
+
+
 def validate_config(config: dict, strict: bool = True):
     """
     Validate the configuration settings.
 
     Args:
         config: The settings dictionary to validate
-        strict: Refuse a ``configuration`` entry carrying a key the schema does not declare.
+        strict: Refuse a ``configuration`` entry or an ``execution`` block carrying a key the
+            schema does not declare.
             True for authoring and launching, where such a key is a misspelling whose cost is
             a campaign configured differently than its file reads. False for reading an
             *archived* campaign, which already ran: the key changed nothing then, and refusing
@@ -2663,8 +2689,11 @@ def validate_config(config: dict, strict: bool = True):
     Raises:
         ValueError: If required sections are missing
     """
+    # Read at call time: the version the ladder declares now, not at this module's import.
+    from robovast.common import migrations  # pylint: disable=import-outside-toplevel
     from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
-        BASELINE_CONFIG_VERSION, SUPPORTED_CONFIG_VERSION, find_migration_markers)
+        BASELINE_CONFIG_VERSION, find_migration_markers)
+    supported = migrations.SUPPORTED_CONFIG_VERSION
 
     logger.debug("Validating configuration")
     version = config.get("version", None)
@@ -2672,17 +2701,17 @@ def validate_config(config: dict, strict: bool = True):
     # not silently accept an old version. Reading an *archived* campaign goes through
     # ``load_config(upgrade=True)`` instead, which ladders it in memory. The refusal below
     # therefore names that path rather than being a dead end -- see migrations/README.md.
-    if isinstance(version, int) and BASELINE_CONFIG_VERSION <= version < SUPPORTED_CONFIG_VERSION:
+    if isinstance(version, int) and BASELINE_CONFIG_VERSION <= version < supported:
         raise ValueError(
             f"config version {version} is not the current version "
-            f"({SUPPORTED_CONFIG_VERSION}), and authoring requires the current one.\n"
+            f"({supported}), and authoring requires the current one.\n"
             "\n"
             "  Upgrade the file:   vast configuration upgrade\n"
             "\n"
             "An archived campaign is migrated automatically when read, so this refusal "
             "only ever applies to a file you are authoring or launching from.\n"
             "\n" + _V1_MIGRATION)
-    if version != SUPPORTED_CONFIG_VERSION:
+    if version != supported:
         # Raised, not logged-and-raised: every caller reports the failure it catches,
         # so logging the same text here printed it twice.
         raise ValueError(f"Unsupported config version: {version}")
@@ -2702,6 +2731,7 @@ def validate_config(config: dict, strict: bool = True):
     logger.debug(f"Config version {version} is supported")
     if not strict:
         config = _drop_unknown_configuration_keys(config)
+        config = _drop_unknown_execution_keys(config)
         config = _drop_archived_kubernetes_keys(config)
         config = _drop_archived_local(config)
     return get_validated_config(config, ConfigV1)

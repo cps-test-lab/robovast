@@ -101,8 +101,9 @@ ROS packages built from source
 ``system_packages`` covers what apt has and ``python_packages`` covers what pip has. Some ROS
 packages are in neither: a package with a ``source:`` entry and no ``release:`` block in
 ``ros/rosdistro`` has no Debian on **any** distro, and is not on PyPI either. ``px4_msgs`` is
-one; vendor driver and message packages routinely are. Before this key the only way in was to
-bake such a package into a shared family image, which makes every unrelated campaign pay for it.
+one; vendor driver and message packages routinely are. Without this key the only way in would
+be to bake such a package into a shared family image, which makes every unrelated campaign pay
+for it.
 
 ``ros_packages`` closes that: each entry is a git repository, cloned at a pinned ref and
 colcon-built into the container's ``/ws`` overlay.
@@ -152,7 +153,7 @@ repository is recorded in the image's build manifest (``vcs.txt``, see
 :ref:`what an image records <image-records>`), which for a source-built package is the only
 statement anywhere of what code the overlay holds. The overlay is ``/ws``, the workspace the
 framework image already builds into and the entrypoint already sources, so the packages are on
-the environment of every process a run starts, by the mechanism that was already there.
+the environment of every process a run starts, with no mechanism of their own.
 
 A build that clones nothing, or that ends up selecting no packages, fails the image build with a
 message naming the repository, rather than producing an image that quietly lacks them. The clone
@@ -263,7 +264,7 @@ by saying so:
    make release-images PROJECT=docker.io/<ns> \
         UBUNTU_MIRROR=https://<mirror>/ubuntu UBUNTU_SNAPSHOT=none
 
-``UBUNTU_SNAPSHOT=none`` drops the dated path, installs whatever that archive serves today, and
+``UBUNTU_SNAPSHOT=none`` drops the dated path, installs whatever that archive serves at build time, and
 labels the images ``org.robovast.ubuntu-snapshot=none``. That label is the point: a campaign
 built on such an image records that it cannot be rebuilt to the same package versions, and
 ``check-recipe`` and ``rebuild_from_recipe`` say so rather than reporting a pruned snapshot.
@@ -348,11 +349,14 @@ Moving a cluster's images
    ROBOVAST_PROJECT=ghcr.io/cps-test-lab vast service upgrade
 
 ``upgrade`` is the command for this, not ``setup --force``. It recovers the cluster's own
-configuration and ingress host *from the cluster*, then touches only the Deployment's
-image, RBAC and the credential Secrets, and always restarts the pod — which is the only way
-``envFrom`` Secrets are re-read. ``setup`` **provisions**: it re-runs the GPU device-plugin
-install, the results volume and the registry storage, and it takes its options as arguments, so a re-run
-without the original flags re-provisions with different ones.
+configuration and ingress host *from the cluster*, reconciles the cluster state a version may
+need (RBAC, node labels, the registry route), and rolls the Deployment onto the new image with
+the credential Secrets rebuilt from the environment. The roll always restarts the pod, which is
+the only way ``envFrom`` Secrets are re-read. ``--no-restart`` stops after the cluster state,
+which the running pod picks up, and moves neither the image nor the Secrets. ``setup``
+**provisions**: it re-runs the GPU device-plugin install, the results volume and the registry
+storage, and it takes its options as arguments, so a re-run without the original flags
+re-provisions with different ones.
 
 
 .. _image-records:
@@ -432,7 +436,7 @@ is what an experiment depends on.
 
 Two things it needs that are easy to miss. The **Dockerfile is an input**, and the recipe records
 the commit it came from rather than the file, so the rebuild checks that revision out first and
-refuses if it cannot; building today's Dockerfile with an old image's pins tests a combination
+refuses if it cannot; building the current Dockerfile with an old image's pins tests a combination
 that never existed. And the recipe and the lock must come from the **same** image — a tag means
 different bytes locally and remotely the moment the registry moves ahead, so a real comparison
 insists on one image and only ``--plan-only`` may ask the registry.
@@ -453,9 +457,9 @@ lock records what actually ran, so those specs can be replaced by exactly those 
 ``vast campaign rerun --check`` reports which recorded images carry a lock, because that is what
 decides whether a rebuild would install the same software or merely something compatible.
 
-A campaign's own ``_execution/image_build_refs`` records the same facts per container, read from
-the labels at composition time — plus, for a user-supplied image, the ``provenance:`` block its
-author declared. Those survive the image being deleted, which the labels do not.
+A campaign's own ``image_build_refs`` in ``_execution/execution.yaml`` records the same facts
+per container, read from the labels at composition time — plus, for a user-supplied image, the
+``provenance:`` block its author declared. Those survive the image being deleted, which the labels do not.
 
 Which revision a deployment is running
 ``````````````````````````````````````
@@ -475,7 +479,7 @@ Nothing has to be passed to get it. Both the environment variable and the revisi
 derived at build time from the checkout the build scripts live in
 (``container/image_stamp.sh``), so ``make release-images`` bakes them with no extra flag —
 there is deliberately no option for it, because an option is something to forget, and a
-forgotten one produced exactly this gap. A dirty tree bakes ``<sha>+dirty`` and the build says
+forgotten one leaves a deployment unable to say which code it runs. A dirty tree bakes ``<sha>+dirty`` and the build says
 so: such an image corresponds to no commit anyone can check out, and a campaign run against it
 records that rather than looking reproducible.
 
@@ -483,13 +487,14 @@ The same helper bakes ``ROBOVAST_BUILD_DATE`` into the service image, reported a
 and printed by ``vast service info`` as ``built``. It answers the question a revision cannot —
 *how old is what is deployed?* — and it is baked rather than read from
 ``org.opencontainers.image.created`` because a container cannot read its own labels. Unlike the
-revision it changes on every build, so its ``ARG`` sits last in the Dockerfile, where only an
-``ENV`` and two ``LABEL``\ s follow it.
+revision it changes on every build, so its ``ARG`` sits after every install step in the
+Dockerfile and only metadata follows it.
 
 A build outside a git checkout bakes nothing, and ``code_revision`` is then **absent** rather
 than filled with something else. That is a deliberate answer — *this deployment cannot tell
 you* — and it has to stay distinguishable from "a revision that differs", which would send
 someone re-releasing over a service that is already current. Absence is also what an image
 built before the revision was baked in reports; re-release the family and ``upgrade`` to get
-the answer back. The package version is no substitute: it stays ``2.0.0`` across every edit, so
-a caller comparing it reads "same code" where the truth is "no information".
+the answer back. The package version is no substitute: it stays the same across every edit
+between releases, so a caller comparing it reads "same code" where the truth is "no
+information".

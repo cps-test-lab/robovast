@@ -44,7 +44,7 @@ def _project(tmp_path, parameters):
     (tmp_path / "scenario.osc").write_text(_SCENARIO)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent(f"""\
-        version: 6
+        version: 7
         metadata: {{name: rasterized-start-from-test}}
         configuration:
         - name: grid

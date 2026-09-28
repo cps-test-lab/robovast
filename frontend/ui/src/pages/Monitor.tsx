@@ -312,11 +312,11 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   const { choose, confirm, prompt } = useDialogs()
   const { notify } = useToasts()
 
-  // Every action below reports its own outcome. A failure goes to a STICKY toast rather than an
-  // Alert on this card: the card's Alert had nothing that ever cleared it -- no mutation is
-  // reset and the card does not unmount -- so a refusal sat there until the tab was reloaded,
-  // outliving the thing it was about. A sticky toast still waits for the reader; it just does
-  // not become part of the campaign.
+  // Every action below reports its own outcome. A failure goes to an error toast (held for
+  // ERROR_DURATION_MS, longer under the pointer) rather than an Alert on this card: an Alert
+  // here has nothing that ever clears it -- no mutation is reset and the card does not
+  // unmount -- so a refusal would sit there until the tab was reloaded, outliving the thing it
+  // was about. A toast waits long enough to be read; it does not become part of the campaign.
   const failed = (what: string, key: string) => (e: unknown) => notify({
     severity: 'error', key, message: what, note: (e as Error).message,
   })
@@ -327,8 +327,8 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['status', id] })
       qc.invalidateQueries({ queryKey: ['campaigns'] })
-      // A refusal the service returns rather than raises (the busy guard, mostly). Kept a
-      // warning, as it was on the card: it is an expected answer, not a fault.
+      // A refusal the service returns rather than raises (the busy guard, mostly). A warning:
+      // it is an expected answer, not a fault.
       if (res && !res.ok) {
         notify({ severity: 'warning', key: `stop:${id}`, message: 'Stop had no effect.',
                  note: res.message || undefined })
@@ -342,10 +342,9 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   const stopJob = useMutation({
     mutationFn: ({ jobName, reason }: { jobName: string; reason?: string }) =>
       robovast.stopJob(id, jobName, reason),
-    // A warning, not an error, and therefore not sticky: this refusal is the EXPECTED outcome
-    // when the job finished between the poll that drew the button and the click, and the
-    // server's message (which names the phase) is the whole explanation. That judgement was
-    // already in the card it is replacing; only the place it appears has changed.
+    // A warning, not an error, and therefore on the shorter clock: this refusal is the EXPECTED
+    // outcome when the job finished between the poll that drew the button and the click, and the
+    // server's message (which names the phase) is the whole explanation.
     onError: (e: unknown) => notify({
       severity: 'warning', key: `stopjob:${id}`, message: 'Could not stop that job.',
       note: (e as Error).message,
@@ -1751,7 +1750,7 @@ export function Monitor({
         <CircularProgress size={24} />
       ) : !data.campaigns.length ? (
         <Alert severity="info" variant="outlined">
-          No campaigns yet — start one from the Launcher.
+          No campaigns yet — start one with the launcher above.
         </Alert>
       ) : !shown.length ? (
         // An empty list under a filter is not an empty deployment, and has to say which it is.

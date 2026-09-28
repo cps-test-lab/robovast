@@ -11,7 +11,7 @@ from robovast.service.image_build import extract_build_specs
 
 
 def _cfg(**containers):
-    return {"version": 6, "execution": {"containers": containers, "runs": 1}}
+    return {"version": 7, "execution": {"containers": containers, "runs": 1}}
 
 
 # -- the schema --------------------------------------------------------------------
@@ -136,7 +136,7 @@ def test_a_per_cluster_cpu_list_is_checked_entry_by_entry():
     entry is wrong ever fails, and only once it is the active context."""
     with pytest.raises(ValueError, match="is not a CPU quantity"):
         validate_config(_cfg(scenario={"image": "a", "resources": {
-            "cpu": [{"gcp-c4": "500m"}, {"local": "8Gi"}]}}))
+            "cpu": [{"cloud.example": "500m"}, {"local": "8Gi"}]}}))
 
 
 # -- the v1 cut --------------------------------------------------------------------
@@ -350,7 +350,7 @@ def test_a_campaigns_own_config_wins_over_a_neighbours(tmp_path):
 
     mine = tmp_path / "aaa-experiment-2026-08-07-000001"
     other = tmp_path / "zzz-experiment-2026-08-04-000001"
-    for d, body in ((mine, "version: 6\n"), (other, "version: 1\n")):
+    for d, body in ((mine, "version: 7\n"), (other, "version: 1\n")):
         (d / "_config").mkdir(parents=True)
         (d / "_config" / "campaign.vast").write_text(body)
 
@@ -464,10 +464,10 @@ def test_memory_that_is_not_a_memory_quantity_is_refused_here(memory):
 def test_a_per_cluster_memory_list_is_checked_entry_by_entry():
     with pytest.raises(ValueError, match="is not a memory quantity"):
         validate_config(_cfg(scenario={"image": "a", "resources": {
-            "memory_limit": [{"gcp-c4": "16Gi"}, {"local": "16GB"}]}}))
+            "memory_limit": [{"cloud.example": "16Gi"}, {"local": "16GB"}]}}))
 
 
-@pytest.mark.parametrize("gpu", [-1, [{"local": 1}, {"gcp-c4": -1}]])
+@pytest.mark.parametrize("gpu", [-1, [{"local": 1}, {"cloud.example": -1}]])
 def test_a_negative_gpu_count_is_refused_here(gpu):
     with pytest.raises(ValueError, match="is not a GPU count"):
         validate_config(_cfg(scenario={"image": "a", "resources": {"gpu": gpu}}))

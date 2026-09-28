@@ -21,7 +21,7 @@ def _campaign(tmp_path, name="camp-a"):
     write_campaign_db(root, name)
     (root / "_config").mkdir()
     vast = root / "_config" / "c.vast"
-    vast.write_text("version: 6\nresults_processing:\n  health_checks: [c]\n")
+    vast.write_text("version: 7\nresults_processing:\n  health_checks: [c]\n")
     return root, str(vast)
 
 
@@ -128,6 +128,27 @@ def test_an_uninstalled_name_is_reported_rather_than_silently_skipped(caplog):
         checks = load_health_checks(declared=["nav2_health_that_is_not_installed"])
     assert "nav2_health_that_is_not_installed" not in checks
     assert "not installed" in caplog.text
+
+
+def test_a_mapping_entry_passes_its_parameters_to_the_checks_class(tmp_path):
+    (tmp_path / "check.py").write_text(
+        "class Check:\n"
+        "    def __init__(self, threshold=1):\n"
+        "        self.threshold = threshold\n"
+        "    def __call__(self, conn, campaign_id):\n"
+        "        return []\n")
+    checks = load_health_checks(declared=[{"./check.py:Check": {"threshold": 5}}],
+                                config_dir=str(tmp_path))
+    assert checks["./check.py:Check"].threshold == 5
+
+
+def test_a_parameter_given_to_a_function_check_is_refused_rather_than_dropped(tmp_path, caplog):
+    (tmp_path / "check.py").write_text("def check(conn, campaign_id):\n    return []\n")
+    with caplog.at_level("WARNING"):
+        checks = load_health_checks(declared=[{"./check.py:check": {"threshold": 5}}],
+                                    config_dir=str(tmp_path))
+    assert checks == {}
+    assert "threshold" in caplog.text
 
 
 # -- the campaign-end pass writes it -------------------------------------------------------

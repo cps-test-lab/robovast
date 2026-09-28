@@ -93,10 +93,9 @@ just reads, aggregates and names.
 *How* it aggregates is a real choice, and the obvious answer is usually the wrong
 one. Averaging hides the run you care about — four comfortable landings and one that
 nearly tipped over average to "comfortable" — and on a quality-diversity archive it
-collapses the very spread the archive exists to map: measured on a quadrotor QD
-campaign, behaviour measures averaged over five runs filled 3 of 512 cells, because
-averaging pulled every cell toward the middle of the behaviour space before the
-archive saw it. :func:`robovast.search.aggregate.aggregate` provides ``worst``
+collapses the very spread the archive exists to map: behaviour measures averaged over
+several runs fill only a small fraction of the archive's cells, because averaging pulls
+every cell toward the middle of the behaviour space before the archive sees it. :func:`robovast.search.aggregate.aggregate` provides ``worst``
 (the default), ``quantile`` (a pessimistic tail that one freak run cannot define) and
 ``mean`` (which must be asked for by name)::
 
@@ -407,7 +406,8 @@ evaluations — the complement to ``random`` (coverage) and ``qd`` (diversity).
 ``strategy_parameters``:
 
 * ``sampler`` — ``tpe`` (default, Tree-structured Parzen Estimator), ``cmaes``
-  (CMA-ES; strong on smooth continuous spaces) or ``random``.
+  (CMA-ES; strong on smooth continuous spaces), ``random``, or ``nsga2`` (NSGA-II, the
+  Pareto sampler: required with more than one objective, refused with one).
 * ``constant_liar`` — for ``tpe``, improves batched (per-batch) asks by
   penalizing in-flight points (default ``true``).
 * ``n_startup_trials`` — random trials before the model takes over (optional).
@@ -629,10 +629,10 @@ Why a fixed repetition count wastes most of its runs
 simultaneously too many and too few. A cell whose runs all agree was decided by its
 first one; a cell on a failure boundary is exactly where more samples buy something.
 
-Measured on a quadrotor search campaign: **3 of 32 configurations produced a mixed
-outcome across 5 repetitions**. The other 29 spent 5 runs each to establish a single
-bit — 145 of 160 runs. At three milliseconds a run that is invisible; at ninety
-seconds a run it is the campaign's whole budget.
+Typically **only the few configurations on a failure boundary produce a mixed outcome
+across their repetitions**; every other cell spends its whole count establishing a single
+bit. When a run takes milliseconds that is invisible; when it takes minutes it is most of
+the campaign's budget.
 
 The ``repetitions`` block
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -647,12 +647,12 @@ The ``repetitions`` block
        min: 1                 # floor: the cheapest a cell can be evaluated
        max: 8                 # ceiling: the cost guard
        neighbours: 5          # how many evaluated neighbours judge "contested"
-       paired: false          # reuse one seed list across cells (see below)
+       paired: false          # true is refused (see below)
 
 Omitting the block entirely is not a policy of uniformity — it is the *absence* of a
-policy, and every cell runs ``execution.runs`` times exactly as it always did.
+policy, and every cell runs ``execution.runs`` times.
 
-* ``fixed`` — every cell gets the same count. Today's behaviour, stated explicitly.
+* ``fixed`` — every cell gets ``execution.runs``, the same as omitting the block.
 * ``adaptive`` — a cell whose nearest already-evaluated neighbours **agree** gets
   ``min``; one sitting where they **disagree** gets up to ``max``.
 
@@ -676,7 +676,7 @@ Two consequences worth knowing:
   cell gets ``min``. Guessing high would rebuild the uniform waste with a different
   constant.
 * When **every observation so far agrees**, no neighbourhood can be contested and
-  everything gets ``min``. That is the 29-of-32 case, and spending the floor on it is
+  everything gets ``min``. That is the common case above, and spending the floor on it is
   the correct answer, not a degenerate one.
 
 A strategy still outranks the policy
@@ -695,8 +695,8 @@ accordingly, so a batch may become several execution groups.
 Budgeting a search whose repetitions vary
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Once repetitions are adaptive, ``batches × per_batch × execution.runs`` no longer
-predicts anything. Bound the campaign with ``budget: [{runs: N}]``, which counts
+With adaptive repetitions, ``batches × per_batch × execution.runs`` does not predict
+the spend. Bound the campaign with ``budget: [{runs: N}]``, which counts
 executions directly. This is also what makes two strategies comparable: a fair contest
 gives both the same number of runs, not the same number of batches.
 
@@ -708,19 +708,20 @@ spent one, and stop a ``runs`` budget in the wrong place.
 Pairing, and what it does not buy
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-``paired: true`` reuses one seed list across every cell, so two cells are compared
-run-for-run instead of only in distribution — a variance reduction that lets a real
-difference show up in far fewer runs.
+``paired: true`` and ``seed_parameter`` are **refused**. Pairing would reuse one seed
+list across every cell, so two cells are compared run-for-run instead of only in
+distribution, and ``seed_parameter`` would name the variation channel the per-repetition
+seed is delivered on (e.g. ``{sim: seed}``). Both need repetition *i* of every cell to draw
+the same noise, which takes a per-run seed no execution backend delivers: a simulator
+override document is written per configuration, so every repetition of a cell would
+receive the same seed and stop varying. Repetitions are therefore unseeded: they still
+vary, and they cannot be paired or replayed.
 
-Be clear about its limits. Pairing covers the **simulator's** seeded noise. A system
-under test running asynchronously in its own container — message timing, callback
-order, CPU contention — is not replayable, so a single run is never reproducible even
-paired, and every claim a search makes remains distributional: *"this configuration
-fails about 40% of the time"*, never *"this run fails"*.
-
-``seed_parameter`` names the variation channel the per-repetition seed is delivered on
-(e.g. ``{sim: seed}``). Without it, repetitions still differ — they are simply
-unseeded, so neither pairing nor replay is available.
+A seed would cover only the **simulator's** noise. A system under test running
+asynchronously in its own container — message timing, callback order, CPU contention — is
+not replayable, so a single run is never reproducible, and every claim a search makes is
+distributional: *"this configuration fails about 40% of the time"*, never *"this run
+fails"*.
 
 Postprocessing: one mechanism, two lists
 -----------------------------------------

@@ -24,7 +24,7 @@ def campaign(tmp_path):
     cfg = cdir / "_config"
     cfg.mkdir(parents=True)
     (cfg / "demo.vast").write_text(yaml.safe_dump({
-        "version": 6,
+        "version": 7,
         "configuration": [{"name": "sweep"}],          # an "as-ran" block to preserve
         "results_processing": {"postprocessing": ["rosbags_to_csv"]},
     }))
@@ -47,6 +47,39 @@ def test_update_overwrites_config_in_place_no_override_dir(campaign):
     # ...and the as-ran block is preserved.
     assert data["configuration"] == [{"name": "sweep"}]
     assert get_postprocessing(campaign)["entries"] == ["rosbags_to_csv", "command"]
+
+
+_AUTHORED = """\
+version: 7
+# why this image: the one the paper's figures were made with
+execution:
+  image: 'example.invalid/sim:1'  # pinned on purpose
+configuration:
+  - name: sweep
+results_processing:
+  postprocessing: [rosbags_to_csv]
+---
+second: document
+"""
+
+
+def test_an_edit_keeps_the_files_comments_quoting_and_other_documents(campaign):
+    """The campaign's .vast is what a rerun hands a person to edit, so an edit of one
+    block leaves the rest of the file as it was written: its comments, its quoting and
+    every document after the first."""
+    campaign_vast(campaign).write_text(_AUTHORED)
+    update_postprocessing(campaign, ["rosbags_to_csv", "command"])
+    update_visualization(campaign, "visualization:\n  panels: []\n")
+    text = campaign_vast(campaign).read_text()
+    assert "# why this image: the one the paper's figures were made with" in text
+    assert "image: 'example.invalid/sim:1'  # pinned on purpose" in text
+    assert text.endswith("---\nsecond: document\n")
+    assert get_postprocessing(campaign)["entries"] == ["rosbags_to_csv", "command"]
+    assert "panels: []" in get_visualization(campaign)["content"]
+    documents = list(yaml.safe_load_all(text))
+    assert documents[0]["results_processing"]["postprocessing"] == ["rosbags_to_csv", "command"]
+    assert documents[0]["visualization"] == {"panels": []}
+    assert documents[1] == {"second": "document"}
 
 
 def test_update_is_idempotent_overwrite(campaign):

@@ -215,7 +215,7 @@ def _project_needing_a_build(tmp_path, python_packages=None):
     from robovast.common.config import validate_config
     (tmp_path / "p.vast").write_text("")
     campaign_config = validate_config({
-        "version": 6,
+        "version": 7,
         "execution": {"runs": 1, "containers": {"scenario": {
             "image": "base:1",
             "python_packages": python_packages or ["shapely>=2.0"]}}}})
@@ -1424,7 +1424,7 @@ def _stepped_campaign(tmp_path, revision):
         yaml.safe_dump({"image_revision": revision}))
     (tmp_path / "_config").mkdir(parents=True, exist_ok=True)
     (tmp_path / "_config" / "p.vast").write_text(yaml.safe_dump(
-        {"version": 6, "execution": {"containers": {"scenario": {"image": "reg/combined:1"},
+        {"version": 7, "execution": {"containers": {"scenario": {"image": "reg/combined:1"},
                                                     "simulation": {}}}}))
     return tmp_path
 
@@ -1461,7 +1461,7 @@ def test_scene_geometry_refuses_rather_than_borrow_the_scenario_image(tmp_path):
         yaml.safe_dump({"image_revision": "reg/scenario@sha256:" + "a" * 64}))
     (tmp_path / "_config").mkdir(parents=True)
     (tmp_path / "_config" / "p.vast").write_text(yaml.safe_dump(
-        {"version": 6, "execution": {"containers": {"scenario": {"image": "reg/scenario:1"},
+        {"version": 7, "execution": {"containers": {"scenario": {"image": "reg/scenario:1"},
                                                     "simulation": {"image": "reg/sim:1"}}}}))
     with pytest.raises(scene_cache.SceneUnavailable) as err:
         scene_cache.world_identity(tmp_path, {"world": "w.yaml", "overrides": {}})
@@ -1479,7 +1479,7 @@ def _scene_identity_for(tmp_path, world, archive=True):
     # The frozen `.vast` names the simulator, which is who says how to rebuild the geometry.
     vast = tmp_path / "_config" / "p.vast"
     vast.parent.mkdir(parents=True, exist_ok=True)
-    vast.write_text("version: 6\nexecution:\n  mode: ros2\n  containers:\n    simulation:\n"
+    vast.write_text("version: 7\nexecution:\n  mode: ros2\n  containers:\n    simulation:\n"
                     "      backend: roqsim\n      config: roqsim_scenes:depot\n")
     meta = {"image_revisions": {"simulation": "reg/sim@sha256:" + "b" * 64}}
     with patch("robovast.common.campaign_data.read_execution_metadata", lambda _p: meta):
@@ -2217,3 +2217,36 @@ def test_a_job_with_no_pod_yet_reports_no_node(cs, monkeypatch):
     _one_running_job(cs, monkeypatch, phase="Pending")
 
     assert cs.list_jobs("camp-2026-07-17-120000").jobs[0].node is None
+
+
+_PER_CLUSTER = {"cpu": [{"lab.example": 4}, {"cloud.example": 8}], "memory": "8Gi"}
+
+
+def _backend_of_service(monkeypatch, recorded):
+    """The backend a service builds for a campaign, with *recorded* as its deployed context."""
+    if recorded is None:
+        monkeypatch.delenv("ROBOVAST_KUBE_CONTEXT", raising=False)
+    else:
+        monkeypatch.setenv("ROBOVAST_KUBE_CONTEXT", recorded)
+    svc = ClusterService(namespace="ns1", cluster_config_name="rke2",
+                         cluster_config_kwargs={}, reap_on_start=False)
+    monkeypatch.setattr(svc, "_cluster_config", lambda: None)
+    monkeypatch.setattr(svc, "_admission_controller", lambda: None)
+    return svc._build_backend(None)
+
+
+def test_a_service_with_a_recorded_context_resolves_a_per_cluster_list(monkeypatch):
+    from robovast.execution.cluster_execution.cluster_context import resolve_resources
+    backend = _backend_of_service(monkeypatch, "cloud.example")
+    assert resolve_resources(_PER_CLUSTER, backend.kube_context) == {
+        "cpu": 8, "memory": "8Gi"}
+
+
+def test_a_service_without_a_recorded_context_refuses_naming_the_remedy(monkeypatch):
+    """The launch carries no context, so telling the caller to pass one names a flag that
+    changes nothing; what records the context is redeploying the service."""
+    from robovast.execution.cluster_execution.cluster_context import resolve_resources
+    backend = _backend_of_service(monkeypatch, None)
+    with pytest.raises(ValueError, match="vast service upgrade") as caught:
+        resolve_resources(_PER_CLUSTER, backend.kube_context)
+    assert "lab.example" in str(caught.value) and "cloud.example" in str(caught.value)

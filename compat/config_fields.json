@@ -165,11 +165,6 @@
       "Union[str, NoneType]"
     ],
     [
-      "general",
-      false,
-      "Union[GeneralConfig, NoneType]"
-    ],
-    [
       "metadata",
       false,
       "Union[dict[str, Any], NoneType]"
@@ -379,6 +374,21 @@
       "str"
     ],
     [
+      "post_command",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "pre_command",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "run_as_user",
+      false,
+      "Union[int, NoneType]"
+    ],
+    [
       "run_files",
       false,
       "Union[list[str], NoneType]"
@@ -416,7 +426,7 @@
     [
       "<extra>",
       false,
-      "ignore"
+      "forbid"
     ]
   ],
   "ExplorerConfig": [
@@ -473,13 +483,6 @@
       "<extra>",
       false,
       "forbid"
-    ]
-  ],
-  "GeneralConfig": [
-    [
-      "<extra>",
-      false,
-      "allow"
     ]
   ],
   "ImageProvenanceConfig": [

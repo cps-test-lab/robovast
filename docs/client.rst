@@ -43,8 +43,9 @@ Every group is named after what it acts on, so the group tells you what you are 
    * - ``vast workspace init|update|download|list|delete``
      - Move a directory into a service workspace, and back out again. ``list --json``
        prints what the MCP ``list_workspaces`` tool returns.
-   * - ``vast workspace validate|preview``
-     - Check a project, and see what its sweep expands to — both before spending compute.
+   * - ``vast workspace validate|preview|world``
+     - Check a project, see what its sweep expands to, and describe the world its simulator
+       will load — all before launching a campaign.
    * - ``vast workspace run <ws> [vast]``
      - **Launch a campaign.** The one way to run a ``.vast``. ``--push DIR`` pushes and
        launches in one step; ``--wait-and-download`` blocks and pulls the results down.
@@ -79,6 +80,15 @@ Every group is named after what it acts on, so the group tells you what you are 
      - Have the service build an export -- the tables as parquet or CSV files, the records,
        the bags if asked (``--tables``, ``--format``, ``--bags``, ``--no-records``) -- wait
        for it, and pull it down as one ``.tar.gz`` (:ref:`results-export`).
+   * - ``vast campaign import <archive>``
+     - Take a downloaded campaign archive into the service, and postprocess it if it needs
+       it.
+   * - ``vast campaign postprocess <id>``
+     - (Re)run a campaign's analysis postprocessing; ``--force`` clears its built tables
+       first.
+   * - ``vast campaign tables build|clear <id>``
+     - Build a campaign's tables for every run now, in the background, or remove the built
+       ones to free storage (each is built again on use).
    * - ``vast service info|resources``
      - Which service is answering, which code it runs and whether it has a queue to order;
        whether the cluster has room. ``--json`` prints what the MCP ``get_service_info`` and
@@ -90,6 +100,9 @@ Every group is named after what it acts on, so the group tells you what you are 
    * - ``vast service restart``
      - Roll the deployed service onto the newest image at its tag, through its own API —
        no kubeconfig needed. Reconciles nothing else; see :doc:`deployment`.
+   * - ``vast service mcp-stats``
+     - Which MCP tools agents call, and what they answered (``--calls``, ``--failed``,
+       ``--csv``).
    * - ``vast container exec|stop``
      - Run a command in the experiment image, to test a container before a campaign does.
    * - ``vast files ls|cat|get|put|rm``
@@ -100,6 +113,8 @@ Every group is named after what it acts on, so the group tells you what you are 
        ``next_step`` included.
    * - ``vast doctor``
      - Check the login, the service, and that ``vast`` is on your PATH.
+   * - ``vast install-completion``
+     - Install shell completion for ``vast``, for the shell ``$SHELL`` names.
 
 A verb whose ``--json`` names an MCP tool prints the document that tool returns, built by the
 same function, and draws its plain lines from that document. With ``--json``, stdout carries
@@ -140,7 +155,8 @@ through.
 What is absent, and what is only partly here
 ============================================
 
-**Absent:** ``vast serve``, ``vast config``, ``vast results``, ``vast ui``. They are not
+**Absent:** ``vast serve``, ``vast serve-data``, ``vast config``, ``vast results``,
+``vast share``, ``vast ui``. They are not
 hidden or disabled — the distribution does not register them, so ``vast --help`` on a
 client install lists exactly what it can run. That is the point of installing it alone.
 

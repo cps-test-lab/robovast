@@ -46,8 +46,8 @@ This is the same path every campaign takes, differing only in which service answ
     vast workspace validate <workspace> my.vast             # check it
     vast workspace run <workspace> my.vast --filter config1 --runs 1
 
-``vast workspace list`` names the workspace; ``vast workspace update . <workspace>`` pushes
-an edit. Before a campaign, ``vast container run`` (or the MCP ``exec_in_container``) runs
+``vast workspace list`` names the workspace; ``vast workspace update <workspace> .`` pushes
+an edit. Before a campaign, ``vast container exec`` (or the MCP ``exec_in_container``) runs
 a command or one configuration's scenario in the image, which is where an import error or
 a missing package shows up in seconds rather than after a pull.
 
@@ -361,8 +361,8 @@ system-under-test image is not a robovast image at all, so an absent label on th
 means "not applicable" rather than "unreadable" — failing closed on them would
 refuse every campaign that has a SUT.
 
-An image built before the label existed now reports nothing and is refused.  Those
-images predate protocol 2, below ``MIN_IMAGE_COMPAT``, so a refusal is the
+An image without the label reports nothing and is refused.  Such an image
+predates protocol 2, below ``MIN_IMAGE_COMPAT``, so a refusal is the
 right answer for them regardless — but the message says what to do about it
 (rebuild from the recorded revision, or re-tag with the label) rather than only
 that it could not tell.
@@ -372,7 +372,7 @@ direction because the fixes are not interchangeable: an image **older** than the
 window means "check out the revision the campaign recorded
 (``_execution/execution.yaml``) and run it there", while one **newer** means
 "upgrade robovast".  Neither ever advises pulling a newer image — a re-run needs the
-bytes the campaign recorded, not today's.
+bytes the campaign recorded, not the current ones.
 
 .. warning::
 
@@ -398,15 +398,14 @@ How to bump the version
 2. Rebuild and push the container images
 
 That is the whole procedure, because there is only one copy. The images take the
-value as a build arg that ``container/image_stamp.sh`` derives from that constant
-— the same way they take the git revision and the build date, and for the same
-reason: a constant copied by hand into each Dockerfile drifts, which is why it
-used to need a CI gate comparing the copies. ``image_stamp.sh`` refuses to build
-if it cannot read the constant, rather than producing an image that carries no
-protocol at all.
+value as a build arg derived from that constant -- by ``container/image_stamp.sh``
+for a local build, by ``image.yml`` in CI -- the same way they take the git
+revision and the build date, and for the same reason: a constant copied by hand
+into each Dockerfile drifts. Both refuse to build if they cannot read the
+constant, rather than producing an image that carries no protocol at all.
 
-``image.yml`` still guards the shape: each Dockerfile must declare
-``ARG ROBOVAST_COMPAT_VERSION`` and label from it, so a literal cannot creep back.
+``image.yml`` guards the shape: each Dockerfile must declare
+``ARG ROBOVAST_COMPAT_VERSION`` and label from it, not from a literal.
 
 **Remembering to bump is the part nothing could check** — the version is a claim,
 and it fails by being forgotten. ``make check-compat-version`` (run in CI on every
@@ -535,6 +534,13 @@ To your `pyproject.toml`, add an entry under `[tool.poetry.plugins."robovast.var
 
     [tool.poetry.plugins."robovast.variation_types"]
     "YourVariation" = "robovast_<yourplugin>.your_variation:YourVariation"
+
+A variation does not define ``__init__``: the base class is constructed as
+``Variation(base_path, parameters, progress_update_callback, scenario_file, output_dir,
+container_runner=None)`` and keeps each argument as the attribute of the same name, with
+``parameters`` validated against ``CONFIG_CLASS`` when the class sets one. ``parameters`` is
+the mapping written under the variation's entry, and it is the only configuration a variation
+receives, so every value it reads is declared there.
 
 A variation can also be loaded from a **local file relative to the .vast**
 without packaging it — reference it as ``<path>.py:<Class>`` wherever a variation
@@ -755,16 +761,13 @@ digest it ran, and a hit is served only while the image still resolves to it.
      publish your own set (``make release-images PROJECT=docker.io/<you> PUSH=1``)
      and point ``ROBOVAST_PROJECT`` at it to iterate. This applies
      only to the built-in sources; independent plugins are handled by
-     ``discover_plugin_installs`` above (installed into the workspace, no image
-     rebuild needed).
+     ``config_plugins.ensure_workspace_plugins`` above (installed into the workspace, no
+     image rebuild needed).
 
    If your plugin's package pulls in a dependency that itself needs system
-   shared libraries (e.g. ``robovast-nav`` hard-depends on
-   ``pyside6-essentials``, whose bundled Qt6 libs need ``libGL.so.1`` and
-   friends to even *import*, regardless of whether any GUI is ever shown), the
-   controller image needs those apt packages too — see the
-   ``container/controller/Dockerfile`` apt-get block for the list verified
-   against ``robovast-nav``. A missing system lib shows up the same way as a
+   shared libraries to even *import*, the controller image needs those apt packages
+   too — see the ``container/controller/Dockerfile`` apt-get block for what it
+   carries. A missing system lib shows up the same way as a
    missing extra: the plugin's entry point fails to load and the variation
    type is reported as unknown.
 
@@ -782,7 +785,7 @@ Example plugin registration:
 
 .. code-block:: toml
 
-    [tool.poetry.plugins."vast.plugins"]
+    [tool.poetry.plugins."robovast.cli_plugins"]
     variation = "variation_utils.cli:variation"
 
 
@@ -853,13 +856,13 @@ configured in the ``.vast`` file under ``results_processing.metadata_processing`
            param1: value1
            param2: value2
 
-Each plugin must subclass ``robovast.common.metadata.MetadataProcessor`` and
+Each plugin must subclass ``robovast.results_processing.metadata.MetadataProcessor`` and
 implement the ``process_metadata`` method:
 
 .. code-block:: python
 
    from pathlib import Path
-   from robovast.common.metadata import MetadataProcessor
+   from robovast.results_processing.metadata import MetadataProcessor
 
    class MyMetadataPlugin(MetadataProcessor):
 
@@ -993,7 +996,7 @@ graph.
    ``collect_prov_metadata`` receives ``rdflib.Namespace`` objects
    (``campaign_namespace``, ``config_namespace``) so you can construct
    campaign-relative IRIs with ``campaign_namespace["some/path"]``.
-   ``rdflib`` is a required dependency of the core ``robovast`` package.
+   ``rdflib`` comes with the core package's ``fair`` extra.
 
 
 .. _extending-simulators:
@@ -1028,7 +1031,8 @@ options in preference order.
 
    That two install sites decide this, and only one of them is documented where a backend
    author would look, is worth revisiting: whether a backend *should* be shippable per
-   campaign is a design question, and today the answer is an accident of call order.
+   campaign is a design question, and the answer follows from call order rather than from a
+   decision.
 
 **Where it runs in composition.** ``apply_backend()`` is called once at the top of the
 ``execution`` extraction in ``generate_scenario_variations()``, so the container plan, the
@@ -1292,7 +1296,7 @@ operate on the full results directory.
 Add Cluster Config Plugin
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-To add a new cluster configuration option for RoboVAST, create a class that inherits from `robovast.execution.cluster_config.base.BaseConfig`.
+To add a new cluster configuration option for RoboVAST, create a class that inherits from `robovast.execution.cluster_config.base_config.BaseConfig`.
 Register your cluster config in your `pyproject.toml` under `[tool.poetry.plugins."robovast.cluster_configs"]`. The key is the name used to select the configuration, and the value is the import path to your configuration class.
 
 .. code-block:: toml
@@ -1301,7 +1305,7 @@ Register your cluster config in your `pyproject.toml` under `[tool.poetry.plugin
     "YourClusterConfig" = "robovast_<yourplugin>.your_cluster_config:YourClusterConfig"
 
 To test your cluster configuration, call
-:meth:`~robovast.execution.cluster_config.base_config.BaseClusterConfig.prepare_setup_cluster`
+:meth:`~robovast.execution.cluster_config.base_config.BaseConfig.prepare_setup_cluster`
 with an output directory. It writes the files and the instructions for performing the setup
 steps by hand, without applying anything. There is no CLI verb for it — ``vast cluster setup``
 is the applying path.
@@ -1655,7 +1659,9 @@ batch per ask/tell round.
 Schema
 ^^^^^^
 
-``robovast.common.store.CampaignStore`` is a thin wrapper over five tables::
+``robovast.common.store.CampaignStore`` is a thin wrapper over seven tables: the five below, plus ``node`` (one row per
+cluster node a job ran on, keyed by a hash of its name) and ``container_failure`` (one row per
+container restart the runner saw under a job)::
 
     campaign (1) --< batch (1) --< unit (one per param set / config) (1) --< run (one per repetition)
     campaign (1) --< job  (one per execution job)  ...............<  run (via run.job_id)
@@ -1695,7 +1701,7 @@ Schema
   earlier batch measured it is a ``recalled`` row whose ``recalled_from`` names the unit
   that measured it, with no outcome of its own.
 * **run** — one repetition of a unit (schema v2+). Mirrors that run's
-  ``test.xml``: ``status`` (``passed``/``failed``/``error``/``unknown``),
+  ``test.xml``: ``status`` (``passed``/``failed``/``error``/``killed``/``invalid``/``unknown``),
   ``passed`` (0/1), ``errors``/``failures``/``tests``, ``duration_s``,
   ``start_time`` and ``failure_message``. ``run_id`` is the numeric run index
   within the config dir — so it is **not unique on its own**; ``config_name`` lives
@@ -1716,7 +1722,7 @@ reader can see what a table looks like without replaying history. ``_MIGRATIONS`
 append-only ladder that upgrades an *existing* store; entry *i* takes ``user_version`` *i*
 to *i+1* and is never edited once shipped, because some database on disk has already
 applied it. Note migration 0→1 is a frozen copy of the v1 layout rather than ``_SCHEMA``
-— reusing ``_SCHEMA`` there would jump an old store to today's tables and the later
+— reusing ``_SCHEMA`` there would jump an old store to the current tables and the later
 ``ALTER TABLE`` steps would then fail on columns that already exist.
 
 Adding a column therefore means touching both, in the same position.
@@ -1831,7 +1837,7 @@ because every other stage reads records whose paths and formats the layout decid
 * a stamp that states no layout, or a step that fails, **blocks**.
 
 A step is ``migrate(campaign_dir) -> None`` and rewrites the tree in place; like a config step
-it may not import the model its record is read with now. Layout 1 is the only layout so far,
+it may not import the current model its record is read with. Layout 1 is the only layout so far,
 so the ladder has no steps; ``src/robovast/common/migrations/README.md`` says how to add one.
 
 Three entry points, one implementation: ``vast campaign import`` (locally, or streamed to a
@@ -1920,6 +1926,10 @@ Status: phase and stage
    * - ``sharing``
      - Streaming the raw pre-postprocessing archive to the configured share (only when
        ``upload_to_share`` was set).
+   * - ``importing``
+     - A campaign taken in from an archive or from the share, entering here and, when
+       what arrived was raw, rolling straight on into ``postprocessing``. In the enum so
+       that everything that knows "live" treats an import as work in progress.
    * - ``postprocessing``
      - Chained analysis postprocessing running in the service process: the campaign's own
        steps, then the campaign-end pass (the tables it declares, its health checks, its
@@ -1942,8 +1952,8 @@ Status: phase and stage
 change, so a defensive re-set does not restart the clock). It exists because a phase name
 alone cannot separate *slow* from *wedged*: an image build in progress and one that will
 never finish both read ``building``. Readers render it as an age — the MCP status returns
-``phase_age_s``, and the web Monitor shows it beside the phase dot while a pre-run phase is
-in effect, where there is no progress bar to watch instead.
+``phase_age_s``, and the web UI's Campaigns page shows it beside the phase dot while a pre-run
+phase is in effect, where there is no progress bar to watch instead.
 
 .. _a-started-campaign-is-findable:
 
@@ -2019,7 +2029,7 @@ two campaigns needing the same image both wait on one build. Two consequences:
 * Stopping a building campaign **detaches** it. ``_await_build_image`` raises
   ``CampaignStopped`` and touches neither the build Job nor the local build thread: a
   sibling may be waiting on that build, and the image is a cache entry rather than this
-  campaign's property. Nothing cancels a build today — the cluster teardown is label-scoped
+  campaign's property. Nothing cancels a build — the cluster teardown is label-scoped
   to ``jobgroup=scenario-runs`` and cannot reach a ``jobgroup=image-builds`` Job, and the
   local ``docker rm -f robovast`` cannot reach a ``buildx`` thread — and it must stay that
   way.
@@ -2037,8 +2047,8 @@ is exactly when someone comes looking. It is also why
 ``controller._record_controller_outcome`` uploads ``build.log`` alongside ``outcome.json``
 — a campaign that died waiting for its image never reaches ``finalize_campaign`` at all.
 
-This changes an error path on purpose: a failed build is now an inspectable ``failed``
-campaign — reason in its status, output in its own log — rather than a 500 and no campaign.
+A failed build is therefore an inspectable ``failed`` campaign — reason in its status,
+output in its own log — rather than a 500 and no campaign.
 Building is part of the campaign's driven work, not a precondition of its existence.
 
 Control operations
@@ -2087,8 +2097,8 @@ mappings documented under *Per-Cluster Resource Limits* in
 :doc:`cluster_execution`) lives in :mod:`robovast.execution.cluster_execution.cluster_context`:
 
 .. automodule:: robovast.execution.cluster_execution.cluster_context
-   :members: get_active_kube_context, list_all_contexts, get_config_context_names,
-             require_context_for_multi_cluster, resolve_resource_value, resolve_resources
+   :members: get_active_kube_context, list_all_contexts, resolve_resource_value,
+             resolve_resources
    :undoc-members:
 
 
@@ -2173,8 +2183,8 @@ React app that reuses those libraries directly.
 request/response models (including :class:`~robovast.execution.control_server.Status`)
 — **1:1**, exactly as the Python ``HTTPTransport`` does. When the interface changes,
 update this file. Pages call the client via TanStack Query (``refetchInterval`` drives
-the Monitor's live polling; mutations drive create/stop). Current pages:
-``pages/Monitor.tsx`` (the launch bar merged into it — there is no separate Launcher),
+the Campaigns page's live polling; mutations drive create/stop). Pages:
+``pages/Monitor.tsx`` (the Campaigns page, which holds the launch bar),
 ``pages/config/ConfigPage.tsx``, ``pages/results/ResultsPage.tsx`` and
 ``pages/admin/AdminPage.tsx``, sharing ``components/StatusView.tsx`` for the live
 ``Status`` render.
@@ -2298,10 +2308,10 @@ is the app-wide way to state a passing fact — mounted once in ``main.tsx``, us
 question and blocks on the answer, this one states a fact and gets out of the way. Three rules
 travel with it.
 
-*Failures do not go through it.* The ``Severity`` union in ``lib/toasts.ts`` has no ``error``
-member, which is the rule expressed as a type: a refusal or an error carries backend text worth
-reading twice and keeps its inline ``Alert`` with ``ErrorText``. Only successes and dispatches
-become transient.
+*A failure stays longer.* The ``Severity`` union in ``lib/toasts.ts`` has an ``error`` member
+held for ``ERROR_DURATION_MS`` rather than the passing notice's clock, because a refusal or an
+error carries backend text worth reading twice; hovering holds it for as long as the reader
+needs.
 
 *It is not a notifier.* The provider draws a rectangle and nothing else. A caller that also
 wants an OS-level notification — the campaign lifecycle watcher in ``CampaignStreamProvider``,
@@ -2487,7 +2497,7 @@ Built-ins ship no assets; a type with neither shows just the resolved parameters
 
 **Results viewer** (``frontend/ui/src/pages/results/``): pick a
 campaign, browse its results schema, run read-only SQL, and chart the result with
-**Vega-Lite** (``frontend/ui/src/preview/VegaLiteChart.tsx`` — rows bound in as ``data.values``).
+**Vega-Lite** (``frontend/ui/src/components/VegaLiteChart.tsx`` — rows bound in as ``data.values``).
 The two data-query ops — ``describe_campaign_data`` / ``query_campaign_data_sql`` — are
 ``RobovastInterface`` operations; the SQL goes through one shared, directory-based helper,
 :mod:`robovast.results_processing.data_query`, which hands it to the DuckDB engine of
@@ -2500,10 +2510,10 @@ identically, and while a campaign is still running. User-declared plots (``visua
 :class:`robovast.common.config.PlotSpec`) are surfaced by ``list_campaign_plots`` and rendered by
 the same Vega-Lite component.
 
-**Run view panel framework** (``frontend/ui/src/lib/dashboard/``) — the Run view (user guide:
-:ref:`web_ui`) is a small plugin framework with three deliberate seams, all designed so a
-future **live view** (watching a running system instead of replaying a rosbag) slots in
-without touching any panel:
+**Run view panel framework** (``frontend/ui/src/lib/panels/``) — the Run view (user guide:
+:ref:`web_ui`) is a small plugin framework with three deliberate seams, all designed so the
+**live view** (watching a running system instead of replaying a rosbag) slots in without
+touching any panel:
 
 * **Panels** are plugins with **two delivery mechanisms behind one contract**. A
   ``PanelPlugin`` = manifest (type name + layout defaults) + React component implementing
@@ -2559,19 +2569,19 @@ without touching any panel:
   nearest-sample lookups, a **generic run-scoped** ``fetchRun(endpoint, params)`` (GET a
   campaign endpoint with ``config_name``+``run_id`` applied — how a panel reaches a
   specialized endpoint without the generic seam knowing about it, e.g. the costmap panel's
-  nav grids), and ``runFileUrl`` for per-run artifact files — today implemented over the
-  read-only data-query endpoints (``dbDataProvider``); a live implementation would wrap a
-  rosbridge buffer. ``timeSeries.ts`` wraps one table as a time-indexed ``TimeSeriesSource``
+  nav grids), and ``runFileUrl`` for per-run artifact files. ``dbDataProvider`` implements it
+  over the read-only data-query endpoints and returns the host's ``LiveDataProvider``, whose
+  ``subscribeLive`` follows a run that is still recording (``liveFeed.ts``). ``timeSeries.ts`` wraps one table as a time-indexed ``TimeSeriesSource``
   (``at(t)``/``upTo(t)``).
-* **Time** comes only from the shared ``PlaybackClock`` (``clock.ts``), an external store
+* **Time** comes only from the shared ``PlaybackClock`` (``frontend/panel-kit/src/clock.ts``), an external store
   (not React state) so display-rate updates don't re-render the tree; canvas panels
   subscribe imperatively via ``useCanvasClock``.
 
 **Package-provided & user-authored panels (Module Federation).** A remote panel is loaded
-at runtime by exactly the seam the variation-preview path uses (above) — the two now share
+at runtime by exactly the seam the variation-preview path uses (above) — the two share
 their machinery. Server side, ``_resolve_plugin_asset(group, name, rel, asset_attr)`` (in
 ``service/app.py``) and ``_plugin_remotes(group, asset_attr, url_builder, module_attr)`` (in
-``service/client.py``) are the generalized forms of the old variation-only helpers;
+``service/service_base.py``) are the generalized forms of the variation-only helpers;
 ``_variation_remotes`` and ``_panel_remotes`` are thin wrappers. A **package panel** is a
 class in the ``robovast.panel_types`` entry-point group declaring ``WEB_PANEL`` (its built
 bundle dir, shipped as package data) + ``PANEL_MODULE``; the service serves it at
@@ -2598,9 +2608,9 @@ samples too large to preload) are in-tree source that both the host and each rem
 their own bundle. Resolve it with a ``tsconfig`` ``paths`` entry plus a matching vite
 ``resolve.alias`` — see ``src/robovast_nav/web`` for the two lines. Do **not** add it to the MF
 ``shared`` map: bundling a private copy is what keeps a version skew between an installed package
-and a newer host UI an ordinary build rather than a remote-load failure. The earlier arrangement — a
-hand-maintained ``contract.ts`` mirror plus a re-implementation of the host's canvas/clock
-scaffolding — is what let a fetch-staleness bug exist in the costmap panel and nowhere else.
+and a newer host UI an ordinary build rather than a remote-load failure. A hand-maintained
+mirror of the contract, or a re-implementation of the host's canvas/clock scaffolding, would
+let a bug exist in one panel and nowhere else.
 
 A panel type may also declare an optional ``REMOTE_NAME`` — the Module-Federation *container*
 name, defaulting to the entry-point name (one container per type). Panels that share a single
@@ -2647,7 +2657,7 @@ table in an existing schema still gets a type of its own, but derives the panel.
 :mod:`robovast.service.endpoint_plugin`) — an installed package contributes a run-scoped data
 endpoint served at ``GET /campaigns/{id}/<name>?config_name=…&run_id=…&…`` → JSON, with **no core
 edit and no frontend change** (the run view already reaches any such endpoint via
-``data.fetchRun(name, params)``, ``frontend/ui/src/lib/dashboard/dataProvider.ts``). This closes the last
+``data.fetchRun(name, params)``, ``frontend/ui/src/lib/panels/dataProvider.ts``). This closes the last
 core-coupling for a self-contained analysis package: it ships a **postprocessing** plugin (writes a
 run-level data file, which is a table), a **service endpoint** (serves it), and a **panel**
 (renders it) — all via entry points; a table the decoder already builds needs only the last two. The mechanism mirrors the MCP-plugin loader: a ``ServiceEndpoint`` ``Protocol``
@@ -2678,14 +2688,16 @@ series converging on that pivot, so a notch moves millimeters once you are close
 never be passed through — flying the eye *and* the pivot along the cursor ray keeps the radius, and
 with it the step size, constant. The same change makes a fixed far plane visible, so ``viewport.ts``
 sizes the frustum each frame to enclose the world's bounding sphere — measured from the *scene*, not
-from the pivot, which the wheel now carries along and which is therefore constant by design.
+from the pivot, which the wheel carries along and which is therefore constant by design.
 **Extractability rule: files in this directory import only
 ``three`` — never ``@/…``** (see its README) — it is shared-candidate code, so all
-robovast-specific wiring lives in the consumer, ``frontend/ui/src/panels/Scene3DPanel.tsx``, which
-binds the vast spec, fetches the descriptor via ``DataProvider.runFileUrl``
-(``GET /results/<campaign>/<config>/<run>/<path>`` — the address is the run's real
-directory, so the loader's *relative* sibling fetches, ``scene.bin``/textures, stay in
-it), and drives ``basePose`` from the clock.
+robovast-specific wiring lives in the two consumers, ``frontend/ui/src/panels/run_view/Scene3DPanel.tsx``
+and ``frontend/ui/src/panels/config/Scene3DPanel.tsx``. Both resolve the descriptor through
+``useSceneGeometry.ts``: the service compiles it on demand in the campaign's image and caches it
+per world (``GET /campaigns/{id}/scene`` asks, one ``POST .../scene/run`` builds; the config view
+uses the workspace's ``/workspaces/{id}/scene``). The run view's panel drives ``jointMap`` and
+``basePose`` from the run's ``sim_poses`` and ``joint_states`` rows on the clock; the config
+view's has no clock and draws what the variations placed as markers.
 
 Deferred: a bundle code-split (Monaco + Plotly + Vega + Module Federation make the SPA large).
 
@@ -2899,7 +2911,7 @@ Two entry points share one implementation:
   the campaign view shows it live. A minutes-to-hours re-run therefore never blocks the caller.
 
 The **upload-to-share** step mirrors this: a failure records ``share_error`` (durable) instead of
-being swallowed, and :meth:`~robovast.execution.cluster_execution.cluster_service.ClusterService.run_share` re-triggers it (web *Retrigger upload-to-share*,
+being swallowed, and :meth:`~robovast.service.service_base.ServiceBase.run_share` re-triggers it (web *Retrigger upload-to-share*,
 MCP ``run_share``, ``POST /campaigns/{id}/share/run``) — also via ``_dispatch_background``
 (``sharing`` phase). Both re-triggers need no live in-memory campaign entry, so they work after a
 service restart. An archive — a share, ``vast campaign download``, the web UI's download — carries
@@ -2926,7 +2938,7 @@ Load the metadata graph
   from rdflib import Graph
 
   g = Graph()
-  g.parse("metadata.prov.json)
+  g.parse("metadata.prov.json")
 
 
 
