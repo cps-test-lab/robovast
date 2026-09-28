@@ -20,8 +20,9 @@ Output Structure
 ----------------
 
 The results directory is named with ``--results-dir``: on the serve command the
-deployment runs for where campaigns land, and on each ``vast results`` verb for which
-tree to read.
+deployment runs for where campaigns land, and on the ``vast results`` verbs that read a
+tree (``publish``, ``generate-metadata``, ``merge-campaigns``; ``backfill-provenance``
+takes it as its argument).
 
 Top-Level Layout
 ^^^^^^^^^^^^^^^^

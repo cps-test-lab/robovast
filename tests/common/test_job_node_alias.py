@@ -19,7 +19,7 @@ def _cfg(kubernetes=None, **execution):
     ex = {"containers": {"scenario": {"image": "a"}}, "runs": 1, **execution}
     if kubernetes is not None:
         ex["kubernetes"] = kubernetes
-    return {"version": 6, "execution": ex, "configuration": [{"name": "a"}]}
+    return {"version": 7, "execution": ex, "configuration": [{"name": "a"}]}
 
 
 def _node(value):

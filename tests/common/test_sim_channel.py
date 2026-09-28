@@ -94,12 +94,12 @@ def test_the_retired_name_key_is_refused_naming_both_channels():
 ])
 def test_exactly_one_destination_is_required(params):
     with pytest.raises(Exception):
-        ParameterVariationList("", params, {}, lambda m: None, "s.osc", "/tmp")
+        ParameterVariationList("", params, lambda m: None, "s.osc", "/tmp")
 
 
 def test_a_variation_writes_the_channel_its_key_names():
     def run(params):
-        v = ParameterVariationList("", params, {}, lambda m: None, "s.osc", "/tmp")
+        v = ParameterVariationList("", params, lambda m: None, "s.osc", "/tmp")
         return v.variation([{"name": "c", "config": {}}])
 
     scenario_side = run({"scenario": "goal_pose", "values": [1.0, 2.0]})

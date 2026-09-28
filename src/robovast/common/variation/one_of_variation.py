@@ -146,7 +146,6 @@ class OneOfVariation(Variation):
             child = child_class(
                 self.base_path,
                 child_params,
-                self.general_parameters,
                 self.progress_update_callback,
                 self.scenario_file,
                 self.output_dir,

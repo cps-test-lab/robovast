@@ -406,7 +406,8 @@ evaluations — the complement to ``random`` (coverage) and ``qd`` (diversity).
 ``strategy_parameters``:
 
 * ``sampler`` — ``tpe`` (default, Tree-structured Parzen Estimator), ``cmaes``
-  (CMA-ES; strong on smooth continuous spaces) or ``random``.
+  (CMA-ES; strong on smooth continuous spaces), ``random``, or ``nsga2`` (NSGA-II, the
+  Pareto sampler: required with more than one objective, refused with one).
 * ``constant_liar`` — for ``tpe``, improves batched (per-batch) asks by
   penalizing in-flight points (default ``true``).
 * ``n_startup_trials`` — random trials before the model takes over (optional).
@@ -646,12 +647,12 @@ The ``repetitions`` block
        min: 1                 # floor: the cheapest a cell can be evaluated
        max: 8                 # ceiling: the cost guard
        neighbours: 5          # how many evaluated neighbours judge "contested"
-       paired: false          # reuse one seed list across cells (see below)
+       paired: false          # true is refused (see below)
 
 Omitting the block entirely is not a policy of uniformity — it is the *absence* of a
-policy, and every cell runs ``execution.runs`` times exactly as it always did.
+policy, and every cell runs ``execution.runs`` times.
 
-* ``fixed`` — every cell gets the same count. Today's behaviour, stated explicitly.
+* ``fixed`` — every cell gets ``execution.runs``, the same as omitting the block.
 * ``adaptive`` — a cell whose nearest already-evaluated neighbours **agree** gets
   ``min``; one sitting where they **disagree** gets up to ``max``.
 
@@ -707,19 +708,20 @@ spent one, and stop a ``runs`` budget in the wrong place.
 Pairing, and what it does not buy
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-``paired: true`` reuses one seed list across every cell, so two cells are compared
-run-for-run instead of only in distribution — a variance reduction that lets a real
-difference show up in far fewer runs.
+``paired: true`` and ``seed_parameter`` are **refused**. Pairing would reuse one seed
+list across every cell, so two cells are compared run-for-run instead of only in
+distribution, and ``seed_parameter`` would name the variation channel the per-repetition
+seed is delivered on (e.g. ``{sim: seed}``). Both need repetition *i* of every cell to draw
+the same noise, which takes a per-run seed no execution backend delivers: a simulator
+override document is written per configuration, so every repetition of a cell would
+receive the same seed and stop varying. Repetitions are therefore unseeded: they still
+vary, and they cannot be paired or replayed.
 
-Be clear about its limits. Pairing covers the **simulator's** seeded noise. A system
-under test running asynchronously in its own container — message timing, callback
-order, CPU contention — is not replayable, so a single run is never reproducible even
-paired, and every claim a search makes remains distributional: *"this configuration
-fails about 40% of the time"*, never *"this run fails"*.
-
-``seed_parameter`` names the variation channel the per-repetition seed is delivered on
-(e.g. ``{sim: seed}``). Without it, repetitions still differ — they are simply
-unseeded, so neither pairing nor replay is available.
+A seed would cover only the **simulator's** noise. A system under test running
+asynchronously in its own container — message timing, callback order, CPU contention — is
+not replayable, so a single run is never reproducible, and every claim a search makes is
+distributional: *"this configuration fails about 40% of the time"*, never *"this run
+fails"*.
 
 Postprocessing: one mechanism, two lists
 -----------------------------------------
