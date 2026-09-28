@@ -165,11 +165,6 @@
       "Union[str, NoneType]"
     ],
     [
-      "general",
-      false,
-      "Union[GeneralConfig, NoneType]"
-    ],
-    [
       "metadata",
       false,
       "Union[dict[str, Any], NoneType]"
@@ -488,13 +483,6 @@
       "<extra>",
       false,
       "forbid"
-    ]
-  ],
-  "GeneralConfig": [
-    [
-      "<extra>",
-      false,
-      "allow"
     ]
   ],
   "ImageProvenanceConfig": [

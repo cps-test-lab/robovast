@@ -28,7 +28,7 @@ def _tree(tmp_path) -> Path:
     (root / "_execution").mkdir(parents=True)
     (root / "_execution" / "outcome.json").write_text('{"phase": "finished"}\n')
     (root / "_config").mkdir()
-    (root / "_config" / "c.vast").write_text("version: 6\n")
+    (root / "_config" / "c.vast").write_text("version: 7\n")
     return root
 
 

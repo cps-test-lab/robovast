@@ -528,7 +528,7 @@ class Variation():
             ConfigViewContribution  # pylint: disable=import-outside-toplevel
         return ConfigViewContribution()
 
-    def __init__(self, base_path, parameters, general_parameters, progress_update_callback,
+    def __init__(self, base_path, parameters, progress_update_callback,
                  scenario_file, output_dir, container_runner=None):
         # Reset shared config index for each new Variation instance so
         # generated short names start from 1 for this variation run.
@@ -545,7 +545,6 @@ class Variation():
                 raise VariationConfigError(str(exc)) from exc
         else:
             self.parameters = parameters
-        self.general_parameters = general_parameters
         self.progress_update_callback = progress_update_callback
         self.scenario_file = scenario_file
         self.output_dir = output_dir
