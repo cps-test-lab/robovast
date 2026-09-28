@@ -46,9 +46,10 @@ MCP together — pass ``--no-mcp`` to serve the API without them (see :ref:`mcp`
    ``Authorization: Bearer``. The cookie is not a preference — ``EventSource`` cannot
    set headers, so it is what keeps the live streams in the web UI working.
 
-   Publishing the service insists on TLS, and on a token being configured. Both
-   refusals are deliberate: a campaign names its own container image, so an open
-   Ingress lets anyone who finds the URL run containers in the cluster.
+   Publishing the service insists on a token being configured, and on TLS unless
+   ``--insecure-http`` says the network is trusted. Both refusals are deliberate: a
+   campaign names its own container image, so an open Ingress lets anyone who finds
+   the URL run containers in the cluster.
 
 The deployment
 --------------
@@ -97,7 +98,7 @@ Access matrix
 
 The published row is hardened once for the whole surface: one shared secret, presented as
 a cookie by browsers and a bearer header by everything else, in front of an Ingress
-that refuses to exist without TLS.
+that refuses to exist without TLS unless ``--insecure-http`` was passed.
 
 Walkthrough — the in-cluster service
 ------------------------------------
@@ -192,9 +193,8 @@ cost every client a port. The front's configuration is rendered by ``setup`` and
 Keeping the service up to date
 ------------------------------
 
-Controllers are launched per campaign, so execution always tracks the configured
-controller image. The persistent service Deployment does not, so it has to be
-updated deliberately.
+A campaign is driven inside the service pod, so the persistent service Deployment is
+the code every campaign runs under, and it has to be updated deliberately.
 
 .. code-block:: bash
 
@@ -258,14 +258,17 @@ that reconciles it. Also *reconcile when convenient*. ``get`` and ``list`` are t
 what ``metrics.k8s.io`` serves — it has no watch — so the numbers are polled, once per sample
 window for the whole service rather than per campaign or per job.
 
-Before rolling, it asks the service which live campaigns the replacement could **not**
-pick up again, and names each with its reason. A live campaign is no longer reason enough
-on its own: its Jobs are not children of the pod being replaced, and the new pod
-re-attaches to them (:doc:`cluster_execution`). What still blocks a roll is a campaign
-nothing could re-launch — one with no records, or a search with no ``search.seed``. ``--yes`` skips the question; without it a non-interactive run aborts rather than
-rolling silently. A service that cannot be reached is reported and the roll proceeds, since
-a wedged service is a reason to upgrade rather than a reason to refuse, but it says so —
-a silent roll must never be read as "nothing was running".
+Before rolling, it asks the service for the live campaigns, names every one and asks. A
+live campaign survives a roll on its own — its Jobs are not children of the pod being
+replaced, and the new pod re-attaches to them (:doc:`cluster_execution`) — except one
+nothing could re-launch: one with no records, a search with no ``search.seed``, or a
+search whose strategy declares itself not resumable. Only the web UI's button leaves that
+distinction to the service, which refuses those campaigns alone, each named with its
+reason; ``upgrade`` and ``vast service restart`` ask about every live campaign.
+``--yes`` skips the question; without it a non-interactive run aborts rather than rolling
+silently. A service that cannot be reached is reported and the roll proceeds, since a
+wedged service is a reason to upgrade rather than a reason to refuse, but it says so — a
+silent roll must never be read as "nothing was running".
 
 There is a smaller verb for the common case, and it needs no kubeconfig:
 
@@ -275,9 +278,10 @@ There is a smaller verb for the common case, and it needs no kubeconfig:
 
 That asks the service to roll *itself* — the Deployment's restart annotation, and nothing
 else. It is the same thing the web UI's Admin page button does (:ref:`web-ui-admin`), and
-it exists because ``upgrade`` needs cluster access, so somebody who reached the deployment
-through ``vast login`` had a button in the browser and no command at all. It carries the
-same live-campaign guard and the same ``--yes``.
+it exists because ``upgrade`` needs cluster access, which somebody who reached the
+deployment through ``vast login`` does not have. It asks about live campaigns as
+``upgrade`` does and takes the same ``--yes``; once answered, it forces the roll past the
+service's own refusal.
 
 **It reconciles nothing.** RBAC, the registry ingress route, the
 credential Secrets and the build daemon are all untouched, so a version needing a new
