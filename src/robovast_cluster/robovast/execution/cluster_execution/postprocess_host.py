@@ -95,6 +95,18 @@ NOT_CAMPAIGN_DATA = frozenset({".robovast_rosbags_process_cache"})
 #: output. See :func:`_image_step_outputs`.
 IMAGE_STEPS_MARKER = ".image-steps-started"
 
+#: Written by the image container beside :data:`IMAGE_STEPS_MARKER` once its steps are done:
+#: their exit status. That container exits 0 whatever it holds, because it is an
+#: initContainer and a failed one starts no container after it -- and this one is the only
+#: container that delivers. A conversion that refused a few bags would otherwise take every
+#: other bag's output down with the pod, and the campaign with it.
+CONVERSION_EXIT_FILE = ".image-steps-exit"
+
+#: This container's exit status when its own steps succeeded but the conversion before it
+#: had failed: what the conversion did produce was delivered, and the Job still fails.
+#: Distinct from ``1`` so :func:`postprocess_job.pod_failure_reason` can say which step it was.
+CONVERSION_FAILED_EXIT = 3
+
 #: How many times the delivery is attempted, and the backoff step between attempts: attempt
 #: *n* is followed by ``n * _DELIVERY_RETRY_S`` seconds. Every transfer's schedule, and for
 #: its reasons (:data:`pod_access.TRANSFER_ATTEMPTS`): a service being rolled may take its
@@ -337,6 +349,28 @@ def _derive_batch(campaign_root: str, commands: list, force: bool) -> tuple:
     return ok, ("batch derived" if ok else "a batch postprocessing step failed"), entries
 
 
+def conversion_failure(dest: str) -> str:
+    """What the image container reported about its steps: ``""`` for success, else why not.
+
+    No file means no image container ran -- a Job with no image steps -- which is success.
+    A file this cannot read as a status is a failure, not a pass: the image container
+    writes it or exits with its own status, so an unreadable one says nothing good.
+    """
+    path = os.path.join(dest, CONVERSION_EXIT_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read().strip()
+    except FileNotFoundError:
+        return ""
+    except OSError as e:
+        return f"its exit status could not be read ({e})"
+    try:
+        code = int(text)
+    except ValueError:
+        return f"its exit status was not a number ({text!r})"
+    return "" if code == 0 else f"it exited {code}"
+
+
 def _required(name: str) -> str:
     """The non-empty value of environment variable *name*, or a ``KeyError`` naming it."""
     value = os.environ.get(name, "").strip()
@@ -438,9 +472,15 @@ def main() -> int:
                 # that is a failed postprocess, not a successful one with a warning.
                 ok, message = False, f"the outputs could not be delivered: {e}"
 
+    conversion = conversion_failure(dest)
     if failure is not None or not ok:
-        print(f"Host postprocessing failed: {message}", file=sys.stderr)
+        also = f"; the conversion before it failed too: {conversion}" if conversion else ""
+        print(f"Host postprocessing failed: {message}{also}", file=sys.stderr)
         return 1
+    if conversion:
+        print(f"The conversion failed: {conversion}. What it converted was delivered, and its "
+              "log names what it could not convert.", file=sys.stderr)
+        return CONVERSION_FAILED_EXIT
     logger.info("%s of %s finished: %s",
                 "Host postprocessing" if batch_commands is None else "Batch derivation",
                 campaign_id, message)

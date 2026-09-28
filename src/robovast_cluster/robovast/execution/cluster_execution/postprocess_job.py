@@ -679,14 +679,20 @@ def _postprocess_split(cluster_config, campaign_id: str, campaign_root: str, nam
 
     map_cmds, reduce_cmds, parts = split
     write_plan(campaign_root, parts, force=force, skip=skip)
-    ok, message = run_map_phase(
+    map_ok, map_message, ended = run_map_phase(
         cluster_config, campaign_id, campaign_root, namespace, image, map_cmds, parts,
         token=token, force=force, kube_context=kube_context, tolerate_under=tolerate_under,
         convert_resources=convert_resources, admission=admission, should_stop=should_stop)
     map_log = delivered_map_log(campaign_root, parts)
-    if not ok:
-        write_phase_log(campaign_root, map_log + stamped("ERROR", message))
-        return record_job_outputs(campaign_id, campaign_root, ok, message,
+    if not map_ok:
+        map_log += stamped("ERROR", map_message)
+    # A part that failed still delivered what it derived, so the reduce runs over whatever
+    # the parts produced and the campaign is queryable less the part's failures -- which the
+    # verdict below still reports. Only a map that did not run to an end (a part never
+    # created, a stop, a lost sight of the Jobs) leaves nothing a reduce could complete.
+    if not map_ok and not ended:
+        write_phase_log(campaign_root, map_log)
+        return record_job_outputs(campaign_id, campaign_root, map_ok, map_message,
                                   should_stop=should_stop)
     config_dir = os.path.dirname(campaign_vast(campaign_root))
     reduce_image = [c for c in reduce_cmds if needs_execution_image(c, config_dir)]
@@ -698,6 +704,10 @@ def _postprocess_split(cluster_config, campaign_id: str, campaign_root: str, nam
         log_prefix=map_log)
     # The reduce pod delivered its own section, which knows nothing of the parts'.
     _prepend_phase_log(campaign_root, map_log)
+    if not map_ok:
+        # An unknown reduce stays unknown; either way the parts' failure is what leads.
+        message = map_message if ok else f"{map_message}; {message}"
+        ok = None if ok is None else False
     return record_job_outputs(campaign_id, campaign_root, ok, message,
                               should_stop=should_stop)
 
@@ -953,11 +963,17 @@ def _conversion_script(steps: list, campaign_id: str = "", part: str = "") -> st
     it becomes the POSTPROCESSING section of the unified campaign log; the host container
     appends to the same file. ``pipefail`` preserves a step's exit status through the
     ``tee`` pipe.
+
+    The steps' status is handed to the host container in
+    :data:`~.postprocess_host.CONVERSION_EXIT_FILE` rather than returned: this is an
+    initContainer, and a failed one would keep the host container -- the only one that
+    delivers -- from running at all. The host fails the Job for it once it has delivered.
     """
     from robovast.results_processing.postprocessing_plugins import (  # noqa: PLC0415
         IMAGE_SCRIPTS_DIR)
 
-    from .postprocess_host import IMAGE_STEPS_MARKER  # noqa: PLC0415
+    from .postprocess_host import (CONVERSION_EXIT_FILE,  # noqa: PLC0415
+                                   IMAGE_STEPS_MARKER)
 
     root = campaign_dir(campaign_id)
     log = f"{root}/{_log_rel(part)}"
@@ -987,7 +1003,10 @@ def _conversion_script(steps: list, campaign_id: str = "", part: str = "") -> st
         # its memory is exactly the case the record exists for -- and it must not be able to
         # change `rc`, which is the conversion's own verdict.
         postprocess_usage.shell_record(root, CONVERT_CONTAINER, _usage_rel(part)),
-        "exit $rc",
+        # A status that cannot be handed over is returned instead: the host container
+        # then never runs, which loses this pod's output but never reports it as a pass.
+        f'echo "$rc" > {CAMPAIGN_MOUNT}/{CONVERSION_EXIT_FILE} || exit $rc',
+        "exit 0",
     ]
     return "\n".join(lines)
 
@@ -1453,6 +1472,7 @@ def pod_failure_reason(core, namespace: str, job_name: str) -> str:
     Advisory: this runs while reporting a failure, so it must not raise one of its own.
     """
     from .cluster_execution import pod_termination_reason  # noqa: PLC0415
+    from .postprocess_host import CONVERSION_FAILED_EXIT  # noqa: PLC0415
 
     try:
         pods = core.list_namespaced_pod(namespace=namespace,
@@ -1483,6 +1503,9 @@ def pod_failure_reason(core, namespace: str, job_name: str) -> str:
                 # their own; `exited 1 (Error)` names none of them.
                 if name == STAGE_CONTAINER:
                     return f"container {name} {_stage_failure(code)} (exit {code})"
+                if name == HOST_CONTAINER and code == CONVERSION_FAILED_EXIT:
+                    return (f"container {CONVERT_CONTAINER} failed; what it converted was "
+                            f"delivered, and its log names what it could not convert")
                 detail = (getattr(term, "reason", None) or "").strip()
                 exited = f"container {name} exited {code}"
                 return f"{exited} ({detail})" if detail else exited

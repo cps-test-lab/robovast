@@ -266,7 +266,7 @@ def test_a_failed_part_keeps_the_pod_s_own_log(tmp_path, monkeypatch):
     phase.ever_created = {"job-1", "job-2"}
     phase.outcome = {"job-1": "succeeded", "job-2": "failed"}
 
-    ok, message = phase.verdict()
+    ok, message, _ended = phase.verdict()
 
     assert ok is False and "exited 1" in message
     kept = (tmp_path / part_file("part-2", "postprocessing.log")).read_text()
@@ -298,7 +298,7 @@ def test_a_split_runs_the_map_then_the_reduce_and_keeps_the_parts_log(monkeypatc
         calls.append("map")
         os.makedirs(tmp_path / PARTS_DIR, exist_ok=True)
         (tmp_path / part_file("part-1", "postprocessing.log")).write_text("part zero\n")
-        return True, "2 part(s) complete"
+        return True, "2 part(s) complete", True
 
     def _reduce(*a, **k):
         calls.append(("reduce", k["role"].skip_map, k["role"].stage_bags,
@@ -316,16 +316,52 @@ def test_a_split_runs_the_map_then_the_reduce_and_keeps_the_parts_log(monkeypatc
     assert plan["parts"] == ["part-1", "part-2"]
 
 
-def test_a_failed_map_never_starts_the_reduce(monkeypatch, tmp_path):
+def _split_inputs(monkeypatch, tmp_path):
     parts = [ps.Part(name="part-1", runs=["a/0"]), ps.Part(name="part-2", runs=["a/1"])]
     monkeypatch.setattr(pj, "_read_submit_inputs",
                         lambda root, skip=None, skip_rosout=False:
                         ([], "img", (), None, (["run_log"], [], parts)))
-    monkeypatch.setattr(ps, "run_map_phase", lambda *a, **k: (False, "1 of 2 part(s) failed"))
+    monkeypatch.setattr(pj, "campaign_vast", lambda root: str(tmp_path / "_config" / "c.vast"))
+
+
+def test_a_map_that_did_not_run_to_its_end_never_starts_the_reduce(monkeypatch, tmp_path):
+    _split_inputs(monkeypatch, tmp_path)
+    monkeypatch.setattr(ps, "run_map_phase",
+                        lambda *a, **k: (False, "1 postprocessing part(s) were never created",
+                                         False))
     monkeypatch.setattr(pj, "run_conversion_job",
-                        lambda *a, **k: pytest.fail("the reduce ran after a failed map"))
+                        lambda *a, **k: pytest.fail("the reduce ran after an unfinished map"))
     ok, message = pj.postprocess_campaign(object(), "camp", str(tmp_path), "ns", token="t")
-    assert ok is False and "1 of 2 part(s) failed" in message
+    assert ok is False and "never created" in message
+
+
+def test_a_failed_part_still_gets_its_campaign_completed_and_still_fails_it(
+        monkeypatch, tmp_path):
+    """A part whose step refused a bag delivered what it did derive, so the reduce completes
+    the campaign over it -- a few refused bags must not keep the whole campaign out of the
+    index -- and the verdict is still the part's failure."""
+    _split_inputs(monkeypatch, tmp_path)
+    monkeypatch.setattr(ps, "run_map_phase",
+                        lambda *a, **k: (False, "1 of 2 postprocessing part(s) failed", True))
+    reduced = []
+
+    def _reduce(*a, **k):
+        reduced.append("1 of 2 postprocessing part(s) failed" in k["log_prefix"])
+        return True, "done"
+
+    monkeypatch.setattr(pj, "run_conversion_job", _reduce)
+    ok, message = pj.postprocess_campaign(object(), "camp", str(tmp_path), "ns", token="t")
+    assert reduced == [True]
+    assert ok is False and "1 of 2 postprocessing part(s) failed" in message
+
+
+def test_a_failed_part_and_a_failed_reduce_are_both_reported(monkeypatch, tmp_path):
+    _split_inputs(monkeypatch, tmp_path)
+    monkeypatch.setattr(ps, "run_map_phase",
+                        lambda *a, **k: (False, "1 of 2 postprocessing part(s) failed", True))
+    monkeypatch.setattr(pj, "run_conversion_job", lambda *a, **k: (False, "reduce broke"))
+    ok, message = pj.postprocess_campaign(object(), "camp", str(tmp_path), "ns", token="t")
+    assert ok is False and "part(s) failed" in message and "reduce broke" in message
 
 
 def test_the_deployment_carries_the_cap_and_refuses_a_bad_one(monkeypatch):
@@ -407,9 +443,9 @@ _PARTS = [ps.Part(name="part-1", runs=["a/0"], jobs=["_jobs/batch-0/job-0"]),
 
 def test_every_part_runs_in_its_own_job_and_the_phase_waits_for_all(cluster):
     batch, root = cluster
-    ok, message = ps.run_map_phase(object(), "camp", str(root), "ns", None, ["run_log"],
-                                   _PARTS, token="t")
-    assert ok is True, message
+    ok, message, ended = ps.run_map_phase(object(), "camp", str(root), "ns", None,
+                                          ["run_log"], _PARTS, token="t")
+    assert ok is True and ended, message
     assert batch.created == ps.part_job_names("camp", _PARTS)
     assert json.loads((root / PARTS_DIR / "part-2.json").read_text())["runs"] == ["a/1"]
 
@@ -418,9 +454,11 @@ def test_a_failed_part_fails_the_phase_and_names_itself(cluster):
     batch, root = cluster
     failing = ps.part_job_names("camp", _PARTS)[1]
     batch.verdicts = {failing: "failed"}
-    ok, message = ps.run_map_phase(object(), "camp", str(root), "ns", None, ["run_log"],
-                                   _PARTS, token="t")
+    ok, message, ended = ps.run_map_phase(object(), "camp", str(root), "ns", None,
+                                          ["run_log"], _PARTS, token="t")
     assert ok is False and failing in message and "exit 1" in message
+    # A failed part ran to its end and delivered: the campaign can still be completed.
+    assert ended is True
 
 
 def test_a_part_left_running_is_waited_for_not_created_again(cluster, monkeypatch):
@@ -428,23 +466,24 @@ def test_a_part_left_running_is_waited_for_not_created_again(cluster, monkeypatc
     running = ps.part_job_names("camp", _PARTS)[0]
     monkeypatch.setattr(pj, "live_job", lambda b, c, ns, name: name == running)
     batch.created.append(running)          # it exists in the cluster already
-    ok, _ = ps.run_map_phase(object(), "camp", str(root), "ns", None, ["run_log"], _PARTS,
-                             token="t")
+    ok, _, _ = ps.run_map_phase(object(), "camp", str(root), "ns", None, ["run_log"], _PARTS,
+                                token="t")
     assert ok is True
     assert batch.created.count(running) == 1
 
 
 def test_a_stop_deletes_every_part(cluster):
     batch, root = cluster
-    ok, message = ps.run_map_phase(object(), "camp", str(root), "ns", None, ["run_log"],
-                                   _PARTS, token="t", should_stop=lambda: True)
-    assert ok is False and "cancelled" in message
+    ok, message, ended = ps.run_map_phase(object(), "camp", str(root), "ns", None,
+                                          ["run_log"], _PARTS, token="t",
+                                          should_stop=lambda: True)
+    assert ok is False and "cancelled" in message and ended is False
     assert sorted(batch.deleted) == sorted(ps.part_job_names("camp", _PARTS))
 
 
 def test_image_steps_without_an_image_are_refused(cluster):
     _batch, root = cluster
-    ok, message = ps.run_map_phase(
+    ok, message, ended = ps.run_map_phase(
         object(), "camp", str(root), "ns", None,
         [{"rosbags_process": {"plugins": [{"type": "to_csv"}]}}], _PARTS, token="t")
-    assert ok is False and "execution image" in message
+    assert ok is False and "execution image" in message and ended is False

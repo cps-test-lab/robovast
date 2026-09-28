@@ -340,7 +340,7 @@ class _MapPhase:
         return ""
 
     def wait(self, timeout: float, should_stop=None) -> tuple:
-        """Poll until every part is done. ``(ok, message)``; ``ok`` None means unknown."""
+        """Poll until every part is done. ``(ok, message, ended)`` as :func:`run_map_phase`."""
         from robovast.common.errors import ClusterUnreachableError  # noqa: PLC0415
 
         from . import postprocess_job as pj  # noqa: PLC0415
@@ -352,12 +352,12 @@ class _MapPhase:
             while True:
                 if should_stop is not None and should_stop():
                     self.cancel()
-                    return False, "postprocessing cancelled: the campaign was stopped"
+                    return False, "postprocessing cancelled: the campaign was stopped", False
                 try:
                     with api_transport_errors("waiting for the postprocessing jobs"):
                         rnd = self.tracker.poll()
                 except ClusterUnreachableError as e:
-                    return None, f"lost sight of the postprocessing jobs: {e}"
+                    return None, f"lost sight of the postprocessing jobs: {e}", False
                 self.ever_created.update(rnd.created)
                 if time.monotonic() - last_log >= pj.LIVE_LOG_INTERVAL:
                     last_log = time.monotonic()
@@ -367,13 +367,13 @@ class _MapPhase:
                                                 for n in rnd.expired}))
                     self.cancel()
                     return False, (f"{len(rnd.expired)} postprocessing part(s) could not "
-                                   f"start: {reasons}")
+                                   f"start: {reasons}"), False
                 if rnd.over:
                     settled = True
                     return self.verdict()
                 if time.monotonic() > deadline:
                     return None, (f"the postprocessing parts were still running after "
-                                  f"{timeout:g}s; they continue in the cluster")
+                                  f"{timeout:g}s; they continue in the cluster"), False
                 sleep_unless_stopped(pj.POLL_SECONDS, should_stop)
         finally:
             if not settled and self.admission is not None:
@@ -383,22 +383,27 @@ class _MapPhase:
             self.publish_log()
 
     def verdict(self) -> tuple:
-        """What the finished parts amount to: ``(ok, message)``."""
+        """What the finished parts amount to: ``(ok, message, ended)``.
+
+        A part that failed still ran to its end, and a part delivers what it derived
+        whether or not a step in it failed -- so ``ended`` is true for every part having
+        finished, failed ones included, and false only for one that never ran.
+        """
         from . import postprocess_job as pj  # noqa: PLC0415
 
         never = [n for n in self.names if n not in self.ever_created]
         if never:
             reason = self.admission.refusal(self.owner) if self.admission is not None else ""
             return False, (f"{len(never)} postprocessing part(s) were never created"
-                           + (f": {reason}" if reason else ""))
+                           + (f": {reason}" if reason else "")), False
         failed = [n for n in self.names if self.outcome.get(n) == "failed"]
         if failed:
             self._keep_logs_of(failed)
             why = "; ".join(f"{n}: {pj.pod_failure_reason(self.core, self.namespace, n)}"
                             for n in failed)
             return False, (f"{len(failed)} of {len(self.names)} postprocessing part(s) "
-                           f"failed -- {why}")
-        return True, f"{len(self.names)} postprocessing part(s) complete"
+                           f"failed -- {why}"), True
+        return True, f"{len(self.names)} postprocessing part(s) complete", True
 
     def _keep_logs_of(self, failed) -> None:
         """Write the pods' own output for parts that delivered none.
@@ -457,11 +462,13 @@ def run_map_phase(cluster_config, campaign_id: str, campaign_root: str, namespac
                   force: bool = False, kube_context=None, tolerate_under=(),
                   convert_resources=None, admission=None, should_stop=None,
                   timeout: float = None) -> tuple:
-    """Run *map_cmds* in one Job per part and wait for all of them. ``(ok, message)``.
+    """Run *map_cmds* in one Job per part and wait for all of them.
 
-    ``ok`` is three-valued like :func:`~.postprocess_job.run_conversion_job`'s: ``None``
-    when this process lost sight of the Jobs (the wait ran out while they were active),
-    which says nothing about whether they will succeed.
+    ``(ok, message, ended)``. ``ok`` is three-valued like
+    :func:`~.postprocess_job.run_conversion_job`'s: ``None`` when this process lost sight of
+    the Jobs (the wait ran out while they were active), which says nothing about whether
+    they will succeed. ``ended`` is whether every part ran to its end, failed ones included
+    -- what decides whether the Job that completes the campaign has anything to complete.
 
     Each part's Job stages its own runs, runs the map's image steps in its image container
     and its host steps in its host container, and delivers what it derived -- including its
@@ -483,7 +490,7 @@ def run_map_phase(cluster_config, campaign_id: str, campaign_root: str, namespac
     host_cmds = [c for c in map_cmds if not needs_execution_image(c, config_dir)]
     if image_cmds and not image:
         return False, ("no execution image for the campaign's image steps; its custom ROS2 "
-                       "types deserialize in no other image")
+                       "types deserialize in no other image"), False
 
     load_kube_config(kube_context)
     core, batch = client.CoreV1Api(), client.BatchV1Api()
@@ -494,19 +501,19 @@ def run_map_phase(cluster_config, campaign_id: str, campaign_root: str, namespac
             # exist before the first Job that names it.
             pod_access.ensure_campaign_secret(core, namespace, campaign_id, token)
     except ClusterUnreachableError as e:
-        return False, f"postprocessing cannot be scheduled: {e}"
+        return False, f"postprocessing cannot be scheduled: {e}", False
     except ApiException as e:
-        return False, f"could not write the campaign's data-plane token Secret: {e}"
+        return False, f"could not write the campaign's data-plane token Secret: {e}", False
 
     phase = _MapPhase(campaign_id, campaign_root, namespace, parts, core, batch, admission)
     items, error = phase.plan(image, image_cmds, host_cmds, force=force,
                               tolerate_under=tolerate_under, pull_secret=pull_secret,
                               convert_resources=convert_resources)
     if error:
-        return False, error
+        return False, error, False
     error = phase.submit(items)
     if error:
-        return False, error
+        return False, error, False
     logger.info("Postprocessing %s in %d parallel part(s)%s", campaign_id, len(parts),
                 f", {len(phase.ever_created)} of them already running"
                 if phase.ever_created else "")

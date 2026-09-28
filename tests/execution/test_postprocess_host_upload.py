@@ -436,3 +436,65 @@ def test_a_part_delivers_its_own_log_and_provenance(monkeypatch, tmp_path, plane
     assert record in plane.sent and part_file("m3", "postprocessing.log") in plane.sent
     assert json.loads(plane.members[0][record])["entries"][0]["plugin"] == "run_log"
     assert "_execution/postprocessing.log" not in plane.sent
+
+
+def _host_env(monkeypatch, tmp_path):
+    campaign = tmp_path / "camp"
+    (campaign / "_execution").mkdir(parents=True)
+    monkeypatch.setenv(pod_access.CAMPAIGN_ID_ENV, "camp")
+    monkeypatch.setenv(postprocess_host.ENV_STAGE_DEST, str(tmp_path))
+    monkeypatch.setenv(pod_access.DATA_URL_ENV, DATA_URL)
+    monkeypatch.setenv(pod_access.TOKEN_ENV, TOKEN)
+    monkeypatch.delenv(postprocess_host.ENV_COMMANDS, raising=False)
+    return campaign
+
+
+def test_after_a_failed_conversion_the_host_still_derives_delivers_and_fails(
+        monkeypatch, tmp_path, capsys):
+    """The conversion refused some bags and converted the rest. What it converted is
+    delivered and ingested -- the campaign is queryable less the refused bags -- and the
+    Job still fails, with the exit code that says which step it was."""
+    campaign = _host_env(monkeypatch, tmp_path)
+    (tmp_path / postprocess_host.CONVERSION_EXIT_FILE).write_text("1\n")
+    ran, sent = [], []
+
+    def _derive(dest, campaign_id, force=False, skip=None, skip_map=False):
+        ran.append(campaign_id)
+        (campaign / "cfg").mkdir()
+        (campaign / "cfg" / "poses.csv").write_text("x\n")
+        return True, "postprocessing complete"
+
+    monkeypatch.setattr("robovast.execution.cluster_execution.postprocess_job."
+                        "run_host_postprocessing", _derive)
+    monkeypatch.setattr(postprocess_host, "_deliver",
+                        lambda root, rels, *_a, **_k: sent.extend(rels))
+
+    assert postprocess_host.main() == postprocess_host.CONVERSION_FAILED_EXIT
+    assert ran == ["camp"] and "cfg/poses.csv" in sent
+    assert "it exited 1" in capsys.readouterr().err
+
+
+def test_a_conversion_that_succeeded_or_never_ran_is_not_a_failure(tmp_path):
+    assert postprocess_host.conversion_failure(str(tmp_path)) == ""
+    (tmp_path / postprocess_host.CONVERSION_EXIT_FILE).write_text("0\n")
+    assert postprocess_host.conversion_failure(str(tmp_path)) == ""
+
+
+def test_an_unreadable_conversion_status_is_a_failure_not_a_pass(tmp_path):
+    """The image container writes the file or exits with its own status, so a file that
+    does not hold one says nothing good."""
+    (tmp_path / postprocess_host.CONVERSION_EXIT_FILE).write_text("")
+    assert "not a number" in postprocess_host.conversion_failure(str(tmp_path))
+
+
+def test_a_failing_host_after_a_failed_conversion_reports_both(monkeypatch, tmp_path, capsys):
+    _host_env(monkeypatch, tmp_path)
+    (tmp_path / postprocess_host.CONVERSION_EXIT_FILE).write_text("137\n")
+    monkeypatch.setattr("robovast.execution.cluster_execution.postprocess_job."
+                        "run_host_postprocessing",
+                        lambda *a, **k: (False, "index unreachable"))
+    monkeypatch.setattr(postprocess_host, "_deliver", lambda *_a, **_k: None)
+
+    assert postprocess_host.main() == 1
+    err = capsys.readouterr().err
+    assert "index unreachable" in err and "it exited 137" in err
