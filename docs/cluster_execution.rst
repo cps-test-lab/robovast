@@ -31,19 +31,19 @@ two same-day ``<name>-<timestamp>`` campaigns apart in the monitor and the web U
 Repetitions come from the ``.vast``'s ``execution.runs`` unless ``--runs`` overrides
 them. Internally:
 
-1. **Launch** — The client pushes the project to a workspace and calls
-   ``create_campaign``. The service starts a :class:`CampaignController` in a
+1. **Launch** — With ``--push`` the client first syncs the directory into the
+   workspace; it then calls ``create_campaign``. The service starts a :class:`CampaignController` in a
    worker thread over ``KubernetesBackend``. No per-campaign controller pod is
    created; the service is the driver.
 
-   The workspace is named after the project's directory and **reused** by later
-   launches of the same project — it is overwritten (after asking; the default is
-   yes, and off a terminal it proceeds and says so), and project files it holds that
-   the local directory no longer has are removed, so it mirrors what is on disk. What
-   the *service* generated inside it (``.cache/``, staged plugins) is left alone, as
-   is ``results/`` — a campaign's output is not project input. Reusing the workspace
-   is what keeps one per *project* rather than one per *launch*; pass
-   ``--workspace NAME`` to push somewhere else.
+   The workspace is the command's first argument; ``--push DIR`` syncs a directory into
+   it, creating it if it does not exist, and a later launch into the same name
+   **reuses** it — the push overwrites what the directory holds, without asking. Files
+   the local directory no longer has stay until ``vast workspace update --prune``
+   removes them. What the *service* generated inside it (``.cache/``, staged plugins)
+   is left alone, as is ``results/`` — a campaign's output is not project input.
+   Reusing the workspace is what keeps one per *project* rather than one per *launch*;
+   a different name pushes somewhere else.
 
    A workspace a campaign is **still reading** is refused, naming the campaign: a
    campaign composes and resolves files out of the workspace, so a push during that
@@ -83,7 +83,7 @@ them. Internally:
    and the service streams downloads straight out of it
    (``vast campaign download`` / ``--wait-and-download``), so no external share is
    required. Pushing a copy to an external ``tar.gz`` **share** is opt-in **at
-   launch** — enable *Upload to share when done* in the web UI launcher (or
+   launch** — enable *Upload to share* in the web UI launcher (or
    ``--upload-to-share`` / the MCP ``upload_to_share`` flag). When set, the driver
    streams a **raw, pre-postprocessing** archive to the configured share the moment
    the runs finish, *before* analysis postprocessing adds derived data — so the
@@ -152,9 +152,10 @@ Available cluster configs (``--list``):
 
    vast cluster setup --list
 
-Setup acts on the *cluster*, not on a project: it reads nothing ambient and runs from any
-directory. It reads no ``.vast`` either: which nodes the cluster's pods may use is given as
-flags (:ref:`below <cluster-node-labels>`).
+Setup acts on the *cluster*, not on a project: it reads no ``.vast`` and runs from any
+directory. What it needs beyond its flags comes from the environment — ``./.env``, then the
+user's — including which nodes campaign jobs may use, ``ROBOVAST_JOB_NODE_LABELS``
+(:ref:`below <cluster-node-labels>`).
 
 The setup command:
 
@@ -705,7 +706,7 @@ service, ``vast campaign import <archive>``.
 
 The share's raw, pre-postprocessing copy is a different system, reached through
 ``vast share`` (see :ref:`cluster-sharing`). To push a copy there, either enable it
-**at launch** (*Upload to share when done* in the web UI, ``--upload-to-share`` on
+**at launch** (*Upload to share* in the web UI, ``--upload-to-share`` on
 ``vast workspace run``, or the MCP ``upload_to_share`` flag) or export a
 finished campaign with ``vast share export -i <campaign-id>``.
 
@@ -763,10 +764,12 @@ stays silent, and an unreachable ntfy server never affects the campaign. Pick a
 different topic per user so notifications don't cross over; each message carries
 its campaign id so concurrent campaigns sharing a topic stay distinguishable.
 
-For an **in-cluster** service the ntfy config is read from your ``.env`` at
-``setup`` time and injected into the service pod (as a Kubernetes Secret, exactly
-like the share credentials), so changing the topic means re-running ``setup
---force`` to redeploy. A ``vast serve`` started by hand reads the ``.env`` live.
+For an **in-cluster** service the ntfy config is read from your ``.env`` by
+``setup`` and injected into the service pod (as a Kubernetes Secret, exactly
+like the share credentials), so changing the topic means ``vast service upgrade``,
+which rebuilds that Secret from the environment and rolls the pod. A ``vast serve``
+started by hand reads the ``.env`` when it starts, so it picks a change up when
+restarted.
 
 
 Experiment image builds (registry)
@@ -2296,7 +2299,7 @@ passed — including the results volume, which is where finished campaigns live.
 * The results survive the service pod being restarted or upgraded and a
   ``vast cluster cleanup``, but they are one directory on one node and no more: archive
   anything that must outlive the machine with ``vast share``, or launch with *Upload to
-  share when done*.
+  share*.
 * ``vast cluster cleanup --delete-data`` is what empties this deployment's directories,
   and nothing else does.
 * The directories draw from the node filesystem and declare no bound, so watch the web
@@ -2448,8 +2451,8 @@ not a fraction of it.
 How it works
 ^^^^^^^^^^^^
 
-Pushing at launch is an opt-in step run **in the driver**: enable *Upload to share
-when done* in the web UI, pass ``--upload-to-share`` to ``vast workspace run``, or set the MCP ``upload_to_share`` flag. No data reaches the user's machine and
+Pushing at launch is an opt-in step run **in the driver**: enable *Upload to share*
+in the web UI, pass ``--upload-to-share`` to ``vast workspace run``, or set the MCP ``upload_to_share`` flag. No data reaches the user's machine and
 no separate archiver pod is involved.
 
 When the toggle is set, the driver — the moment the scenario runs finish and
