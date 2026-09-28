@@ -3,6 +3,9 @@ version: 6
 metadata:
   name: historic-v6
   title: Nav2 controller comparison (archived, v6)
+# Kept so the v6 -> v7 step meets the section it drops.
+general:
+  map_resolution: 0.05
 configuration_presets:
   # A preset carries the same body a configuration does, minus what belongs to one
   # configuration. Kept here so a later step meets the block rather than only the entries.

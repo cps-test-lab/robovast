@@ -9,7 +9,7 @@ def _key(tmp_path, **images):
     """The key of one unchanged ``.vast``: written once, since the key reads a file's mtime."""
     vast = tmp_path / "c.vast"
     if not vast.exists():
-        vast.write_text("version: 6\n")
+        vast.write_text("version: 7\n")
     return _build_generate_cache_key(
         variation_file=str(vast), vast_dir=str(tmp_path), scenario_file="", run_files=[],
         analysis_files=[], configurations=[], **images).fingerprint()
