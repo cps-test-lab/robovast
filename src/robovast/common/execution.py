@@ -49,7 +49,7 @@ from .config_identifier import (compute_config_identifier, hash_file_content, ha
 from .sut_channel import SUT_CONFIG_FILE
 from .sut_channel import source_paths as sut_source_paths
 from .errors import CampaignConfigError, missing_input_error
-from .simulators import SIM_CONFIG_FILE, SIM_OVERRIDES_MOUNT
+from .simulators import SIM_CONFIG_FILE, SIM_OVERRIDES_MOUNT, scenario_use_sim_time
 
 # The host <-> container protocol: what host scripts assume about an image's entrypoint,
 # paths and environment. Bump COMPAT_VERSION when that contract changes (a new required
@@ -1043,8 +1043,9 @@ def scenario_env(campaign_data):
     """The scenario-shaping env vars a run's config implies, for ``entrypoint.sh``.
 
     Covers only what is derived from the ``.vast``: which scenario file to run, the
-    simulation backend, the runner selection, and whether the behaviour tree status log is
-    recorded. Shared by the Kubernetes backend and container-exec, so the two cannot drift.
+    simulation backend, the runner selection and its clock, and whether the behaviour tree
+    status log is recorded. Shared by the Kubernetes backend and container-exec, so the two
+    cannot drift.
 
     Deliberately *not* here:
 
@@ -1067,6 +1068,9 @@ def scenario_env(campaign_data):
     mode = execution.get("mode", "auto")
     if mode and mode != "auto":
         env['SCENARIO_MODE'] = str(mode)
+    # Which clock a scenario's durations run on. Always stated, like BT_LOG, so the pod spec
+    # says outright what the run did; independent of the bag's RECORD_USE_SIM_TIME below.
+    env['SCENARIO_USE_SIM_TIME'] = 'true' if scenario_use_sim_time(execution) else 'false'
     # Always on, and stated rather than left to the entrypoint's own default, so the compose
     # file / pod spec says outright what the run did. A run that did not record how its
     # behaviour tree progressed cannot be explained after the fact, and the file costs

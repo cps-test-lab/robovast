@@ -1163,7 +1163,7 @@ Simulation backend passed to scenario-execution as ``--simulation <module:Class>
 A ``simulation`` backend can also be combined with the **ROS** runner (see ``mode`` below): when
 ``mode: ros2`` is set, the ROS runner ticks the ``SimulationInterface`` inside its spin loop, so a
 step-based simulation runs alongside the ROS behaviours that drive it (a simulation that publishes
-``/clock`` becomes the time source).
+``/clock`` becomes the time source under ``use_sim_time: true``, below).
 
 mode
 ^^^^
@@ -1185,7 +1185,46 @@ ROS runner in an image that ships ROS.
 
    execution:
      mode: ros2
+     use_sim_time: true    # MySimulation publishes /clock on step()
      simulation: my_pkg.my_module:MySimulation
+
+.. _scenario-clock:
+
+use_sim_time
+^^^^^^^^^^^^
+
+**Type:** Boolean
+
+**Required:** In the ROS shape (``mode: ros2``), unless the simulator backend answers it
+
+Which clock a scenario's durations -- ``wait elapsed()``, ``timeout()``, a measurement window --
+run on. scenario-execution keeps a second clock, host time, for its kill deadlines and for
+waiting on a simulator, whatever this says.
+
+**ROS shape** (``mode: ros2``)
+   ``true`` starts the ROS runner with ``use_sim_time``, so the durations run on ``/clock``: a
+   simulator paced slower or faster than real time takes the scenario with it. ``false`` runs
+   them on wall time. Unset, the simulator backend answers whether its simulator publishes
+   ``/clock`` (roqsim does, through its ROS 2 bridge), and a campaign with no backend, or with
+   one that cannot say, is refused at validation until it states the value. Under ``true`` the
+   runner waits for ``/clock`` before the scenario starts and fails the run when none comes --
+   so a scenario that starts the simulator itself (a ``ros_launch`` of Gazebo, say) states
+   ``false``.
+**Stepped shape** (``mode: base``)
+   The non-ROS runner measures the durations on the simulation's own step clock (step count
+   times ``dt``) when a ``simulation`` is stepped, and on wall time otherwise. There is no ROS
+   time to choose, so the key is refused here.
+``mode: auto``
+   Refused as well: which runner starts is only decided inside the container. The ROS runner
+   runs the durations on wall time, the non-ROS one as in the stepped shape.
+
+This is independent of ``recording.ros2.use_sim_time``, which stamps the run's bag.
+
+.. code-block:: yaml
+
+   execution:
+     mode: ros2
+     use_sim_time: false   # the scenario launches the simulator itself
 
 run_as_user
 ^^^^^^^^^^^
@@ -1771,10 +1810,11 @@ to ``--topics`` and an entry starting with ``^`` is a regex for ``-e``; ``exclud
 ``--exclude-regex``, ``exclude_types`` is ``--exclude-topic-types`` and ``use_sim_time`` is
 ``--use-sim-time``. ``use_sim_time: true`` is what every campaign that reads its tables in sim
 seconds wants (see :ref:`one clock per run <run-clock>`); the default is rosbag2's own,
-``false``. Hidden topics are always admitted (``--include-hidden-topics``): an action's
-``/<name>/_action/feedback`` and ``status`` are hidden, rosbag2 drops a hidden topic even when
-``topics`` names it, and the ``action_<name>_feedback``/``_status`` tables are read from
-exactly those.
+``false``. It stamps the bag only; the clock a scenario's own durations run on is
+:ref:`execution.use_sim_time <scenario-clock>`. Hidden topics are always admitted
+(``--include-hidden-topics``): an action's ``/<name>/_action/feedback`` and ``status`` are
+hidden, rosbag2 drops a hidden topic even when ``topics`` names it, and the
+``action_<name>_feedback``/``_status`` tables are read from exactly those.
 
 ``roqsim`` is the simulator's own recording (``<run>/roqsim_bag``): the capture rate, and which
 tracks it holds as patterns over ``<entity>/<body-or-joint>`` — ``robot/**`` is all of an entity,

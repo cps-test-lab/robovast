@@ -798,7 +798,8 @@ RESERVED_ENV_NAMES = frozenset({
     'OUTPUT_DIR', 'SCENARIO_OUTPUT_DIR', 'RUN_OUTPUT_DIR', 'OUTPUT_RESULT_PER_SCENARIO',
     # what the run executes, and with what
     'SCENARIO_FILE', 'SCENARIO_PARAMETER_FILE', 'SCENARIO_EXECUTION_PARAMETERS',
-    'SCENARIO_MODE', 'SIMULATION', 'CONTAINER_NAME', 'ROBOVAST_CONTAINER_COMMAND',
+    'SCENARIO_MODE', 'SCENARIO_USE_SIM_TIME', 'SIMULATION', 'CONTAINER_NAME',
+    'ROBOVAST_CONTAINER_COMMAND',
     # hooks the campaign declares by their own keys, not by env
     'PRE_COMMAND', 'POST_COMMAND',
     # logging derived from the .vast
@@ -1013,6 +1014,10 @@ class ExecutionConfig(BaseModel):
     # ticks the SimulationInterface in its spin loop). ``base`` forces the non-ROS CLI
     # (scenario_execution) even when ros2 is on PATH -- for pure non-ROS scenarios (e.g. growth_sim).
     mode: str = "auto"
+    # Whether the ROS runner is started with ``use_sim_time``, so a scenario's durations run on
+    # /clock. ROS shape only; unset, the simulator backend answers, and with no backend to
+    # answer the campaign must state it (robovast.common.simulators.scenario_use_sim_time).
+    use_sim_time: Optional[bool] = None
     # Size of the pod's shared ``/dev/shm``. One tmpfs is mounted into every container of
     # the run, which is what lets ROS 2's default Fast DDS use its shared-memory transport
     # across the scenario / sut / simulation boundary.

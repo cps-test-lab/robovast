@@ -316,21 +316,38 @@ else
     #   auto -> detect: the ROS runner when ros2 is on PATH, otherwise the bare
     #           `scenario_execution` console script (pip/non-ROS images only)
     SCENARIO_MODE="${SCENARIO_MODE:-auto}"
+    ROS_RUNNER_CMD="ros2 run scenario_execution_ros scenario_execution_ros"
     if [ "${SCENARIO_MODE}" = "ros2" ]; then
-        RUNNER_CMD="ros2 run scenario_execution_ros scenario_execution_ros"
+        RUNNER_CMD="${ROS_RUNNER_CMD}"
     elif [ "${SCENARIO_MODE}" = "base" ]; then
         RUNNER_CMD="ros2 run scenario_execution scenario_execution"
     elif command -v ros2 > /dev/null 2>&1; then
-        RUNNER_CMD="ros2 run scenario_execution_ros scenario_execution_ros"
+        RUNNER_CMD="${ROS_RUNNER_CMD}"
     else
         RUNNER_CMD="scenario_execution"
     fi
+    # The scenario's clock (SCENARIO_USE_SIM_TIME, from execution.use_sim_time or the simulator
+    # backend). Under use_sim_time the ROS runner measures a scenario's durations on /clock;
+    # otherwise on wall time. Last on the command line: --ros-args takes everything after it.
+    SIM_TIME_PARAM=""
+    case "${SCENARIO_USE_SIM_TIME:-false}" in
+        true)
+            if [ "${RUNNER_CMD}" != "${ROS_RUNNER_CMD}" ]; then
+                log "ERROR: SCENARIO_USE_SIM_TIME=true needs the ROS runner, but this run starts '${RUNNER_CMD}'."
+                exit 1
+            fi
+            SIM_TIME_PARAM="--ros-args -p use_sim_time:=true" ;;
+        false) ;;
+        *)
+            log "ERROR: SCENARIO_USE_SIM_TIME must be true or false, not '${SCENARIO_USE_SIM_TIME}'."
+            exit 1 ;;
+    esac
     if [ -e "${SCENARIO_PARAMETER_FILE}" ]; then
         log "Starting scenario execution (mode=${SCENARIO_MODE}) with config file..."
-        log "Commandline: ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}"
-        run_scenario ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+        log "Commandline: ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS} ${SIM_TIME_PARAM}"
+        run_scenario ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS} ${SIM_TIME_PARAM}
     else
         log "Starting scenario execution (mode=${SCENARIO_MODE}) without config file..."
-        run_scenario ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+        run_scenario ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS} ${SIM_TIME_PARAM}
     fi
 fi
