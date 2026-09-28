@@ -2664,7 +2664,11 @@ completion in declaration order:
   :class:`~robovast.results_processing.postprocessing_plugins.ExecutionImagePlugin` — in order,
   each as its plugin's own ``image_command``, against the same mount. It touches a marker beside
   the campaign first; every file changed after it is this container's output. It exists only where
-  the campaign has such a step.
+  the campaign has such a step. It **exits 0 whatever its steps returned** and hands their status
+  to ``host`` in a file beside the marker: a failed initContainer starts nothing after it, so a
+  step that refused a few bags would otherwise take every converted one down with the pod. ``host``
+  then runs, delivers, and fails the Job with its own exit code ``3``, which the failure reason
+  names as the conversion's.
 * ``host`` (container, controller image,
   :mod:`~robovast.execution.cluster_execution.postprocess_host`) runs everything else — the other
   plugins, the index ingest and metadata — and is what delivers: one tar of what the Job

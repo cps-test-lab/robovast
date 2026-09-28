@@ -444,9 +444,22 @@ def test_the_conversion_writes_the_campaign_tree_and_uploads_nothing():
 
     assert step.rstrip().endswith(f"{pj.CAMPAIGN_MOUNT}/c1")
     assert "--output-root" not in step
-    assert script.rstrip().endswith("exit $rc")
     for absent in ("curl", pod_access.TOKEN_ENV, pod_access.DATA_URL_ENV):
         assert absent not in script, absent
+
+
+def test_a_failed_conversion_hands_its_status_on_instead_of_failing_the_pod():
+    """The conversion is an initContainer, and a failed one starts nothing after it -- so
+    the host container, the only one that delivers, would never run, and one refused bag
+    would take every converted one down with the pod. The status goes to the host instead,
+    which fails the Job once it has delivered."""
+    from robovast.execution.cluster_execution.postprocess_host import CONVERSION_EXIT_FILE
+
+    script = pj._conversion_script(steps(), campaign_id="c1")
+    lines = script.rstrip().splitlines()
+    assert lines[-1] == "exit 0"
+    # Handed over, or returned when it cannot be: never dropped for a pass.
+    assert lines[-2] == f'echo "$rc" > {pj.CAMPAIGN_MOUNT}/{CONVERSION_EXIT_FILE} || exit $rc'
 
 
 def test_a_failed_conversion_still_writes_a_postprocessing_section(tmp_path):
@@ -571,6 +584,22 @@ def test_another_containers_exit_code_is_reported_as_the_number():
 
     assert pj.pod_failure_reason(core, 'ns', 'job-x') == (
         f'container {pj.HOST_CONTAINER} exited 7 (Error)')
+
+
+def test_a_host_that_delivered_after_a_failed_conversion_names_the_conversion():
+    """The conversion hands its status to the host rather than exiting with it, so the
+    container that exits non-zero is the host -- and "host exited 3" would send the reader
+    to the one step that worked."""
+    from robovast.execution.cluster_execution.postprocess_host import CONVERSION_FAILED_EXIT
+
+    core = _core([_pod(init=[_CS(pj.STAGE_CONTAINER, exit_code=0),
+                             _CS(pj.CONVERT_CONTAINER, exit_code=0)],
+                       main=[_CS(pj.HOST_CONTAINER, exit_code=CONVERSION_FAILED_EXIT)])])
+
+    reason = pj.pod_failure_reason(core, 'ns', 'job-x')
+
+    assert reason.startswith(f'container {pj.CONVERT_CONTAINER} failed')
+    assert 'delivered' in reason
 
 
 class _FakeBatch:
