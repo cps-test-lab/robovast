@@ -91,9 +91,9 @@ class _RootGroup(click.Group):
     def invoke(self, ctx):
         try:
             return super().invoke(ctx)
-        except (click.ClickException, click.Abort, click.exceptions.Exit):
-            raise
         except Exception as e:  # noqa: BLE001 - every verb's failure, reported once
+            if isinstance(e, (click.ClickException, click.Abort, click.exceptions.Exit)):
+                raise
             handle_cli_exception(e)
             return None
 
