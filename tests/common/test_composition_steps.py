@@ -37,7 +37,7 @@ class Empty(Variation):
 """
 
 _VAST = """\
-version: 6
+version: 7
 metadata: {name: step-test}
 configuration:
 - name: cell0
