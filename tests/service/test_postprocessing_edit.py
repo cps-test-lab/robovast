@@ -24,7 +24,7 @@ def campaign(tmp_path):
     cfg = cdir / "_config"
     cfg.mkdir(parents=True)
     (cfg / "demo.vast").write_text(yaml.safe_dump({
-        "version": 6,
+        "version": 7,
         "configuration": [{"name": "sweep"}],          # an "as-ran" block to preserve
         "results_processing": {"postprocessing": ["rosbags_to_csv"]},
     }))
@@ -50,7 +50,7 @@ def test_update_overwrites_config_in_place_no_override_dir(campaign):
 
 
 _AUTHORED = """\
-version: 6
+version: 7
 # why this image: the one the paper's figures were made with
 execution:
   image: 'example.invalid/sim:1'  # pinned on purpose
