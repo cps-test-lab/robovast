@@ -140,6 +140,17 @@ Hooks, all optional except as noted:
 ``CONFIG_CLASS`` / ``SUPPORTED_SHAPES``
    A pydantic model for the backend's own keys, and which shapes it serves. An
    unsupported shape is refused at validation time, naming what *is* supported.
+``DOTTED_ROOT``
+   The backend key a bare dotted ``sim:`` path lands under, or ``None`` for no short form
+   (:ref:`varying the simulator <sim-channel>`).
+``ASSET_ENTRY_POINT_GROUPS``
+   Entry-point groups whose providers supply the simulator's assets: which of the
+   distributions a run records (version, and commit for a VCS install) its results name as
+   asset providers.
+``sim_document(cfg, execution)``
+   The part of ``cfg`` that travels as a file rather than on the command line — a nested
+   override tree, written per job and read by whatever ``containers`` puts in argv. ``None``
+   (the default) means everything the backend needs is already on argv.
 ``containers(cfg, execution)``
    Container blocks it contributes, merged **underneath** what the campaign declared, so
    an author always wins.
@@ -163,7 +174,13 @@ Hooks, all optional except as noted:
 ``records_scene_state(cfg, execution)``
    Whether runs record the simulator state a ``scene3d`` panel replays -- the recording the
    decoder reads into ``sim_poses``, ``joint_states``, ``sim_recording`` and ``sim_entities``.
-``scene_export(cfg, execution, *, world, max_tex_dim, overrides)``
+``default_panels(cfg, execution)``
+   Run-view panels this backend contributes, as ``{<type>: <props>}`` entries — the panel
+   that replays a recorded scene state, for a backend that records one; ``[]`` otherwise.
+``describe_query(cfg, execution, *, entities, targets)``
+   A query describing what this world *provides* — the addresses a campaign's overrides may
+   name — or ``None``; :ref:`what the check does with it <sim-channel>`.
+``scene_export(cfg, execution, *, world, max_tex_dim, overrides, overrides_file=None)``
    Command that compiles a world into a web scene descriptor, or ``None``.
 ``run_state_file(cfg, execution)``
    The run-relative recording a screenshot is rendered from, or ``None``. Whatever the
@@ -352,9 +369,10 @@ family member, which is the only one carrying roqsim *and* the RoboVAST contract
 (the ``org.robovast.compat-version`` label, scenario-execution, the ``/out`` mount):
 
 - ``mode: ros2`` — a ``simulation`` container of its own, running
-  ``roqsim sim <config> --ros --headless``. Nothing a campaign owns contains roqsim, so the
-  GL packages, the ``mujoco`` pin and the ``roqsim`` package list leave the ``.vast``
-  entirely.
+  ``roqsim sim <config> --headless --pacing realtime``, plus ``--override`` when the
+  configuration has overrides (:ref:`below <sim-channel>`). Nothing a campaign owns contains
+  roqsim, so the GL packages, the ``mujoco`` pin and the ``roqsim`` package list leave the
+  ``.vast`` entirely.
 - ``mode: base`` — the same image as the ``scenario`` container, because a stepped
   simulator shares the scenario's process.
 
@@ -370,9 +388,10 @@ simulator, and ``roqsim state`` reads a moment or a range of that recording rath
 following anything.
 
 Its own keys are ``config`` (a world YAML beside the ``.vast``, or a package ref such as
-``roqsim_scenes:depot``) and ``adapter``. It is ``config`` rather than ``world`` because the
-file is roqsim's whole configuration — physics, plugins, robot, sensors and its
-``extends`` chain — and "world" understates what a campaign selects.
+``roqsim_scenes:depot``), ``overrides`` (what the ``sim:`` channel below writes into) and
+``adapter`` (the stepped shape's ``SimulationInterface``). It is ``config`` rather than
+``world`` because the file is roqsim's whole configuration — physics, plugins, robot, sensors
+and its ``extends`` chain — and "world" understates what a campaign selects.
 
 .. _sim-channel:
 
@@ -397,6 +416,7 @@ A ``.vast`` reaches those keys through the ``sim:`` channel -- the sibling of ``
          values: [world/depot.yaml, world/warehouse.yaml]
      - ParameterVariationDistributionUniform:
          sim: components.floorplan.floor.friction  # or vary a value inside it
+         num_variations: 5
          min: 0.6
          max: 1.4
      - ParameterVariationList:
@@ -564,10 +584,11 @@ Building the image from your own roqsim
 ```````````````````````````````````````
 
 The Dockerfile clones roqsim at a ref, so what reaches the image is roqsim as *pushed*. Push
-the work to a branch and name it::
+the work to a branch and name it in the environment — the script resolves it to a commit
+before building, so the image is keyed on what was actually fetched::
 
-    container/robovast/build.sh --image roqsim \
-        --project docker.io/<you> --push -- --build-arg ROQSIM_REF=<branch>
+    ROQSIM_REF=<branch> container/robovast/build.sh --image roqsim \
+        --project docker.io/<you> --push
 
 The image records the commit it was built from and ``roqsim --version`` reports it, which is
 what lets a campaign say which simulator it ran — a commit nobody can fetch names nothing. A
