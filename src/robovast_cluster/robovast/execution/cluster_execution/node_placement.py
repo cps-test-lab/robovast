@@ -252,6 +252,28 @@ BUILD_NODE_LABEL = "robovast.io/build-node"
 #: absent has no such middle state.
 LABEL_VALUE = "true"
 
+#: What each of RoboVAST's own short-lived pods reserves: an image build's client, a
+#: campaign's aux composition pod, an ``exec_in_container`` session. Declared so the scheduler
+#: and admission see them where they run -- a pod that requests nothing is invisible to both,
+#: and a campaign that filled its node to the core leaves it no cycles at all. The build's own
+#: work is the daemon's, which reserves for itself, so its client asks for little.
+TRANSIENT_POD_RESOURCES = {"requests": {"cpu": "500m", "memory": "512Mi"}}
+BUILD_CLIENT_RESOURCES = {"requests": {"cpu": "100m", "memory": "128Mi"}}
+
+
+def transient_pod_affinity() -> dict:
+    """A preference for the build node, where the service keeps its per-node reserve.
+
+    Preferred, never required: a cluster whose build node is full or gone still runs the pod
+    wherever it fits. See :func:`~.cluster_capacity.reserved_node_names`.
+    """
+    return {"nodeAffinity": {"preferredDuringSchedulingIgnoredDuringExecution": [{
+        "weight": 100,
+        "preference": {"matchExpressions": [{
+            "key": BUILD_NODE_LABEL, "operator": "In", "values": [LABEL_VALUE]}]},
+    }]}}
+
+
 #: Taints a workload tolerates by virtue of being infrastructure rather than a campaign run.
 #: Empty: the service pod carries no tolerations, so a tainted node is simply not eligible
 #: for it. Callers with tolerations of their own (the build daemon) pass them in.

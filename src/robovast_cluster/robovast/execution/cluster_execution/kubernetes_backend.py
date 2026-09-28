@@ -1403,6 +1403,23 @@ class BatchJobRunner:
             jobs[0], total_jobs, also_reads=[probe_tag(node_id) for node_id in node_ids])
         started = campaign_start_key(self.campaign)
         for index, node_id in enumerate(node_ids):
+            # **A node its probe can never fit is left out now, and says so.** The check above
+            # asks whether ANY node can hold the probe; a mixed cluster answers yes while its
+            # smallest node cannot. Queued anyway, that probe never places, and a node being
+            # measured takes no work -- so the node sat idle for the whole batch, reported only
+            # as "being measured". Skipping it costs the capacity it never gave, and nothing
+            # else: its runs are runs that do not happen, which keeps the campaign comparable.
+            capacity = admission.capacity_of(node_id)
+            if capacity is not None and not capacity.holds(sizing):
+                reason = (f"its calibration probe needs {sizing.cpu:g} cpu / "
+                          f"{sizing.memory // (1024 ** 2)}Mi and the node holds at most "
+                          f"{capacity.cpu:g} cpu / {capacity.memory // (1024 ** 2)}Mi once "
+                          f"the service's per-node reserve is off")
+                calibration.skip(node_id, reason)
+                logger.warning("Batch %s: leaving node %s out of this campaign: %s. Lower "
+                               "execution.containers.*.resources to use it.",
+                               self._batch_tag, node_id, reason)
+                continue
             key = _short_job_name(self.campaign, probe_tag(node_id), index)
             if not calibration.claim_probe(node_id, key):
                 continue

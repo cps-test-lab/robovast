@@ -1111,6 +1111,7 @@ def test_a_probe_asks_for_its_own_parameter_document(monkeypatch):
         calibration=lambda campaign, cls: types.SimpleNamespace(
             claim_probe=lambda node_id, key: True),
         preflight=lambda sizing, node_id=None: None,
+        capacity_of=lambda node_id: None,
         submit=lambda *a, **k: None)
     monkeypatch.setattr(runner, "_warn_about_containers_with_no_role", lambda: None,
                         raising=False)
@@ -1127,6 +1128,53 @@ def test_a_probe_asks_for_its_own_parameter_document(monkeypatch):
 
     runner._start_probes(["job-0"], 1)
     assert list(asked.get("also_reads", ())) == [kb.probe_tag("n1"), kb.probe_tag("n2")]
+
+
+def test_a_node_its_probe_can_never_fit_is_left_out_with_the_reason(monkeypatch, caplog):
+    """A mixed cluster passes the "can ANY node hold the probe" check while its smallest node
+    cannot. Queued anyway, that probe never places and the node, being measured, takes no work
+    for the whole batch. It is skipped instead, saying what did not fit, and never claimed."""
+    import logging
+    import types
+
+    from robovast.execution.cluster_execution import kubernetes_backend as kb
+    from robovast.execution.cluster_execution.node_admission import Capacity, JobSizing
+
+    MIB = 1024 ** 2
+    claimed, skipped, submitted = [], {}, []
+    runner = kb.BatchJobRunner()
+    runner.campaign = "camp-2026-01-01-000000"
+    runner._batch_tag = "batch-0"
+    runner._probes = {}
+    capacities = {"big": Capacity(cpu=95.0, memory=64000 * MIB, node_id="big"),
+                  "small": Capacity(cpu=10.35, memory=64000 * MIB, node_id="small")}
+    runner.admission = types.SimpleNamespace(
+        calibration=lambda campaign, cls: types.SimpleNamespace(
+            claim_probe=lambda node_id, key: claimed.append(node_id) or True,
+            skip=lambda node_id, reason: skipped.update({node_id: reason})),
+        preflight=lambda sizing, node_id=None: None,
+        capacity_of=capacities.get,
+        submit=lambda owner, items, **k: submitted.append(k["pin"]))
+    monkeypatch.setattr(runner, "_warn_about_containers_with_no_role", lambda: None,
+                        raising=False)
+    monkeypatch.setattr(runner, "_probe_node_ids", lambda total: ["big", "small"],
+                        raising=False)
+    monkeypatch.setattr(runner, "_job_sizing",
+                        lambda job, total: JobSizing(11.1, 5184 * MIB), raising=False)
+    monkeypatch.setattr(runner, "_campaign_node_id", lambda: None, raising=False)
+    monkeypatch.setattr(runner, "_probe_owner", lambda: "owner", raising=False)
+    monkeypatch.setattr(runner, "create_job_manifest",
+                        lambda job, total_jobs, node_figures=None, also_reads=(): {},
+                        raising=False)
+    runner._probe_nodes_written = ["big", "small"]
+
+    with caplog.at_level(logging.WARNING):
+        runner._start_probes(["job-0"], 1)
+
+    assert claimed == ["big"] and submitted == ["big"]
+    assert list(skipped) == ["small"]
+    assert "11.1 cpu" in skipped["small"] and "10.35 cpu" in skipped["small"]
+    assert "leaving node small out" in caplog.text
 
 
 def test_a_node_with_no_parameter_document_is_left_to_the_next_batch(monkeypatch):
@@ -1147,6 +1195,7 @@ def test_a_node_with_no_parameter_document_is_left_to_the_next_batch(monkeypatch
         calibration=lambda campaign, cls: types.SimpleNamespace(
             claim_probe=lambda node_id, key: claimed.append(node_id) or True),
         preflight=lambda sizing, node_id=None: None,
+        capacity_of=lambda node_id: None,
         submit=lambda *a, **k: None)
     monkeypatch.setattr(runner, "_warn_about_containers_with_no_role", lambda: None,
                         raising=False)
