@@ -14,11 +14,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import functools
 import logging
 import os
 import pickle
-import re
 import sys
 from dataclasses import asdict, is_dataclass
 
@@ -227,81 +225,35 @@ def filter_configs(configs):
     return filtered_documents
 
 
-_OSC_IMPORT = re.compile(r"""^\s*import\s+(?:"([^"]*)"|'([^']*)'|osc\.([\w.]+))""")
-
-
-@functools.lru_cache(maxsize=None)
-def _osc_library_file(name):
-    """The file an ``import osc.<name>`` reads, or None when no installed package provides it."""
-    from importlib.metadata import entry_points  # pylint: disable=import-outside-toplevel
-    from importlib.resources import files  # pylint: disable=import-outside-toplevel
-
-    found = [ep for ep in entry_points(group="scenario_execution.osc_libraries") if ep.name == name]
-    if not found:
-        return None
-    resource, filename = found[0].load()()
-    return str(files(resource).joinpath("lib_osc", filename))
-
-
-def scenario_inputs(scenario_file):
-    """*scenario_file* and every file an ``.osc`` imports, transitively, for a cache key.
-
-    A string import is opened as written, as scenario-execution opens it. A library import
-    is the file its ``scenario_execution.osc_libraries`` entry point names; one that no
-    installed package provides cannot be read here, so it is not an input.
-
-    Raises:
-        FileNotFoundError: If a file named by a string import does not exist
-    """
-    inputs = []
-    pending = [scenario_file]
-    while pending:
-        path = pending.pop()
-        if path in inputs:
-            continue
-        inputs.append(path)
-        if not path.endswith(".osc"):
-            continue
-        with open(path, encoding="utf-8") as f:
-            lines = f.read().splitlines()
-        for line in lines:
-            match = _OSC_IMPORT.match(line)
-            if not match:
-                continue
-            imported = match.group(1) or match.group(2)
-            if imported is not None:
-                if not os.path.isfile(imported):
-                    raise FileNotFoundError(f"{path} imports {imported}, which does not exist")
-                pending.append(imported)
-            else:
-                library = _osc_library_file(match.group(3))
-                if library is not None:
-                    pending.append(library)
-    return inputs
-
-
 def get_scenario_parameters(scenario_file):
     """Get scenario parameters from scenario file.
 
-    Cached under every file the parse reads (:func:`scenario_inputs`).
+    A cache entry records every file its parse read, the scenario and each file it imports,
+    and is served only while none of them has changed.
 
     Args:
         scenario_file: Path to the scenario file
     """
-    file_cache = FileCache(os.path.dirname(scenario_file), "robovast_scenario_parameters_" +
+    file_cache = FileCache(os.path.dirname(scenario_file), "robovast_scenario_parameters_and_inputs_" +
                            os.path.basename(scenario_file).replace("/", "_").replace(".", "_"), [])
 
-    inputs = scenario_inputs(scenario_file)
-    cached_params = file_cache.get_cached_file(inputs, binary=True, content=True)
-    if cached_params:
-        return pickle.loads(cached_params)
-    else:
-        from scenario_execution import \
-            get_scenario_parameters as \
-            _external_get_scenario_parameters  # pylint: disable=import-outside-toplevel
-        params = _external_get_scenario_parameters(scenario_file)
-        file_cache.save_file_to_cache(inputs, pickle.dumps(params), content=True, binary=True)
-        return params
+    cache_file = file_cache.get_cache_filename()
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "rb") as f:
+                _, inputs = pickle.load(f)
+        except (OSError, pickle.UnpicklingError, EOFError, ValueError, TypeError):
+            inputs = None
+        if inputs:
+            cached = file_cache.get_cached_file(inputs, binary=True, content=True)
+            if cached:
+                return pickle.loads(cached)[0]
+
+    from scenario_execution import \
+        get_scenario_parameters_and_inputs  # pylint: disable=import-outside-toplevel
+    params, inputs = get_scenario_parameters_and_inputs(scenario_file)
+    file_cache.save_file_to_cache(inputs, pickle.dumps((params, inputs)), content=True, binary=True)
+    return params
 
 
 def is_scenario_parameter(value, scenario_file):

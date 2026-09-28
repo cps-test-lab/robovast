@@ -4520,13 +4520,13 @@ files = [
 
 [[package]]
 name = "scenario-execution"
-version = "1.5.0"
+version = "1.8.0"
 description = "Scenario Execution for Robotics"
 optional = false
 python-versions = ">=3.10"
 files = [
-    {file = "scenario_execution-1.5.0-py3-none-any.whl", hash = "sha256:1c8fa77653fb45ccacec7baa842d8ecce4ccf3b1ed85cb3ec80a0fa0d372ffc3"},
-    {file = "scenario_execution-1.5.0.tar.gz", hash = "sha256:955bba72d0fa1bdf1e765696829bdca07b60e59bdb9b0385224de96315be9261"},
+    {file = "scenario_execution-1.8.0-py3-none-any.whl", hash = "sha256:127ff5edc801590b9bf081599299bcd383b3c2640783ce678af6285039889600"},
+    {file = "scenario_execution-1.8.0.tar.gz", hash = "sha256:b2e2b65dc6d04a09b856d379d07c3a1e5ae3e6cd2c581b524179a7fcc778629e"},
 ]
 
 [package.dependencies]
@@ -4534,6 +4534,9 @@ antlr4-python3-runtime = "4.9.2"
 py-trees = "2.4.0"
 pyyaml = "6.0.1"
 setuptools = "*"
+
+[package.extras]
+test = ["pytest"]
 
 [[package]]
 name = "scikit-learn"
@@ -5722,4 +5725,4 @@ test = ["cmaes", "ipykernel", "lxml-html-clean", "nbclient", "nbconvert", "nbfor
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.12,<3.14"
-content-hash = "561191b16255c7d574c391751b63e631b53d40c2b9a89c28d9a3d694d3101e74"
+content-hash = "f70df46f85f3e962da7d31b987e1c1b49c8387dfd1340d223ce0885ab0359878"
