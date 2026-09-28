@@ -2387,7 +2387,8 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     Every request needs the shared token; when none is configured one is minted and
     printed as a clickable login URL, so there is no unauthenticated mode to start by
     accident. Binds ``127.0.0.1`` by default all the same — publishing the service is a
-    deliberate act (``vast cluster setup --ingress-host``, which insists on TLS).
+    deliberate act (``vast cluster setup --ingress-host``, which needs TLS unless given
+    ``--insecure-http``).
 
     ``mount_mcp`` (default on) puts the MCP server on this same port, so one URL reaches
     the web UI, the REST API and the tools together.
