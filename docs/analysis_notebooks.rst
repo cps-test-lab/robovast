@@ -240,11 +240,10 @@ The rows travel as an Arrow stream (``POST /campaigns/{id}/query.arrow``), so ev
 arrives in its type and a list column as a list, exactly as a local read gives them; a
 DataFrame passed as ``tables=`` travels with the query.
 
-The service builds what each call names from the campaign's records, as it does for the web UI,
-and sends the answer as CSV. ``vast service token`` prints the token it accepts. Three things
-differ from a campaign on disk: the columns are typed by pandas from the CSV, a query takes no
-parameters, and ``config()`` is refused, because the service does not serve a configuration's
-files through these routes.
+The service builds what each call names from the campaign's records, as it does for the web UI.
+``vast service token`` prints the token it accepts. Two things differ from a campaign on disk: a
+query takes no parameters, and ``config()`` is refused, because the service does not serve a
+configuration's files through these routes.
 
 Reading a campaign's own record
 -------------------------------
