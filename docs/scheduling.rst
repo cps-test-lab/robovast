@@ -45,10 +45,15 @@ The interface
 
 **What a job needs, and what a node has.** Both frozen, both plain numbers::
 
-    JobSizing(cpu: float, memory: int, gpu: int = 0)      # summed over a pod's containers
-    Capacity(cpu, memory, gpu)                            # what one node holds when empty
-    NodeBudget(node_id, free_cpu, free_memory, free_gpu)  # what one node has free NOW
+    JobSizing(cpu: float, memory: int, gpu: int = 0, ephemeral: int = 0)  # summed over a pod's containers
+    Capacity(cpu, memory, gpu, node_id, ephemeral)                        # what one node holds when empty
+    NodeBudget(node_id, free_cpu, free_memory, free_gpu, free_ephemeral, pinnable)  # what one node has free NOW
     Budget(nodes: tuple[NodeBudget], counted_jobs: frozenset, growable: bool)
+
+``ephemeral`` is ``ephemeral-storage`` in bytes, placed like cpu and memory so a pin cannot
+send a pod to a node without the disk; ``pinnable`` is false for a node a ``nodeSelector``
+cannot name, which still holds work — the job is created unpinned and kube-scheduler settles
+it.
 
 ``counted_jobs`` is the double-counting fix: the provider reports which Jobs its reading
 already saw, so a reservation stops being subtracted the instant the real pod starts being
@@ -76,12 +81,15 @@ headroom off: a reserve that is never spendable is not part of either answer.
 
    * - Call
      - Meaning
-   * - ``submit(owner, items, *, started_at, priority=0, campaign="", sizing_for_node=None, accepts_node=None, pin=None)``
+   * - ``submit(owner, items, *, started_at, priority=0, campaign="", sizing_for_node=None, accepts_node=None, pin=None, reserves=True)``
      - Enqueue a whole plan. ``items`` are ``(key, JobSizing, create_fn)``; ``create_fn``
        takes the chosen ``node_id`` (or ``None`` when unpinned). ``started_at`` is the
        **campaign's** start, not the batch's. ``campaign`` is whose rank the items take and
        defaults to ``owner``; a sub-scope owner (``<campaign>#probes``) must name it, or its
-       work ranks as a stranger to the campaign it belongs to.
+       work ranks as a stranger to the campaign it belongs to. ``reserves`` is whether a
+       pinned item that does not fit holds its node open against lower-ranked work;
+       ``False`` for a campaign confined to one node, which would otherwise hold it for
+       its whole life.
    * - ``drain(*, limit=None) -> int``
      - Create as many globally-highest-ranked items as currently fit. Returns how many. A
        **paused** campaign's items are not candidates at all.
@@ -106,10 +114,16 @@ headroom off: a reserve that is never spendable is not part of either answer.
    * - ``forget_scheduling(campaign)``
      - Drop both, once the campaign is over. Runs per **campaign**, beside
        ``forget_calibration`` and never merged with it.
-   * - ``preflight(sizing)``
-     - Raise ``AdmissionRefused`` when no node could *ever* hold it.
+   * - ``preflight(sizing, node_id=None)``
+     - Raise ``AdmissionRefused`` when no node could *ever* hold it — or, with ``node_id``,
+       when that one node could not, for a campaign confined to it.
    * - ``states(owner) -> dict``
      - ``key -> PLANNED | CREATED``, for progress reporting.
+   * - ``given_up(owner) -> dict``
+     - ``key -> cause`` for items dropped after ``CREATE_ATTEMPT_LIMIT`` failed creates; they
+       leave ``states``, so this is the only place they show. Kept until ``cancel``.
+   * - ``space_shortfall() -> str | None``
+     - Why the last drain admitted nothing for want of disk space, or ``None``.
    * - ``refusal(owner) -> str``
      - One line saying what this owner is waiting for — **its own** item count and the sizing
        the fit test actually used, not the queue's total and not the declared figure.
@@ -130,18 +144,23 @@ Workflows
 
     submit(campaign, plan, started_at=..., priority=0)
     while True:
-        reap     -> finished(key) for each vanished CREATED job
-        exit     -> if every plan entry is FINISHED: break
+        measure  -> read finished probes; each frees its node for work
         drain()  -> may create OTHER campaigns' jobs; that is the point
+        reap     -> finished(key) for each CREATED job no longer running
+        give up  -> anything in given_up(campaign): fail the batch
         probes   -> nothing PLANNED of its own left: drop_planned(campaign#probes)
+        space    -> publish space_shortfall() on the campaign's stage
+        exit     -> nothing PLANNED and no created job still running: break
         publish  -> waiting_for_capacity from states(), not from pods
+        explain  -> log refusal(campaign) and refusal(campaign#probes)
         sleep 2
     finally:
         cancel(campaign)                # and cancel(campaign#probes)
         delete every probe Job still outstanding
 
-Step 4 is what makes ordering global without a controller thread: whichever campaign happens
-to be awake advances everybody, in ``(priority, campaign rank, campaign start)`` order.
+The ``drain()`` step is what makes ordering global without a controller thread: whichever
+campaign happens to be awake advances everybody, in ``(priority, campaign rank, campaign
+start)`` order.
 
 **A campaign's rank and its hold.** ``priority`` above is the order *within* a campaign --
 a probe before the work it gates, postprocessing before both -- and it stays the leading key.
@@ -236,11 +255,11 @@ the node, and it is per node — work that can go elsewhere still does.
 
 It is taken **only where the wait can end**: if the node could not hold the item even empty, the
 node keeps working. Holding it would drain the machine and keep it drained, which is worse than
-not reserving at all. That question needs the node's identity, which is why ``Capacity`` now
-carries an optional ``node_id`` — ``preflight`` asks only whether *some* node is large enough,
-and a probe pinned to the smallest machine of a mixed cluster was being judged against the
-biggest. An unknowable answer reserves, because a wrong reserve costs one batch and a wrong skip
-cost the whole campaign.
+not reserving at all. That question needs the node's identity, which is what ``Capacity``'s
+optional ``node_id`` is for — without it, ``preflight`` asks only whether *some* node is large
+enough, and a probe pinned to the smallest machine of a mixed cluster would be judged against
+the biggest. An unknowable answer reserves, because a wrong reserve costs one batch and a wrong
+skip costs the whole campaign.
 
 The count exists for what is left. At the end of one batch the two are indistinguishable,
 and failing on first sight would make a busy minute at campaign start terminal — discarding a

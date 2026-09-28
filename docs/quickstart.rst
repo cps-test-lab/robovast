@@ -138,7 +138,8 @@ Two configurations are refused rather than warned about: an Ingress with no acce
 (it would publish an unauthenticated RoboVAST, and a campaign names its own container
 image, so reaching the URL is enough to run containers in your cluster), and an Ingress
 over plain HTTP (the token would cross the network in clear text, and the session cookie
-is ``Secure``, so the login would not work at all).
+is ``Secure``, so the login would not work at all) unless ``--insecure-http`` says the
+network is trusted.
 
 Then hand out the URL and the token. ``vast service token`` prints both, together
 with the three ways to connect, so onboarding someone is one copy-paste:
@@ -204,8 +205,12 @@ Keeping it running
 .. code-block:: bash
 
    vast service upgrade          # new version: image + RBAC, nobody logged out
-   vast cluster setup --force    # rotate credentials from .env (logs everyone out)
+   vast cluster setup rke2 --force --rotate-token \
+       --ingress-host robovast.example.org \
+       --ingress-class nginx --issuer robovast-ca   # new token, logs everyone out
    vast cluster cleanup          # remove it; the results volume is kept unless --delete-data
+
+``setup --force`` re-provisions with the options it is given, so repeat the ones from step 3.
 
 If the Ingress itself breaks, ``kubectl port-forward svc/robovast-service 8800:8800`` puts
 the service back on the conventional local port and every client finds it there.
