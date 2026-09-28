@@ -20,12 +20,20 @@ A ``.vast`` configuration file has the following top-level structure:
      ...
    plugins:
      - my_plugin==1.2.3
+   configuration_presets:
+     ...
    configuration:
      - name: scenario1
        ...
    execution:
      ...
-   analysis:
+   search:                       # optional; see Search
+     ...
+   results_processing:
+     ...
+   recording:
+     ...
+   visualization:
      ...
 
 Version
@@ -66,6 +74,13 @@ act on. The step, applied the same way to ``search.postprocessing``:
   refused, and the upgrade leaves a marker in its place. The ``run_log`` table holds every line;
   filter by severity where it is read (every log surface takes a minimum severity), then delete
   the marker.
+* ``execution.local`` is removed. It held the overrides of a run on a developer's Docker, and a
+  campaign runs on a cluster, where the block applied to nothing.
+
+**Version 5 → 6.** A job is one run, so ``execution.runs_per_job`` is gone and
+``execution.timeout`` is the budget of one run. A file that packed ``k`` runs behind
+``timeout: T`` gets ``ceil(T / k)`` per run, the share it allotted each; at ``runs_per_job: 1``
+the key is dropped and ``timeout`` is left as written.
 
 **Version 6 → 7.** The top-level ``general:`` section is removed: nothing in robovast read it,
 and a variation plugin is constructed without it. The step drops the section, and a current
@@ -496,9 +511,8 @@ configuration declares is ``sim:``.
 
 .. note::
 
-   ``name:`` is not a destination and is refused, naming the three keys that are. In a
-   ``.vast`` that still carries it, it means ``scenario:``; one spelling per destination
-   is what keeps the commonest line in a ``.vast`` from having two.
+   ``name:`` is not a destination and is refused, naming the three keys that are: one
+   spelling per destination is what keeps the commonest line in a ``.vast`` from having two.
 
 .. _config-variation-slots:
 
@@ -777,7 +791,7 @@ is what it runs in:
        scenario: {goal_pose: {position: {x: 10.0, y: 5.0}}}
        sim:
          overrides:
-           plugins: {ceiling: {enabled: false}}
+           components: {ceiling: {enabled: false}}
 
 A nested mapping against the backend's own schema, merged over
 :ref:`execution.containers.simulation <config-containers>` — which stays the campaign-wide
@@ -793,14 +807,15 @@ sut
 **Required:** No
 
 Fixed values for **how the system under test is configured** in this configuration — the
-third channel's sibling of ``parameters`` and ``sim``:
+third channel beside ``scenario`` and ``sim``, likewise under ``parameters:``:
 
 .. code-block:: yaml
 
    configuration:
    - name: no-voxel
-     sut:
-       nav2.local_costmap.local_costmap.ros__parameters.voxel_layer: {$absent: true}
+     parameters:
+       sut:
+         nav2.local_costmap.local_costmap.ros__parameters.voxel_layer: {$absent: true}
 
 A **flat** mapping of ``<source>.<path>`` to value, unlike ``sim``: everything after the
 source name belongs to that file's format and may be an XPath, which no nested mapping can
@@ -1387,8 +1402,10 @@ Additional environment variables to set in the run container. Each list item sho
 environment — what identifies the campaign (``CAMPAIGN_ID``), where results are written
 (``OUTPUT_DIR``, ``SCENARIO_OUTPUT_DIR``, ``RUN_OUTPUT_DIR``), what the runner executes and
 with which parameters (``SCENARIO_FILE``, ``SCENARIO_PARAMETER_FILE``,
-``SCENARIO_EXECUTION_PARAMETERS``), and the credentials results are uploaded with
-(``S3_*``). Setting one of these is refused when the campaign is validated, naming it.
+``SCENARIO_EXECUTION_PARAMETERS``), how the pod reaches the service's data plane
+(``ROBOVAST_DATA_URL``, ``ROBOVAST_TOKEN``, ``ROBOVAST_CAMPAIGN_ID``), and more —
+``RESERVED_ENV_NAMES`` in :mod:`robovast.common.config` is the list. Setting one of these
+is refused when the campaign is validated, naming it.
 
 The refusal is at validation and not left to the backend on purpose. Whether a campaign's
 value would actually displace RoboVAST's depends on emission order and on the backend's
@@ -1438,8 +1455,8 @@ inside it.
 - ``memory`` (Optional): Memory reservation (e.g. ``8Gi``, ``4096Mi``), or a per-cluster list —
   and, with no ``memory_limit``, the ceiling too
 - ``cpu_limit`` / ``memory_limit`` (Optional): the **ceiling**, when it should differ from the
-  reservation. Omitted — the default — the limit equals the request, which is what every
-  campaign meant before these existed. See *Splitting the reservation from the ceiling* below
+  reservation. Omitted — the default — the limit equals the request. See *Splitting the
+  reservation from the ceiling* below
 - ``gpu`` (Optional): Number of GPUs. Omitted, the container gets none, whatever the
   cluster advertises; declare ``gpu: 1`` on the container that renders (a camera or image
   sensor in the world). Setting it enables the NVIDIA runtime; the GPU must also be
@@ -1468,7 +1485,7 @@ meant. Write the key to be explicit, or to have the mismatch refused rather than
 .. code-block:: yaml
 
    execution:
-     sizing: calibrated          # default: fixed
+     sizing: calibrated          # inferred from the file when absent
      containers:
        sut: {image: nav2:latest}          # no `resources:` -- measured per node
        simulation: {image: sim:latest}
@@ -1998,7 +2015,8 @@ ROS-shaped assumption in a feature that has no reason to carry one.
 health_checks
 ^^^^^^^^^^^^^
 
-**Type:** List of strings
+**Type:** List of strings (a plugin name or a local ``./path.py:Class`` ref), or dictionaries
+carrying one such entry with its parameters
 
 **Required:** No
 
@@ -2041,7 +2059,9 @@ postprocessing.  Each entry is either a plugin name (string) or a dictionary wit
 the plugin name as key and plugin-specific parameters as value.
 
 Publication plugins are executed by ``vast results publish`` and operate on the
-full results directory (parent of campaign directories).
+full results directory (parent of campaign directories). Every entry also takes
+``ask: true``, which asks for confirmation before that plugin runs (``--force`` skips the
+question).
 
 .. code-block:: yaml
 
@@ -2097,6 +2117,19 @@ full results directory (parent of campaign directories).
     including it in the archive.  Typical fields are ``title`` and
     ``description``.  The merged ``metadata.yaml`` is always written
     regardless of ``include_filter`` / ``exclude_filter``.
+
+- ``zenodo``: Upload the files the preceding plugins produced (the zip archives) to a
+  Zenodo deposition, together with the dataset metadata from the ``.vast``. The deposition
+  is not submitted or published — the files are uploaded for review. Optional parameters:
+
+  - ``record_id``: the draft deposition to add to. Omitted, the id cached in
+    ``.robovast_zenodo_project`` beside the ``.vast`` is used, or a new deposition is created
+    after a prompt and its id cached there.
+  - ``sandbox``: ``true`` targets ``sandbox.zenodo.org`` instead of ``zenodo.org``.
+  - ``overwrite``: a file of the same name already in the deposition, as for ``zip``.
+
+  The access token, with the ``deposit:write`` scope, is the ``ZENODO_ACCESS_TOKEN``
+  environment variable, which ``vast`` reads from the ``.env`` of the directory it runs in.
 
 Multiple ``zip`` entries may be defined to produce different archives from the
 same campaign:
@@ -2233,24 +2266,24 @@ Here's a complete example showing all major configuration options:
    version: 7
    configuration:
    - name: parameter-sweep
-     scenario_file: scenario.osc
      variations:
      - ParameterVariationList:
-         name: velocity
+         scenario: velocity
          values: [1.0, 2.0, 3.0]
      - ParameterVariationDistributionUniform:
-         name: obstacle_count
+         scenario: obstacle_count
          num_variations: 5
          min: 1
          max: 10
          type: int
          seed: 42
    - name: baseline
-     scenario_file: scenario.osc
      parameters:
-     - velocity: 2.0
-     - obstacle_count: 5
+       scenario:
+         velocity: 2.0
+         obstacle_count: 5
    execution:
+     scenario_file: scenario.osc
      containers:
        scenario:
          image: ghcr.io/cps-test-lab/robovast:latest

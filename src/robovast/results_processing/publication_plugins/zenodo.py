@@ -35,16 +35,16 @@ Configuration example:
            ask: true
            record_id: 1234567
 
-Credentials are read from the ``.env`` file adjacent to the ``.vast`` file
-(or the project root)::
+The access token is the ``ZENODO_ACCESS_TOKEN`` environment variable, which ``vast``
+reads from the ``.env`` of the directory it runs in::
 
     ZENODO_ACCESS_TOKEN=your_access_token_here
 
 Set ``sandbox: true`` to test against ``sandbox.zenodo.org`` instead of the
 production instance.
 
-See ``docs/zenodo.rst`` for instructions on creating an access token with the
-``deposit:write`` scope.
+The token needs the ``deposit:write`` scope; ``docs/configuration.rst`` lists the plugin
+beside ``zip`` under the publication plugins.
 """
 
 import json
@@ -541,8 +541,7 @@ class Zenodo(BasePublicationPlugin):
 
         ZENODO_ACCESS_TOKEN=your_access_token_here
 
-    See ``docs/zenodo.rst`` for step-by-step instructions on creating a Zenodo
-    access token restricted to the ``deposit:write`` scope.
+    The token needs the ``deposit:write`` scope.
     """
 
     plugin_type = "upload"
@@ -593,8 +592,8 @@ class Zenodo(BasePublicationPlugin):
         if not token:
             return (
                 False,
-                "ZENODO_ACCESS_TOKEN is not set.  Add it to your .env file.\n"
-                "See docs/zenodo.rst for instructions.",
+                "ZENODO_ACCESS_TOKEN is not set. Add a Zenodo access token with the "
+                "deposit:write scope to the .env of the directory vast runs in.",
                 [],
             )
 
