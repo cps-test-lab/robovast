@@ -1259,6 +1259,15 @@ class ClusterService(ServiceBase):
         started = getattr(getattr(job, "status", None), "start_time", None)
         return started.timestamp() if started is not None else None
 
+    def _is_planned(self, campaign_id: str, job_name: str) -> bool:
+        """Whether *job_name* is queued for capacity: admitted, and not created yet."""
+        from .node_admission import PLANNED
+
+        with self._admission_lock:
+            admission = self._admission
+        return admission is not None and \
+            admission.states(campaign_id).get(job_name) == PLANNED
+
     def _planned_jobs(self, campaign_id, created) -> list:
         """The campaign's admitted-but-not-yet-created jobs, as ``waiting`` summaries.
 
@@ -1359,6 +1368,10 @@ class ClusterService(ServiceBase):
         label = f"campaign-id={_label_safe_campaign(campaign_id)},job-name={job_name}"
         pods = core.list_namespaced_pod(self.namespace, label_selector=label)
         if not pods.items:
+            if self._is_planned(campaign_id, job_name):
+                # Queued for capacity: it has no pod and no artifacts yet, and it will. A
+                # stream opened on it waits for its first line instead of failing.
+                return LogChunk(text="", next_offset=offset, eof=False)
             return self._archived_job_log(campaign_id, job_name, offset)
         pod = pods.items[0]
         tail = self._job_log_tail(campaign_id, job_name)
@@ -1401,16 +1414,22 @@ class ClusterService(ServiceBase):
                                               tag_width)
 
         campaign_dir = self.campaign_dir(campaign_id)
+        # Two names reach here: a run's ``<config>/<run>``, which the job-link manifest
+        # resolves, and a Kubernetes Job name from the job listing, which it cannot -- that
+        # one names its artifact dir on the Job itself, for as long as the Job exists.
         try:
-            manifest = (campaign_dir / JOB_LINKS_MANIFEST_REL).read_bytes()
+            links = yaml.safe_load(
+                (campaign_dir / JOB_LINKS_MANIFEST_REL).read_bytes()) or {}
         except FileNotFoundError:
-            raise KeyError(
-                f"campaign {campaign_id!r} has no job-link manifest: no archived log for "
-                f"job {job_name!r}") from None
+            links = {}
         try:
-            job_rel = resolve_job_artifact_rel(yaml.safe_load(manifest) or {}, job_name)
-        except FileNotFoundError as e:
-            raise KeyError(f"{e} in campaign {campaign_id!r}") from None
+            job_rel = resolve_job_artifact_rel(links, job_name)
+        except FileNotFoundError:
+            job_rel = self._job_artifact_dir(job_name)
+        if not job_rel:
+            raise KeyError(
+                f"no archived log for job {job_name!r} in campaign {campaign_id!r}: it is "
+                f"neither a run in the job-link manifest nor a Job that still exists")
 
         log_dir = campaign_dir / job_rel / "logs"
         names = sorted(p.name for p in log_dir.iterdir()) if log_dir.is_dir() else []
