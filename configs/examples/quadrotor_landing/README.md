@@ -5,8 +5,9 @@ deliberately simple ([files/quadrotor_sim.py](files/quadrotor_sim.py),
 single file, numpy only) but **stochastic** — wind gusts and sensor noise mean a
 given parameter set can land on one run and fail on the next.
 
-All variants share one scenario, sim and `extract` module; only the `search`
-`strategy` (and its `strategy_parameters`) differ:
+All four share one scenario and sim. The three search variants also share the
+wind variation, `QuadMetrics` and the `extract` module; they differ in `strategy`
+(and its `strategy_parameters`) and in their budget:
 
 | File | Mode | Run with |
 |---|---|---|
@@ -24,6 +25,11 @@ All variants share one scenario, sim and `extract` module; only the `search`
 | `wind_strength` | mean horizontal wind acceleration [m/s²] |
 | `descent_rate` | commanded descent speed [m/s] |
 
+The batch grid sets all four directly. The search variants search `wind_speed`
+[m/s] and `turbulence` instead of `wind_strength`: the local variation
+[variations/wind.py](variations/wind.py) (`WindFieldVariation`) turns them into
+`wind_strength` with a quadratic-drag law.
+
 ## Failure modes (each coupled to two parameters)
 
 The failures are **regions in the joint space**, so a search has to explore
@@ -39,20 +45,22 @@ combinations — no single parameter explains a failure:
 ## Scoring: the `extract` module
 
 The sim writes only the **raw** `trajectory.csv` (`t, x, z, vx, vz, tilt`) per
-run. [search/extract.py](search/extract.py) (`QuadExtract`) is the one
-SUT-specific scoring step — referenced from the `.vast` as
-`./search/extract.py:QuadExtract` and parameterizable via `extract.params`. It
-derives, aggregated over a config's runs:
+run. [search/metrics.py](search/metrics.py) (`QuadMetrics`) derives a per-run
+`metrics.csv` from it, and
+[search/extract.py](search/extract.py) (`QuadExtract`) is the one SUT-specific
+scoring step — referenced from the `.vast` as `search/extract.py:QuadExtract` and
+parameterizable via `extract.params`. It reads those per-run files and derives,
+aggregated over a config's runs:
 
 - **objective** `failure_rate` (from `test.xml`),
 - **measures** `max_tilt`, `drift_dist`, `landing_speed`, `control_effort`
-  (from `trajectory.csv`).
+  (from `metrics.csv`).
 
 Aggregated **worst-case** across a config's runs, not averaged (`extract.params`
 takes `aggregate: worst | quantile | mean`). Every measure is a cost, so the
-pessimistic end is the maximum — and averaging is what collapsed this campaign's
-512-cell archive onto 3 cells, by pulling every cell toward the middle of the
-behaviour space before the archive ever saw it.
+pessimistic end is the maximum — averaging pulls every cell toward the middle of
+the behaviour space before the archive ever sees it, and collapses a large archive
+onto a few cells.
 
 A cell that produced no result, or none this could read, raises `NoSampleError`
 rather than scoring: for a *maximized* failure rate a fabricated 0.0 is the least
@@ -60,22 +68,29 @@ interesting score there is, and fabricated measures are archive coordinates, so
 they place an unmeasurable configuration in a real cell as an elite.
 
 The QD archive's `strategy_parameters.archive.measures` select/bound which
-measures form the behavior space. The same module is reused for analysis: the
-batch `.vast` lists `extract_to_csv` under `results_processing.postprocessing`,
-which runs `QuadExtract` and writes a per-config `metrics.csv` — one source of
-truth, no duplicated metric logic.
+measures form the behavior space. The batch `.vast` lists
+`search/metrics.py:QuadMetrics` under `results_processing.postprocessing`, the
+search files under `search.postprocessing`, so the notebooks and the extractor
+read the same per-run `metrics.csv` — one source of truth, no duplicated metric
+logic.
 
 ## Visualization
 
-`analysis/` notebooks (wired via `evaluation.visualization`, matplotlib only):
+`analysis/` notebooks (wired via `visualization.results.explorer.notebooks`, matplotlib only):
 
-- `analysis_run.ipynb` — x–z descent path + tilt, **plus an animated GIF**
-  (reads `trajectory.csv`).
+- `analysis_run.ipynb` — x–z descent path + tilt (reads `trajectory.csv`),
+  **plus an animated GIF**: the `descent.gif` that
+  [analysis/render.py](analysis/render.py) (`DescentVideo`, listed under
+  `results_processing.postprocessing` in every `.vast`) renders per run.
+- `analysis_batch.ipynb` — one search batch: its configs' objectives, measures and
+  where it sampled the search space (search variants).
 - `analysis_qd.ipynb` — reads `campaign.db`: objective distribution and 2-D
   projections of the behavior space coloured by objective (the discovered failure
-  landscape; works for random/QD/Optuna runs).
-- `analysis_campaign.ipynb` / `analysis_config.ipynb` — per-config metrics for
-  batch runs (from `extract_to_csv`).
+  landscape; works for random/QD/Optuna runs). The campaign notebook of the
+  random and QD variants; its QD views need the `qd` extra.
+- `analysis_config.ipynb` / `analysis_campaign.ipynb` — per-config metrics (each
+  run's `metrics.csv`) plus failure rate; the campaign notebook of the batch and
+  Optuna variants.
 
 See `docs/search.rst` for the generic `search` schema and how strategies /
 extractors plug in (including local-file and multi-objective extensions).

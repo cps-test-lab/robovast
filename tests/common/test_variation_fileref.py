@@ -61,7 +61,7 @@ def test_oneof_child_file_ref_resolves(tmp_path):
     one_of = OneOfVariation(
         str(tmp_path),
         {"variations": [{"myvar.py:TagVariation": {}}]},
-        {}, lambda *_: None, None, str(tmp_path))
+        lambda *_: None, None, str(tmp_path))
     out = one_of.variation([{"name": "c", "config": {}}])
     assert len(out) == 1
     assert out[0]["config"]["tag"] == "x"
@@ -73,7 +73,7 @@ def test_oneof_unknown_child_raises(tmp_path):
     one_of = OneOfVariation(
         str(tmp_path),
         {"variations": [{"NoSuchVariation": {}}]},
-        {}, lambda *_: None, None, str(tmp_path))
+        lambda *_: None, None, str(tmp_path))
     with pytest.raises(ValueError, match="Unknown variation type"):
         one_of.variation([{"name": "c", "config": {}}])
 
@@ -85,7 +85,7 @@ def test_windfield_variation_computes_wind_strength(tmp_path):
     from robovast.common.plugin_ref import load_ref
     cls = load_ref("variations/wind.py:WindFieldVariation",
                    "robovast.variation_types", QUAD)
-    var = cls(QUAD, {"wind_speed": 10.0, "turbulence": 0.2}, {},
+    var = cls(QUAD, {"wind_speed": 10.0, "turbulence": 0.2},
               lambda *_: None, None, str(tmp_path))
     out = var.variation([{"name": "c", "config": {}}])
     assert len(out) == 1  # one config per input (1:1 search contract)
