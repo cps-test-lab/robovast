@@ -535,6 +535,13 @@ To your `pyproject.toml`, add an entry under `[tool.poetry.plugins."robovast.var
     [tool.poetry.plugins."robovast.variation_types"]
     "YourVariation" = "robovast_<yourplugin>.your_variation:YourVariation"
 
+A variation does not define ``__init__``: the base class is constructed as
+``Variation(base_path, parameters, progress_update_callback, scenario_file, output_dir,
+container_runner=None)`` and keeps each argument as the attribute of the same name, with
+``parameters`` validated against ``CONFIG_CLASS`` when the class sets one. ``parameters`` is
+the mapping written under the variation's entry, and it is the only configuration a variation
+receives, so every value it reads is declared there.
+
 A variation can also be loaded from a **local file relative to the .vast**
 without packaging it — reference it as ``<path>.py:<Class>`` wherever a variation
 name is expected (in a ``configuration[].variations`` list or a ``search.variations``

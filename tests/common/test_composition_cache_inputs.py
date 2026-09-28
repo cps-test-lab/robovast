@@ -68,7 +68,7 @@ def _helper_project(tmp_path):
         "import osc.robotics\n\nscenario cell_test:\n    do serial:\n        wait elapsed(1s)\n")
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent("""\
-        version: 6
+        version: 7
         configuration:
         - name: cell
           variations:
