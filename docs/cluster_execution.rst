@@ -698,11 +698,18 @@ their results there as they ran — and ``vast campaign download`` (or
    # -> ./campaign-2025-06-01-120000.tar.gz
 
 That is the whole command. It fetches the campaign as this service holds it —
-postprocessing and all — writes one ``.tar.gz``, and stops: nothing is extracted, no
+postprocessing and its built tables included, so ``robovast-data`` or a notebook opens it
+without building anything — writes one ``.tar.gz``, and stops: nothing is extracted, no
 results directory is written into, and no state is kept about what you already have.
 The stream is end-to-end, so a ~1TB campaign is never buffered on the service or in
 memory. What you do with the archive afterwards is yours; to put it back into a
 service, ``vast campaign import <archive>``.
+
+``--raw`` fetches the records alone, as ``<campaign-id>.raw.tar.gz``: no tables and
+nothing postprocessing recorded producing (its provenance record, the metadata, each
+output its steps reported), so an import postprocesses it afresh. The MCP's
+``get_campaign_download(raw=True)`` and the web UI's **Download records only (raw)** are
+the same archive.
 
 The share's raw, pre-postprocessing copy is a different system, reached through
 ``vast share`` (see :ref:`cluster-sharing`). To push a copy there, either enable it

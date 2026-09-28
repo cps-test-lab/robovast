@@ -51,9 +51,11 @@ class _Client:
         self.payload = payload
         self.served = served
         self.session = SimpleNamespace(get=self._get)
+        self.params = []
 
-    def _get(self, url, timeout, stream):
+    def _get(self, url, timeout, stream, params=None):
         del url, timeout, stream
+        self.params.append(params)
         return _StreamingResponse(self.payload, self.served)
 
     @staticmethod
@@ -70,6 +72,14 @@ def test_the_archive_is_extracted_as_it_streams_and_no_archive_is_kept(tmp_path)
     assert (tmp_path / CID / "cfg" / "0" / "test.xml").read_bytes() == b"<t/>"
     assert sorted(p.name for p in tmp_path.iterdir()) == [CID], "no archive, no scratch"
     assert seen and seen[-1] == len(payload)
+
+
+def test_raw_asks_the_route_for_the_records_alone(tmp_path):
+    payload = _archive([(f"{CID}/campaign.db", b"db")])
+    client = _Client(payload, served=f"{CID}.raw.tar.gz")
+    landed = extract_campaign_archive(client, CID, str(tmp_path), raw=True)
+    assert client.params == [{"raw": "true"}]
+    assert landed == str(tmp_path / f"{CID}.raw")
 
 
 def test_the_service_names_the_tree(tmp_path):

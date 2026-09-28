@@ -53,8 +53,9 @@ import pyarrow.parquet as pq
 
 from . import DATA_CONTRACT, __version__
 
-#: The campaign-level directory every derived file lives under. RoboVAST already treats a
-#: ``.cache`` directory as rebuildable: archives and exports leave it out.
+#: The campaign-level directory every derived file lives under. RoboVAST treats a ``.cache``
+#: directory as rebuildable: a share and an export leave it out, and a download carries only
+#: the manifest and the table files of the top-level one.
 CACHE_DIR = ".cache"
 TABLES_DIR = "tables"
 MANIFEST = "MANIFEST.json"

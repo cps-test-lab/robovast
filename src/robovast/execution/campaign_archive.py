@@ -62,13 +62,82 @@ from robovast.client.safe_path import check_relative, check_segment, safe_join
 
 logger = logging.getLogger(__name__)
 
-#: Excluded from every campaign archive by default: ``.cache`` holds the tables built from
-#: the campaign's records, which are rebuilt on first use and never belong in a shared or
-#: downloaded campaign.
+#: Excluded from a shared campaign: ``.cache`` holds the tables built from the campaign's
+#: records, which are rebuilt on first use. A download chooses what it carries instead
+#: (:func:`download_skip`).
 DEFAULT_EXCLUDE = frozenset({".cache"})
 
 #: Read size for the download generator.
 _CHUNK = 1024 * 1024
+
+#: What a downloaded campaign holds. ``WITH_TABLES`` is the campaign as the service holds it:
+#: its records, what postprocessing derived from them, and its built tables -- so it opens in
+#: a notebook without building anything. ``RAW`` is the records alone: no table cache and
+#: nothing postprocessing recorded producing, so an import postprocesses it afresh.
+WITH_TABLES = "tables"
+RAW = "raw"
+CONTENTS = (WITH_TABLES, RAW)
+
+#: What of a campaign's top-level ``.cache`` a download with its tables carries: the
+#: catalogue and the table files. Its exports, locks and anything else stay behind.
+_TABLE_CACHE = (".cache/MANIFEST.json", ".cache/tables")
+
+#: What postprocessing writes whatever its steps are, relative to the campaign directory:
+#: its own record, the campaign's metadata and provenance, and the providers it recorded.
+_POSTPROCESSING_FILES = frozenset({
+    "_transient/postprocessing.yaml", "_execution/providers.yaml", "metadata.yaml",
+    "metadata.prov.json", "metadata.dot", "metadata.pdf"})
+
+
+def postprocessing_outputs(campaign_root: str) -> frozenset:
+    """Campaign-relative paths postprocessing recorded producing in *campaign_root*.
+
+    Its fixed files and every entry's ``output`` in its provenance record. A plugin that
+    writes a file without reporting it is not named here: the record is the only account
+    of what a step made.
+    """
+    from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
+        POSTPROCESSING_RECORD, postprocessing_entries)
+    record = os.path.join(campaign_root, POSTPROCESSING_RECORD)
+    try:
+        with open(record, "rb") as fh:
+            entries = postprocessing_entries(fh.read()) or []
+    except FileNotFoundError:
+        entries = []
+    outputs = set(_POSTPROCESSING_FILES)
+    transient = os.path.dirname(POSTPROCESSING_RECORD)
+    for entry in entries:
+        output = (entry or {}).get("output")
+        if output:
+            rel = os.path.normpath(os.path.join(transient, output)).replace(os.sep, "/")
+            if not rel.startswith("../"):
+                outputs.add(rel)
+    return frozenset(outputs)
+
+
+def download_skip(campaign_root: str, contents: str):
+    """The predicate a download of *campaign_root* leaves a campaign-relative path out by.
+
+    Every ``.cache`` below the top level is left out whatever *contents* is: a run's own
+    render cache is rebuilt by whoever renders it. :data:`WITH_TABLES` keeps the top-level
+    table catalogue and files; :data:`RAW` leaves out the whole cache and what postprocessing
+    recorded producing (:func:`postprocessing_outputs`).
+    """
+    if contents not in CONTENTS:
+        raise ValueError(f"a campaign download is one of {', '.join(CONTENTS)}, "
+                         f"not {contents!r}")
+    derived = postprocessing_outputs(campaign_root) if contents == RAW else frozenset()
+
+    def skip(rel: str) -> bool:
+        parts = rel.split("/")
+        if ".cache" in parts:
+            if contents == RAW or parts[0] != ".cache" or ".cache" in parts[1:]:
+                return True
+            return not (rel == ".cache" or any(rel == keep or rel.startswith(keep + "/")
+                                               for keep in _TABLE_CACHE))
+        return any(rel == out or rel.startswith(out + "/") for out in derived)
+
+    return skip
 
 #: Campaign-relative member marking an archive taken while the campaign was still
 #: running. Its presence is the whole signal: a snapshot has the shape of a finished
@@ -255,7 +324,7 @@ class _LiveFile(io.RawIOBase):
             super().close()
 
 
-def _add_live_tree(tar: tarfile.TarFile, campaign_root: str, exclude) -> None:
+def _add_live_tree(tar: tarfile.TarFile, campaign_root: str, skip) -> None:
     """Add a campaign that is **still being written** into *tar*, member by member.
 
     ``TarFile.add`` walks the tree itself and lets an ``OSError`` from any single file
@@ -267,8 +336,10 @@ def _add_live_tree(tar: tarfile.TarFile, campaign_root: str, exclude) -> None:
     Sizes are taken from the open descriptor rather than from the directory entry, so the
     header cannot describe a different moment than the payload; :class:`_LiveFile` covers
     what changes after that.
+
+    *skip* is called with each member's campaign-relative path; a directory it skips is not
+    walked into.
     """
-    exclude = frozenset(exclude or ())
     root = os.path.normpath(str(campaign_root))
     base = os.path.basename(root)
     tar.add(root, arcname=base, recursive=False)
@@ -280,10 +351,9 @@ def _add_live_tree(tar: tarfile.TarFile, campaign_root: str, exclude) -> None:
         except OSError:
             continue
         for entry in entries:
-            if entry.name in exclude:
-                continue
             child = f"{arc}/{entry.name}"
-            if _is_stamp(child.partition("/")[2]):
+            rel = child.partition("/")[2]
+            if skip(rel) or _is_stamp(rel):
                 continue
             try:
                 if entry.is_symlink() or entry.is_dir(follow_symlinks=False):
@@ -412,11 +482,12 @@ def campaign_tar_stream(campaign_root: str, exclude=DEFAULT_EXCLUDE, on_member=N
     return tar_stream(lambda tar: _add_campaign_tree(tar, campaign_root, exclude, on_member))
 
 
-def iter_campaign_tar(campaign_root: str, exclude=DEFAULT_EXCLUDE, chunk_size: int = _CHUNK,
-                      snapshot: "dict | None" = None):
+def iter_campaign_tar(campaign_root: str, contents: str = WITH_TABLES,
+                      chunk_size: int = _CHUNK, snapshot: "dict | None" = None):
     """Generator yielding the ``tar.gz`` of the local directory *campaign_root*.
 
-    Compressed, because a download leaves the cluster.
+    Compressed, because a download leaves the cluster. *contents* is what it carries
+    (:data:`WITH_TABLES` or :data:`RAW`, :func:`download_skip`).
 
     *snapshot* — a dict of facts, possibly empty — says the campaign is **still running**:
     the tree is then read tolerantly (:func:`_add_live_tree`) and :data:`SNAPSHOT_MEMBER`
@@ -430,9 +501,10 @@ def iter_campaign_tar(campaign_root: str, exclude=DEFAULT_EXCLUDE, chunk_size: i
     On a tree nothing is writing to, the tolerant walk produces the same archive.
     """
     campaign_id = os.path.basename(os.path.normpath(str(campaign_root)))
+    skip = download_skip(str(campaign_root), contents)
 
     def _add(tar):
-        _add_live_tree(tar, campaign_root, exclude)
+        _add_live_tree(tar, campaign_root, skip)
         add_archive_stamp(tar, campaign_id)
         if snapshot is not None:
             add_snapshot_marker(tar, campaign_id, **snapshot)

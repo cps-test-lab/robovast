@@ -824,9 +824,11 @@ decoder reads its configuration from there.
 **The cache is disposable.** Deleting ``.cache/`` loses nothing but the time to build it
 again, and every surface that clears it relies on exactly that: ``vast campaign tables
 clear``, the MCP ``clear_campaign_tables``, ``DELETE /campaigns/{id}/tables``, the admin
-page's table-cache entry, and ``force`` on a postprocessing re-run. An archive (download,
-share) carries the records and never ``.cache/``, so an imported campaign builds its tables
-from its records on first use like any other.
+page's table-cache entry, and ``force`` on a postprocessing re-run. A share archive carries
+the records and never ``.cache/``. A download carries the top-level cache's manifest and
+table files (``campaign_archive.download_skip``), so it opens without building anything;
+wherever it lands, an entry another decoder version wrote is not current there and is built
+again from the records, and ``--raw`` leaves the cache out altogether.
 
 .. _data-contract:
 

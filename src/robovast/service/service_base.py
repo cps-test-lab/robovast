@@ -1201,7 +1201,7 @@ class ServiceBase(RobovastInterface):
         return {"phase": str(snap.phase),
                 "runs_completed": snap.runs.completed, "runs_total": snap.runs.total}
 
-    def campaign_archive_name(self, campaign_id: str) -> str:
+    def campaign_archive_name(self, campaign_id: str, raw: bool = False) -> str:
         """The file name this campaign's archive is offered under.
 
         A campaign still running is named ``<id>.incomplete.tar.gz``, and that is the whole
@@ -1210,11 +1210,11 @@ class ServiceBase(RobovastInterface):
         real ones its name is all that distinguishes it. The browser, the CLI and anyone who
         forwards the file get the same warning without opening it.
         """
-        from robovast.execution.share_providers.naming import \
-            INCOMPLETE, archive_name  # pylint: disable=import-outside-toplevel
+        from robovast.execution.share_providers.naming import (  # pylint: disable=import-outside-toplevel
+            INCOMPLETE, RAW, archive_name)
         if self.campaign_is_live(campaign_id):
             return archive_name(campaign_id, INCOMPLETE)
-        return f"{campaign_id}.tar.gz"
+        return archive_name(campaign_id, RAW) if raw else f"{campaign_id}.tar.gz"
 
     # -- the data plane, in-process --
     #
@@ -1259,17 +1259,17 @@ class ServiceBase(RobovastInterface):
             raise RuntimeError("no auth token bound to this service; build it with build_app")
         return auth.scoped_token(token, scope)
 
-    def campaign_tar_stream(self, campaign_id: str):
+    def campaign_tar_stream(self, campaign_id: str, raw: bool = False):
         """Tar this host's campaign directory straight into the response.
 
-        ``.cache`` is left out: it is rebuilt from the records. A campaign that is still
-        running carries a snapshot marker
-        (see ``campaign_archive.iter_campaign_tar``) so what lands cannot be mistaken for
-        a finished one; liveness is this transport's knowledge, from its registry.
+        With its built tables, or *raw* (``campaign_archive.download_skip``). A campaign
+        that is still running carries a snapshot marker (see
+        ``campaign_archive.iter_campaign_tar``) so what lands cannot be mistaken for a
+        finished one; liveness is this transport's knowledge, from its registry.
         """
         live = self.campaign_is_live(campaign_id)
         return self._data_plane().campaign_tar_stream(
-            campaign_id, live=live,
+            campaign_id, raw=raw, live=live,
             facts=self._snapshot_facts(campaign_id) if live else None)
 
     def campaign_live(self, campaign_id: str, run: str, tables):

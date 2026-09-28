@@ -67,8 +67,10 @@ Large uploads take the side channel instead: ``POST /uploads`` grants a token, a
 
 The **data plane** is the third namespace, ``/data``: every route that moves a campaign's
 or a staged slot's bytes as one tar stream. ``GET /data/campaigns/{id}/archive`` is the
-whole campaign's records as a tar.gz -- postprocessed if they have been, raw if not --
-and never its ``.cache/`` table cache; ``GET /data/campaigns/{id}/exports/{export_id}`` is
+whole campaign as a tar.gz -- its records, what postprocessing derived, and its built
+tables (the ``.cache/`` manifest and table files) -- and ``?raw=true`` the records alone,
+without the tables and what postprocessing recorded producing;
+``GET /data/campaigns/{id}/exports/{export_id}`` is
 a finished export's tar.gz (:ref:`results-export`), a ``404`` until it is done and a ``409``
 naming the reason once it failed; ``GET .../inputs`` is what a job pod extracts into its
 ``/config``, with the campaign's ``_config/`` and ``_transient/`` flattened, only the

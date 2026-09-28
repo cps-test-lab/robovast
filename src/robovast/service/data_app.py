@@ -158,17 +158,17 @@ class DataPlane:
             return False
         return status is not None and is_terminal(status.phase)
 
-    def campaign_archive_name(self, campaign_id: str) -> str:
-        from robovast.execution.share_providers.naming import \
-            INCOMPLETE, archive_name  # pylint: disable=import-outside-toplevel
+    def campaign_archive_name(self, campaign_id: str, raw: bool = False) -> str:
+        from robovast.execution.share_providers.naming import (  # pylint: disable=import-outside-toplevel
+            INCOMPLETE, RAW, archive_name)
         if not self.campaign_is_finished(campaign_id):
             return archive_name(campaign_id, INCOMPLETE)
-        return f"{campaign_id}.tar.gz"
+        return archive_name(campaign_id, RAW) if raw else f"{campaign_id}.tar.gz"
 
     # -- the five operations --
 
-    def campaign_tar_stream(self, campaign_id: str, *, live: "bool | None" = None,
-                            facts: "dict | None" = None):
+    def campaign_tar_stream(self, campaign_id: str, raw: bool = False, *,
+                            live: "bool | None" = None, facts: "dict | None" = None):
         """The campaign as a tar stream; see the interface method of the same name.
 
         *live* is whether the campaign is still being written -- a caller that knows says
@@ -182,7 +182,8 @@ class DataPlane:
             live = not self.campaign_is_finished(campaign_id)
         snapshot = dict(facts or {}) if live else None
         return campaign_archive.iter_campaign_tar(
-            str(campaign_dir), exclude=campaign_archive.DEFAULT_EXCLUDE, snapshot=snapshot)
+            str(campaign_dir),
+            campaign_archive.RAW if raw else campaign_archive.WITH_TABLES, snapshot=snapshot)
 
     def campaign_inputs_tar_stream(self, campaign_id: str, job_tags: "list[str]",
                                    config_files: "list[tuple[str, str]] | None" = None):
@@ -521,13 +522,13 @@ def data_router(source):
         return result
 
     @router.get(Routes.campaign_archive("{campaign_id}"))
-    def download_campaign_archive(campaign_id: str):
+    def download_campaign_archive(campaign_id: str, raw: bool = Query(default=False)):
         """Stream the campaign as a ``tar.gz``.
 
-        Backs ``vast campaign download`` and the web UI's download button. What comes out
-        is the campaign's records as this service holds them -- postprocessed if it has
-        been, raw if it has not -- never its table cache: derived data is an addition to a
-        campaign, never the condition for reading one.
+        Backs ``vast campaign download`` and the web UI's download menu. What comes out is
+        the campaign as this service holds it -- its records, what postprocessing derived,
+        and its built tables, so it opens in a notebook without building anything -- or,
+        with ``raw=true``, the records alone, which an import postprocesses afresh.
 
         Nothing is buffered and no scratch is used: the tree is tarred into the response
         as it is read. Decisive for campaigns that run to terabytes.
@@ -535,9 +536,9 @@ def data_router(source):
         # The name before the stream: a running campaign is offered as
         # `<id>.incomplete.tar.gz`, and the header is the only place that reaches a browser
         # -- which saves whatever this says and never sees the marker inside the archive.
-        name = _guard(lambda: source.campaign_archive_name(campaign_id))
+        name = _guard(lambda: source.campaign_archive_name(campaign_id, raw))
         return StreamingResponse(
-            _guard(lambda: source.campaign_tar_stream(campaign_id)),
+            _guard(lambda: source.campaign_tar_stream(campaign_id, raw)),
             media_type=GZIP_MEDIA_TYPE,
             headers={"Content-Disposition": f'attachment; filename="{name}"'})
 

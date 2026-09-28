@@ -262,7 +262,7 @@ def test_a_body_that_is_not_a_tar_is_a_400(client):
     assert resp.status_code == 400, resp.text
 
 
-def test_the_archive_carries_the_records_and_never_the_table_cache(client, root):
+def test_the_archive_carries_the_records_and_the_tables_and_raw_only_the_records(client, root):
     campaign = root / _CAMPAIGN
     (campaign / "_calibration").mkdir()
     (campaign / "_calibration" / "probe.mcap").write_bytes(b"probe")
@@ -272,7 +272,12 @@ def test_the_archive_carries_the_records_and_never_the_table_cache(client, root)
     names = _names(client.get(Routes.campaign_archive(_CAMPAIGN)).content, gz=True)
     assert f"{_CAMPAIGN}/_calibration/probe.mcap" in names
     assert f"{_CAMPAIGN}/_config/campaign.vast" in names
-    assert not [n for n in names if "/.cache" in n]
+    assert f"{_CAMPAIGN}/.cache/tables/poses.parquet" in names
+
+    raw = _names(client.get(Routes.campaign_archive(_CAMPAIGN), params={"raw": "true"}).content,
+                 gz=True)
+    assert f"{_CAMPAIGN}/_calibration/probe.mcap" in raw
+    assert not [n for n in raw if "/.cache" in n]
 
 
 def test_the_standalone_plane_reads_liveness_from_the_tree(standalone, root):
