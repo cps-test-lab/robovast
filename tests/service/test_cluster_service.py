@@ -1267,14 +1267,30 @@ def test_get_job_log_merges_all_three_containers(cs, monkeypatch):
     assert "mujoco model loaded" in lines[0]
 
 
-def _no_pod(cs, monkeypatch, tmp_path, files):
-    """A job whose pod is gone, and a campaign holding *files* (rel path -> bytes)."""
+def _no_pod(cs, monkeypatch, tmp_path, files, jobs=None):
+    """A job whose pod is gone, and a campaign holding *files* (rel path -> bytes).
+
+    *jobs* maps the Kubernetes Jobs that still exist to their ``OUTPUT_DIR``; any other name
+    reads as a Job that is gone.
+    """
+    from kubernetes import client
 
     class _Core:
         def list_namespaced_pod(self, namespace, label_selector):
             return types.SimpleNamespace(items=[])
 
+    class _Batch:
+        def read_namespaced_job(self, name, namespace):
+            if name not in (jobs or {}):
+                raise client.exceptions.ApiException(status=404)
+            env = [types.SimpleNamespace(name="OUTPUT_DIR", value=jobs[name])]
+            container = types.SimpleNamespace(env=env)
+            return types.SimpleNamespace(spec=types.SimpleNamespace(
+                template=types.SimpleNamespace(
+                    spec=types.SimpleNamespace(containers=[container]))))
+
     monkeypatch.setattr(cs, "_k8s", lambda: _Core())
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
     monkeypatch.setattr(cs, "_campaigns_root", lambda: tmp_path)
     for rel, blob in files.items():
         path = tmp_path / rel
@@ -1308,6 +1324,34 @@ def test_get_job_log_of_a_finished_job_is_read_from_the_campaign(cs, monkeypatch
     assert "not a container log" not in chunk.text
     # The offset protocol continues past the archive the same way it does past a live tail.
     assert cs.get_job_log("camp", "cfg/0", offset=chunk.next_offset).text == ""
+
+
+def test_get_job_log_of_a_listed_job_whose_pod_is_gone_reads_its_artifacts(
+        cs, monkeypatch, tmp_path):
+    """The job listing names Jobs by their Kubernetes name, which the job-link manifest does
+    not key on. The Job itself says where its artifacts went, for as long as it exists."""
+    _no_pod(cs, monkeypatch, tmp_path, {
+        "camp/_jobs/batch-0/job-9/logs/system.log": b"run ended\n",
+    }, jobs={"camp-batch0-9": "/out/_jobs/batch-0/job-9"})
+
+    chunk = cs.get_job_log("camp", "camp-batch0-9")
+
+    assert chunk.eof and "run ended" in chunk.text
+
+
+def test_get_job_log_of_a_queued_job_waits_rather_than_failing(cs, monkeypatch, tmp_path):
+    """A job queued for capacity has no pod and no artifacts yet, and will have both. A
+    stream opened on it from the job listing must wait for its first line, not report the
+    job as unknown."""
+    from robovast.execution.cluster_execution.node_admission import PLANNED
+
+    _no_pod(cs, monkeypatch, tmp_path, {})
+    cs._admission = types.SimpleNamespace(
+        states=lambda owner: {"camp-batch0-9": PLANNED} if owner == "camp" else {})
+
+    chunk = cs.get_job_log("camp", "camp-batch0-9", offset=0)
+
+    assert chunk.text == "" and chunk.eof is False and chunk.next_offset == 0
 
 
 def test_get_job_log_of_a_job_that_delivered_nothing_is_absent(cs, monkeypatch, tmp_path):
