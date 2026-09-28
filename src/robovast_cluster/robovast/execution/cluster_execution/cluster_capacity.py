@@ -34,9 +34,11 @@ from .node_admission import Budget, Capacity, NodeBudget
 
 logger = logging.getLogger(__name__)
 
-#: Held back from every node so RoboVAST's own transient work -- the build daemon, the aux
-#: discovery pod, an ``exec_in_container`` session -- is not squeezed out by a campaign that
-#: filled the cluster exactly.
+#: Held back on the node RoboVAST's own transient work runs on -- the build daemon, which
+#: bursts past its own request, and the aux composition and ``exec_in_container`` pods, which
+#: prefer that node -- so a campaign that filled the cluster exactly does not squeeze it out.
+#: Where no node is labelled the build node that work can land anywhere, and every node keeps
+#: the reserve (:func:`reserved_node_names`).
 #:
 #: **Not a ``.vast`` knob.** The reserve protects tenants no single campaign owns, so letting
 #: one campaign shrink it would let it take capacity every other campaign depends on.
@@ -118,6 +120,28 @@ def headroom() -> "Tuple[float, int]":
     return float(cpu), int(mem)
 
 
+def reserved_node_names(nodes) -> "Optional[set]":
+    """The names of the nodes the reserve is held on, or ``None`` for every node.
+
+    The build node, labelled by setup, is where the transient work lands. A cluster with no
+    such label has placed that work nowhere in particular, so the reserve stays on every node
+    -- not a fallback, but the same rule: hold it where the work can run.
+    """
+    from .node_placement import BUILD_NODE_LABEL, LABEL_VALUE  # noqa: PLC0415
+
+    labelled = {node.metadata.name for node in nodes
+                if (node.metadata.labels or {}).get(BUILD_NODE_LABEL) == LABEL_VALUE}
+    return labelled or None
+
+
+def _reserve_on(name, reserved) -> "Tuple[float, int]":
+    """``(cpu, memory)`` held back on node *name*: the reserve, or nothing.
+
+    One rule for both readings, as the reserve itself is (see ``capacities``).
+    """
+    return headroom() if reserved is None or name in reserved else (0.0, 0)
+
+
 class ClusterBudgetProvider:
     """Reads the live cluster. The only implementation today; see ``BudgetProvider``."""
 
@@ -135,9 +159,10 @@ class ClusterBudgetProvider:
         """What each node could hold if it were empty -- **headroom already taken off**.
 
         Subtracted here for the same reason it is subtracted from ``budget()``: the reserve is
-        never spendable by a campaign, so a node's usable size is ``allocatable - headroom``
-        in **both** answers, and they must agree. If this reported the raw figure, a sizing
-        above ``allocatable - headroom`` but at or below ``allocatable`` would pass
+        never spendable by a campaign, so a reserved node's usable size is
+        ``allocatable - headroom`` in **both** answers, and they must agree. If this reported
+        the raw figure, a sizing above ``allocatable - headroom`` but at or below
+        ``allocatable`` would pass
         :meth:`~.node_admission.AdmissionController.preflight` -- which exists precisely to
         tell "wait" from "impossible" -- and then no drain could ever place it. The campaign
         would sit in the admit loop having created ZERO jobs, invisible to every diagnosis
@@ -148,18 +173,25 @@ class ClusterBudgetProvider:
         Never below zero: a node smaller than the reserve reports as holding nothing, which is
         the truth, rather than a negative that would read as room.
         """
-        head_cpu, head_mem = headroom()
         ids = self._node_identities()
         # Carrying the node id, so a PINNED item can be asked whether the one node it may use
         # could ever hold it. Without it the only answerable question is the cluster-wide one,
         # and a probe pinned to the smallest machine of a mixed cluster is judged against the
         # biggest.
-        return [Capacity(cpu=max(0.0, parse_resource(a.get("cpu")) - head_cpu),
-                         memory=max(0, int(parse_resource(a.get("memory"))) - head_mem),
-                         gpu=int(parse_resource(a.get("nvidia.com/gpu"))),
-                         node_id=ids.get(name, (None, False))[0],
-                         ephemeral=int(parse_resource(a.get("ephemeral-storage"))))
-                for name, a in self._allocatables().items()]
+        reserved = self._reserved_nodes()
+        out = []
+        for name, a in self._allocatables().items():
+            head_cpu, head_mem = _reserve_on(name, reserved)
+            out.append(Capacity(cpu=max(0.0, parse_resource(a.get("cpu")) - head_cpu),
+                                memory=max(0, int(parse_resource(a.get("memory"))) - head_mem),
+                                gpu=int(parse_resource(a.get("nvidia.com/gpu"))),
+                                node_id=ids.get(name, (None, False))[0],
+                                ephemeral=int(parse_resource(a.get("ephemeral-storage")))))
+        return out
+
+    def _reserved_nodes(self) -> "Optional[set]":
+        """:func:`reserved_node_names` over the live node list, read once per reading."""
+        return reserved_node_names(self._core_api_factory().list_node().items)
 
     def _declared_total(self):
         """The cluster's own idea of how big it can get, or ``None``.
@@ -207,16 +239,17 @@ class ClusterBudgetProvider:
         cluster reports room -- the free cores are spread across nodes and no single node
         holding the 4.75 a pod needed.
 
-        Headroom is subtracted from **every** node, not once from the total. It protects the
-        shared tenants no campaign owns, and those run on each machine; taking it off the sum
-        would leave every node but one unprotected.
+        Headroom is subtracted **per node**, on the nodes the transient work runs on
+        (:func:`reserved_node_names`), not once from the total: a reserve taken off the sum
+        protects no machine in particular.
         """
         alloc = self._allocatables(schedulable_only=True)
         ids = self._node_identities()
         per_node, seen = self._committed(set(alloc))
-        head_cpu, head_mem = headroom()
+        reserved = self._reserved_nodes()
         nodes = []
         for name, a in alloc.items():
+            head_cpu, head_mem = _reserve_on(name, reserved)
             used = per_node.get(name, (0.0, 0, 0, 0))
             identity, pinnable = ids.get(name, (None, False))
             nodes.append(NodeBudget(

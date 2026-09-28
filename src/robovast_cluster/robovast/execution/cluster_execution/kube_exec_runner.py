@@ -34,6 +34,7 @@ correct:
   spawns ``ls``/``wc`` counts its own helpers and reports an idle pod as busy forever.
 """
 
+import copy
 import logging
 import shutil
 from pathlib import Path
@@ -406,6 +407,7 @@ def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
     from robovast.common.execution import resolve_sidecar_image
 
     from .kubernetes_backend import pull_policy_for
+    from .node_placement import TRANSIENT_POD_RESOURCES, transient_pod_affinity
 
     metadata = {"name": _pod_name(slot), "namespace": namespace,
                 "labels": dict(_labels())}
@@ -452,8 +454,11 @@ def _pod_manifest(spec: ExecSpec, deadline_s: int, namespace: str,
                 "command": ["/bin/bash", "-c", f"exec sleep {int(deadline_s)}"],
                 "env": env,
                 "volumeMounts": main_mounts,
+                # What exec'd commands run in; see TRANSIENT_POD_RESOURCES.
+                "resources": copy.deepcopy(TRANSIENT_POD_RESOURCES),
             }],
             "volumes": volumes,
+            "affinity": transient_pod_affinity(),
             **({"imagePullSecrets": [{"name": pull_secret}]} if pull_secret else {}),
         },
     }
