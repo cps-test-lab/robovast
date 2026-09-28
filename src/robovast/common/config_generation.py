@@ -283,7 +283,7 @@ def _make_container_runner(spec, *, image_project=None, image_project_tag=None, 
     return LocalContainerRunner(spec, should_stop=_aux_stop_predicate.get())
 
 
-def execute_variation(base_dir, configs, variation_class, parameters, general_parameters, progress_update_callback, scenario_file, output_dir=None, container_runner=None):
+def execute_variation(base_dir, configs, variation_class, parameters, progress_update_callback, scenario_file, output_dir=None, container_runner=None):
     logger.debug(f"Executing variation: {variation_class.__name__}")
     # Constructing a plugin validates its parameters, so a refusal happens HERE -- and
     # reported from outside this function it named neither the plugin nor the config block,
@@ -292,7 +292,7 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
     # way a construction can fail keeps the exception it already raises, including the ones
     # carrying their own next step.
     try:
-        variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, scenario_file, output_dir, container_runner=container_runner)
+        variation = variation_class(base_dir, parameters, progress_update_callback, scenario_file, output_dir, container_runner=container_runner)
     except VariationConfigError as e:
         msg = f"Variation failed. {variation_class.__name__}: {e}"
         logger.error(msg)
@@ -2267,8 +2267,6 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         temp_path = tempfile.TemporaryDirectory(prefix="robovast_variation_")
         output_dir = temp_path.name
 
-    general_parameters = parameters.get('general', {})
-
     # Get scenario parameters once (same for all configurations)
     scenario_param_dict = get_scenario_parameters(scenario_file)
     existing_scenario_parameters = next(iter(scenario_param_dict.values())) if scenario_param_dict else []
@@ -2339,7 +2337,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             try:
                 (result, var_input_files, var_campaign_transient, var_config_transient,
                  var_read_files) = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
-                                                                                                          variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir,
+                                                                                                          variation_parameters, progress_update_callback, scenario_file, output_dir,
                                                                                                           container_runner=container_runner)
             except (VariationInfeasibleError, VariationConfigError, VariationFailed) as exc:
                 # Name the config block and the .vast line here -- neither execute_variation

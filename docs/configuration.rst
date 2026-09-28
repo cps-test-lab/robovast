@@ -12,7 +12,7 @@ A ``.vast`` configuration file has the following top-level structure:
 
 .. code-block:: yaml
 
-   version: 6
+   version: 7
    extends: common/base.vast     # optional; see Extends
    metadata:
      title: "Project Title"
@@ -48,7 +48,7 @@ declare only the current one:
 
 .. code-block:: yaml
 
-   version: 6
+   version: 7
 
 An **older** version is migrated forward rather than refused:
 
@@ -81,6 +81,11 @@ act on. The step, applied the same way to ``search.postprocessing``:
 ``execution.timeout`` is the budget of one run. A file that packed ``k`` runs behind
 ``timeout: T`` gets ``ceil(T / k)`` per run, the share it allotted each; at ``runs_per_job: 1``
 the key is dropped and ``timeout`` is left as written.
+
+**Version 6 → 7.** The top-level ``general:`` section is removed: nothing in robovast read it,
+and a variation plugin is constructed without it. The step drops the section, and a current
+file that still declares ``general:`` is refused naming the key. A value a variation plugin
+needs is one of that plugin's own parameters, under its entry in ``variations``.
 
 
 .. note::
@@ -124,7 +129,7 @@ meant to change -- a container's resources, a postprocessing step, a dashboard.
 
 .. code-block:: yaml
 
-   version: 6
+   version: 7
    extends: common/nav2-base.vast
    execution:
      containers:
@@ -2258,7 +2263,7 @@ Here's a complete example showing all major configuration options:
 
 .. code-block:: yaml
 
-   version: 6
+   version: 7
    configuration:
    - name: parameter-sweep
      variations:

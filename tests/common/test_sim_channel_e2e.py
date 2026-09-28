@@ -81,7 +81,7 @@ def _project(tmp_path, configuration):
         (worlds / name).write_text(_WORLD)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent(f"""\
-        version: 6
+        version: 7
         metadata: {{name: sim-channel}}
         configuration:
         {configuration}

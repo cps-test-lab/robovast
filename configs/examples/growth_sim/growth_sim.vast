@@ -1,4 +1,4 @@
-version: 6
+version: 7
 metadata:
   name: growth_sim
 configuration:
