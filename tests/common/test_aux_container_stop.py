@@ -144,5 +144,5 @@ def test_a_stop_is_not_reported_as_a_broken_plugin():
             raise CampaignStopped("auxiliary container stopped by request")
 
     with pytest.raises(CampaignStopped):
-        cg.execute_variation("/tmp", [{}], _Stopped, {}, {}, lambda _line: None,
+        cg.execute_variation("/tmp", [{}], _Stopped, {}, lambda _line: None,
                              "scenario.osc")

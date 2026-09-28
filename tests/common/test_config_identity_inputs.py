@@ -61,7 +61,7 @@ def test_a_variation_is_identified_by_its_reference(tmp_path):
 
 def test_a_configuration_without_its_block_is_refused(tmp_path):
     """Staging hashes the block; one that did not come from composition has none to hash."""
-    (tmp_path / "s.vast").write_text("version: 6\n", encoding="utf-8")
+    (tmp_path / "s.vast").write_text("version: 7\n", encoding="utf-8")
     (tmp_path / "s.osc").write_text("scenario x:\n    do serial:\n        wait elapsed(1s)\n",
                                     encoding="utf-8")
     with pytest.raises(KeyError, match="_config_block"):
