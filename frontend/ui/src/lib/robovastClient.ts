@@ -614,14 +614,14 @@ export const robovast = {
   // SSE stream URLs for live logs. `new EventSource(url)` streams frames, auto-reconnects,
   // and resumes from the last event id via Last-Event-ID: a row cursor for the campaign log
   // (see useCampaignLogStream) and for a job log (see useJobLogStream), a byte offset for the
-  // service log (see LogPanel). The pull methods above are the same routes read once; the
-  // browser prefers these. The campaign stream takes the same filters as its pull.
+  // service log (see LogPanel). The pull methods above read the same logs once; the browser
+  // prefers these. The campaign stream takes the same filters as its pull.
   campaignLogStreamUrl: (campaignId: string, q: CampaignLogQuery = {}) =>
     `${BASE}/campaigns/${encodeURIComponent(campaignId)}/logs/stream${campaignLogQuery('', q)}`,
 
   // SSE stream of the campaign list itself: the server pushes the full list on
   // connect and on every change (a server-side loop over listCampaigns), in the order
-  // asked for. The Monitor page consumes this instead of polling; EventSource reconnects
+  // asked for. The Campaigns page consumes this instead of polling; EventSource reconnects
   // natively.
   campaignsStreamUrl: (sort: CampaignListSort = DEFAULT_CAMPAIGN_SORT) => {
     const q = campaignSortQuery(sort)

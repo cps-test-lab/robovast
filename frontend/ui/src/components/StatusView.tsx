@@ -550,11 +550,11 @@ export function StatusView({
   // in place of the list, because an empty list here reads as "nothing is running", and a
   // listing that failed says nothing of the kind.
   jobsError?: string | null
-  // Monitor cares only about jobs still meaningful right now: it drops completed ones
-  // from both the count summary and the jobs list (the Launcher lists everything).
+  // Drop completed jobs from both the count summary and the jobs list, keeping only what is
+  // still meaningful right now. Omitted → every job is listed.
   liveOnly?: boolean
-  // The top card in Monitor's newest-first campaign list — see FailureBox. Defaults to
-  // true so the Launcher and other single-campaign callers keep the box open.
+  // The top card in the Campaigns page's newest-first list — see FailureBox. Defaults to
+  // true, so a view showing a single campaign keeps the box open.
   newest?: boolean
   // Cluster CPU capacity, for Details' "jobs in flight" estimate. Omitted → not shown.
   quotaCpu?: number | null
@@ -565,8 +565,8 @@ export function StatusView({
   // means not recorded -- a campaign that ended before this was measured, or one still
   // running -- and Details then shows no size rather than "0 B".
   resultsBytes?: number | null
-  // Offer each running job a Stop button. Omitted → no buttons, which is what the Launcher
-  // wants: this view stays presentational and the caller owns the confirm + the mutation,
+  // Offer each running job a Stop button. Omitted → no buttons. This view stays
+  // presentational and the caller owns the confirm + the mutation,
   // because it also owns the jobs query that has to be invalidated afterwards.
   onStopJob?: (job: JobSummary) => void
   // The job a stop is currently in flight for, so its button can disable itself rather than
@@ -834,7 +834,7 @@ export function StatusView({
  *  and drawing a meter would need a denominator the campaign never declared.
  *
  *  Closed by default and fetched only while open. That gating is the whole reason this can sit on
- *  a campaign card at all: the Monitor renders every campaign in the list, so anything a card does
+ *  a campaign card at all: the Campaigns page renders every campaign, so anything a card does
  *  unconditionally is paid for by the whole page — see `useDetails`, which is closed by default for
  *  exactly this reason.
  *
