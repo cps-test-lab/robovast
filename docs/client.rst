@@ -26,6 +26,18 @@ Nothing here is a reduced version of a command that exists elsewhere. Every verb
 client offers only *drives* a service, so a client install is a complete install rather
 than a truncated one.
 
+**The next step up is a campaign's data on this machine.**
+
+.. code-block:: bash
+
+   pip install "robovast-client[data]"
+   vast results build ~/Downloads/<campaign-id>.tar.gz
+
+The ``data`` extra adds ``robovast-data`` — the decoder, DuckDB and pandas — and with it
+``vast results build``, which builds a downloaded campaign's tables and compacts them
+(:ref:`results-tables-ahead`), and the notebook API over them (:ref:`results-notebooks`). It
+is the heavy step, which is why the client does not take it without being asked.
+
 
 What you can do with it
 =======================

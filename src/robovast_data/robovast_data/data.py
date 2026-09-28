@@ -48,7 +48,8 @@ from robovast_decode.tables import (cache_root, campaign_table_path, manifest_lo
 
 from . import bulk
 from .bulk import Frame, PointCloud
-from .engine import Engine, Problem, Scope
+from .engine import Built, Engine, Problem, Scope
+from .progress import ProgressLine
 from .statement import QueryError
 
 #: Above this many rows, :meth:`Data.table` says what it is about to hold before it does.
@@ -295,6 +296,32 @@ class Data(Reader):
                   "ASOF JOIN poses p ON p.timestamp <= d.timestamp", tables={"detections": det})
         """
         return self._frame(query, params, tables)
+
+    def build(self, tables: Optional[Iterable[str]] = None, *, workers: Optional[int] = None,
+              compact: bool = True, progress=True) -> Built:
+        """Build every table here now (or *tables*), rather than on first use.
+
+        The runs are built by *workers* processes at once (default: every core but one), and
+        a whole campaign's tables are then compacted into one file each, which is smaller and
+        faster to read than one file per run (:mod:`robovast_decode.compact`); *compacted* ``False``
+        leaves them one file per run. *progress* ``True`` writes one line
+        ``0%...10%...100%``; a callable is called with ``(phase, done, total)`` instead.
+        Tables that could not be built for some run are warned about, as a query does.
+        """
+        workers = workers or max(1, (os.cpu_count() or 2) - 1)
+        engine = Engine(self.scopes, workers=workers, threads=self.engine.threads,
+                        memory_limit=self.engine.memory_limit, timeout_s=self.engine.timeout_s)
+        line = None
+        if progress is True:
+            runs = sum(len(engine._runs(scope)) for scope in self.scopes)
+            line = ProgressLine(f"{', '.join(_describe(s) for s in self.scopes[:3])}: "
+                                f"{runs} runs, {workers} workers")
+            progress = line
+        built = engine.build(tables, compact=compact, progress=progress or None)
+        if line is not None:
+            line.finish()
+        _report(built.problems)
+        return built
 
     def config(self, name: str) -> ConfigFiles:
         """The resolved files configuration *name* ran with."""

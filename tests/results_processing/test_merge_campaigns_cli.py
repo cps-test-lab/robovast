@@ -7,11 +7,11 @@ is a usage error answered before anything runs -- not a ``Path(None)`` deep in t
 
 from click.testing import CliRunner
 
-from robovast.results_processing.cli import results
+from robovast.results_processing.cli import merge_results_cmd
 
 
 def test_the_results_directory_is_required(tmp_path):
-    result = CliRunner().invoke(results, ["merge-campaigns", str(tmp_path / "merged")])
+    result = CliRunner().invoke(merge_results_cmd, [str(tmp_path / "merged")])
     assert result.exit_code == 2
     assert "Missing option '--results-dir'" in result.output
     assert "Traceback" not in result.output

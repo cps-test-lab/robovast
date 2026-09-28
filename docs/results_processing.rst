@@ -352,10 +352,11 @@ compared with a run that kept one instance throughout.
 Tables
 ------
 
-A table is a set of parquet files under ``<campaign>/.cache/tables/``, one per run, cataloged by
-``.cache/MANIFEST.json``. Every
-table carries ``campaign_id``, ``config_name`` and ``run_id`` in its own rows, so it joins to
-``runs`` and to every other table on ``(config_name, run_id)``.
+A table is a set of parquet files under ``<campaign>/.cache/tables/``, cataloged by
+``.cache/MANIFEST.json``: one file per run as it is built, and one file for the whole table once
+it is compacted (:ref:`results-tables-compacted`). Every table carries ``campaign_id``,
+``config_name`` and ``run_id`` in its own rows, so it joins to ``runs`` and to every other table
+on ``(config_name, run_id)``.
 
 Where the tables come from
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -489,7 +490,22 @@ no ROS install, no execution image, no container. The service, a notebook on a l
 
 ``.cache/MANIFEST.json`` records, per table and run, the files that make it up, their schema,
 the source bytes they were built from, the decoder version that built them — and, for a run that
-has no rows for a table or only part of them, the reason.
+has no rows for a table or only part of them, the reason. A compacted run's entry keeps all of
+that and names no file of its own: its rows are in the table's compacted file.
+
+.. _results-tables-compacted:
+
+**A finished campaign's table is one file.** Building one file per run is what lets a query
+build only the runs it names; once the runs are final it only costs — thousands of small files,
+each with its own footer and its own copy of the columns naming the run. The campaign-end pass,
+``vast campaign tables build`` and ``vast results build`` therefore *compact* each table: its final
+run files are merged into one file, rows unchanged and in run order, each floating-point column
+stored in whichever encoding makes it smallest. A query for one configuration or one run still
+reads only its part of the file. What compacts is only what a reader may take as it is — written by
+this decoder, final, with no reason — so a run still recording keeps its own files, and a compacted
+run built again (a newer decoder, a late sidecar) is read from its own file until the next compaction
+folds it back in. A table whose runs disagree on a column's type is left one file per run, and
+the pass names it.
 
 **A table a topic stopped decoding for is incomplete, and says why.** A topic whose type
 neither the recording, its sidecar nor the ROS distribution defines gives its table no rows; a
@@ -1387,12 +1403,26 @@ section (``_execution/tables.log``). Clearing is refused while the campaign runs
 are being built. ``describe_campaign_data`` and the Data browser report each table as built for
 M of N runs; describing builds nothing.
 
-Without a service, ``robovast-decode`` builds a campaign directory's tables in place:
+Without a service, ``vast results build`` builds a campaign directory's — or a downloaded
+archive's — tables in place, every core but one at once, and compacts them. It arrives with
+``robovast-data``: ``pip install robovast-client[data]``.
+
+.. code-block:: bash
+
+   vast results build <campaign-dir|archive> [--table NAME ...] [--jobs N] [--no-compact]
+
+It writes one progress line and then what it left: the tables, their rows, and the size of
+``.cache`` beside the recordings'. It exits 1 when a table could not be built for some run,
+naming them (``--verbose`` names the runs). In a notebook, ``Campaign(path).build()`` does the
+same (:ref:`results-notebooks`).
+
+``robovast-decode``, the decoder's own command line, builds and compacts one step at a time:
 
 .. code-block:: bash
 
    robovast-decode tables <campaign-dir>                      # what the records can give, and what is built
    robovast-decode build <campaign-dir> [--table NAME] [--run CONFIG/RUN] [--force]
+   robovast-decode compact <campaign-dir> [--table NAME] [--jobs N]
 
 
 .. _results-export:

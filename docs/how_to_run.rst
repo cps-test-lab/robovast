@@ -66,7 +66,7 @@ How to run
    :prog: vast service token
    :nested: full
 
-.. click:: robovast.results_processing.cli:results
+.. click:: robovast.client.results_cli:results
    :prog: vast results
    :nested: full
 

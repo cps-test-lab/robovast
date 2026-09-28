@@ -38,6 +38,22 @@ runs = read_runs("~/Downloads/nav-…")
 `runs`, `table()` and `sql()` then answer for that node only. This is how the same notebook
 cell works on a laptop and in RoboVAST's Results Explorer.
 
+## Building every table now
+
+A table is built on first use; `build()` builds them all at once instead, one run per core
+but one, and then compacts each table into one file: the runs' files merged, rows unchanged,
+smaller and faster to read. A query for one configuration or run still reads only its part.
+
+```python
+c = Campaign("~/Downloads/nav-through-poses-2026-09-23-11155362.tar.gz")
+c.build()                       # nav-...: 1180 runs, 27 workers  0%...10%...100%  138 s
+c.build(tables=["poses"])       # only these
+open_data(".../<config>").build()   # one configuration: built, not compacted
+```
+
+With `robovast-client` installed beside it (`pip install robovast-client[data]`), the same is
+a command: `vast results build <campaign-dir|archive> [--table NAME] [--jobs N]`.
+
 A campaign on a service opens by its URL, with the service's token (`vast service token`
 prints it), and answers `runs`, `tables`, `table()` and `sql()` without a download:
 

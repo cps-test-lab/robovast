@@ -63,9 +63,9 @@ from .framing import Channel, McapTail, has_footer, summary_channels
 from .handlers import Videos
 from .layout import YAML_LOADER, job_links, run_dirs
 from .registry import INFRA_BAG, ROQSIM_BAG, SCENARIO_BAG, narrow, plan_for
-from .tables import (TableBuffer, fixed, live_owned, manifest_lock, read_manifest,
-                     record_run_absent, record_run_table, remove_files, run_lock, run_table_path,
-                     write_manifest, write_table, written_here)
+from .tables import (FileCatalog, TableBuffer, fixed, live_owned, read_manifest,
+                     record_run_absent, record_run_table, run_lock, run_table_path, write_table,
+                     written_here)
 
 #: The report of what a recording holds, as a table of its own.
 RECORDING_TABLE = "_recording"
@@ -249,14 +249,19 @@ def plugin_groups(config: Optional[dict]) -> Dict[str, list]:
 
 def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
           runs: Optional[Iterable[str]] = None, config: Optional[dict] = None,
-          force: bool = False) -> BuildReport:
+          force: bool = False, catalog=None) -> BuildReport:
     """Build *tables* (every one the recordings can give, for ``None``) for *runs*.
 
     *runs* are ``config/run`` keys (every run, for ``None``); *config* is the campaign's
     decoder configuration (``{"groups": [...]}``). A table already built for a run from the
     same source bytes by this decoder version is left alone unless *force*.
+
+    *catalog* holds the manifest the build reads and records into: the campaign's file
+    (:class:`~robovast_decode.tables.FileCatalog`, the default), or one run's entries in
+    memory (:class:`~robovast_decode.tables.RunCatalog`) for a bulk build that merges them.
     """
     campaign_dir = os.path.abspath(campaign_dir)
+    catalog = catalog or FileCatalog(campaign_dir)
     campaign_id = os.path.basename(campaign_dir)
     wanted_runs = set(runs) if runs is not None else None
     derived_wanted = [t for t in DERIVED if tables is None or t in tables]
@@ -279,10 +284,10 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
     for run in selected:
         with run_lock(campaign_dir, run.key):
             _build_run(campaign_dir, campaign_id, run, groups, wanted_tables, force, report,
-                       known_tables)
+                       known_tables, catalog)
     if derived_wanted:
         _build_derived(campaign_dir, campaign_id, selected, derived_wanted,
-                       (config or {}).get("containers"), force, report)
+                       (config or {}).get("containers"), force, report, catalog)
     if wanted_tables is not None:
         report.unknown = [t for t in wanted_tables if t not in known_tables]
     return report
@@ -290,10 +295,10 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
 
 def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, list],
                wanted_tables: Optional[List[str]], force: bool, report: BuildReport,
-               known_tables: set) -> None:
+               known_tables: set, catalog) -> None:
     """One run's tables from its recordings and its own files; the caller holds its lock."""
     sources = _sources(run)
-    manifest = read_manifest(campaign_dir)
+    manifest = catalog.read()
     sizes = {os.path.relpath(b, campaign_dir): source_size(b) for _, b in sources}
     report_current = not force and _is_current(manifest, RECORDING_TABLE, run.key,
                                                sum(sizes.values()))
@@ -359,9 +364,8 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
                     report.failed.setdefault(table, {})[run_key] = reason
         if decoded and not report_current:
             _recording_rows(recording_rows, role, decoded, plan)
-        with manifest_lock(campaign_dir):
-            fresh = read_manifest(campaign_dir)
-            superseded = []
+        superseded = []
+        with catalog.update() as fresh:
             for table, rel, arrow, reason in written:
                 superseded += record_run_table(
                     fresh, table, run_key, files=[rel], rows=arrow.num_rows,
@@ -369,20 +373,20 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
                     sources={rel_bag: size},
                     complete=complete, reason=reason)
                 report.built.setdefault(table, []).append(run_key)
-            write_manifest(campaign_dir, fresh)
-            # The parts an abandoned live session left: named by no manifest now.
-            remove_files(campaign_dir, superseded)
+        # The parts an abandoned live session left: named by no manifest now.
+        catalog.discard(superseded)
     if not report_current and sources:
-        _write_recording(campaign_dir, campaign_id, run, recording_rows, sizes)
+        _write_recording(campaign_dir, campaign_id, run, recording_rows, sizes, catalog)
         report.built.setdefault(RECORDING_TABLE, []).append(run.key)
     elif sources:
         report.skipped.setdefault(RECORDING_TABLE, []).append(run.key)
     file_tables = _build_files(campaign_dir, campaign_id, run, wanted_tables, force,
                                report, known_tables,
-                               reserved=run_bag_tables | DERIVED_TABLES)
+                               reserved=run_bag_tables | DERIVED_TABLES, catalog=catalog)
     if wanted_tables is not None:
         _record_absent(campaign_dir, run, wanted_tables, report, sizes, bag_sources,
-                       known=run_bag_tables | file_tables | {RECORDING_TABLE})
+                       known=run_bag_tables | file_tables | {RECORDING_TABLE},
+                       catalog=catalog)
 
 
 def _sources(run: Run) -> List[Tuple[str, str]]:
@@ -426,9 +430,9 @@ def derived_sources(campaign_dir: str, run: Run, manifest: dict) -> Dict[str, in
 
 
 def _derive_run(campaign_dir: str, campaign_id: str, run: Run, tables: List[str],
-                containers, force: bool, report: BuildReport) -> None:
+                containers, force: bool, report: BuildReport, catalog) -> None:
     """One run's derived tables, from its job's records; the caller holds its lock."""
-    manifest = read_manifest(campaign_dir)
+    manifest = catalog.read()
     sources = derived_sources(campaign_dir, run, manifest)
     entries = {t: manifest.get("tables", {}).get(t, {}).get("runs", {}) for t in tables}
     # Current: the same sources by this decoder, or a live derivation's whose stamp is
@@ -451,8 +455,7 @@ def _derive_run(campaign_dir: str, campaign_id: str, run: Run, tables: List[str]
         rel = run_table_path(campaign_dir, table, run.config_name, run.run_id)
         write_table(campaign_dir, rel, rows)
         written.append((table, rel, rows))
-    with manifest_lock(campaign_dir):
-        fresh = read_manifest(campaign_dir)
+    with catalog.update() as fresh:
         done = set()
         for table, rel, rows in written:
             record_run_table(fresh, table, run.key, files=[rel], rows=rows.num_rows,
@@ -465,19 +468,20 @@ def _derive_run(campaign_dir: str, campaign_id: str, run: Run, tables: List[str]
                 # it has, and that came out empty.
                 record_run_absent(fresh, table, run.key, sources=sources,
                                   complete=complete, known=True)
-        write_manifest(campaign_dir, fresh)
 
 
 def _build_derived(campaign_dir: str, campaign_id: str, selected: List[Run],
-                   tables: List[str], containers, force: bool, report: BuildReport) -> None:
+                   tables: List[str], containers, force: bool, report: BuildReport,
+                   catalog) -> None:
     """The derived tables of every selected run, from its job's records."""
     for run in selected:
         with run_lock(campaign_dir, run.key):
-            _derive_run(campaign_dir, campaign_id, run, tables, containers, force, report)
+            _derive_run(campaign_dir, campaign_id, run, tables, containers, force, report,
+                        catalog)
 
 
 def _build_files(campaign_dir: str, campaign_id: str, run: Run, wanted_tables, force: bool,
-                 report: BuildReport, known_tables: set, reserved) -> set:
+                 report: BuildReport, known_tables: set, reserved, catalog) -> set:
     """The run's own ``*.csv``/``*.jsonl`` files as tables (:mod:`robovast_decode.authored`);
     the tables its files are, built or refused."""
     files = run_files(run.path, reserved=reserved)
@@ -485,7 +489,7 @@ def _build_files(campaign_dir: str, campaign_id: str, run: Run, wanted_tables, f
         known_tables.add(table)
         if wanted_tables is None or table in wanted_tables:
             report.failed.setdefault(table, {})[run.key] = reason
-    manifest = read_manifest(campaign_dir)
+    manifest = catalog.read()
     columns = {"campaign_id": campaign_id, "config_name": run.config_name,
                "run_id": run.run_id}
     complete = os.path.isfile(os.path.join(run.path, "test.xml"))
@@ -511,19 +515,17 @@ def _build_files(campaign_dir: str, campaign_id: str, run: Run, wanted_tables, f
         write_table(campaign_dir, rel, arrow)
         written.append((table, rel, arrow, os.path.relpath(path, campaign_dir), size))
     if written:
-        with manifest_lock(campaign_dir):
-            fresh = read_manifest(campaign_dir)
+        with catalog.update() as fresh:
             for table, rel, arrow, source, size in written:
                 record_run_table(fresh, table, run.key, files=[rel], rows=arrow.num_rows,
                                  schema=arrow.schema, sources={source: size},
                                  complete=complete)
                 report.built.setdefault(table, []).append(run.key)
-            write_manifest(campaign_dir, fresh)
     return set(files.tables) | set(files.refused)
 
 
 def _record_absent(campaign_dir: str, run: Run, wanted_tables, report: BuildReport,
-                   sizes: dict, bag_sources: Dict[str, dict], known: set) -> None:
+                   sizes: dict, bag_sources: Dict[str, dict], known: set, catalog) -> None:
     """Enter the asked-for tables *run* has no rows for, and why where a build failed.
 
     A bag table's entry records the one recording it comes from (*bag_sources*), as an entry
@@ -538,14 +540,12 @@ def _record_absent(campaign_dir: str, run: Run, wanted_tables, report: BuildRepo
     if not missing:
         return
     complete = os.path.isfile(os.path.join(run.path, "test.xml"))
-    with manifest_lock(campaign_dir):
-        manifest = read_manifest(campaign_dir)
+    with catalog.update() as manifest:
         for table in missing:
             reason = report.failed.get(table, {}).get(run.key)
             record_run_absent(manifest, table, run.key,
                               sources=bag_sources.get(table, sizes), complete=complete,
                               reason=reason, known=table in known)
-        write_manifest(campaign_dir, manifest)
 
 
 def _is_current(manifest: dict, table: str, run_key: str, size: int) -> bool:
@@ -603,17 +603,15 @@ def _recording_rows(buf: TableBuffer, role: str, decoded, plan) -> None:
 
 
 def _write_recording(campaign_dir: str, campaign_id: str, run: Run, buf: TableBuffer,
-                     sizes: dict) -> None:
+                     sizes: dict, catalog) -> None:
     arrow = buf.to_arrow(fixed(RECORDING_FIELDS),
                          context={"campaign_id": campaign_id, "config_name": run.config_name,
                                   "run_id": run.run_id})
     rel = run_table_path(campaign_dir, RECORDING_TABLE, run.config_name, run.run_id)
     write_table(campaign_dir, rel, arrow)
-    with manifest_lock(campaign_dir):
-        manifest = read_manifest(campaign_dir)
+    with catalog.update() as manifest:
         record_run_table(manifest, RECORDING_TABLE, run.key, files=[rel], rows=arrow.num_rows,
                          schema=arrow.schema, sources=sizes, complete=True)
-        write_manifest(campaign_dir, manifest)
 
 
 def available_tables(campaign_dir: str, config: Optional[dict] = None,
