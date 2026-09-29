@@ -3676,6 +3676,8 @@ class KubernetesBackend(ExecutionBackend):
         )
         # Every later batch of the campaign runs the sidecar this one fixed.
         options.sidecar_image = runner._sidecar_image  # noqa: SLF001 - same module
+        # The sidecar a table-building part stages with: the one the campaign ran with.
+        self._sidecar_image = runner._sidecar_image  # noqa: SLF001 - same module
         # Now, and not after the batch: the runner's plan carries the digest every pod will
         # run (``_pin_image_refs``), and this is the earliest moment it is known. A campaign
         # that dies in its first batch still leaves a record naming the exact bytes it was
@@ -3873,6 +3875,21 @@ class KubernetesBackend(ExecutionBackend):
                               image_digests=digests or None,
                               image_labels=image_labels or None,
                               nodes_skipped=runner.skipped_nodes() or None)
+
+    def table_builder(self, campaign_root: str, should_stop=None):
+        """Build the campaign's tables in parts, one Job each (``table_jobs``), with the
+        sidecar the campaign ran with.
+
+        A part is sized from the campaign's own record of what its system under test was
+        given on each node (:func:`~.table_jobs.recorded_sizing`), the record a
+        postprocessing started later reads too. ``None`` when that record says nothing about
+        the size: the tables are built where the campaign is postprocessed.
+        """
+        from .table_jobs import cluster_pod_builder  # noqa: PLC0415
+        return cluster_pod_builder(
+            campaign_root, namespace=self.namespace, kube_context=self.kube_context,
+            cluster_config=lambda: self.cluster_config, admission=lambda: self._admission,
+            sidecar_image=getattr(self, "_sidecar_image", None), should_stop=should_stop)
 
     def finalize_campaign(self, campaign_root: str) -> None:
         """Release what the cluster held for this campaign: its calibration and its rank.

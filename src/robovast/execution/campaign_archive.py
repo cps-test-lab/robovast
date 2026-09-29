@@ -483,11 +483,14 @@ def campaign_tar_stream(campaign_root: str, exclude=DEFAULT_EXCLUDE, on_member=N
 
 
 def iter_campaign_tar(campaign_root: str, contents: str = WITH_TABLES,
-                      chunk_size: int = _CHUNK, snapshot: "dict | None" = None):
+                      chunk_size: int = _CHUNK, snapshot: "dict | None" = None,
+                      part: str = "", compress: bool = True):
     """Generator yielding the ``tar.gz`` of the local directory *campaign_root*.
 
-    Compressed, because a download leaves the cluster. *contents* is what it carries
-    (:data:`WITH_TABLES` or :data:`RAW`, :func:`download_skip`).
+    Compressed, because a download leaves the cluster; *compress* ``False`` is a plain tar,
+    for a reader inside it. *contents* is what it carries (:data:`WITH_TABLES` or
+    :data:`RAW`, :func:`download_skip`); *part* narrows the records to one part of a table
+    build (:func:`robovast.results_processing.table_parts.part_skip`).
 
     *snapshot* — a dict of facts, possibly empty — says the campaign is **still running**:
     the tree is then read tolerantly (:func:`_add_live_tree`) and :data:`SNAPSHOT_MEMBER`
@@ -502,6 +505,19 @@ def iter_campaign_tar(campaign_root: str, contents: str = WITH_TABLES,
     """
     campaign_id = os.path.basename(os.path.normpath(str(campaign_root)))
     skip = download_skip(str(campaign_root), contents)
+    if part:
+        # One part of a table build: its runs' records and what the decoder reads beside them
+        # (robovast.results_processing.table_parts). A part is always records alone.
+        if contents != RAW:
+            raise ValueError("a table part is staged from the records alone (raw)")
+        from robovast.results_processing.table_parts import \
+            part_skip  # pylint: disable=import-outside-toplevel
+        records, outside_part = skip, part_skip(str(campaign_root), part)
+
+        def skip_records_or_outside_part(rel: str) -> bool:
+            return records(rel) or outside_part(rel)
+
+        skip = skip_records_or_outside_part
 
     def _add(tar):
         _add_live_tree(tar, campaign_root, skip)
@@ -509,7 +525,7 @@ def iter_campaign_tar(campaign_root: str, contents: str = WITH_TABLES,
         if snapshot is not None:
             add_snapshot_marker(tar, campaign_id, **snapshot)
 
-    return iter_tar(_add, chunk_size)
+    return iter_tar(_add, chunk_size, compress=compress)
 
 
 def iter_tree_tar(root: str, chunk_size: int = _CHUNK):

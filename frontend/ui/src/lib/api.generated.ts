@@ -1277,6 +1277,9 @@ export interface paths {
          *
          *     Nothing is buffered and no scratch is used: the tree is tarred into the response
          *     as it is read. Decisive for campaigns that run to terabytes.
+         *
+         *     ``part`` (with ``raw=true``) stages one part of a table build for the pod that
+         *     builds it; ``uncompressed=true`` is a plain tar, for a reader inside the cluster.
          */
         get: operations["download_campaign_archive_data_campaigns__campaign_id__archive_get"];
         put?: never;
@@ -7406,6 +7409,8 @@ export interface operations {
         parameters: {
             query?: {
                 raw?: boolean;
+                part?: string;
+                uncompressed?: boolean;
             };
             header?: never;
             path: {

@@ -2088,6 +2088,14 @@ def service_manifests(namespace="default", image=None, env=None,
         if not any(e["name"] == var for e in env):
             env = [*env, {"name": var, "value": os.environ.get(var, "").strip()}]
 
+    # How many runs a table-building part starts with, carried and parsed the same way.
+    from .table_jobs import RUNS_PER_PART_ENV, runs_per_part  # pylint: disable=import-outside-toplevel
+
+    runs_per_part()
+    if not any(e["name"] == RUNS_PER_PART_ENV for e in env):
+        env = [*env, {"name": RUNS_PER_PART_ENV,
+                      "value": os.environ.get(RUNS_PER_PART_ENV, "").strip()}]
+
     # The pod's timezone (see _host_timezone), carried unconditionally for the same reason
     # as the family env above: "" is UTC to libc -- what an unset TZ already means.
     if not any(e["name"] == "TZ" for e in env):

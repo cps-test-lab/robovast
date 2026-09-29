@@ -51,20 +51,21 @@ manifest is on disk; a query that read the manifest before reads the run files i
 from __future__ import annotations
 
 import io
+import json
 import multiprocessing
 import os
 import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterable, Iterator, List, Optional
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
-from .tables import (CONTEXT_COLUMNS, TABLES_DIR, _incoming, cache_root, compacted_runs,
-                     manifest_lock, read_manifest, record_campaign_table, remove_files,
-                     write_manifest, written_here)
+from .tables import (CONTEXT_COLUMNS, MANIFEST, TABLES_DIR, _incoming, cache_root, compacted_runs,
+                     manifest_lock, merge_fragments, read_manifest, record_campaign_table,
+                     remove_files, write_manifest, written_here)
 
 #: zstd level of a compacted file. A compaction is written once and read many times; past this level
 #: the files shrink by little and the writing takes several times as long.
@@ -233,6 +234,7 @@ def _compact_table(campaign_dir: str, plan: _Plan, level: int) -> _Written:
     except (pa.ArrowInvalid, pa.ArrowTypeError) as exc:
         return _Written(plan.table, rel, 0, None, keys, [], before,
                         error=f"its runs' columns do not agree: {exc}")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = _incoming(path)
     writer = None
     pending: List[pa.Table] = []
@@ -258,7 +260,6 @@ def _compact_table(campaign_dir: str, plan: _Plan, level: int) -> _Written:
         held = rest.num_rows
 
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
         for part in _sources(root, plan):
             part = _conform(part, schema)
             pending.append(part)
@@ -360,4 +361,92 @@ def _commit(campaign_dir: str, plan: _Plan, out: _Written, report: CompactReport
                 pass                            # not empty: a run still has its own file
 
 
-__all__ = ["ROW_GROUP_ROWS", "SAMPLE_ROWS", "CompactReport", "ZSTD_LEVEL", "compact", "compacted_path"]
+def merge(campaign_dir: str, roots: Iterable[str], *, workers: int = 1,
+          level: int = ZSTD_LEVEL,
+          progress: Optional[Callable[[int, int], None]] = None) -> CompactReport:
+    """Merge caches built for parts of the campaign into its own, one compacted file per table.
+
+    Each of *roots* (relative to the campaign's cache root) is the cache a part's build left:
+    its manifest and its tables, every final table compacted into one file for the part's runs.
+    Each table's part files, and what an earlier compaction of the campaign holds for runs no part
+    built, become one compacted file; every part's run entries enter the campaign's manifest; a
+    run file a part did not compact (a run a table could not be built for completely) moves to
+    its place in the campaign's cache. The parts' directories are the caller's to remove.
+
+    Raises when the campaign's compacted file of a table changed while the parts were merged:
+    a merge that dropped the other writer's rows, or this one's, would be silent.
+    """
+    campaign_dir = os.path.abspath(campaign_dir)
+    root = cache_root(campaign_dir)
+    parts = []
+    for rel in roots:
+        with open(os.path.join(root, rel, MANIFEST), encoding="utf-8") as fh:
+            parts.append((rel, json.load(fh)))
+    for rel, manifest in parts:
+        for entry in manifest.get("tables", {}).values():
+            for run in entry.get("runs", {}).values():
+                for file_rel in run.get("files") or []:
+                    target = os.path.join(root, file_rel)
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    os.replace(os.path.join(root, rel, file_rel), target)
+    current = read_manifest(campaign_dir)
+    plans: List[_Plan] = []
+    for table in sorted({t for _, m in parts for t in m.get("tables", {})}):
+        files, keys, built = [], set(), set()
+        for rel, manifest in parts:
+            entry = manifest["tables"].get(table, {})
+            built |= set(entry.get("runs", {}))
+            whole = entry.get("campaign") or {}
+            if whole.get("compacted") is not None:
+                files += [f"{rel}/{f}" for f in whole.get("files") or []]
+                keys |= set(whole["compacted"])
+        if not files:
+            continue
+        whole = current.get("tables", {}).get(table, {}).get("campaign") or {}
+        previous = list(whole.get("files") or []) if whole.get("compacted") is not None else []
+        kept = compacted_runs(current, table) - built
+        plans.append(_Plan(table, previous + files, sorted(kept | keys), {}))
+    written: List[Tuple[_Plan, _Written]] = []
+    total = len(plans)
+    if workers <= 1 or total <= 1:
+        for done, plan in enumerate(plans, 1):
+            written.append((plan, _compact_table(campaign_dir, plan, level)))
+            if progress:
+                progress(done, total)
+    else:
+        with ProcessPoolExecutor(max_workers=min(workers, total),
+                                 mp_context=multiprocessing.get_context("spawn")) as pool:
+            futures = {pool.submit(_compact_table, campaign_dir, plan, level): plan
+                       for plan in plans}
+            for done, future in enumerate(as_completed(futures), 1):
+                written.append((futures[future], future.result()))
+                if progress:
+                    progress(done, total)
+    report = CompactReport()
+    discard: List[str] = []
+    with manifest_lock(campaign_dir):
+        manifest = read_manifest(campaign_dir)
+        for plan, out in written:
+            was = (manifest.get("tables", {}).get(plan.table, {}).get("campaign") or {})
+            ours = [f for f in plan.previous if not f.startswith(tuple(r + "/" for r, _ in parts))]
+            if ours and was.get("files") != ours:
+                raise RuntimeError(f"the compacted file of {plan.table} changed while its parts "
+                                   "were merged; merge again")
+        merge_fragments(manifest, (m for _, m in parts))
+        for plan, out in written:
+            if out.error:
+                raise RuntimeError(f"the parts of {plan.table} cannot be merged: {out.error}")
+            record_campaign_table(manifest, plan.table, files=[out.rel], rows=out.rows,
+                                  schema=out.schema, sources={}, runs=len(out.keys),
+                                  compacted=out.keys)
+            discard += [f for f in plan.previous
+                        if not f.startswith(tuple(r + "/" for r, _ in parts))]
+            report.compacted[plan.table] = len(out.keys)
+            report.bytes_after += os.path.getsize(os.path.join(root, out.rel))
+        write_manifest(campaign_dir, manifest)
+    remove_files(campaign_dir, discard)
+    return report
+
+
+__all__ = ["CompactReport", "ROW_GROUP_ROWS", "SAMPLE_ROWS", "ZSTD_LEVEL", "compact",
+           "compacted_path", "merge"]
