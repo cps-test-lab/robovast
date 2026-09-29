@@ -227,11 +227,10 @@ def _sorted_rows(table):
 
 
 def test_a_replayed_campaign_reads_as_postprocessed_with_the_live_tables(svc):
-    import pyarrow.parquet as pq
-
     from robovast.results_processing.campaign_tables import write_decoder_config
     from robovast.results_processing.postprocessing import run_postprocessing
     from robovast_decode.live import Watcher
+    from robovast_decode.tables import read_manifest, read_run_table
     from tests.results_processing.conftest import write_campaign_db
     from tests.robovast_decode.conftest import make_campaign
 
@@ -252,7 +251,7 @@ def test_a_replayed_campaign_reads_as_postprocessed_with_the_live_tables(svc):
     (root / "cfg" / "0" / "test.xml").write_text("<testsuite/>")
     watcher.changed([str(root / "cfg" / "0" / "test.xml")])
     assert watcher.following("cfg/0") == set()
-    live = {t: pq.read_table(root / ".cache" / "tables" / t / "cfg" / "0.parquet")
+    live = {t: read_run_table(str(root), read_manifest(str(root)), t, "cfg/0")
             for t in _TABLES}
     assert svc.get_status(CID).postprocessed is False, "tables alone are not a postprocess"
 
@@ -261,6 +260,7 @@ def test_a_replayed_campaign_reads_as_postprocessed_with_the_live_tables(svc):
     assert ok, message
     assert svc.get_status(CID).postprocessed is True
     for table, rows in live.items():
-        replayed = pq.read_table(root / ".cache" / "tables" / table / "cfg" / "0.parquet")
+        # Read through the manifest: the campaign-end pass compacts the tables into one file.
+        replayed = read_run_table(str(root), read_manifest(str(root)), table, "cfg/0")
         assert replayed.schema == rows.schema, table
         assert _sorted_rows(replayed) == _sorted_rows(rows), table

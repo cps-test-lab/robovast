@@ -31,22 +31,7 @@ from robovast.results_processing.metadata import generate_campaign_metadata
 from robovast.results_processing.publication import load_publication_plugins, run_publication
 
 
-@click.group()
-def results():
-    """Work on a results directory on THIS machine.
-
-    Every verb here names a path and none of them needs a login: this is the local half
-    of the tool, for someone holding a results tree -- publishing it, generating its
-    metadata and provenance, merging campaigns. It ships with the full ``robovast``
-    distribution, so a client-only install does not have this group at all, which is the
-    honest signal that none of it is a service operation.
-
-    What acts on a *campaign* is ``vast campaign`` -- including postprocessing, which
-    lives there because the service owns the cluster the runs executed on.
-    """
-
-
-@results.command(name='publish')
+@click.command(name='publish')
 @click.option('--results-dir', '-r', required=True, type=click.Path(),
               help='Directory containing run results.')
 @click.option('--force', '-f', is_flag=True,
@@ -143,7 +128,7 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign, 
     click.echo(f"\u2713 {message}")
 
 
-@results.command(name='backfill-provenance')
+@click.command(name='backfill-provenance')
 @click.argument('results_dir', type=click.Path(exists=True))
 @click.option('--write', is_flag=True,
               help='Actually write. Without this, report what would change and touch nothing.')
@@ -211,7 +196,7 @@ def backfill_provenance_cmd(results_dir, write, force):
                    f"Nothing written -- add --write.")
 
 
-@results.command(name='merge-campaigns')
+@click.command(name='merge-campaigns')
 @click.argument('merged_campaign_dir', type=click.Path())
 @click.option('--results-dir', '-r', required=True, type=click.Path(exists=True, file_okay=False),
               help='Directory holding the campaign directories to merge.')
@@ -237,7 +222,7 @@ def merge_results_cmd(merged_campaign_dir, results_dir):
         handle_cli_exception(e)
 
 
-@results.command(name='generate-metadata')
+@click.command(name='generate-metadata')
 @click.option('--results-dir', '-r', required=True, type=click.Path(),
               help='Directory containing run results.')
 @click.option('--dot-pdf', is_flag=True, default=False,
@@ -323,7 +308,7 @@ def generate_metadata_cmd(results_dir, dot_pdf):
     click.echo(f"✓ Metadata generated for {len(campaign_dirs)} campaign(s)")
 
 
-@results.command(name='postprocess-commands')
+@click.command(name='postprocess-commands')
 def list_postprocessing_commands():
     """List all available postprocessing command plugins.
 
@@ -371,7 +356,7 @@ def list_postprocessing_commands():
     click.echo("Commands with parameters use plugin name as key with parameters as dict.")
 
 
-@results.command(name='publish-commands')
+@click.command(name='publish-commands')
 def list_publication_plugins():
     """List all available publication plugins.
 

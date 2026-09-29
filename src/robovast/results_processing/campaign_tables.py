@@ -53,6 +53,7 @@ from robovast_decode.authored import table_name
 from robovast_decode.build import CAMPAIGN_TABLES, available_tables
 from robovast_decode.derived import DERIVED
 from robovast_decode.layout import DECODER_CONFIG, MAIN_CONTAINER, decoder_config
+from robovast_decode.compact import CompactReport, compact
 from robovast_decode.tables import (CACHE_DIR, TABLES_DIR, cache_root, campaign_table_path,
                                     manifest_lock, read_manifest, record_campaign_table,
                                     write_manifest, write_table)
@@ -241,6 +242,21 @@ def replay_tables(campaign_dir: str, *,
     return engine.ensure(tables)
 
 
+#: Tables compacted at once in the service: the same bound a build's worker processes have.
+COMPACT_WORKERS = 8
+
+
+def compact_tables(campaign_dir: str, *,
+                progress: Optional[Callable[[int, int], None]] = None) -> CompactReport:
+    """Merge each table's final run files into one file (:mod:`robovast_decode.compact`).
+
+    What a run still records keeps its own files, so this is safe on a campaign that is not
+    over, and a later compaction folds in what was built since.
+    """
+    return compact(campaign_dir, workers=min(COMPACT_WORKERS, os.cpu_count() or 1),
+                progress=progress)
+
+
 def clear_tables(campaign_dir: str) -> int:
     """Remove the campaign's built tables and its exports; the bytes freed.
 
@@ -328,5 +344,5 @@ def write_postprocessing_steps(campaign_dir: str, entries: List[dict]) -> int:
 __all__ = ["ALWAYS_BUILT", "DECODER_COMMANDS", "DECODER_GROUPS_COMMAND", "EXPORTS_DIR",
            "VIDEO_PRODUCER_COMMANDS", "build_tables", "clear_tables", "declared_tables",
            "decoder_groups", "exports_bytes", "exports_root", "is_decoder_command",
-           "replay_tables", "table_cache_bytes", "write_decoder_config",
+           "replay_tables", "compact_tables", "table_cache_bytes", "write_decoder_config",
            "write_postprocessing_steps", "write_run_health"]

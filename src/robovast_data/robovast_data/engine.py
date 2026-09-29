@@ -54,6 +54,7 @@ from __future__ import annotations
 import multiprocessing
 import os
 import threading
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -66,9 +67,12 @@ from robovast_decode.authored import header, run_files
 from robovast_decode.build import (CAMPAIGN_TABLES, DERIVED_TABLES, RECORDING_TABLE, Run,
                                    available_tables, build, find_runs, settled)
 from robovast_decode.layout import decoder_config
+from robovast_decode.compact import CompactReport
+from robovast_decode.compact import compact as compact_campaign
 from robovast_decode.runs import RUNS_TABLE, StoreError, build_runs
-from robovast_decode.tables import (LIVE_STALE_S, TABLES_DIR, cache_root, read_manifest,
-                                    schema_of, written_here)
+from robovast_decode.tables import (LIVE_STALE_S, MANIFEST, TABLES_DIR, FileCatalog,
+                                    RunCatalog, cache_root, compacted_runs, merge_fragments,
+                                    read_manifest, run_fragment, schema_of, written_here)
 
 from . import record, views
 from .statement import Narrowing, QueryError, Statement, parse
@@ -83,11 +87,42 @@ RECORD_SCHEMA = "campaign"
 #: costs more than it saves.
 _IN_PROCESS = 2
 
+#: While worker processes build, what they built is entered in the manifest at most this
+#: often: a reader sees progress, and the manifest is not rewritten once per run.
+_MERGE_EVERY_S = 2.0
+
 _MACROS = (
     "CREATE MACRO percentile(v, p) AS quantile_cont(v, greatest(0, least(100, p)) / 100.0)",
     "CREATE MACRO regexp(p, v) AS "
     "CASE WHEN v IS NULL OR p IS NULL THEN false ELSE regexp_matches(v, p) END",
 )
+
+_MANIFESTS: Dict[str, Tuple[tuple, dict]] = {}
+_MANIFESTS_LOCK = threading.Lock()
+
+
+def _manifest(campaign_dir: str) -> dict:
+    """The campaign's manifest, parsed once per version of the file and shared: the engine
+    reads it several times a query and never changes it.
+
+    A manifest is only ever replaced whole by a rename, so the file's identity, size and
+    modification time name one version of it.
+    """
+    path = os.path.join(cache_root(campaign_dir), MANIFEST)
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        return read_manifest(campaign_dir)
+    key = (st.st_ino, st.st_size, st.st_mtime_ns)
+    with _MANIFESTS_LOCK:
+        held = _MANIFESTS.get(path)
+        if held is not None and held[0] == key:
+            return held[1]
+    manifest = read_manifest(campaign_dir)
+    with _MANIFESTS_LOCK:
+        _MANIFESTS[path] = (key, manifest)
+    return manifest
+
 
 def _quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
@@ -154,9 +189,60 @@ class Prepared:
     problems: List[Problem] = field(default_factory=list)
 
 
-def _build_one(campaign_dir: str, tables: Sequence[str], run_key: str, config: dict):
-    report = build(campaign_dir, tables=list(tables), runs=[run_key], config=config)
-    return run_key, {t: dict(r) for t, r in report.failed.items()}
+@dataclass
+class Built:
+    """What :meth:`Engine.build` did: the tables it could not build for some run, and what
+    compacting did, per campaign."""
+    problems: List[Problem]
+    compacted: Dict[str, CompactReport]
+
+
+@dataclass
+class _Files:
+    """Where one table's rows are, across the scopes."""
+    #: Campaign files: rows of every run compacted into them, or of an imported export.
+    campaign: List[str] = field(default_factory=list)
+    #: Each run's own files.
+    runs: List[str] = field(default_factory=list)
+    #: ``campaign_id/config/run`` of the runs compacted into a campaign file and written again
+    #: since, whose rows there are superseded by their own files.
+    rewritten: List[str] = field(default_factory=list)
+    schemas: List[List[List[str]]] = field(default_factory=list)
+
+
+def _read_parquet(files: List[str]) -> str:
+    return "read_parquet([" + ", ".join(_quote(f) for f in files) + "], union_by_name = true)"
+
+
+def _build_one(campaign_dir: str, tables: Sequence[str], run_key: str, config: dict,
+               fragment: dict):
+    """One run's build in a worker process, against its own entries in memory; what it
+    entered, for the parent to merge."""
+    catalog = RunCatalog(fragment)
+    build(campaign_dir, tables=list(tables), runs=[run_key], config=config, catalog=catalog)
+    return campaign_dir, catalog.manifest, catalog.superseded
+
+
+class _Merger:
+    """What worker processes built, entered in each campaign's manifest in batches."""
+
+    def __init__(self):
+        self.pending: Dict[str, List[Tuple[dict, List[str]]]] = {}
+        self.last = time.monotonic()
+
+    def add(self, campaign_dir: str, fragment: dict, superseded: List[str]) -> None:
+        self.pending.setdefault(campaign_dir, []).append((fragment, superseded))
+        if time.monotonic() - self.last >= _MERGE_EVERY_S:
+            self.flush()
+
+    def flush(self) -> None:
+        for campaign_dir, done in self.pending.items():
+            catalog = FileCatalog(campaign_dir)
+            with catalog.update() as manifest:
+                merge_fragments(manifest, (fragment for fragment, _ in done))
+            catalog.discard([rel for _, superseded in done for rel in superseded])
+        self.pending.clear()
+        self.last = time.monotonic()
 
 
 class Engine:
@@ -199,7 +285,7 @@ class Engine:
         work: List[Tuple[Scope, dict, str, Tuple[str, ...]]] = []
         demanded: List[Tuple[Scope, str, str]] = []
         for scope in self.scopes:
-            manifest = read_manifest(scope.campaign_dir)
+            manifest = _manifest(scope.campaign_dir)
             config = decoder_config(scope.campaign_dir)
             for run in self._runs(scope):
                 todo = []
@@ -217,7 +303,8 @@ class Engine:
                         continue
                     todo.append(table)
                 if todo:
-                    work.append((scope, config, run.key, tuple(todo)))
+                    work.append((scope, config, run.key, tuple(todo),
+                                 run_fragment(manifest, run.key)))
         self._run_builds(work)
         return self._problems(demanded)
 
@@ -226,21 +313,58 @@ class Engine:
         if not total:
             return
         if self.workers <= 1 or total <= _IN_PROCESS:
-            for done, (scope, config, key, todo) in enumerate(work, 1):
-                _build_one(scope.campaign_dir, todo, key, config)
+            for done, (scope, config, key, todo, _) in enumerate(work, 1):
+                build(scope.campaign_dir, tables=list(todo), runs=[key], config=config)
                 if self.progress:
                     self.progress(done, total)
             return
+        merger = _Merger()
         # Spawned, not forked: the caller may hold DuckDB's threads, which a fork copies
         # mid-flight.
-        with ProcessPoolExecutor(max_workers=min(self.workers, total),
-                                 mp_context=multiprocessing.get_context("spawn")) as pool:
-            futures = [pool.submit(_build_one, scope.campaign_dir, todo, key, config)
-                       for scope, config, key, todo in work]
-            for done, future in enumerate(as_completed(futures), 1):
-                future.result()
-                if self.progress:
-                    self.progress(done, total)
+        try:
+            with ProcessPoolExecutor(max_workers=min(self.workers, total),
+                                     mp_context=multiprocessing.get_context("spawn")) as pool:
+                futures = [pool.submit(_build_one, scope.campaign_dir, todo, key, config,
+                                       fragment)
+                           for scope, config, key, todo, fragment in work]
+                for done, future in enumerate(as_completed(futures), 1):
+                    merger.add(*future.result())
+                    if self.progress:
+                        self.progress(done, total)
+        finally:
+            # What finished is entered even when a worker failed, so it is not built again.
+            merger.flush()
+
+    def build(self, tables: Optional[Iterable[str]] = None, *, compact: bool = True,
+              progress: Optional[Callable[[str, int, int], None]] = None) -> "Built":
+        """Build *tables* for every run in scope (every table the recordings can give, for
+        ``None``), then compact each whole campaign's tables into one file each.
+
+        *progress* is called with ``(phase, done, total)``: ``"build"`` counts runs,
+        ``"compact"`` tables. Compacting needs the whole campaign in scope: a configuration or a run
+        is built and left as it is.
+        """
+        if tables is not None:
+            names = set(tables)
+        else:
+            names = set()
+            for scope in self.scopes:
+                names |= set(available_tables(scope.campaign_dir,
+                                              decoder_config(scope.campaign_dir)))
+        saved = self.progress
+        self.progress = (lambda done, total: progress("build", done, total)) if progress else None
+        try:
+            problems = self.ensure(sorted(names))
+        finally:
+            self.progress = saved
+        reports: Dict[str, CompactReport] = {}
+        if compact:
+            for scope in self.scopes:
+                if scope.whole:
+                    reports[scope.campaign_id] = compact_campaign(
+                        scope.campaign_dir, workers=self.workers,
+                        progress=(lambda d, t: progress("compact", d, t)) if progress else None)
+        return Built(problems, reports)
 
     def _problems(self, demanded) -> List[Problem]:
         problems = []
@@ -248,7 +372,7 @@ class Engine:
         for scope, table, key in demanded:
             manifest = manifests.get(scope.campaign_dir)
             if manifest is None:
-                manifest = manifests[scope.campaign_dir] = read_manifest(scope.campaign_dir)
+                manifest = manifests[scope.campaign_dir] = _manifest(scope.campaign_dir)
             entry = manifest.get("tables", {}).get(table, {}).get("runs", {}).get(key) or {}
             if entry.get("reason"):
                 problems.append(Problem(scope.campaign_id, table, key, entry["reason"],
@@ -300,11 +424,11 @@ class Engine:
 
     # -- the connection --------------------------------------------------------------------
 
-    def _files(self, table: str) -> Tuple[List[str], List[List[str]]]:
+    def _files(self, table: str) -> "_Files":
         """The parquet files of *table* for the scopes, and the schemas they were written with."""
-        files, schemas = [], []
+        out = _Files()
         for scope in self.scopes:
-            manifest = read_manifest(scope.campaign_dir)
+            manifest = _manifest(scope.campaign_dir)
             entries = manifest.get("tables", {}).get(table, {}).get("runs", {})
             in_scope = None if scope.whole else {r.key for r in self._runs(scope)}
             root = cache_root(scope.campaign_dir)
@@ -313,21 +437,27 @@ class Engine:
                     continue
                 if not entry.get("files"):
                     continue
-                files.extend(os.path.join(root, f) for f in entry["files"])
-                schemas.append(schema_of(manifest, entry))
+                out.runs.extend(os.path.join(root, f) for f in entry["files"])
+                out.schemas.append(schema_of(manifest, entry))
             whole = manifest.get("tables", {}).get(table, {}).get("campaign")
             if whole and whole.get("files"):
-                files.extend(os.path.join(root, f) for f in whole["files"])
-                schemas.append(schema_of(manifest, whole))
-        return files, schemas
+                out.campaign.extend(os.path.join(root, f) for f in whole["files"])
+                out.schemas.append(schema_of(manifest, whole))
+                # A run compacted into the campaign file and written again since has its own
+                # files, and its rows are read from those.
+                compacted = compacted_runs(manifest, table)
+                out.rewritten.extend(f"{scope.campaign_id}/{key}"
+                                     for key in whole.get("compacted") or [] if key not in compacted)
+        return out
 
     def _examined(self, table: str) -> bool:
         """Has *table* been looked for in some run in scope, whether or not it has rows?"""
         for scope in self.scopes:
-            runs = read_manifest(scope.campaign_dir).get("tables", {}).get(table, {}).get(
+            runs = _manifest(scope.campaign_dir).get("tables", {}).get(table, {}).get(
                 "runs", {})
             keys = runs if scope.whole else [r.key for r in self._runs(scope) if r.key in runs]
-            if any(runs[k].get("files") or runs[k].get("known") for k in keys):
+            if any(runs[k].get("files") or runs[k].get("known") or runs[k].get("compacted")
+                   for k in keys):
                 return True
         return False
 
@@ -338,8 +468,8 @@ class Engine:
         empty, so a query over it answers "nothing" beside the reasons rather than "no such
         table".
         """
-        files, schemas = self._files(table)
-        if not files:
+        files = self._files(table)
+        if not (files.campaign or files.runs):
             if self._examined(table):
                 con.execute(f"CREATE VIEW {_ident(table)} AS SELECT "
                             "CAST(NULL AS VARCHAR) AS campaign_id, "
@@ -347,14 +477,24 @@ class Engine:
                             "CAST(NULL AS BIGINT) AS run_id WHERE false")
                 return {"campaign_id", "config_name", "run_id"}
             return None
-        listed = ", ".join(_quote(f) for f in files)
+        parts = []
+        if files.campaign:
+            part = f"SELECT * FROM {_read_parquet(files.campaign)}"
+            if files.rewritten:
+                listed = ", ".join(_quote(k) for k in files.rewritten)
+                part += (" WHERE campaign_id || '/' || config_name || '/' || "
+                         f"CAST(run_id AS VARCHAR) NOT IN ({listed})")
+            parts.append(part)
+        if files.runs:
+            parts.append(f"SELECT * FROM {_read_parquet(files.runs)}")
         # A campaign-level file holds every run's rows, so a scope narrower than the campaign
         # is applied to the rows as well as to the file set.
         where = ("" if all(s.whole for s in self.scopes)
                  else " WHERE " + " OR ".join(s.predicate() for s in self.scopes))
-        con.execute(f"CREATE VIEW {_ident(table)} AS SELECT * FROM "
-                    f"read_parquet([{listed}], union_by_name = true){where}")
-        return {name for schema in schemas for name, _ in schema}
+        body = (parts[0] if len(parts) == 1
+                else "SELECT * FROM (" + " UNION ALL BY NAME ".join(parts) + ")")
+        con.execute(f"CREATE VIEW {_ident(table)} AS SELECT * FROM ({body}){where}")
+        return {name for schema in files.schemas for name, _ in schema}
 
     def _define_record(self, con) -> None:
         by_table: Dict[str, List[pa.Table]] = {}
@@ -502,7 +642,7 @@ class Engine:
             keys = None if scope.whole else [r.key for r in self._runs(scope)]
             counts = available_tables(scope.campaign_dir, decoder_config(scope.campaign_dir),
                                       runs=keys)
-            manifest = read_manifest(scope.campaign_dir)
+            manifest = _manifest(scope.campaign_dir)
             if RECORDING_TABLE in manifest.get("tables", {}):
                 recorded = manifest["tables"][RECORDING_TABLE]["runs"]
                 in_scope = [k for k in recorded if keys is None or k in keys]
@@ -603,5 +743,5 @@ def _explain(exc: duckdb.Error, relations, con) -> str:
     return message
 
 
-__all__ = ["DEFAULT_TIMEOUT_S", "Engine", "LIVE_STALE_S", "Prepared", "Problem", "RECORD_SCHEMA",
-           "Scope"]
+__all__ = ["Built", "DEFAULT_TIMEOUT_S", "Engine", "LIVE_STALE_S", "Prepared", "Problem",
+           "RECORD_SCHEMA", "Scope"]

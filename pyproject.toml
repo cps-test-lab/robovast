@@ -149,6 +149,16 @@ test = ["pytest", "ribs", "shapely", "optuna", "cmaes", "rdflib", "pyld", "nbfor
 [tool.poetry.plugins."robovast.cli_startup"]
 env-file = "robovast.common.env_file:load_env_file"
 
+[tool.poetry.plugins."robovast.results_plugins"]
+# `vast results`: the group is the client's, so that `robovast-data` can attach `build` to it
+# too; these verbs need the core.
+publish = "robovast.results_processing.cli:publish_cmd"
+backfill-provenance = "robovast.results_processing.cli:backfill_provenance_cmd"
+merge-campaigns = "robovast.results_processing.cli:merge_results_cmd"
+generate-metadata = "robovast.results_processing.cli:generate_metadata_cmd"
+postprocess-commands = "robovast.results_processing.cli:list_postprocessing_commands"
+publish-commands = "robovast.results_processing.cli:list_publication_plugins"
+
 [tool.poetry.plugins."robovast.cli_plugins"]
 # The verbs that need the core -- a service implementation, Docker, the UI build, the
 # results reader. They attach to the client's root group like any other plugin, so a
@@ -157,7 +167,6 @@ serve = "robovast.common.cli.core_commands:serve"
 serve-data = "robovast.common.cli.core_commands:serve_data"
 ui = "robovast.common.cli.core_commands:ui"
 configuration = "robovast.configuration.configuration_utils.cli:configuration"
-results = "robovast.results_processing.cli:results"
 # `vast share`: four of its six verbs instantiate a share provider, so the group needs
 # the core. `export`/`import` only drive the service and could live in the client, but
 # one group split across two distributions is worse than the asymmetry.

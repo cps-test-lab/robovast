@@ -74,6 +74,7 @@ carry the frontend, and each name adds exactly what its editable counterpart abo
 .. code-block:: bash
 
    pip install robovast-client              # drive a service: the CLI alone
+   pip install "robovast-client[data]"      # and analyse a campaign here: vast results build
    pip install "robovast[nav,roqsim]"       # the core: config, results, the service's code
    pip install robovast-cluster             # the service implementation: deploy and run it
 

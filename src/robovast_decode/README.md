@@ -13,13 +13,18 @@ definitions file a run writes beside its bag, and from the ROS 2 distro's standa
 pip install robovast-decode
 robovast-decode tables  path/to/campaign            # what the recordings can give, and what is built
 robovast-decode build   path/to/campaign --table poses
+robovast-decode compact    path/to/campaign            # each table's final run files, one file
 ```
 
 A run's own `*.csv` and `*.jsonl` files are tables too, named after the file and typed from
 their values, and `runs` -- one row per run with its outcome, host and every varied factor as a
 typed `param_*` column -- is read from the campaign's `campaign.db` (`robovast_decode.runs`).
 
-A table is built for a run once and kept; building again rebuilds only what changed. The
+A table is built for a run once and kept; building again rebuilds only what changed. Once a
+campaign's runs are final, `compact` merges each table's run files into one file -- rows unchanged,
+in run order, each float column in whichever encoding makes it smallest -- and the manifest
+keeps every run's entry, so a run built again later is read from its own file until the next
+compact. The
 tables are the same ones a RoboVAST service builds, row for row: a pose is resolved with
 `tf2`'s own rules (its caches, its extrapolation refusals, its interpolation), not with a
 look-alike.

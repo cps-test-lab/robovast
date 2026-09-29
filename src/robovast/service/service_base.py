@@ -2027,8 +2027,8 @@ class ServiceBase(RobovastInterface):
         def work():
             from robovast.client.logging_config import (  # pylint: disable=import-outside-toplevel
                 add_campaign_log_handler, remove_campaign_log_handler)
-            from robovast.results_processing.campaign_tables import \
-                build_tables  # pylint: disable=import-outside-toplevel
+            from robovast.results_processing.campaign_tables import (  # pylint: disable=import-outside-toplevel
+                build_tables, compact_tables)
             handler = None
             try:
                 handler = add_campaign_log_handler(
@@ -2048,6 +2048,11 @@ class ServiceBase(RobovastInterface):
                 logger.info("Tables of %s built%s", campaign_id,
                             f"; {len(problems)} could not be built for some runs"
                             if problems else "")
+                compacted = compact_tables(str(campaign_dir))
+                for table, why in sorted(compacted.skipped.items()):
+                    logger.warning("  %s left one file per run: %s", table, why)
+                logger.info("%d table(s) of %s compacted into one file each",
+                            len(compacted.compacted), campaign_id)
             except Exception:  # pylint: disable=broad-except
                 logger.exception("Building the tables of %s failed", campaign_id)
             finally:
