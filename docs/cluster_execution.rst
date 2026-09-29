@@ -1710,6 +1710,13 @@ How the figure is found:
   job artifacts, and what a sidecar writes per run (a simulator's recording and pose
   record), each of which is named by its own variable and every one of which the probe
   points at its own directory. A campaign of 50 runs still delivers 50.
+* **What it measured and what it allocated are part of the campaign's record.** Every run on a
+  node was sized from that node's figures, so they are a condition of the run: ``campaign.db``
+  keeps them on the machine's own row, ``node.calibration_json`` -- per container, what the
+  probe measured before headroom (``measured``), the calibration settings that turned it into
+  a size (``rule``), and the requests and limits a job on the node was given (``allocated``).
+  A run joins to it through its job (``run.job_id`` -> ``job.node_label`` -> ``node``), and a
+  notebook reads it as ``campaign.node``. ``NULL`` is a node the campaign did not calibrate.
 * **A probe is listed, marked, and counted apart.** It holds real capacity on a real node, so
   it carries the campaign's labels and appears in the job listing — as ``kind: calibration``,
   named for the node it measures, and outside every figure in ``JobCounts``, which a reader

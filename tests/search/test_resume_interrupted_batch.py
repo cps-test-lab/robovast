@@ -247,10 +247,11 @@ def test_a_reask_that_proposes_other_cells_stops_the_resume(tmp_path):
 
 
 def _to_schema_14(db, *, batches):
-    """*db* as schema 14 wrote it: no ``complete`` column, and the campaign's recorded
-    ``batches`` count set to *batches*."""
+    """*db* as schema 14 wrote it: no ``complete`` column, no later column either, and the
+    campaign's recorded ``batches`` count set to *batches*."""
     conn = sqlite3.connect(db)
     conn.execute("ALTER TABLE batch DROP COLUMN complete")
+    conn.execute("ALTER TABLE node DROP COLUMN calibration_json")
     conn.execute("UPDATE campaign SET batches = ?", (batches,))
     conn.execute("PRAGMA user_version = 14")
     conn.commit()
