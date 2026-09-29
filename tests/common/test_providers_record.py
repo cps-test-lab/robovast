@@ -150,6 +150,25 @@ def test_an_unresolvable_backend_leaves_the_answer_unknown(tmp_path):
     assert read_providers_record(root) is None
 
 
+def test_each_distinct_record_is_parsed_once_and_the_answer_is_the_same(tmp_path):
+    """Every job's containers run the same images, so their records repeat -- and parsing all
+    of them held more than the host step's memory on a campaign of ten thousand jobs. The
+    repeats are read, counted and skipped; the union they would have added to is unchanged."""
+    from robovast.results_processing.postprocessing import _campaign_provider_records
+
+    many = _campaign(tmp_path / "many", records=[SUT_RECORD] + [SIM_RECORD] * 40, vast=_VAST)
+    once = _campaign(tmp_path / "once", records=[SUT_RECORD, SIM_RECORD], vast=_VAST)
+
+    records, read = _campaign_provider_records(many)
+    assert read == 41 and len(records) == 2
+
+    lines, output = _sink()
+    _record_campaign_providers(many, output)
+    _record_campaign_providers(once, lambda _m: None)
+    assert read_providers_record(many) == read_providers_record(once)
+    assert any("41 container record(s), 2 distinct" in line for line in lines)
+
+
 def test_a_campaign_with_providers_records_them_on_disk(tmp_path):
     root = _campaign(tmp_path, records=[SUT_RECORD, SIM_RECORD], vast=_VAST)
     _record_campaign_providers(root, lambda _m: None)
