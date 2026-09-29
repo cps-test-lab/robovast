@@ -227,6 +227,28 @@
   "origin_yaw REAL",
   "data TEXT"
  ],
+ "main.ground_truth_poses": [
+  "campaign_id TEXT",
+  "config_name TEXT",
+  "run_id INTEGER",
+  "timestamp REAL",
+  "frame TEXT",
+  "source_table TEXT",
+  "position.x REAL",
+  "position.y REAL",
+  "position.z REAL",
+  "orientation.x REAL",
+  "orientation.y REAL",
+  "orientation.z REAL",
+  "orientation.w REAL",
+  "twist.linear.x REAL",
+  "twist.linear.y REAL",
+  "twist.linear.z REAL",
+  "twist.angular.x REAL",
+  "twist.angular.y REAL",
+  "twist.angular.z REAL",
+  "orientation.yaw REAL"
+ ],
  "main.nav2_behavior_tree": [
   "campaign_id TEXT",
   "config_name TEXT",

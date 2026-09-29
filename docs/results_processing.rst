@@ -383,6 +383,10 @@ Where the tables come from
      - ``run_log``, ``scenario_timestamps``, ``resource_usage``, ``system_usage``,
        ``run_clock``
      - a job's container logs, resource samples and infrastructure recording, cut to each run
+   * - Ground truth
+     - ``ground_truth_poses``
+     - the pose table the campaign's simulator names: ``sim_poses`` or ``poses``
+       (:ref:`below <ground-truth-table>`)
    * - **Authored files**
      - one per file stem: ``behaviors``, ``nav2_behaviors``, a scenario's ``out``, …
      - every ``*.csv`` and ``*.jsonl`` below a run directory
@@ -659,6 +663,43 @@ yaw, because the 2D consumers — the costmap panel's heading marker, the nav MC
 notebooks — all want a heading and none of them should reimplement quaternion math in SQL,
 JavaScript and pandas separately. It is a projection: correct for a body in the plane, and the
 quaternion is the one to read for a body that has left it.
+
+.. _ground-truth-table:
+
+**Ground truth is one table,** ``ground_truth_poses``: where the robot truly was, in the world
+frame, whichever simulator ran the run. Each simulator has its own producer. One that records
+its own state has every body's world pose from inside the simulation; one that does not
+publishes the true pose on ``/tf`` as a leaf frame beside the localization tree, named
+``<robot>_base_link_gt`` by convention. The table reads the one the campaign's simulator backend
+names (its ``ground_truth`` hook, :ref:`simulators`), so an analysis reads ground truth without
+knowing the simulator:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Source (``ground_truth`` in ``_execution/tables.yaml``)
+     - Rows
+   * - ``{table: sim_poses, entity_kind: robot}`` -- roqsim
+     - the bodies of the entities ``sim_entities`` lists as ``robot``
+   * - ``{table: poses, frame_suffix: _gt}`` -- the default, for a backend that names none or a
+       campaign with no backend (Gazebo started by the scenario)
+     - the ``poses`` frames whose name ends in ``_gt``; the frame must be extracted
+       (``rosbags_tf_to_csv`` ``frames``) and is worth ``require``-ing
+
+The columns are the pose contract's, plus ``source_table`` naming the table the rows came from.
+``timestamp`` is the time the pose was true, in sim seconds -- the simulator's own sample time,
+or the ground-truth transform's ``stamp`` -- so the table carries no ``stamp`` and is safe to
+difference; ``twist.*`` is NULL where the source is ``/tf``. A run whose source has no such frame
+gets no rows and a reason naming the frames its source does have, not an empty table that reads
+as a robot that never moved. ``pose_track_view`` leaves it out: its rows are already tracks there,
+under the table they came from.
+
+.. code-block:: sql
+
+   SELECT config_name, run_id, frame, max(timestamp) - min(timestamp) AS duration_s
+   FROM ground_truth_poses
+   GROUP BY config_name, run_id, frame;
 
 .. _clock-map:
 
@@ -1123,12 +1164,15 @@ tables anywhere:
      - {type: tf_to_csv, frames: all, require: [base_link]}
      - {type: action_to_csv, action: navigate_to_pose}
    containers: [robovast, simulation, sut]
+   ground_truth: {table: sim_poses, entity_kind: robot}
 
 ``groups`` is the entries grouped by recording (``rosbag2`` for the run's own, ``logs/rosout_bag``
 for the job's); ``containers`` names the containers the campaign runs, which is how a container
 that recorded nothing is reported rather than silently absent from ``run_log`` and
-``resource_usage``. A configured handler replaces the default for its topics, and the rest of the
-recording keeps its defaults.
+``resource_usage``; ``ground_truth`` is where the campaign's simulator backend says its
+:ref:`ground truth <ground-truth-table>` comes from, absent for the ``/tf`` convention. A
+configured handler replaces the default for its topics, and the rest of the recording keeps its
+defaults.
 
 .. list-table::
    :header-rows: 1

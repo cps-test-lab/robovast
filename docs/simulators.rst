@@ -174,6 +174,11 @@ Hooks, all optional except as noted:
 ``records_scene_state(cfg, execution)``
    Whether runs record the simulator state a ``scene3d`` panel replays -- the recording the
    decoder reads into ``sim_poses``, ``joint_states``, ``sim_recording`` and ``sim_entities``.
+``ground_truth(cfg, execution)``
+   Where a run's :ref:`ground_truth_poses <ground-truth-table>` come from, as the decoder's
+   ``ground_truth`` entry, or ``None`` -- the default -- for a simulator that records nothing
+   of its own, whose ground truth is the ``*_gt`` frame its world publishes on ``/tf``. roqsim
+   answers ``{table: sim_poses, entity_kind: robot}``: the robots' bodies in its recording.
 ``default_panels(cfg, execution)``
    Run-view panels this backend contributes, as ``{<type>: <props>}`` entries — the panel
    that replays a recorded scene state, for a backend that records one; ``[]`` otherwise.

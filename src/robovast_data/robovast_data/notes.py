@@ -34,6 +34,8 @@ from __future__ import annotations
 from typing import Dict, Iterable
 
 from robovast_decode.derived import NOTES as DERIVED_NOTES
+from robovast_decode.ground_truth import GROUND_TRUTH
+from robovast_decode.ground_truth import NOTES as GROUND_TRUTH_NOTES
 from robovast_decode.runs import NOTES as RUNS_NOTES
 from robovast_decode.runs import RUNS_TABLE
 
@@ -163,6 +165,9 @@ def notes_for(table: str, columns: Iterable[str]) -> Dict[str, str]:
                        else _POSE_NATIVE_CLOCK_NOTES)
         out.update({c: n for c, n in {**clock_notes, **_POSE_ORIENTATION_NOTES}.items()
                     if c in columns})
+    if table == GROUND_TRUTH:
+        # One table over two producers: its own notes say what holds for both.
+        out.update({c: n for c, n in GROUND_TRUTH_NOTES.items() if c in columns})
     return out
 
 
