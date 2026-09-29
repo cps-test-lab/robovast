@@ -130,7 +130,8 @@ class NodeCalibration:
     benchmark suite.
     """
 
-    #: node_id -> {container_name: {"sustained": cores, "peak": cores}}, headroom applied
+    #: node_id -> {container_name: {"sustained": cores, "peak": cores, ...}}, as measured:
+    #: the headroom is applied where a figure becomes a size (``calibrated_resources``)
     _by_node: dict = field(default_factory=dict)
     #: node_id -> the probe key currently measuring that node
     _probes: dict = field(default_factory=dict)
@@ -145,6 +146,10 @@ class NodeCalibration:
     #: rather than on the runner because a runner is per batch and this counts batches: a
     #: search builds a fresh one every round, so a tally kept there would read 1 forever.
     _unmeasured_batches: dict = field(default_factory=dict)
+    #: node_id -> ``{"rule": ..., "allocated": ...}``: how that node's figures were turned into
+    #: each container's resources, and what they came to. Noted by the runner that rendered
+    #: them (:meth:`note_allocation`), kept for the record of the campaign (:meth:`provenance`).
+    _allocated: dict = field(default_factory=dict)
     enabled: bool = True
     #: Whether calibration applies to this CAMPAIGN, decided once and kept.
     #:
@@ -162,6 +167,26 @@ class NodeCalibration:
     def calibrated(self, node_id) -> "dict | None":
         """That node's per-container cores, or ``None`` while it is still unknown."""
         return self._by_node.get(node_id)
+
+    def note_allocation(self, node_id, *, rule: dict, allocated: dict) -> None:
+        """Keep how *node_id*'s figures sized each container (*rule*: the per-container
+        calibration settings) and what they came to (*allocated*: each container's requests
+        and limits), for :meth:`provenance`. Only for a node that has figures."""
+        if node_id in self._by_node:
+            self._allocated[node_id] = {"rule": rule, "allocated": allocated}
+
+    def provenance(self, node_id) -> "dict | None":
+        """What *node_id*'s calibration was, for the campaign's record; ``None`` for a node
+        this campaign did not calibrate.
+
+        ``{"measured": {container: figures before headroom}, "rule": {container: settings},
+        "allocated": {container: {"requests": ..., "limits": ...}}}`` -- what the probe
+        measured, how that became a size, and the size every run on the node had.
+        """
+        figures = self._by_node.get(node_id)
+        if figures is None:
+            return None
+        return {"measured": figures, **self._allocated.get(node_id, {})}
 
     def outcome(self) -> dict:
         """``{"calibrated": [...], "refused": {node: reason}, "skipped": {node: reason}}``."""

@@ -86,7 +86,8 @@
   "allocatable_json TEXT",
   "node_info_json TEXT",
   "labels_json TEXT",
-  "first_seen REAL"
+  "first_seen REAL",
+  "calibration_json TEXT"
  ],
  "campaign.run": [
   "campaign_id TEXT",

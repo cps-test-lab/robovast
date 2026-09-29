@@ -188,7 +188,8 @@ CREATE TABLE IF NOT EXISTS node (
     allocatable_json TEXT,            -- status.allocatable: what the scheduler may hand out
     node_info_json   TEXT,            -- status.nodeInfo minus machineID/systemUUID
     labels_json      TEXT,            -- metadata.labels minus kubernetes.io/hostname
-    first_seen       REAL
+    first_seen       REAL,
+    calibration_json TEXT             -- what this node's calibration measured and allocated
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_node_label ON node (campaign_id, node_label);
 CREATE TABLE IF NOT EXISTS run (
@@ -554,8 +555,19 @@ ALTER TABLE batch ADD COLUMN complete INTEGER;
 UPDATE batch SET complete = 1 WHERE {_BATCH_COMPLETE_BEFORE_15};
 """
 
+# 15 -> 16: what a node's calibration measured and what it allocated.
+#
+# Under ``sizing: calibrated`` every run on a node is sized from that node's probe, so the
+# figures decide how much CPU and memory each run's containers had -- a condition of the run as
+# much as the machine is. Kept on the machine's own row, where every run already joins
+# (``run.job_id -> job.node_label -> node``): the figures are frozen once set, so one row per
+# node is one record per run. NULL where the node was not calibrated.
+_MIGRATION_ADD_NODE_CALIBRATION = """
+ALTER TABLE node ADD COLUMN calibration_json TEXT;
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -580,6 +592,7 @@ _MIGRATIONS = [
     _MIGRATION_ADD_ORIGIN_CONFIG_VERSION,
     _MIGRATION_ADD_RECALLED,
     _MIGRATION_ADD_BATCH_COMPLETE,
+    _MIGRATION_ADD_NODE_CALIBRATION,
 ]
 
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
@@ -878,7 +891,8 @@ class CampaignStore:
         touched.
 
         *facts* is what only the Kubernetes API can say (capacity, allocatable, nodeInfo,
-        labels); ``None`` means nobody could ask -- an unreadable node, or
+        labels), and the campaign's calibration of the machine where it had one; ``None``
+        means nobody could ask -- an unreadable node, or
         a re-index with no cluster in reach. The row is still written, because *which*
         machine a run used is worth recording even when its hardware is not available.
         *cpu_name* comes the other way, from the run's own ``/proc/cpuinfo``: Kubernetes
@@ -888,7 +902,7 @@ class CampaignStore:
             return
         row = self._conn.execute(
             "SELECT id, cpu_name, capacity_json, allocatable_json, node_info_json, "
-            "labels_json FROM node WHERE campaign_id = ? AND node_label = ?",
+            "labels_json, calibration_json FROM node WHERE campaign_id = ? AND node_label = ?",
             (campaign_id, label)).fetchone()
         facts = facts or {}
         cols = {
@@ -897,15 +911,16 @@ class CampaignStore:
             "allocatable_json": _json_or_none(facts.get("allocatable")),
             "node_info_json": _json_or_none(facts.get("node_info")),
             "labels_json": _json_or_none(facts.get("labels")),
+            "calibration_json": _json_or_none(facts.get("calibration")),
         }
         if row is None:
             self._conn.execute(
                 "INSERT INTO node (campaign_id, node_label, cpu_name, capacity_json, "
-                "allocatable_json, node_info_json, labels_json, first_seen) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "allocatable_json, node_info_json, labels_json, first_seen, calibration_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (campaign_id, label, cols["cpu_name"], cols["capacity_json"],
                  cols["allocatable_json"], cols["node_info_json"], cols["labels_json"],
-                 time.time()))
+                 time.time(), cols["calibration_json"]))
             self._conn.commit()
             return
         # Fill gaps only. The first writer wins, so a later job on the same machine cannot

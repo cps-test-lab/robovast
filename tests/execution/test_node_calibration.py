@@ -1135,3 +1135,34 @@ def test_a_node_with_no_parameter_document_is_left_to_the_next_batch(monkeypatch
 
     assert list(asked.get("also_reads", ())) == [kb.probe_tag("n1")]
     assert claimed == ["n1"], "the node with a document is still measured"
+
+
+def test_what_a_calibrated_node_gave_its_runs_is_kept_for_the_record():
+    """The figures, the rule that sized them and the resources a job on the node was
+    rendered with: what every run there had."""
+    from robovast.execution.cluster_execution import kubernetes_backend as kb
+
+    cal = NodeCalibration()
+    cal._by_node["n1"] = {"sut": {"peak": 1.4, "memory_peak": 600 * 2**20}}
+    r = kb.BatchJobRunner()
+    r._calibration = cal
+    r._sizing_template = (object(), 4)
+    r._calibration_by_container = lambda: {"sut": {"size_on": 100.0, "limit": "request"}}
+
+    def _manifest(job, total, node_figures=None):
+        assert node_figures == cal.calibrated("n1")
+        return {"spec": {"template": {"spec": {
+            "containers": [{"name": "robovast", "resources": {"requests": {"cpu": "1"}}}],
+            "initContainers": [{"name": "sut", "restartPolicy": "Always",
+                                "resources": {"requests": {"cpu": "1.75"},
+                                              "limits": {"cpu": "1.75"}}}]}}}}
+
+    r.create_job_manifest = _manifest
+    r._note_allocation(cal, "n1")
+
+    assert cal.provenance("n1") == {
+        "measured": {"sut": {"peak": 1.4, "memory_peak": 600 * 2**20}},
+        "rule": {"sut": {"size_on": 100.0, "limit": "request"}},
+        "allocated": {"robovast": {"requests": {"cpu": "1"}},
+                      "sut": {"requests": {"cpu": "1.75"}, "limits": {"cpu": "1.75"}}}}
+    assert cal.provenance("n2") is None, "a node not calibrated has no record"
