@@ -353,10 +353,10 @@ Tables
 ------
 
 A table is a set of parquet files under ``<campaign>/.cache/tables/``, cataloged by
-``.cache/MANIFEST.json``: one file per run as it is built, and one file for the whole table once
-it is compacted (:ref:`results-tables-compacted`). Every table carries ``campaign_id``,
-``config_name`` and ``run_id`` in its own rows, so it joins to ``runs`` and to every other table
-on ``(config_name, run_id)``.
+``.cache/MANIFEST.json``: one file per run as it is built, and one file for the whole table once it
+is compacted (:ref:`compacted tables <results-tables-compacted>`). Every table carries
+``campaign_id``, ``config_name`` and ``run_id`` in its own rows, so it joins to ``runs`` and to
+every other table on ``(config_name, run_id)``.
 
 Where the tables come from
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
