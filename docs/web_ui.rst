@@ -214,8 +214,11 @@ here by what they do:
   ordered by what a reader came for — open something, take something away, re-run something,
   destroy something — and every entry is conditional, so a campaign with nothing to act on
   yet is offered no menu at all. Its middle group is **Download**, which streams the
-  campaign's ``tar.gz`` straight from the service's ``/data/campaigns/{id}/archive`` route,
-  tarred off its results tree as it is read and never buffered; **Export…**, below it on a
+  campaign's ``tar.gz`` -- its records, what postprocessing derived, and its built tables --
+  straight from the service's ``/data/campaigns/{id}/archive`` route, tarred off its results
+  tree as it is read and never buffered; **Download records only (raw)** on a campaign that
+  is over, the same route with ``?raw=true``: no tables and nothing postprocessing produced;
+  **Export…**, below it on a
   campaign that is not running, which opens a dialog -- the campaign's tables as a checklist,
   all checked, the format (parquet or CSV), which recordings ship and whether the records do --
   and, once **Start** is pressed, follows the export as the service builds it and offers the
@@ -698,9 +701,10 @@ download`` alone does not make a campaign appear here.
 **It is also not instant.** The import is a tracked operation like any other: the campaign
 appears in the list straight away at phase ``importing`` — its id is read from the archive
 before a byte is extracted — and, when the archive is a raw one, rolls on into
-``postprocessing``, which runs its steps and builds the tables it declares. An archive never
-carries built tables (``.cache/``); every other table is built from the campaign's records the
-first time something names it. So the
+``postprocessing``, which runs its steps and builds the tables it declares. A downloaded archive
+carries its built tables (``.cache/``), used where this service's decoder wrote them the same
+way; every other table is built from the campaign's records the first time something names it.
+So the
 dialog closes as soon as you start it and you watch the row, exactly as for a run. A failed
 import removes itself; there is no half-campaign left to tidy up.
 

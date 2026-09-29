@@ -54,7 +54,8 @@ from robovast.service.interface import (ActionResult, BINARY_FILE, BinaryFile,
                                         UpgradeInfo,
                                         ValidationReport, WorkOrder,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
-                                        WorldDescription, WriteFileRequest)
+                                        WorldDescription, WriteFileRequest,
+                                        campaign_archive_query)
 
 logger = logging.getLogger(__name__)
 
@@ -726,7 +727,7 @@ class HTTPTransport(RobovastInterface):
         self.raise_for_status(resp)
         return OutputsIngested.model_validate(resp.json())
 
-    def campaign_tar_stream(self, campaign_id: str):
+    def campaign_tar_stream(self, campaign_id: str, raw: bool = False):
         """Stream the campaign archive through, chunk by chunk.
 
         Not ``_get``: the body is a gzip stream that can run to ~1TB, so neither end
@@ -734,7 +735,8 @@ class HTTPTransport(RobovastInterface):
         :func:`~robovast.service.project_push.download_campaign_archive` is that, with
         a progress bar and an atomic rename.
         """
-        return self._stream(Routes.campaign_archive(campaign_id))
+        return self._stream(Routes.campaign_archive(campaign_id),
+                            **campaign_archive_query(raw))
 
     def workspace_tar_stream(self, workspace_id: str):
         """Stream the workspace archive through, chunk by chunk.

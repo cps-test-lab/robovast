@@ -705,8 +705,8 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   const archiveStage = running
     ? 'incomplete'
     : summary.postprocessed
-      ? 'postprocessed'
-      : 'raw'
+      ? 'with tables'
+      : 'not postprocessed'
 
   // One listing for the whole page: every card asks under the same react-query key, so
   // they collapse into a single request, and the share answers for itself rather than
@@ -849,9 +849,24 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
           <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
           {/* The label states which of the three things the archive can be: a running campaign's
               snapshot is missing the runs that have not finished, and a finished campaign's
-              results are raw until postprocessing has produced its tables and plots. */}
+              archive carries its tables once postprocessing has built them. */}
           <ListItemText primary={`Download (${archiveStage})`} />
         </MenuItem>,
+        // The records alone: no tables and nothing postprocessing produced, which an import
+        // postprocesses afresh. Offered once the campaign is over; a running campaign's
+        // snapshot is the item above.
+        running ? null : (
+          <MenuItem
+            key="download-raw"
+            component="a"
+            href={robovast.archiveUrl(id, true)}
+            download={`${id}.raw.tar.gz`}
+            onClick={closeMenu}
+          >
+            <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
+            <ListItemText primary="Download records only (raw)" />
+          </MenuItem>
+        ),
         // The other way out: the tables as files, built for the request, with the records
         // beside them. Not offered while the campaign runs, since the export refuses a tree
         // that is still changing -- the snapshot above is what a running campaign offers.

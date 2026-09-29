@@ -572,6 +572,15 @@ def test_get_campaign_download_cluster_returns_url(monkeypatch):
     assert "error" not in res
 
 
+def test_get_campaign_download_raw_points_at_the_records_alone(monkeypatch):
+    monkeypatch.setattr(service_access, "service_client",
+                        lambda: _fake_download_client("kubernetes"))
+    res = results_lifecycle.get_campaign_download("camp-2026-01-01-000000", raw=True)
+    assert res["path"] == "/data/campaigns/camp-2026-01-01-000000/archive?raw=true"
+    assert res["url"].endswith("/data/campaigns/camp-2026-01-01-000000/archive?raw=true")
+    assert res["next_step"] == "vast campaign download camp-2026-01-01-000000 --raw"
+
+
 def test_get_campaign_download_local_also_returns_a_url(monkeypatch):
     """The URL does not depend on the backend the service reports."""
     monkeypatch.setattr(service_access, "service_client",

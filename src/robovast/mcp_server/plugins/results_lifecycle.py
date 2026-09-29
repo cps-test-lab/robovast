@@ -31,6 +31,7 @@ Removal is one verb: a campaign has one home, and deleting it is deleting that.
 """
 
 import logging
+from urllib.parse import urlencode
 
 from fastmcp import FastMCP
 
@@ -169,8 +170,10 @@ def import_campaign(archive_path: str = "", share_archive: str = "",
 
     Registration, not just extraction: listings and every query answer from ``campaign.db``,
     so an unpacked archive lists blank. A **raw** archive (no postprocessing record — what
-    the share holds) is postprocessed once it lands; an archive carries no tables either
-    way, and every table is built from the records the first time something names it.
+    the share holds, or ``get_campaign_download(raw=True)``) is postprocessed once it lands.
+    A downloaded archive carries its built tables, used as they are where this service's
+    decoder wrote them the same way; any other table is built from the records the first
+    time something names it.
     Returns immediately; the campaign is already listed at phase ``importing``.
 
     Give exactly one source. Neither carries bytes through this tool — an archive is
@@ -199,28 +202,28 @@ def import_campaign(archive_path: str = "", share_archive: str = "",
     return {"campaign_id": ref.campaign_id, "note": ref.note}
 
 
-def get_campaign_download(campaign_id: str) -> dict:
-    """Where to download a campaign as the service holds it -- a link, never a file fetched here.
+def get_campaign_download(campaign_id: str, raw: bool = False) -> dict:
+    """Where to download a campaign, with its built tables -- a link, never a file fetched here.
 
-    A campaign **still running** downloads too, as a snapshot named
-    ``<campaign-id>.incomplete.tar.gz`` that an import reports as degraded: runs that had
-    not finished are absent. For the tables as files, ``export_campaign``.
+    A running one downloads as ``<campaign-id>.incomplete.tar.gz``, missing unfinished runs.
 
     Args:
         campaign_id: The campaign to download.
+        raw: Only the records, without tables and postprocessing outputs.
 
     Returns:
-        ``{campaign_id, path, next_step}`` plus ``url`` when this service declares an
-        origin. Or ``{error}``.
+        ``{campaign_id, path, next_step}``, plus ``url`` when an origin is declared; or
+        ``{error}``.
     """
-    from robovast.service.interface import Routes
+    from robovast.service.interface import Routes, campaign_archive_query
     client = service_access.service_client()
     if client is None:
         return {"error": f"{NO_SERVICE}. The campaign lives with the service, not "
                           "on this host."}
     # The route helper, not a second copy of the path: it exists so this link and the
     # endpoint serving it are one string.
-    path = Routes.campaign_archive(campaign_id)
+    query = campaign_archive_query(raw)
+    path = Routes.campaign_archive(campaign_id) + (f"?{urlencode(query)}" if query else "")
     # Omitted rather than empty when there is no origin to build one from -- a deployment
     # that declares none still has a usable answer in `path` + `next_step`.
     url = service_access.web_url(client, path)
@@ -228,16 +231,13 @@ def get_campaign_download(campaign_id: str) -> dict:
     # id already filled in. Nothing is said about the share copy -- whether one exists is
     # not a fact this service records (only `share_error`, a failure, travels with a
     # campaign), and `vast share download` is documented where commands are looked up.
-    #
-    # `campaign download`, not the identical `results download`: this runs on the
-    # *caller's* machine, and `vast results` ships only with the full distribution, so an
-    # agent driving a remote service over this MCP -- the case the tool exists for -- may
-    # not have it. The campaign group is the client's, so this one always resolves.
+    # `vast campaign download` is the client's own verb, so it resolves on any install an
+    # agent driving a remote service over this MCP has.
     return {
         "campaign_id": campaign_id,
         **({"url": url} if url else {}),
         "path": path,
-        "next_step": f"vast campaign download {campaign_id}",
+        "next_step": f"vast campaign download {campaign_id}{' --raw' if raw else ''}",
     }
 
 

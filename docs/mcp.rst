@@ -757,13 +757,13 @@ the field is *absent*, that is an answer as well: there is nothing obvious to do
 next. It is deliberately not on every reply, since a field that always appears is
 one that stops being read.
 
-Results live
-wherever the service keeps them — its results root (retrieve via the web UI or
-``get_campaign_download``, which hands back the route, the ``vast campaign download``
-command with the id filled in, and a URL when this deployment declares an origin to build
-one from — see :ref:`mcp-origin`). It says nothing about the share: whether a campaign has
-a copy there is not a fact the service records, so claiming one would be advertising what
-the caller may not have.
+Results live wherever the service keeps them — its results root (retrieve via the web UI or
+``get_campaign_download``, which hands back the route, the ``vast campaign download`` command
+with the id filled in, and a URL when this deployment declares an origin to build one from —
+see :ref:`mcp-origin`; ``raw=True`` points at the records alone, without the built tables and
+what postprocessing produced). It says nothing about the share: whether a campaign has a copy
+there is not a fact the service records, so claiming one would be advertising what the caller
+may not have.
 
 ``export_campaign`` is the other way out, and the one to reach for when the point is an
 **analysis away from the service** -- a notebook on a laptop, a hand-off to someone without

@@ -1433,10 +1433,10 @@ Export
 An **export** is one ``tar.gz`` built for one request: the campaign's tables as files, with
 the records that produced them and, if asked, its recordings. It is for an analysis away
 from the service -- a notebook on a laptop, a hand-off -- where the archive is the wrong
-shape: the archive is the campaign as the service holds it and ships no table, and its
-tables are built again wherever it lands. An export's tables are built once, on the
-service, by the same decoder a query uses, and written where pandas or DuckDB opens them
-directly.
+shape: the archive is the campaign as the service holds it, its tables in the decoder's own
+cache, read through ``robovast-data``. An export's tables are built once, on the service, by
+the same decoder a query uses, and written as plain files where pandas or DuckDB opens them
+directly, without RoboVAST.
 
 What it contains is the request's to decide:
 

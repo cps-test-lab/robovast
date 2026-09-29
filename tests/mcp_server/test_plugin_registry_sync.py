@@ -511,6 +511,9 @@ _PARAMETER_VOCABULARY = {
     # Build every table the records can give again, not only the declared ones: the switch
     # of run_postprocessing, the CLI's --replay and the request body spell it the same way.
     "replay",
+    # A campaign's records alone, without its built tables and what postprocessing produced:
+    # get_campaign_download, the CLI's --raw and the archive route's ?raw=true spell it so.
+    "raw",
 }
 
 
