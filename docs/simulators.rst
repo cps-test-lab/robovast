@@ -580,6 +580,15 @@ So a world a ``mode: ros2`` campaign runs **must** declare its own ``ros2_bridge
 bridge is installed is ``roqsim sim <world> --no-communication``, which strips the transport
 plugins, so declaring them costs the world nothing.
 
+roqsim's own control socket is not middleware but part of the deployment: ``roqsim sim``
+serves it, and the scenario library's roqsim actions (``entity_call``, ``entity_monitor``,
+``entity_near``, ...) reach the simulator through it. In ``mode: ros2`` the two run in separate
+containers, so the backend sets ``ROQSIM_CONTROL=ipc:///ipc/roqsim-control.sock`` in both, on
+the ``/ipc`` directory every container of the job mounts; roqsim's default, a socket in the run
+directory, would sit under ``/out`` in the simulator's container alone. ``mode: base`` sets
+nothing: the scenario reaches the simulator in its own process. A campaign's own
+``execution.env`` still wins, as for every backend variable.
+
 Building the image from your own roqsim
 ```````````````````````````````````````
 
