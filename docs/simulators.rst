@@ -576,13 +576,15 @@ YAML. A campaign runner configuring a simulator's middleware would be reaching a
 down; ``--headless`` and ``--pacing`` are the only two the deployment owns.
 
 So a world a ``mode: ros2`` campaign runs **must** declare its own ``ros2_bridge``, plus
-``sim_interfaces`` if the scenario touches entities. Opening such a world by hand where no
+``sim_interfaces`` if the scenario uses scenario-execution's ``osc.sim`` actions (the
+``simulation_interfaces`` services). Opening such a world by hand where no
 bridge is installed is ``roqsim sim <world> --no-communication``, which strips the transport
 plugins, so declaring them costs the world nothing.
 
 roqsim's own control socket is not middleware but part of the deployment: ``roqsim sim``
-serves it, and the scenario library's roqsim actions (``entity_call``, ``entity_monitor``,
-``entity_near``, ...) reach the simulator through it. In ``mode: ros2`` the two run in separate
+serves it, and roqsim's own ``osc.roqsim`` entity actions (``entity_call``,
+``entity_monitor``, ``entity_near``, ``entity_moved``, ...) reach the simulator through it, so
+they need neither ``sim_interfaces`` nor a ROS bridge. In ``mode: ros2`` the two run in separate
 containers, so the backend sets ``ROQSIM_CONTROL=ipc:///ipc/roqsim-control.sock`` in both, on
 the ``/ipc`` directory every container of the job mounts; roqsim's default, a socket in the run
 directory, would sit under ``/out`` in the simulator's container alone. ``mode: base`` sets
