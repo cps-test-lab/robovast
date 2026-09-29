@@ -143,3 +143,45 @@ def test_the_recording_block_becomes_the_simulators_knobs():
     # A block with no roqsim section says nothing to roqsim.
     ros_only = apply_backend(dict(execution), recording=recording_config({"ros2": {"use_sim_time": True}}))
     assert "ROQSIM_CAPTURE_FPS" not in ros_only["_backend_env"]
+
+
+def _roqsim_execution(mode):
+    return {"mode": mode,
+            "containers": {"simulation": {"backend": "roqsim", "config": "pkg:world"}}}
+
+
+def test_the_ros_shape_serves_the_control_socket_on_the_jobs_shared_ipc_dir():
+    """``roqsim sim`` and the scenario's roqsim library run in separate containers, and both
+    are told the same socket on the one directory the two share. Left to roqsim's default the
+    socket lands in the simulator's run directory under ``/out``, where the scenario's own
+    discovery does not look."""
+    from robovast.common.execution import IPC_DIR, scenario_env, sidecar_backend_env
+    from robovast.common.simulators import apply_backend, sim_job_overlay
+
+    uri = f"ipc://{IPC_DIR}/roqsim-control.sock"
+    execution = _roqsim_execution("ros2")
+    applied = apply_backend(dict(execution))
+    # The scenario container ...
+    assert scenario_env({"execution": applied})["ROQSIM_CONTROL"] == uri
+    # ... and the simulator, campaign-level and per job.
+    assert sidecar_backend_env(applied, "simulation")["ROQSIM_CONTROL"] == uri
+    overlay = sim_job_overlay(execution, execution["containers"]["simulation"])
+    assert overlay["env"]["ROQSIM_CONTROL"] == uri
+
+
+def test_the_stepped_shape_names_no_control_socket():
+    """The scenario reaches the simulator in its own process, so there is nothing to connect to."""
+    from robovast.common.execution import scenario_env
+    from robovast.common.simulators import apply_backend
+
+    applied = apply_backend(_roqsim_execution("base"))
+    assert "ROQSIM_CONTROL" not in applied["_backend_env"]
+    assert "ROQSIM_CONTROL" not in scenario_env({"execution": applied})
+
+
+def test_a_campaign_can_still_name_its_own_control_socket():
+    from robovast.common.execution import sidecar_backend_env
+    from robovast.common.simulators import apply_backend
+
+    applied = apply_backend(dict(_roqsim_execution("ros2"), env=[{"ROQSIM_CONTROL": "none"}]))
+    assert "ROQSIM_CONTROL" not in sidecar_backend_env(applied, "simulation")

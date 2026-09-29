@@ -12,7 +12,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from robovast.client.safe_path import UnsafePathError, check_relative
-from robovast.common.execution import MEMBER_ROQSIM, family_image_ref
+from robovast.common.execution import IPC_DIR, MEMBER_ROQSIM, family_image_ref
 from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER, SHAPE_ROS, SHAPE_STEPPED,
                                         SIM_OVERRIDES_MOUNT, SIM_QUERY_OVERRIDES_MOUNT,
                                         SIMULATION_CONTAINER, ContainerQuery, SimulatorBackend,
@@ -32,6 +32,13 @@ _WORLD_ROOTS = ("sim", "components")
 #: :meth:`RoqsimBackend.env` asks for it, :meth:`run_state_file` tells the service where to
 #: find it -- so the request and the lookup cannot drift apart.
 _RECORD_FILE = "roqsim_bag/roqsim.mcap"
+
+#: Where ``roqsim sim`` serves its control socket in the ROS shape, and where the scenario's
+#: roqsim library reaches it. On the job's shared :data:`~robovast.common.execution.IPC_DIR`
+#: because the two run in separate containers: roqsim's default, a socket in the run directory,
+#: sits under ``/out`` in the simulator's container only, and a simulator's registration in its
+#: own runtime directory is invisible from the scenario's.
+_CONTROL_URI = f"ipc://{IPC_DIR}/roqsim-control.sock"
 
 
 def _is_package_ref(config: str) -> bool:
@@ -163,10 +170,12 @@ class RoqsimBackend(SimulatorBackend):
             # entry point: the same command debugs the world by hand, so there is no
             # second way the simulator can be started.
             #
-            # No transport flags: which topics a world speaks, under which namespace, and
-            # whether it serves a control plane are the WORLD's to declare. A campaign
+            # No middleware flags: which topics a world speaks, under which namespace, and
+            # whether it serves the ROS control plane are the WORLD's to declare. A campaign
             # runner configuring a simulator's middleware would be reaching a layer down,
-            # and headless/pacing are the only two the deployment owns.
+            # and headless/pacing are the only two the deployment owns. Where roqsim's own
+            # control socket lives is the deployment's, since it depends on how the job's
+            # containers share a filesystem: :meth:`env` sets it.
             command = ["roqsim", "sim", _config_in_container(cfg.config),
                        "--headless", "--pacing", "realtime"]
             if cfg.overrides:
@@ -234,7 +243,13 @@ class RoqsimBackend(SimulatorBackend):
         # different machine whenever a campaign is dispatched. roqsim picks it at
         # import instead (roqsim.gl.select_offscreen_gl), which is what finally
         # retires the 22-line shell script three packages had each copied.
-        if shape_for(execution.get("mode", "auto")) == SHAPE_STEPPED:
+        if shape_for(execution.get("mode", "auto")) == SHAPE_ROS:
+            # The simulator serves its control socket here and the scenario connects to it
+            # here: RoboVAST gives this environment to both containers, the scenario through
+            # scenario_env and the simulator through sidecar_backend_env. The stepped shape
+            # needs none: its scenario reaches the simulator in its own process.
+            env["ROQSIM_CONTROL"] = _CONTROL_URI
+        else:
             # In-process: no command line to put the config on, so the adapter reads it
             # from here. The scenario stays simulator-agnostic either way -- it never
             # learns that this simulator has a thing called a world.
