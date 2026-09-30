@@ -71,6 +71,41 @@ def test_a_campaign_can_still_ask_for_plain_roqsim_logs():
     assert "ROQSIM_LOG_FORMAT" not in sidecar_backend_env(execution, "simulation")
 
 
+def test_a_ros_run_names_the_control_socket_for_the_simulator_and_the_scenario_alike():
+    """`roqsim sim` serves its control socket in one container and the scenario's roqsim actions
+    look for it in another. Both read ROQSIM_CONTROL, so the backend states the address once, on
+    the /ipc directory every container of the job shares -- not in the run's result directory,
+    which a job holding several runs does not set."""
+    from robovast.common.execution import IPC_DIR, sidecar_backend_env
+    from robovast.common.simulators import apply_backend
+    from robovast_sim_roqsim.backend import ROQSIM_CONTROL_URI
+
+    assert ROQSIM_CONTROL_URI == f"ipc://{IPC_DIR}/roqsim-control.sock"
+    execution = {"mode": "ros2",
+                 "containers": {"simulation": {"backend": "roqsim", "config": "pkg:world"}}}
+    applied = apply_backend(dict(execution))
+    assert applied["_backend_env"]["ROQSIM_CONTROL"] == ROQSIM_CONTROL_URI
+    assert sidecar_backend_env(applied, "simulation")["ROQSIM_CONTROL"] == ROQSIM_CONTROL_URI
+
+
+def test_a_stepped_run_serves_no_control_socket_address():
+    """In-process: the scenario holds the simulator, so there is no socket to name."""
+    from robovast.common.simulators import apply_backend
+
+    execution = {"mode": "base",
+                 "containers": {"scenario": {"backend": "roqsim", "config": "pkg:world"}}}
+    applied = apply_backend(dict(execution))
+    assert "ROQSIM_CONTROL" not in applied.get("_backend_env", {})
+
+
+def test_a_campaign_can_still_name_its_own_control_address():
+    from robovast.common.execution import sidecar_backend_env
+
+    execution = {"mode": "ros2", "_backend_env": {"ROQSIM_CONTROL": "ipc:///ipc/roqsim-control.sock"},
+                 "env": [{"ROQSIM_CONTROL": "tcp://:5555"}]}
+    assert "ROQSIM_CONTROL" not in sidecar_backend_env(execution, "simulation")
+
+
 def test_importing_the_backend_pulls_in_no_simulator():
     """The non-negotiable rule for a backend, checked rather than asserted in prose.
 

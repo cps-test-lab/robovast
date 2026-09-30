@@ -11,7 +11,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from robovast.common.execution import MEMBER_ROQSIM, family_image_ref
+from robovast.common.execution import IPC_DIR, MEMBER_ROQSIM, family_image_ref
 from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER, SHAPE_ROS, SHAPE_STEPPED,
                                         SIM_OVERRIDES_MOUNT, SIM_QUERY_OVERRIDES_MOUNT,
                                         SIMULATION_CONTAINER, ContainerQuery, SimulatorBackend,
@@ -24,6 +24,11 @@ ADAPTER = "roqsim.scenario_adapter:MujocoSim"
 #: Every top level a world document has, and therefore every root a ``sim:`` destination may
 #: address.
 _WORLD_ROOTS = ("sim", "components")
+
+#: The control socket of a ``ros``-shape run: served by ``roqsim sim`` in the simulation container
+#: and reached by the scenario's roqsim actions in the scenario container, both through
+#: ``ROQSIM_CONTROL`` (:meth:`RoqsimBackend.env`).
+ROQSIM_CONTROL_URI = f"ipc://{IPC_DIR}/roqsim-control.sock"
 
 #: The MuJoCo state recording each run writes, relative to its output directory. Named once
 #: and read twice — :meth:`RoqsimBackend.env` asks for it, :meth:`run_state_file` tells the
@@ -214,6 +219,13 @@ class RoqsimBackend(SimulatorBackend):
         # different machine whenever a campaign is dispatched. roqsim picks it at
         # import instead (roqsim.gl.select_offscreen_gl), which is what finally
         # retires the 22-line shell script three packages had each copied.
+        if shape_for(execution.get("mode", "auto")) == SHAPE_ROS:
+            # Where `roqsim sim` serves its control socket and where the scenario's roqsim
+            # actions look for it -- the same variable on both sides of the job, so the address
+            # is stated rather than inferred. On /ipc because that is the one directory every
+            # container of the job shares; the run's result directory is not set at all in a job
+            # that holds several runs.
+            env["ROQSIM_CONTROL"] = ROQSIM_CONTROL_URI
         if shape_for(execution.get("mode", "auto")) == SHAPE_STEPPED:
             # In-process: no command line to put the config on, so the adapter reads it
             # from here. The scenario stays simulator-agnostic either way -- it never
