@@ -423,6 +423,14 @@ the variable, not a fallback. Every engine the service builds honours them -- a 
 build, an export, a track deviation -- and so does a notebook rendered in the Results Explorer;
 a notebook on a laptop passes the same options to ``Campaign(..., threads=, memory_limit=)``.
 
+A campaign's tables are built at its end by Jobs on the cluster, a part of its runs each
+(:ref:`tables built in parts <results-tables-in-parts>`). How many runs a part starts with is read
+and carried the same way:
+
+.. code-block:: bash
+
+   ROBOVAST_TABLE_PART_RUNS=100   # runs a table-building part starts with; halved on OOM
+
 Checking a deployment
 ---------------------
 

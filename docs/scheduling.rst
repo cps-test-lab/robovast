@@ -294,6 +294,26 @@ the campaign would end on a node it could not measure while naming a cause nobod
   ``preflight`` ran once on the declared sizing and is never re-asked per node.
 
 
+**Work that shrinks when it runs out of memory.** For the same work over many independent units
+whose memory need is only known by trying -- a campaign's runs, whose tables build in parts
+(:ref:`tables built in parts <results-tables-in-parts>`) --
+:class:`~robovast.execution.cluster_execution.shrinking_jobs.ShrinkingJobs` runs Jobs a level at a
+time over ``AdmittedJobs``::
+
+    level 0:  make_items(units, 0)  -> submit under <owner>/g0
+    poll      -> a Job OOM-killed at level g:
+                 cancel(<owner>/g<g>)            the queue's planned items and holds, dropped
+                 delete the level's running Jobs
+                 make_items(units not delivered, g + 1) -> submit under <owner>/g<g+1>
+              -> a Job killed where at_floor(item, g) -> fail, naming its units
+              -> any other failure, or a pod that cannot start -> fail, no retry
+
+The caller decides what a level is -- fewer units per Job, fewer workers -- and never more
+memory: a Job larger than what the node was calibrated for is one the queue may not place. A
+level's owner is a sub-scope like ``<campaign>#probes``, so taking a level back is one
+``cancel`` and every surface keeps counting the campaign's own items apart from it.
+
+
 Failure modes worth knowing
 ---------------------------
 
