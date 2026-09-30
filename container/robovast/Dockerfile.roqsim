@@ -258,7 +258,6 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
         /opt/roqsim/roqsim_scenes \
         /opt/roqsim/roqsim_nav \
         /opt/roqsim/roqsim_walker \
-        /opt/roqsim/roqsim_webctrl \
         /opt/roqsim/scenario_execution_roqsim
 
 # The learned-policy platforms: quadruped + humanoid, which pull CPU torch (several hundred MB
