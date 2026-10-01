@@ -314,6 +314,31 @@ RUN mkdir -p /etc/robovast && \
         > /etc/robovast/pip-constraints.txt
 ENV PIP_CONSTRAINT=/etc/robovast/pip-constraints.txt
 
+# How long a Fast DDS service server waits for a new client's reply reader to be matched
+# before it drops the reply ("client will not receive response"). rmw_fastrtps waits for the
+# response writer's reliability max_blocking_time, 100 ms by default -- shorter than discovery
+# takes while a run starts dozens of nodes on shared CPUs. A dropped reply to a component
+# container's load_node leaves launch_ros waiting for it forever, so every node queued behind
+# it is never loaded. The "service" profile is the one rmw_fastrtps reads for a service's
+# response writer only; topics and clients keep Fast DDS's defaults.
+RUN printf '%s\n' \
+        '<?xml version="1.0" encoding="UTF-8" ?>' \
+        '<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">' \
+        '  <data_writer profile_name="service">' \
+        '    <qos>' \
+        '      <reliability>' \
+        '        <kind>RELIABLE</kind>' \
+        '        <max_blocking_time>' \
+        '          <sec>5</sec>' \
+        '          <nanosec>0</nanosec>' \
+        '        </max_blocking_time>' \
+        '      </reliability>' \
+        '    </qos>' \
+        '  </data_writer>' \
+        '</profiles>' \
+        > /etc/robovast/fastdds_profiles.xml
+ENV FASTRTPS_DEFAULT_PROFILES_FILE=/etc/robovast/fastdds_profiles.xml
+
 # Environment variables
 # Unbuffered: a campaign's only view of a run is its streamed log, and a buffered
 # interpreter withholds output for as long as it likes -- including the traceback of a
