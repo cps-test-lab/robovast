@@ -1014,6 +1014,10 @@ kubelet starts in its place runs no workload, and the runner ends the job as soo
 the restart off the pod. Whatever verdict the scenario reached in between describes a trial
 that had already lost its process.
 
+The scenario container itself is not restarted, but an OOM kill of it is read the same way:
+the kill takes its post-run with it, so the pod's uploader waits for a marker that never
+comes, and the runner ends the job rather than letting it run on to its deadline.
+
 **It is the one status that overrides a written verdict**, and that inverts the rule stated
 for ``killed`` just above. The inversion is the whole reason it is a separate kind rather
 than another kill:
