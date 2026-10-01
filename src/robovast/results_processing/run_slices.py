@@ -228,16 +228,13 @@ def _read_window(run_dir: Path) -> Tuple[Optional[float], Optional[float]]:
     A run killed mid-flight never wrote ``test.xml``. That is not an error here: it has no
     window, and the consumer decides what to do with a run whose extent is unknown.
     """
-    from robovast.common.campaign_data import \
-        read_test_result  # pylint: disable=import-outside-toplevel
+    from robovast.common.campaign_data import (  # pylint: disable=import-outside-toplevel
+        read_test_result, trial_window)
     try:
         result = read_test_result(run_dir)
     except (FileNotFoundError, ValueError, OSError):
         return None, None
-    start = result.get("start_epoch")
-    if start is None:
-        return None, None
-    return start, start + (result.get("duration_sec") or 0.0)
+    return trial_window(result)
 
 
 def _claims_for_job(windows: List[Tuple[str, Optional[float]]]) -> Dict[str, Tuple[float, float]]:
