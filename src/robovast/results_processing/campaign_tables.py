@@ -21,7 +21,8 @@ campaign's records the first time something names it, by :mod:`robovast_decode`.
 is what RoboVAST adds around that:
 
 * **The decoder's configuration** -- the campaign's ``rosbags_*`` entries (frames to resolve,
-  topics to tabulate, ``require``, cameras to encode) and the containers it runs -- written to
+  topics to tabulate, ``require``, cameras to encode), the containers it runs and where its
+  simulator's ground truth comes from -- written to
   ``_execution/tables.yaml`` when the campaign's config is frozen and again when its
   postprocessing runs, so a copy of the campaign builds the same tables anywhere
   (:data:`robovast_decode.layout.DECODER_CONFIG`).
@@ -182,6 +183,15 @@ def _containers(campaign_dir: str) -> Optional[List[str]]:
     return [MAIN_CONTAINER] + [c.name for c in plan.sidecars]
 
 
+def _ground_truth(vast_path: str) -> Optional[dict]:
+    """Where the campaign's simulator backend says its ground truth comes from, if it says."""
+    from robovast.common.simulators import ground_truth_source  # noqa: PLC0415
+
+    with open(vast_path, encoding="utf-8") as fh:
+        raw = next(iter(yaml.safe_load_all(fh)), None) or {}
+    return ground_truth_source(raw.get("execution") or {}, os.path.dirname(vast_path))
+
+
 def write_decoder_config(campaign_dir: str, vast_path: str) -> dict:
     """Write the campaign's decoder configuration to ``_execution/tables.yaml``; return it."""
     postprocessing, search, _checks, _plots = _campaign_blocks(vast_path)
@@ -189,6 +199,9 @@ def write_decoder_config(campaign_dir: str, vast_path: str) -> dict:
     containers = _containers(campaign_dir)
     if containers is not None:
         config["containers"] = containers
+    truth = _ground_truth(vast_path)
+    if truth is not None:
+        config["ground_truth"] = truth
     path = os.path.join(campaign_dir, DECODER_CONFIG)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".incoming"

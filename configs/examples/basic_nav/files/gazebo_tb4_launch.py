@@ -8,10 +8,11 @@ This wrapper adds only what the comparison needs on top and cannot get any other
 because the campaign cannot edit an upstream launch file.
 
 Why it exists: the campaign's analysis reads a ground-truth trajectory
-(``<robot>_base_link_gt``), and Gazebo publishes no such frame by itself. roqsim gets
-it from the ``ground_truth_pose`` world plugin; here it comes from
-``gazebo_tf_publisher`` (scenario-execution's gz helper, already installed in the
-RoboVAST base image), which reads gz's own pose feed and republishes ``map -> …_gt``.
+(``ground_truth_poses``), which for a simulator without a recording of its own is the
+``<robot>_base_link_gt`` frame on ``/tf`` -- and Gazebo publishes no such frame by itself.
+Here it comes from ``gazebo_tf_publisher`` (scenario-execution's gz helper, already
+installed in the RoboVAST base image), which reads gz's own pose feed and republishes
+``map -> …_gt``.
 Without it the Gazebo runs record only ``base_link`` — the AMCL *estimate* — so a
 "ground truth" comparison would silently be comparing believed poses.
 
@@ -24,9 +25,8 @@ Two values here are load-bearing and were both wrong in the obvious formulation:
   missing-frame bug it is here to fix.
 * ``robot_name`` is forced to ``turtlebot4``. The publisher names the frame
   ``<gz model name>_<base_frame_id>_gt``, and tb4_simulation_launch.py's default model
-  name is ``nav2_turtlebot4`` — which would emit ``nav2_turtlebot4_base_link_gt`` while
-  roqsim emits ``turtlebot4_base_link_gt``, leaving the two backends' trajectories
-  under different table keys for no reason other than a default.
+  name is ``nav2_turtlebot4`` — which would emit ``nav2_turtlebot4_base_link_gt`` rather
+  than the ``turtlebot4_base_link_gt`` basic_nav_gazebo.vast requires.
 
 It also runs the campaign **headless**, which upstream cannot do while publishing ground
 truth: ``headless`` gates the SceneBroadcaster plugin in the world *and* the Gazebo GUI,
@@ -48,8 +48,7 @@ from launch_ros.actions import Node
 
 # The gz world whose pose feed carries the robot: fixed by the map this campaign runs.
 _WORLD = "depot"
-# Must match the model name roqsim's world gives the robot, so both backends publish
-# one frame name and the analysis needs no per-backend special case.
+# Names the ground-truth frame turtlebot4_base_link_gt, the frame basic_nav_gazebo.vast requires.
 _ROBOT_NAME = "turtlebot4"
 
 

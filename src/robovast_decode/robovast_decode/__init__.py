@@ -35,4 +35,5 @@ except PackageNotFoundError:  # a source tree that was never installed
 #: leaf field; laser scans are tables.
 #: 3: campaign.batch has recalls_recorded and complete; campaign.unit has recalled_from.
 #: 4: campaign.node has calibration_json.
-DATA_CONTRACT = 4
+#: 5: ground_truth_poses.
+DATA_CONTRACT = 5

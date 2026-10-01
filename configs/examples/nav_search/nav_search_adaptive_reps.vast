@@ -47,7 +47,7 @@ search:
   # recordings the first time a plugin names them.
   - rosbags_tf_to_csv:
       frames: all
-      require: [base_link, odom, turtlebot4_base_link_gt]
+      require: [base_link, odom]
   - rosbags_to_csv:
       topics: [/collision, /clearance]
   - rosbags_nav2bt_to_csv
@@ -159,7 +159,7 @@ results_processing:
   postprocessing:
   - rosbags_tf_to_csv:
       frames: all
-      require: [base_link, odom, turtlebot4_base_link_gt]
+      require: [base_link, odom]
   - rosbags_to_csv:
       topics: [/collision, /clearance]
   - rosbags_nav2bt_to_csv
