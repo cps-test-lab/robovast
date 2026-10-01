@@ -55,13 +55,16 @@ used — the shape is *derived*, not a second key to keep consistent with the fi
 **Stepped** (``mode: base``)
    scenario-execution owns the loop and calls ``step()``, so the simulator runs **in the
    scenario's process** — ``simulation`` and ``scenario`` resolve to one container. Time
-   advances only when the behaviour tree ticks, which makes a run exactly reproducible.
-   This is the shape a trial with no ROS in it wants.
+   advances only when the behaviour tree ticks, which makes a run exactly reproducible, and a
+   scenario's durations run on that step clock. This is the shape a trial with no ROS in it
+   wants.
 
 **ROS** (``mode: ros2``)
    The simulator runs on its own, publishes ``/clock``, and the scenario observes it over
    ROS — so it gets its own container. No ``SimulationInterface`` is involved, which is
-   why a simulator that has none fits here unchanged.
+   why a simulator that has none fits here unchanged. A scenario's durations run on
+   ``/clock`` or on wall time as :ref:`execution.use_sim_time <scenario-clock>` says, which
+   the backend's ``publishes_clock`` answers when the campaign leaves it unset.
 
 ``mode: auto`` is refused when a backend is declared: ``auto`` is resolved *inside* the
 container by testing whether ``ros2`` is on ``PATH``, so the same ``.vast`` would get a
@@ -174,6 +177,10 @@ Hooks, all optional except as noted:
 ``records_scene_state(cfg, execution)``
    Whether runs record the simulator state a ``scene3d`` panel replays -- the recording the
    decoder reads into ``sim_poses``, ``joint_states``, ``sim_recording`` and ``sim_entities``.
+``publishes_clock(cfg, execution)``
+   Whether the simulator publishes ``/clock`` in the ROS shape, which starts scenario-execution
+   with ``use_sim_time``. ``None`` (the default) means the backend cannot say, and a campaign
+   using it must state ``execution.use_sim_time``. roqsim answers ``True``.
 ``default_panels(cfg, execution)``
    Run-view panels this backend contributes, as ``{<type>: <props>}`` entries — the panel
    that replays a recorded scene state, for a backend that records one; ``[]`` otherwise.
