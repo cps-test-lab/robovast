@@ -22,7 +22,7 @@ def _store_docs(namespace="default", **kwargs):
 
 
 def _store_pod_spec(**kwargs):
-    return next(d for d in _store_docs(**kwargs) if d["kind"] == "Pod")["spec"]
+    return store_pod.store_pod_spec(_store_docs(**kwargs))
 
 
 def test_the_index_runs_in_the_robovast_pod_not_the_service_pod():

@@ -507,9 +507,9 @@ campaign this deployment has finished. Archive what matters (``vast share``) bef
 the placement.
 
 One thing a re-``setup`` cannot do by itself: applying a manifest over an object that already
-exists keeps the existing one, so a **running** ``robovast`` pod — the registry and the index
+exists keeps the existing one, so a live ``robovast`` Deployment — the registry and the index
 — cannot be relocated that way. Setup refuses rather than reporting a placement it did not
-apply, and says what recreating it costs: delete the pod, or run ``cleanup`` first.
+apply, and says what recreating it costs: delete the Deployment, or run ``cleanup`` first.
 
 .. _cluster-gpu:
 
@@ -1168,8 +1168,9 @@ appended when the client produced none.
 Where the registry and the index run
 ------------------------------------
 
-``vast cluster setup`` creates one ``robovast`` pod per deployment, holding this
-deployment's two pieces of **setup-lifetime infrastructure**:
+``vast cluster setup`` creates one ``robovast`` pod per deployment, as the single replica of
+the ``robovast`` Deployment, holding this deployment's two pieces of **setup-lifetime
+infrastructure**:
 
 ``registry``
    the container registry experiment images are built into, published on ``/v2`` of the
@@ -1186,6 +1187,14 @@ deployment's two pieces of **setup-lifetime infrastructure**:
 on demand: images are rebuilt when a campaign asks for them, and the index is re-ingested
 from the campaigns. That is why it is one replica with no standby and no backup — losing
 it costs time and nothing else.
+
+**The Deployment replaces a pod the node evicted.** An evicted pod is not restarted, and while
+none runs, the Service has no endpoints and every push and pull on ``/v2`` answers 503. The
+Deployment's ``Recreate`` strategy removes the old pod before starting its replacement,
+because the registry blobs and the Postgres data directory each take one writer. A namespace
+that still runs the two in a bare ``robovast`` pod is refused by ``vast cluster setup`` and
+``vast service upgrade``, since a Deployment beside it would put two of each behind one
+Service; ``vast cluster cleanup`` removes that pod, and setup then creates the Deployment.
 
 **Why they are not in the service pod.** ``robovast-service`` is a Deployment and every
 ``vast service upgrade`` rolls it, so a container living there is restarted by each

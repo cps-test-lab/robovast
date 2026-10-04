@@ -22,6 +22,13 @@ the Postgres campaign index (:mod:`.index_deploy`) -- and one ClusterIP Service 
 of it. Every provider deploys exactly this pod; what differs between providers is where its
 volumes come from, and that arrives as arguments.
 
+**A Deployment of one, so an evicted pod comes back.** Nothing recreates a bare Pod the
+kubelet evicted: it stays ``Failed`` while the Service in front of it has no endpoints and
+every push and pull gets a 503. The pod is therefore the template of a single-replica
+Deployment, which replaces it. Its strategy is ``Recreate``: the registry blobs and the
+Postgres data directory are single-writer volumes, so the old pod must be gone before the
+new one starts.
+
 **Why they are not in the service pod.** ``robovast-service`` is a Deployment, and every
 ``vast service upgrade`` rolls it: a container living there is restarted by each upgrade,
 including one that only bumps the controller image, and its volume follows the Deployment
@@ -48,12 +55,12 @@ on the node, and only that host works for both (see :mod:`.registry_deploy`). Th
 Ingress' ``/v2`` backend is this pod's Service.
 """
 
-#: The Pod every cluster config deploys, the ClusterIP Service in front of it, and the
-#: label the Service selects on. Spelled once, here, because three things must agree on
-#: it: the manifest that creates the pod, the DSN baked into the service's environment, and
+#: The Deployment every cluster config deploys, the ClusterIP Service in front of its pod,
+#: and the label the Service selects on. Spelled once, here, because three things must agree
+#: on it: the manifest that creates the pod, the DSN baked into the service's environment, and
 #: the Ingress rule routing ``/v2``. Two spellings would drift into a deployment that
 #: cannot find its own registry or index while every half looks correct on its own.
-STORE_POD_NAME = "robovast"
+STORE_DEPLOYMENT_NAME = "robovast"
 STORE_SERVICE_NAME = "robovast"
 STORE_POD_SELECTOR = {"role": "robovast"}
 
@@ -99,9 +106,10 @@ def attach_infrastructure(docs, namespace="default", index_storage_path="",
     """The ``robovast`` pod's manifest: the registry and the index, their claims, the Service.
 
     *docs* is what a caller already has of it, parsed -- ``[]`` for a fresh manifest, which
-    is what every provider passes. The containers are appended to the Pod named
-    :data:`STORE_POD_NAME` (created here when absent) and their ports to the Service of the
-    same name, so the registry Ingress and the index DSN name one host on every provider.
+    is what every provider passes. The containers are appended to the pod template of the
+    Deployment named :data:`STORE_DEPLOYMENT_NAME` (created here when absent) and their ports
+    to the Service of the same name, so the registry Ingress and the index DSN name one host
+    on every provider.
 
     Each volume is a claim where a class is given and a ``hostPath`` otherwise; an index
     hostPath left empty takes :data:`.data_paths.DEFAULT_INDEX_HOST_PATH`, the registry's
@@ -114,14 +122,19 @@ def attach_infrastructure(docs, namespace="default", index_storage_path="",
     from . import index_deploy, registry_deploy  # pylint: disable=import-outside-toplevel
 
     docs = [d for d in docs if d is not None]
-    pod = _find(docs, "Pod", STORE_POD_NAME)
-    if pod is None:
-        pod = {"apiVersion": "v1", "kind": "Pod",
-               "metadata": {"name": STORE_POD_NAME, "namespace": namespace,
-                            "labels": dict(STORE_POD_SELECTOR)},
-               "spec": {"containers": [], "volumes": []}}
-        docs.append(pod)
-    spec = pod.setdefault("spec", {})
+    deployment = _find(docs, "Deployment", STORE_DEPLOYMENT_NAME)
+    if deployment is None:
+        deployment = {
+            "apiVersion": "apps/v1", "kind": "Deployment",
+            "metadata": {"name": STORE_DEPLOYMENT_NAME, "namespace": namespace,
+                         "labels": dict(STORE_POD_SELECTOR)},
+            "spec": {"replicas": 1,
+                     "strategy": {"type": "Recreate"},
+                     "selector": {"matchLabels": dict(STORE_POD_SELECTOR)},
+                     "template": {"metadata": {"labels": dict(STORE_POD_SELECTOR)},
+                                  "spec": {"containers": [], "volumes": []}}}}
+        docs.append(deployment)
+    spec = store_pod_spec(docs)
     containers = spec.setdefault("containers", [])
     volumes = spec.setdefault("volumes", [])
     for container, volume in (
@@ -165,6 +178,46 @@ def attach_infrastructure(docs, namespace="default", index_storage_path="",
                                                           index_storage_size))
               if c]
     return claims + docs
+
+
+def store_pod_spec(docs):
+    """The pod spec in the Deployment of a manifest :func:`attach_infrastructure` built."""
+    deployment = _find(docs, "Deployment", STORE_DEPLOYMENT_NAME)
+    return deployment["spec"]["template"].setdefault("spec", {})
+
+
+def read_live_store(namespace):
+    """The live Deployment's pod template, or ``None`` when setup has not created it.
+
+    The template rather than a pod: what setup applied is the template, and a pod in the
+    middle of being replaced may not exist. It has the ``spec`` the checks here read.
+
+    Refuses a bare Pod named :data:`STORE_DEPLOYMENT_NAME`. It shares the Deployment's labels,
+    so a Deployment created beside it would put two registries and two Postgres servers behind
+    one Service, writing the same volumes.
+    """
+    from kubernetes import client  # pylint: disable=import-outside-toplevel
+
+    try:
+        deployment = client.AppsV1Api().read_namespaced_deployment(
+            STORE_DEPLOYMENT_NAME, namespace)
+        return deployment.spec.template
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            raise
+    try:
+        client.CoreV1Api().read_namespaced_pod(STORE_DEPLOYMENT_NAME, namespace)
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            return None
+        raise
+    raise RuntimeError(
+        f"namespace {namespace} runs the registry and the index in a bare pod named "
+        f"{STORE_DEPLOYMENT_NAME}, which nothing recreates once it is evicted. They run in a "
+        f"Deployment of that name, and creating it beside the pod would put two of each "
+        f"behind one Service. Run 'vast cluster cleanup' then 'vast cluster setup'. Built "
+        f"images are rebuilt on demand and the index is re-ingested from the campaigns on the "
+        f"results volume, which this does not touch.")
 
 
 def infrastructure_claims(namespace="default"):
@@ -241,28 +294,24 @@ def refuse_a_pod_on_the_wrong_node(namespace, node_labels):
     directories or the claims they were given, and a pod recreated on the same node finds
     them again; on another node the registry starts empty and the index is re-ingested
     from the results volume.
-    """
-    from kubernetes import client  # pylint: disable=import-outside-toplevel
 
-    if not node_labels:
+    Reads the live store through :func:`read_live_store` even without a placement, so a
+    bare pod is refused on every setup.
+    """
+    live = read_live_store(namespace)
+    if not node_labels or live is None:
         return
-    try:
-        pod = client.CoreV1Api().read_namespaced_pod(STORE_POD_NAME, namespace)
-    except client.exceptions.ApiException as e:
-        if e.status == 404:
-            return          # nothing live; the manifest will simply be created
-        raise
-    selector = pod.spec.node_selector or {}
+    selector = live.spec.node_selector or {}
     if all(selector.get(k) == v for k, v in node_labels.items()):
         return
     raise RuntimeError(
-        f"the {STORE_POD_NAME} pod (registry and index) is already running on node "
-        f"{pod.spec.node_name} and cannot be moved by re-applying its manifest -- an "
-        f"existing pod is kept as it is, so the new placement would be reported but never "
-        f"take effect. Delete it (`kubectl delete pod {STORE_POD_NAME} -n {namespace}`) or "
-        f"run `vast cluster cleanup` first. Built images are rebuilt on demand and the index "
-        f"is re-ingested from the campaigns on the results volume; the campaigns themselves "
-        f"are not in this pod.")
+        f"the {STORE_DEPLOYMENT_NAME} Deployment (registry and index) is already placed by "
+        f"node selector {selector} and cannot be moved by re-applying its manifest -- an "
+        f"existing Deployment is kept as it is, so the new placement would be reported but "
+        f"never take effect. Delete it (`kubectl delete deployment {STORE_DEPLOYMENT_NAME} "
+        f"-n {namespace}`) or run `vast cluster cleanup` first. Built images are rebuilt on "
+        f"demand and the index is re-ingested from the campaigns on the results volume; the "
+        f"campaigns themselves are not in this pod.")
 
 
 def registry_enforces_auth(pod) -> bool:

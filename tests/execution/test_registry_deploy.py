@@ -20,7 +20,7 @@ def _store_docs(namespace="default", **kwargs):
 
 
 def _pod(**kwargs):
-    return next(d for d in _store_docs(**kwargs) if d["kind"] == "Pod")["spec"]
+    return store_pod.store_pod_spec(_store_docs(**kwargs))
 
 
 def _registry_container(pod):
@@ -63,7 +63,7 @@ def test_the_registry_has_somewhere_durable_to_keep_blobs():
 
 def test_a_storage_class_switches_the_volume_to_a_pvc():
     docs = _store_docs(registry_storage_class="local-path")
-    pod = next(d for d in docs if d["kind"] == "Pod")["spec"]
+    pod = store_pod.store_pod_spec(docs)
     volume = next(v for v in pod["volumes"] if v["name"] == rd.REGISTRY_VOLUME_NAME)
     assert volume["persistentVolumeClaim"]["claimName"] == rd.REGISTRY_VOLUME_NAME
     assert "hostPath" not in volume
