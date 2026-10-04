@@ -24,6 +24,7 @@ toolkit that actually builds/submits Jobs lives in
 :mod:`.kubernetes_backend` (the in-cluster controller is the sole executor).
 """
 
+import hashlib
 import logging
 import re
 import signal as _signal
@@ -44,13 +45,24 @@ from .manifests import MAIN_CONTAINER_NAME
 logger = logging.getLogger(__name__)
 
 
-def _label_safe_campaign(campaign: str) -> str:
-    """Convert campaign to a valid Kubernetes label value.
+#: The digest :func:`_label_safe_campaign` ends a shortened value with, in hex characters.
+CAMPAIGN_DIGEST_LENGTH = 8
 
-    Label values must be 63 chars or less, alphanumeric, hyphens, periods.
+
+def _label_safe_campaign(campaign: str, limit: int = 63) -> str:
+    """Convert campaign to a valid Kubernetes label value of at most *limit* characters.
+
+    Label values must be 63 chars or less, alphanumeric, hyphens, periods. A longer value
+    keeps its head and ends in a digest of the whole of it: campaign ids differ in their
+    trailing timestamp, so a plain cut would give two runs of one experiment the same
+    label -- and the same Secret, whose token is scoped to only one of them.
     """
     s = campaign.lower().replace("_", "-")
-    return "".join(c for c in s if c.isalnum() or c in "-.")[:63]
+    s = "".join(c for c in s if c.isalnum() or c in "-.")
+    if len(s) <= limit:
+        return s
+    digest = hashlib.sha256(s.encode()).hexdigest()[:CAMPAIGN_DIGEST_LENGTH]
+    return f"{s[:limit - CAMPAIGN_DIGEST_LENGTH - 1].rstrip('-.')}-{digest}"
 
 
 def job_phase(job, pod_phases=None) -> str:
