@@ -207,9 +207,10 @@ _ACTIVE = {"active": 1}
 _SUCCEEDED = {"succeeded": 1}
 
 
-def _await(monkeypatch, *, probes, statuses, timeout=100_000):
+def _await(monkeypatch, *, probes, statuses, timeout=100_000, wedged=("",), cancelled=None):
     """Drive ``await_job`` on a fake clock that advances by each poll's sleep, with the
-    blocked probe answering from *probes* (the last repeated). Returns
+    blocked probe answering from *probes* and the wedge probe from *wedged* (the last of each
+    repeated); *cancelled* collects the Jobs deleted. Returns
     ``((ok, message), seconds_waited)``."""
     now = {"t": 1_000.0}
     monkeypatch.setattr(pj, "time", types.SimpleNamespace(time=lambda: now["t"]))
@@ -219,6 +220,12 @@ def _await(monkeypatch, *, probes, statuses, timeout=100_000):
     script = iter(probes)
     monkeypatch.setattr(pj, "_blocked_reason",
                         lambda *_a, **_kw: next(script, probes[-1]))
+    wedge = iter(wedged)
+    monkeypatch.setattr(pj, "_wedged_init_container",
+                        lambda *_a, **_kw: next(wedge, wedged[-1]))
+    monkeypatch.setattr(pj, "cancel_job", lambda _b, _ns, name: (cancelled
+                                                                  if cancelled is not None
+                                                                  else []).append(name))
     result = pj.await_job(object(), _JobStatusFeed(*statuses), "/nowhere", "ns", "job-x",
                           timeout=timeout)
     return result, now["t"] - 1_000.0
@@ -258,6 +265,58 @@ def test_a_pod_with_an_unpullable_image_is_reported_after_the_short_grace(monkey
     assert ok is False
     assert "cannot start" in message and "ImagePullBackOff: no such image" in message
     assert BLOCKED_GRACE_SECONDS <= waited < CONTENDED_GRACE_SECONDS
+
+
+def test_a_pod_stuck_behind_an_oom_killed_stage_is_failed_and_deleted(monkeypatch):
+    """The kubelet neither starts the next step nor fails the pod, so the Job reads active
+    until the deadline -- and a re-run adopts the same Job and waits on it again."""
+    from robovast.execution.cluster_execution.cluster_execution import BLOCKED_GRACE_SECONDS
+
+    cancelled = []
+    (ok, message), waited = _await(monkeypatch, probes=[("", False)], statuses=[_ACTIVE],
+                                   wedged=[pj.STAGE_CONTAINER], cancelled=cancelled)
+    assert ok is False
+    assert pj.STAGE_CONTAINER in message and "memory limit" in message
+    assert cancelled == ["job-x"]
+    assert BLOCKED_GRACE_SECONDS <= waited < 10 * BLOCKED_GRACE_SECONDS
+
+
+def test_an_oom_kill_the_kubelet_moves_past_is_not_a_verdict(monkeypatch):
+    """Seen once and gone: the pod went on to its next step, so the conversion carries on."""
+    cancelled = []
+    (ok, message), _waited = _await(
+        monkeypatch, probes=[("", False)], statuses=[_ACTIVE, _ACTIVE, _SUCCEEDED],
+        wedged=[pj.STAGE_CONTAINER, ""], cancelled=cancelled)
+    assert ok is True, message
+    assert cancelled == []
+
+
+def _pod_status(phase, *init):
+    return types.SimpleNamespace(status=types.SimpleNamespace(
+        phase=phase, init_container_statuses=[
+            types.SimpleNamespace(name=name, state=types.SimpleNamespace(
+                terminated=types.SimpleNamespace(reason=reason, exit_code=0)))
+            for name, reason in init]))
+
+
+class _Pods:
+    def __init__(self, *pods):
+        self.pods = list(pods)
+
+    def list_namespaced_pod(self, namespace, label_selector):
+        return types.SimpleNamespace(items=self.pods)
+
+
+def test_a_pending_pod_behind_an_oom_killed_init_step_is_named():
+    core = _Pods(_pod_status("Pending", (pj.STAGE_CONTAINER, "OOMKilled")))
+    assert pj._wedged_init_container(core, "ns", "job-x") == pj.STAGE_CONTAINER
+
+
+def test_a_cleanly_staged_or_running_pod_is_not_wedged():
+    assert pj._wedged_init_container(
+        _Pods(_pod_status("Pending", (pj.STAGE_CONTAINER, "Completed"))), "ns", "j") == ""
+    assert pj._wedged_init_container(
+        _Pods(_pod_status("Running", (pj.STAGE_CONTAINER, "OOMKilled"))), "ns", "j") == ""
 
 
 # -- one campaign, many conversions ------------------------------------------
