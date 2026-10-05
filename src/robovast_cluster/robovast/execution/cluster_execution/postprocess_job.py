@@ -249,15 +249,25 @@ def step_resources(cpu, memory, ephemeral: str = "") -> dict:
     }
 
 
+#: The stage step's memory, as reservation and ceiling. Fixed rather than sized from the
+#: campaign (see :func:`stage_resources`), but not tight: the memory cgroup also carries the
+#: kernel's buffers for the files being written, and a part of tens of gigabytes can take them
+#: past a few hundred MiB. A process killed there is retried by the fetch and the step still
+#: succeeds -- but the kubelet records the container as OOMKilled and does not start the next
+#: one (see :func:`_wedged_init_container`), so a kill costs the whole postprocess.
+STAGE_MEMORY = "2Gi"
+
+
 def stage_resources(stage_bytes=None) -> dict:
     """What the stage step gets for a campaign of *stage_bytes*.
 
     **cpu and memory are fixed, and a campaign's figure does not raise them** -- unlike the
     host step below. Staging is ``curl | tar``: the archive streams through a pipe and each
-    member is written as it arrives, so what it holds *in memory* is set by that construction
-    and not by the size of the campaign. The small memory bound is therefore a GUARD rather
-    than a reservation, and it runs nothing a ``.vast`` would know the appetite of better
-    than we do.
+    member is written as it arrives, so what its processes hold *in memory* is set by that
+    construction and not by the size of the campaign. The memory bound is therefore a GUARD
+    rather than a reservation for the campaign, with room for the write buffers the cgroup
+    is charged for (:data:`STAGE_MEMORY`), and it runs nothing a ``.vast`` would know the
+    appetite of better than we do.
 
     **Disk is the opposite, because that is where the streaming ends.** Every member lands on
     the node's filesystem and stays there for the pod's life, so the staged tree *is* the
@@ -266,7 +276,7 @@ def stage_resources(stage_bytes=None) -> dict:
     the figure is scheduled onto a node that cannot hold it and evicted partway through --
     losing the whole postprocessing, not the excess.
     """
-    return step_resources(2, "512Mi", ephemeral=stage_ephemeral_request(stage_bytes))
+    return step_resources(2, STAGE_MEMORY, ephemeral=stage_ephemeral_request(stage_bytes))
 
 
 #: The floor under the host step, which is where **everything the campaign declared that is
@@ -1512,6 +1522,33 @@ def pod_failure_reason(core, namespace: str, job_name: str) -> str:
     return ""
 
 
+def _wedged_init_container(core, namespace: str, job_name: str) -> str:
+    """The init container this Job's pod is stuck behind, or ``""``.
+
+    An init container the kernel OOM-killed a process in can still succeed -- the fetch
+    retries a killed ``curl`` and succeeds -- and the kubelet then records it ``OOMKilled``,
+    neither starts the next container nor fails the pod: it stays ``Pending`` with no event.
+    The Job reads ``active`` throughout, so without this the wait sees a conversion that
+    is merely slow until its deadline.
+
+    Advisory, like :func:`_blocked_reason`: a pod list that cannot be read yields ``""``.
+    """
+    try:
+        pods = core.list_namespaced_pod(namespace=namespace,
+                                        label_selector=f"job-name={job_name}").items or []
+        for pod in pods:
+            status = getattr(pod, "status", None)
+            if getattr(status, "phase", None) != "Pending":
+                continue
+            for cs in getattr(status, "init_container_statuses", None) or []:
+                term = getattr(getattr(cs, "state", None), "terminated", None)
+                if term is not None and getattr(term, "reason", None) == "OOMKilled":
+                    return getattr(cs, "name", None) or "?"
+    except Exception as e:  # noqa: BLE001 - advisory only
+        logger.debug("Could not read pods of %s: %s", job_name, e)
+    return ""
+
+
 def _blocked_reason(core, namespace: str, job_name: str) -> "tuple[str, bool]":
     """``("<reason>: <message>", contended)`` when this Job's pod cannot start right now,
     else ``("", False)``.
@@ -1932,6 +1969,7 @@ def await_job(core, batch, campaign_root, namespace: str, name: str,
     # minutes -- and the only way to watch one is a pod name nobody off-cluster has.
     next_live_log = 0.0
     blocked_since = None  # when the pod was first seen unable to start, while it still is
+    wedged_since = None  # when the pod was first seen stuck behind an OOM-killed init step
     while time.time() < deadline:
         if should_stop is not None and should_stop():
             return False, cancel_job(batch, namespace, name)
@@ -1996,6 +2034,24 @@ def await_job(core, batch, campaign_root, namespace: str, name: str,
                     f"node for it, or mounting what it needs -- not about postprocessing, "
                     f"which has not run. Nothing about the campaign's results is wrong; "
                     f"re-run postprocessing once the pod can start.")
+        # A pod stuck behind an OOM-killed init step is not reported by the Job either, and
+        # it never moves: deleted rather than left, because a part Job an earlier attempt
+        # left running is adopted by the next one, which would wait on this pod again.
+        wedged = _wedged_init_container(core, namespace, name)
+        if not wedged:
+            wedged_since = None
+        else:
+            if wedged_since is None:
+                wedged_since = time.time()
+            if time.time() - wedged_since >= BLOCKED_GRACE_SECONDS:
+                publish_live_log(core, campaign_root, namespace, name, prefix=log_prefix)
+                cancel_job(batch, namespace, name)
+                return False, (
+                    f"postprocessing job {name} stopped after its {wedged} step: the "
+                    f"kernel killed a process there for exceeding the step's memory limit, "
+                    f"and the kubelet does not start the next step after that, even when "
+                    f"the step succeeded. The Job is deleted so a re-run starts it afresh; "
+                    f"nothing about the campaign's runs is wrong.")
         sleep_unless_stopped(POLL_SECONDS, should_stop)
     # The deadline is this process's patience, not a verdict about the Job: nothing here
     # stops it, and a conversion measured in hours is still running when the wait gives
