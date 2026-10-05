@@ -51,7 +51,9 @@ ASK_PUSH=""
 ROS_DISTRO="jazzy"
 UBUNTU_MIRROR=""
 UBUNTU_SNAPSHOT_ARG=""
-ROQSIM_REF="main"
+# Empty: build.sh then builds the roqsim commit Dockerfile.roqsim pins. --roqsim-ref names
+# another ref for a one-off build.
+ROQSIM_REF=""
 # `latest` matches CI and the built-in family default. Pass --tag <stamp> to publish an
 # immutable set, which is how a deployment is pinned: ROBOVAST_PROJECT_TAG=<stamp>.
 TAG="latest"
