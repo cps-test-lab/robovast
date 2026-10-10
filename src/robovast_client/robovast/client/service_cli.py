@@ -246,7 +246,7 @@ def resources(namespace, context):
                f" {_gib(usage.memory_capacity_bytes)}")
     click.echo(f"  runs      {usage.jobs_running} running, {usage.jobs_pending} pending")
     # In GB, the unit the free-space reserve is stated in, so the two lines can be compared.
-    for label, space in (("disk", usage.disk), ("store", usage.store)):
+    for label, space in (("disk", usage.disk), ("results", usage.results)):
         if space is not None and space.capacity_bytes > 0:
             free = max(0, space.capacity_bytes - space.used_bytes)
             click.echo(f"  {label:<9} {free / 1000 ** 3:.0f} GB free of "
