@@ -4,18 +4,17 @@
 
 """The nav_search objective's margins are commensurable, unfloored, and ordered.
 
-Three properties, each of which a shipped version of this extractor violated, and each
-caught only by running a campaign rather than by reading the code:
+Three properties, none of which is visible from reading the code alone:
 
 1. **Divided by a scale, not a threshold.** A threshold answers *did it fail*; a scale
    answers *by how much*. With the 0.05 m contact threshold as denominator the clearance
-   margin carried 12x the sensitivity of the goal margin, so ``min()`` returned whichever
-   margin had the tightest denominator rather than whichever failure was nearest -- the
-   clearance term decided 31 of 48 cells on a real Halton search.
-2. **No floor.** Clamping at -1 put 32 of those 48 cells on one value while their
-   underlying clearances still ranged over 16%, which is a worse cliff than the
-   ``failure_rate`` this objective exists to replace.
-3. **A collision corrects the input, not the score.** Forcing -1 on contact put a verdict
+   margin would carry an order of magnitude more sensitivity than the goal margin, so
+   ``min()`` would return whichever margin had the tightest denominator rather than
+   whichever failure was nearest.
+2. **No floor.** Clamping at -1 puts every cell past the clamp on one value whatever its
+   underlying clearance, which is a worse cliff than the ``failure_rate`` this objective
+   exists to replace.
+3. **A collision corrects the input, not the score.** Forcing -1 on contact puts a verdict
    inside a margin -- the very thing being replaced.
 """
 
@@ -86,12 +85,12 @@ def test_a_metre_of_clearance_and_a_metre_of_goal_error_weigh_comparably(tmp_pat
 
 
 def test_the_time_margin_is_a_fraction_of_the_timeout(tmp_path):
-    """The one margin that was always scale-divided, and the one that never plateaued.
+    """The time margin is a fraction of the timeout, and does not plateau.
 
-    Tested where it BINDS, which is the lesson from getting this wrong: the goal margin is
+    Tested where it BINDS, because elsewhere it cannot be seen: the goal margin is
     ceilinged at ``arrival_radius / path_scale`` = 0.12, because a run cannot end better
     than at the goal. So a comfortable run is always scored by its goal margin, and asking
-    for a time margin of 0.5 asked for something ``min()`` can never return.
+    for a time margin of 0.5 asks for something ``min()`` can never return.
 
     That ceiling is not a defect -- it is the goal criterion honestly being the tightest
     constraint here: 0.6 m of slack out of a 5 m traverse really is 12%. And it does not
@@ -158,8 +157,8 @@ def test_contact_with_a_positive_sampled_clearance_still_fails(tmp_path):
 
 
 def test_contact_does_not_flatten_runs_onto_one_value(tmp_path):
-    """Scored on the outcome alone, 26 colliding cells share exactly -1.0 while their
-    clearances differ by 16%. Correcting the input instead of the score keeps them apart."""
+    """Scored on the outcome alone, colliding cells would share exactly -1.0 while their
+    clearances differ. Correcting the input instead of the score keeps them apart."""
     shallow = _score(tmp_path, "shallow", clearance=-0.01, duration=30.0, to_goal=0.0,
                      collided=True)
     deep = _score(tmp_path, "deepc", clearance=-0.09, duration=30.0, to_goal=0.0,

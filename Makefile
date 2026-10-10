@@ -54,23 +54,23 @@ venv/.robovast_installed: Makefile pyproject.toml src/robovast_nav/pyproject.tom
 	@echo "Setting up RoboVAST environment..."
 	# The sibling packages are installed explicitly, not via extras: they are path
 	# dependencies, and `pip install -e .[roqsim]` would take them from the index.
-	# roqsim was missing here, so every fresh venv lacked the `roqsim` simulator entry
-	# point and ~25 tests failed on "Unknown robovast.simulators plugin" -- a broken
-	# environment that looked like broken code.
+	# Without robovast-sim-roqsim a fresh venv lacks the `roqsim` simulator entry point and
+	# the tests that compose a campaign fail on "Unknown robovast.simulators plugin" -- a
+	# broken environment that looks like broken code.
 	# robovast-cluster is a distribution, not an extra: `pip install -e .` yields a core
 	# with no service implementation at all, so `vast cluster` disappears and the cluster tests
-	# fail on a missing plugin -- the same shape as the roqsim miss above.
+	# fail on a missing plugin -- the same shape as a missing roqsim above.
 	# robovast-client goes LAST, and that ordering is load-bearing. It is a non-optional
 	# path dependency of robovast, so `pip install -e .` resolves it and installs a plain
 	# *copy* into site-packages -- silently replacing an editable install done earlier.
-	# The result is a developer editing src/robovast_client and seeing no effect, with
-	# nothing said. Installing it after everything that depends on it is what makes the
+	# The result would be a developer editing src/robovast_client and seeing no effect,
+	# with nothing said. Installing it after everything that depends on it is what makes the
 	# editable install the one that survives.
 	# `notebooks` is named even though the `test` extra happens to carry the same five
 	# packages: a dev venv runs `vast serve`, and the Explorer's notebook endpoint is
-	# 503 without that toolchain. Depending on the test extra for it meant the service's
-	# capability rode on why the *suite* needs nbformat -- a coincidence, and one that
-	# reads like an accident the moment either list is edited.
+	# 503 without that toolchain. Depending on the test extra for it would make the
+	# service's capability ride on why the *suite* needs nbformat -- a coincidence, and one
+	# that reads like an accident the moment either list is edited.
 	. venv/bin/activate && pip install -e .[docs,test,notebooks] \
 		&& pip install -e src/robovast_nav \
 		&& pip install -e src/robovast_sim_roqsim \

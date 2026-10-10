@@ -293,10 +293,10 @@ figure a GPU campaign cannot currently produce.
 implementation was rejected rather than shipped.
 
 **What is cheaply available, and why it does not answer the question.**
-``nvidia-smi --query-gpu=memory.used,utilization.gpu`` is one 26 ms call and would slot into
+``nvidia-smi --query-gpu=memory.used,utilization.gpu`` is one fast call and would slot into
 the existing sampler without difficulty. But both figures are whole-*device*: under
 time-slicing a single card carries up to ``--gpu-replicas`` tenants plus whatever else the
-node runs (a desktop session accounted for 337 MiB on ``node-02``). A row would be
+node runs (a desktop session on the node, for one). A row would be
 attributed per job — the sampler runs in the job's container, so ``config_name``, ``run_id``
 and ``container`` all come out right — while its *value* described the whole card. That
 answers "was the GPU saturated while my run went", not "what my run cost", and a row read in
@@ -332,9 +332,8 @@ to ``(config_name, run_id)`` has to be designed too.
 
 Until then, the honest substitute is a **calibration campaign at** ``--gpu-replicas 1``: with
 one tenant the device figure *is* the per-job figure, measured once and reused, while real
-sweeps run time-sliced. Per-context memory has already been measured this way
-(:ref:`cluster-gpu`): 93 MiB for one 640×480 offscreen context, ~77 MiB marginal by the
-sixteenth.
+sweeps run time-sliced. :ref:`cluster-gpu` describes what per-context memory looks like
+measured this way.
 
 **Design work already done, worth keeping when this is finalised.**
 
@@ -367,4 +366,4 @@ sixteenth.
   ``[Not Supported]`` for unsupported fields on some cards.
 * **If a device figure is ever recorded anyway**, record the concurrent GPU process count with
   it. Counting the device's processes needs no PID matching, and it is what turns an
-  uninterpretable "1574 MiB" into "1574 MiB shared by sixteen renderers".
+  uninterpretable device total into that total shared by N renderers.
