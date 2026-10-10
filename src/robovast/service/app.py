@@ -2116,7 +2116,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     # catch-all mount. Cluster-transparent: dispatch resolves the campaign dir via
     # ``impl.campaign_dir``, which is the campaign itself.
     from robovast.service.endpoint_plugin import (  # pylint: disable=import-outside-toplevel
-        RunDataContext, load_service_endpoints)
+        RunDataContext, core_campaign_segments, load_service_endpoints)
 
     def _make_endpoint_route(endpoint):
         def route(campaign_id: str, request: Request):
@@ -2127,7 +2127,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             return _guard(lambda: endpoint.handle(ctx))
         return route
 
-    for _name, _endpoint in load_service_endpoints().items():
+    for _name, _endpoint in load_service_endpoints(core_campaign_segments(app.routes)).items():
         # ``_name`` may contain '/' (namespacing, e.g. "nav/costmap") → a nested path.
         app.add_api_route(
             f"/campaigns/{{campaign_id}}/{_name}",

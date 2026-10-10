@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 
 from robovast.results_processing.data_query import DataQueryError
 from robovast.service.app import build_app
-from robovast.service.endpoint_plugin import (RESERVED_CAMPAIGN_ENDPOINTS, RunDataContext,
+from robovast.service.endpoint_plugin import (RunDataContext, core_campaign_segments,
                                               load_service_endpoints)
 from tests.service.null_service import NullService
 from tests.robovast_data.conftest import nav_campaign, write_store
@@ -28,7 +28,7 @@ from tests.robovast_data.conftest import nav_campaign, write_store
 # -- loader ----------------------------------------------------------------
 
 def test_loader_includes_relocated_costmap():
-    eps = load_service_endpoints()
+    eps = load_service_endpoints(frozenset())
     assert "costmap" in eps
     assert type(eps["costmap"]).__name__ == "CostmapEndpoint"
 
@@ -58,9 +58,41 @@ def test_loader_skips_reserved_and_duplicate(monkeypatch):
     monkeypatch.setattr(
         "robovast.service.endpoint_plugin.entry_points",
         lambda group: [_EP("good", _Good), _EP("reserved", _Reserved), _EP("dup", _Dup)])
-    eps = load_service_endpoints()
+    eps = load_service_endpoints(frozenset({"panels"}))
     assert set(eps) == {"pkg/foo"}
-    assert "panels" in RESERVED_CAMPAIGN_ENDPOINTS
+
+
+def _plugin(name):
+    class _Endpoint:
+        def handle(self, ctx):
+            del ctx
+            return {"plugin": True}
+    _Endpoint.name = name
+    return _Endpoint
+
+
+def test_a_plugin_named_after_any_core_campaign_route_is_skipped(tmp_path, monkeypatch):
+    """Every segment a core route owns is reserved, not only the ones somebody listed: a
+    plugin registered under one would sit behind the core route and never answer."""
+    class _EP:
+        def __init__(self, name):
+            self.name, self.value, self._obj = name, f"mod:{name}", _plugin(name)
+
+        def load(self):
+            return self._obj
+
+    monkeypatch.setattr("robovast.service.endpoint_plugin.entry_points",
+                        lambda group: [_EP("logs"), _EP("jobs/extra"), _EP("pkg/fresh")])
+    app = build_app(_null_service(tmp_path))
+    plugin_paths = {r.path for r in app.routes
+                    if "plugin-endpoints" in (getattr(r, "tags", None) or [])}
+    assert plugin_paths == {"/campaigns/{campaign_id}/pkg/fresh"}
+
+
+def test_the_reserved_segments_are_the_core_routes(tmp_path):
+    segments = core_campaign_segments(build_app(_null_service(tmp_path)).routes)
+    assert {"status", "logs", "jobs", "scene", "scene_assets", "panels"} <= segments
+    assert "costmap" in segments, "the installed plugin's own route is registered too"
 
 
 # -- RunDataContext facade -------------------------------------------------
