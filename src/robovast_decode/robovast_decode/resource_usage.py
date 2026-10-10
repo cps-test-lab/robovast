@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import csv
 import os
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 from . import run_slices
@@ -94,31 +94,6 @@ class ScanStats:
     unexpected: List[str] = field(default_factory=list)
     unreadable: List[str] = field(default_factory=list)
 
-    #: Counted per RUN by the caller: one job's ticks are split between the runs it served,
-    #: so the campaign total is a sum over runs and must not also take the job's.
-    _PER_RUN_FIELDS = ("rows",)
-
-    def add_job(self, other: "ScanStats") -> None:
-        """Fold one job's stats into these campaign totals.
-
-        Driven by the dataclass fields rather than a written-out list, so a counter added to
-        the class later cannot be silently dropped from the summary -- the same guard, and
-        for the same reason, as ``run_log.MergeStats.add_job``.
-        """
-        for spec in fields(self):
-            if spec.name in self._PER_RUN_FIELDS:
-                continue
-            mine, theirs = getattr(self, spec.name), getattr(other, spec.name)
-            if isinstance(mine, list):
-                for item in theirs:
-                    if item not in mine:
-                        mine.append(item)
-            else:
-                setattr(self, spec.name, mine + theirs)
-
-    def summary(self) -> str:
-        return (f"{self.rows} rows across {len(self.containers)} container(s) "
-                f"({self.samples} samples in {self.ticks} tick(s) from {self.files} file(s))")
 
 
 class Sample(NamedTuple):
@@ -343,26 +318,6 @@ def rows_for_slice(ticks: Sequence[Tick], slice_: run_slices.RunSlice) -> List[d
                 "shm_total_bytes": tick.shm_total_bytes,
             })
     return rows
-
-
-def peak_shm(ticks: Sequence[Tick]) -> Tuple[Optional[int], Optional[int]]:
-    """``(peak used, limit in force)`` for one run, or ``(None, None)`` if unmeasured.
-
-    The run's high-water mark, which is the figure ``execution.shm_size`` has to cover. Taken
-    over every tick of its job and **not** filtered to the trial window: a participant
-    allocates its shared-memory segments as it starts up, and a SIGBUS during bring-up loses
-    the run just as completely as one mid-trial.
-
-    Containers are pooled rather than compared. They all mount the same tmpfs, so their
-    figures agree by construction; MAX over them is that one series, and a per-container
-    breakdown would only invite the reader to explain a difference that cannot exist.
-    """
-    used: Optional[int] = None
-    total: Optional[int] = None
-    for tick in ticks:
-        used = _max_opt(used, tick.shm_used_bytes)
-        total = _max_opt(total, tick.shm_total_bytes)
-    return used, total
 
 
 def expected_container_files(containers: Optional[Sequence[str]]) -> Optional[Dict[str, str]]:

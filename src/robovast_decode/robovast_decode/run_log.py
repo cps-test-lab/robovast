@@ -49,7 +49,7 @@ Timestamps are wall throughout -- sim time is added from a
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import log_summary, run_slices
@@ -152,34 +152,6 @@ class MergeStats:
     rows: int = 0
     containers: List[str] = field(default_factory=list)
 
-    #: Counted per RUN by the caller, from the rows it keeps — so it is the one field
-    #: :meth:`add_job` must not take from a job's stats.
-    _PER_RUN_FIELDS = ("rows",)
-
-    def add_job(self, other: "MergeStats") -> None:
-        """Fold one job's stats into these campaign totals.
-
-        Driven by the dataclass fields rather than a written-out list of additions, because
-        such a list drops a counter added to the class later without saying so — and the
-        summary then reports zero however much the merge did, which is the exact opposite of
-        what these counters exist for.
-        """
-        for spec in fields(self):
-            if spec.name in self._PER_RUN_FIELDS:
-                continue
-            if spec.name == "containers":
-                for name in other.containers:
-                    if name not in self.containers:
-                        self.containers.append(name)
-            else:
-                setattr(self, spec.name, getattr(self, spec.name) + getattr(other, spec.name))
-
-    def summary(self) -> str:
-        return (f"{self.rows} rows "
-                f"({self.rosout_records} rosout, {self.stdout_records} stdout from "
-                f"{self.stdout_lines} lines, {self.matched} matched, "
-                f"{self.node_attributed} by node) "
-                f"across {len(self.containers)} container(s)")
 
 
 def container_of(filename: str) -> Optional[str]:
