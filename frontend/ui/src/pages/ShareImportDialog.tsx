@@ -7,13 +7,11 @@
 // band. The listing is one request per page, shared with the cards through its react-query
 // key, and the share answers for itself.
 //
-// This was a panel under the campaign list, which put it off the bottom of the page on any
-// deployment with a long list — collapsed, at that. A dialog off the import menu is reachable
-// in one click however long the list is, and it can afford a search box, which a share
-// holding hundreds of archives needs.
+// A dialog off the import menu rather than a panel under the campaign list: it is reachable in
+// one click however long the list is, and it can afford a search box, which a share holding
+// hundreds of archives needs.
 //
-// Everything IS listed, including campaigns already here, which the panel filtered out. That
-// is for the deep link's sake: somebody handed a link to a campaign they already have must
+// Everything IS listed, including campaigns already here. That is for the deep link's sake: somebody handed a link to a campaign they already have must
 // be told so, not shown an empty dialog.
 
 import { useMemo, useState } from 'react'
@@ -246,8 +244,8 @@ function Row({
 /** Copy the deep link that opens this dialog on this campaign.
  *
  *  A copy button that looks identical before and after is one people press twice, so the press
- *  is acknowledged — through the app-wide toast (useToasts), which is why this no longer runs a
- *  timer of its own. The toast is drawn above the dialog on purpose; see ToastProvider. */
+ *  is acknowledged — through the app-wide toast (useToasts), so this keeps no timer of its
+ *  own. The toast is drawn above the dialog on purpose; see ToastProvider. */
 function CopyLinkButton({ campaignId }: { campaignId: string }) {
   const { notify } = useToasts()
   return (

@@ -16,15 +16,13 @@ import { useToasts } from './ToastProvider'
 
 // The campaign list, streamed once for the whole app.
 //
-// This lived inside Monitor until it needed a second reader. Monitor is wrapped in `KeepAlive`
-// and is only mounted once its page has been *visited*, so a deep link straight to `#/results`
-// left the stream unopened -- fine while the list was the only thing that wanted it, and wrong
-// the moment anything app-wide (a notification, a badge) depends on campaigns changing. Hoisting
-// it to a provider makes it independent of which page is on screen while still opening exactly
-// one EventSource: the hook below runs once, in the provider, and readers take its value from
-// context.
+// A provider rather than part of Monitor: Monitor is wrapped in `KeepAlive` and is only mounted
+// once its page has been *visited*, so a deep link straight to `#/results` would leave the stream
+// unopened, and things app-wide (the lifecycle notices) depend on campaigns changing. Here it is
+// independent of which page is on screen while still opening exactly one EventSource: the hook
+// below runs once, in the provider, and readers take its value from context.
 //
-// The stream itself is unchanged. The server pushes the full list on connect and on every change
+// The server pushes the full list on connect and on every change
 // (a server-side loop over list_campaigns), so this is the single source for the list -- no
 // polling. useLiveStream owns the recovery: a dropped connection, a stream the browser gave up
 // on, and a socket that died silently while the tab was in the background all end in a fresh
@@ -109,8 +107,8 @@ function useCampaignLifecycleNotices(data: ListCampaignsResponse | null) {
         // is what `hasResults` answers: the end of a campaign is reached before postprocessing,
         // and one without it never grows the data these views read. Deliberately not also gated
         // on `kind === 'finished'` -- a STOPPED campaign's ending event carries kind 'stopped',
-        // and its completed batches are postprocessed like any other's, so that clause withheld
-        // the link from exactly the campaign whose partial results someone wanted.
+        // and its completed batches are postprocessed like any other's, so such a gate would
+        // withhold the link from exactly the campaign whose partial results someone wants.
         //
         // A failure gets somewhere to go instead. The notice states the first line of the
         // reason and then clears itself, so the card -- which has the whole of it, and the
