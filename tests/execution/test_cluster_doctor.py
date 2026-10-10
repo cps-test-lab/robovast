@@ -49,6 +49,8 @@ def _node(cpu, memory):
     pytest.param("8", "32Gi", True, id="comfortable"),
     pytest.param("2", "4Gi", True, id="small-but-usable"),
     pytest.param("8000m", "32Gi", True, id="millicores"),
+    pytest.param("15500m", "64G", True, id="decimal-memory-unit"),
+    pytest.param("8", "65536000k", True, id="kilobyte-memory-unit"),
     pytest.param("0", "0", False, id="schedules-nothing"),
 ])
 def test_capacity_fails_only_on_a_cluster_that_can_run_nothing(monkeypatch, cpu, memory, ok):
@@ -79,6 +81,19 @@ def test_capacity_reports_the_largest_node_not_the_total(monkeypatch):
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: core)
 
     assert "largest node: 4.0 CPU" in doctor._check_capacity().detail
+
+
+def test_a_node_advertising_no_allocatable_reads_as_nothing(monkeypatch):
+    """A node with no ``allocatable`` yet (still joining) is a node holding nothing, not a
+    crash of the command that is meant to diagnose it."""
+    core = mock.Mock()
+    core.list_node.return_value = SimpleNamespace(
+        items=[SimpleNamespace(status=SimpleNamespace(allocatable=None)), _node("4", "8Gi")])
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: core)
+
+    check = doctor._check_capacity()
+    assert check.ok
+    assert "largest node: 4.0 CPU, 8.0 GiB" in check.detail
 
 
 def test_a_namespaced_kubeconfig_is_reported_before_setup_dies_on_it(monkeypatch):
