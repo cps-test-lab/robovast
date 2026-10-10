@@ -1,13 +1,6 @@
 build/
-# `poetry build` output at the repo root. Not ignored until now, so a build left a
-# multi-megabyte untracked wheel in the tree, one `git add -A` away from being committed.
-# Deliberately NOT `src/*/dist/`: src/robovast_nav/dist/ holds wheels that are *tracked*
-# (robovast_nav 1.0.0, committed at some point and now stale), and a rule claiming to
-# ignore tracked files misleads without changing anything.
+# `poetry build` output: the root distribution's, and each sibling distribution's.
 /dist/
-# The sibling distributions' build output. `src/robovast_nav/dist/` once held *tracked*
-# wheels (robovast_nav 1.0.0, committed in an early cluster commit and stale ever since
-# against the package's 2.0.0); they are gone, so the glob is honest now.
 src/*/dist/
 install/
 log/

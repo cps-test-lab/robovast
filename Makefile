@@ -53,13 +53,12 @@ venv/.robovast_installed: Makefile pyproject.toml src/robovast_nav/pyproject.tom
 	
 	@echo "Setting up RoboVAST environment..."
 	# The sibling packages are installed explicitly, not via extras: they are path
-	# dependencies, and `pip install -e .[roqsim]` would take them from the index.
-	# roqsim was missing here, so every fresh venv lacked the `roqsim` simulator entry
-	# point and ~25 tests failed on "Unknown robovast.simulators plugin" -- a broken
-	# environment that looked like broken code.
+	# dependencies, and `pip install -e .[roqsim]` would take them from the index. Without
+	# robovast-sim-roqsim the venv has no `roqsim` simulator entry point, and the tests that
+	# name the backend fail on an unknown plugin rather than on the code.
 	# robovast-cluster is a distribution, not an extra: `pip install -e .` yields a core
 	# with no service implementation at all, so `vast cluster` disappears and the cluster tests
-	# fail on a missing plugin -- the same shape as the roqsim miss above.
+	# fail on a missing plugin.
 	# robovast-client goes LAST, and that ordering is load-bearing. It is a non-optional
 	# path dependency of robovast, so `pip install -e .` resolves it and installs a plain
 	# *copy* into site-packages -- silently replacing an editable install done earlier.
@@ -306,8 +305,7 @@ publish-client-test-venv:
 	python3 -m venv /tmp/robovast-client-test-venv
 # --no-cache-dir because pip caches the index page: without it, a rehearsal minutes after
 # its own upload resolves to the version cached BEFORE it and tests a wheel nobody just
-# built. That is not hypothetical -- it is how this target once reported a missing verb
-# against a stale release while the fresh one sat on the index unread.
+# built.
 	/tmp/robovast-client-test-venv/bin/pip install \
 		--no-cache-dir \
 		--index-url https://test.pypi.org/simple/ \
@@ -315,9 +313,9 @@ publish-client-test-venv:
 		robovast-client
 	@echo "The surface is the client's, and nothing else..."
 # The VERB LIST, not the help text. Grepping the whole `--help` for "^  <verb>" reads the
-# prose too, so an absence check for `config` once matched a documentation paragraph and
-# failed a perfectly good install. Only the `Commands:` section is a list of verbs, and
-# only its first column is a verb name -- so extract that and compare whole lines.
+# prose too, so an absence check for `config` can match a documentation paragraph and fail
+# a good install. Only the `Commands:` section is a list of verbs, and only its first column
+# is a verb name -- so extract that and compare whole lines.
 	@/tmp/robovast-client-test-venv/bin/vast --help > /tmp/robovast-client-help.txt
 	@awk '/^Commands:/{f=1;next} f && /^  [^ ]/{print $$1}' \
 		/tmp/robovast-client-help.txt | sort -u > /tmp/robovast-client-verbs.txt
@@ -326,8 +324,7 @@ publish-client-test-venv:
 			echo "❌ '$$verb' missing from vast --help"; exit 1; fi; \
 	done
 # `if`, not `grep && { exit 1; }`. The latter returns GREP's status, so an absence loop
-# whose last verb is correctly absent exits 1 and fails the target on the passing path --
-# which is why this check had never once run green.
+# whose last verb is correctly absent exits 1 and fails the target on the passing path.
 #
 # `wait`, `service-log` and `exec` are absent because they MOVED, not because they need the
 # core: `campaign wait`, `service log`, `container exec`. Asserting their absence is what
