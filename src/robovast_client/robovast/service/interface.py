@@ -21,21 +21,17 @@ pydantic request/response models. Three bindings mirror this contract 1:1:
 
 * the **service** HTTP endpoints (:mod:`robovast.service.app`) call an
   implementation of :class:`RobovastInterface`;
-* the **client** (:class:`robovast.service.client.RobovastClient`) implements it
-  over a transport (HTTP to the service, or in process inside it);
-* the **MCP tools** and **``vast`` CLI commands** are thin wrappers over the
-  client.
+* the **HTTP transport** (:class:`robovast.service.http_client.HTTPTransport`, built by
+  :func:`~robovast.service.http_client.RobovastClient`) implements it by calling those
+  endpoints;
+* the **MCP tools** and **``vast`` CLI commands** are thin wrappers over an
+  implementation.
 
-Campaign **status** reuses :class:`robovast.client.status.Status`
-verbatim — the same model the per-campaign controller already serves over its
-``/status`` channel and the ``vast ... monitor`` command already consumes — so
-the persistent service is a superset of the existing control channel, not a new
-vocabulary.
+Campaign **status** is :class:`robovast.client.status.Status`, the model the campaign
+controller writes, served with its stall verdict as :class:`~robovast.client.status.StatusResponse`.
 
-This module is intentionally dependency-light (only ``pydantic`` + the existing
-``Status`` model) so it imports cleanly in any binding. Phase 0 defines the
-campaign-lifecycle + version operations; workspace, postprocessing, and data
-operations extend :class:`RobovastInterface` in later phases.
+This module is intentionally dependency-light (``pydantic`` and the client's own models)
+so it imports cleanly in any binding, a client-only install included.
 """
 
 from abc import ABC, abstractmethod
@@ -46,9 +42,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from robovast.client import file_address
-# Reused verbatim — the controller's live status model. (The old ``Command`` /
-# ``CommandResult`` RPC envelopes are gone: the controller runs in-process now, so
-# ``stop`` is a direct call rather than an HTTP command to a controller pod.)
+# Reused verbatim: the controller's live status model and the config view's geometry.
 from robovast.client.scene_markers import ConfigViewContribution, SceneMarker  # noqa: F401  # pylint: disable=unused-import
 from robovast.client.status import (Phase, Status, StatusResponse, StepProgress,  # noqa: F401  # pylint: disable=unused-import
                                     status_response)
@@ -2405,9 +2399,8 @@ class CampaignPanelsResponse(BaseModel):
     transport_only: bool = False
 
 
-# NOTE: the costmap frame endpoint (``CostmapFrame`` model + ``get_costmap_frame`` +
-# ``Routes.campaign_costmap``) moved out of core: it is now a package-provided service
-# endpoint shipped by ``robovast_nav`` (``robovast.service_endpoints`` group). See
+# The costmap frame endpoint is not on this interface: ``robovast_nav`` ships it as a
+# package-provided service endpoint (``robovast.service_endpoints`` group). See
 # ``robovast.service.endpoint_plugin`` for the generic mechanism.
 
 
@@ -2606,7 +2599,7 @@ def campaign_archive_query(raw: bool) -> dict:
 
 class Routes:
     """Canonical HTTP paths — shared by the service app and the HTTP client so
-    the two bindings cannot drift. Phase 0 (campaign lifecycle + version)."""
+    the two bindings cannot drift."""
 
     VERSION = "/version"
     HEALTHZ = "/healthz"
@@ -3059,7 +3052,7 @@ class Routes:
 
 
 class RobovastInterface(ABC):
-    """The full RoboVAST operation surface (Phase 0 subset defined here).
+    """The full RoboVAST operation surface.
 
     Implemented by the server core and by the client transports; both satisfy
     the identical contract so callers are transport-agnostic.
@@ -3428,8 +3421,8 @@ class RobovastInterface(ABC):
                 -- the concrete name is the implementation's to choose. Spelled literally rather
                 than imported from ``robovast.common.config``: this package deliberately does
                 not depend on the core (see ``test_client_needs_no_core``).
-            source: Which surface asked, for the ledger. Not an identity: the service is
-                unauthenticated.
+            source: Which surface asked, for the ledger. Not an identity: who asked is
+                the request's authenticated principal.
 
         Not abstract, for the reason :meth:`get_job_state` is not: a transport that cannot do this
         inherits a refusal rather than being made to write one.
@@ -3527,8 +3520,8 @@ class RobovastInterface(ABC):
                 on the cluster.
             reason: The operator's optional explanation, stored with the record.
             source: Which surface asked — ``"webui"``, ``"mcp"``, ``"cli"``. Recorded for
-                the audit trail; not a user identity, since the service is
-                unauthenticated.
+                the audit trail; not a user identity, which is the request's
+                authenticated principal.
 
         Raises:
             KeyError: No such campaign, or no such job in it.
@@ -3940,7 +3933,7 @@ class RobovastInterface(ABC):
 
         Wraps ``config_validation.validate_project_file``. ``path`` selects which
         ``.vast`` (workspace-relative); empty picks the sole ``.vast`` (error if
-        there are several — pass ``path``). Empty ``workspace_id`` → the CWD project.
+        there are several — pass ``path``). An empty ``workspace_id`` raises ``ValueError``.
         Returns every problem at once (schema, scenario file, plugin refs) + counts.
 
         Two checks run a container, and each catches a failure that is otherwise
