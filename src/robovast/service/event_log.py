@@ -84,6 +84,10 @@ _PRUNE_EVERY = 200
 EVENTS_FILENAME = "events.db"
 
 
+class EventLogUnreadable(Exception):
+    """The log could not be read: a failed lookup, which an empty record must never stand for."""
+
+
 @dataclass(frozen=True)
 class Event:
     """One thing that happened, as recorded.
@@ -105,7 +109,12 @@ class Event:
 
 
 class EventLog:
-    """Append-only, durable, bounded. Never raises at the caller."""
+    """Append-only, durable, bounded.
+
+    Appending never raises at the caller: a record of work must not fail the work. Reading
+    does, with :class:`EventLogUnreadable`, because a reader shown an empty record would take
+    a broken log for a quiet service.
+    """
 
     def __init__(self, path):
         self.path = Path(path)
@@ -191,14 +200,15 @@ class EventLog:
         with self._lock:
             conn = self._connect()
             if conn is None:
-                return []
+                raise EventLogUnreadable(
+                    "the event log could not be opened; the service log names the reason")
             try:
                 rows = conn.execute(
                     "SELECT seq, at, kind, severity, actor, subject_type, subject_id, message, "
                     "payload FROM event " + where, params).fetchall()
-            except sqlite3.Error:
+            except sqlite3.Error as e:
                 logger.warning("could not read the event log", exc_info=True)
-                return []
+                raise EventLogUnreadable(f"the event log could not be read: {e}") from e
         out = []
         for row in rows:
             try:

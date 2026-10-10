@@ -61,4 +61,13 @@ describe('fetchPanelEvents', () => {
     expect(query.get('limit')).toBe('50')
     expect(query.has('since')).toBe(false)
   })
+
+  it('rejects with the service\'s sentence when the log cannot be read', async () => {
+    // The panel shows a rejection as an error; an empty page would read "Nothing recorded yet"
+    // over a log that could not be read at all.
+    const detail = 'the event log could not be read: no such table: event'
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ detail }), { status: 503 })))
+    await expect(fetchPanelEvents(50)).rejects.toMatchObject({ status: 503, message: detail })
+  })
 })

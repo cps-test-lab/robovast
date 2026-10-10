@@ -72,6 +72,9 @@ export interface paths {
          *     cursor resumes from it. The two are exclusive, so a request naming both is refused
          *     rather than having one of them ignored.
          *
+         *     A log that cannot be read answers 503, never an empty page: an empty record says
+         *     nothing happened, which a broken log cannot know.
+         *
          *     Its own cursor-keyed route rather than a field on a polled payload, per the tiers in
          *     ``docs/http_api.rst``: this grows, and the campaign list is re-sent once a second for
          *     as long as any tab is open.
