@@ -698,11 +698,18 @@ their results there as they ran — and ``vast campaign download`` (or
    # -> ./campaign-2025-06-01-120000.tar.gz
 
 That is the whole command. It fetches the campaign as this service holds it —
-postprocessing and all — writes one ``.tar.gz``, and stops: nothing is extracted, no
+postprocessing and its built tables included, so ``robovast-data`` or a notebook opens it
+without building anything — writes one ``.tar.gz``, and stops: nothing is extracted, no
 results directory is written into, and no state is kept about what you already have.
 The stream is end-to-end, so a ~1TB campaign is never buffered on the service or in
 memory. What you do with the archive afterwards is yours; to put it back into a
 service, ``vast campaign import <archive>``.
+
+``--raw`` fetches the records alone, as ``<campaign-id>.raw.tar.gz``: no tables and
+nothing postprocessing recorded producing (its provenance record, the metadata, each
+output its steps reported), so an import postprocesses it afresh. The MCP's
+``get_campaign_download(raw=True)`` and the web UI's **Download records only (raw)** are
+the same archive.
 
 The share's raw, pre-postprocessing copy is a different system, reached through
 ``vast share`` (see :ref:`cluster-sharing`). To push a copy there, either enable it
@@ -1703,6 +1710,13 @@ How the figure is found:
   job artifacts, and what a sidecar writes per run (a simulator's recording and pose
   record), each of which is named by its own variable and every one of which the probe
   points at its own directory. A campaign of 50 runs still delivers 50.
+* **What it measured and what it allocated are part of the campaign's record.** Every run on a
+  node was sized from that node's figures, so they are a condition of the run: ``campaign.db``
+  keeps them on the machine's own row, ``node.calibration_json`` -- per container, what the
+  probe measured before headroom (``measured``), the calibration settings that turned it into
+  a size (``rule``), and the requests and limits a job on the node was given (``allocated``).
+  A run joins to it through its job (``run.job_id`` -> ``job.node_label`` -> ``node``), and a
+  notebook reads it as ``campaign.node``. ``NULL`` is a node the campaign did not calibrate.
 * **A probe is listed, marked, and counted apart.** It holds real capacity on a real node, so
   it carries the campaign's labels and appears in the job listing — as ``kind: calibration``,
   named for the node it measures, and outside every figure in ``JobCounts``, which a reader

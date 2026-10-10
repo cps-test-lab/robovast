@@ -34,3 +34,21 @@ def test_node_facts_are_read_from_the_cluster(monkeypatch):
     assert facts == {"capacity": {"cpu": "8"}, "allocatable": {"cpu": "7"}, "node_info": {},
                      "labels": {"zone": "z1"}}
     assert asked == ["ctx"]
+
+
+def test_a_calibrated_node_s_facts_carry_its_calibration(monkeypatch):
+    from robovast.execution.cluster_execution.node_calibration import NodeCalibration
+
+    monkeypatch.setattr(kube_client, "core_v1_client", lambda context=None: types.SimpleNamespace(
+        list_node=lambda: types.SimpleNamespace(items=[])))
+    cal = NodeCalibration()
+    label = node_label("node-a")
+    cal._by_node[label] = {"sut": {"peak": 1.0}}
+    cal.note_allocation(label, rule={"sut": {}}, allocated={"sut": {"requests": {"cpu": "1"}}})
+    admission = types.SimpleNamespace(calibration=lambda owner, factory=None:
+                                      cal if owner == "camp-2026-01-01-00000000" else None)
+    backend = KubernetesBackend(cluster_config=object(), admission=admission)
+    backend._campaign_id = "camp-2026-01-01-00000000"
+
+    assert backend.node_facts(label) == {"calibration": cal.provenance(label)}
+    assert backend.node_facts(node_label("node-b")) is None

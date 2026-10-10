@@ -44,7 +44,8 @@ from robovast.common.plugin_ref import is_file_ref, load_ref
 from robovast.common.results_utils import campaign_vast_or_none, find_campaign_vast_file
 from robovast.results_processing.campaign_tables import (build_tables, clear_tables,
                                                          declared_tables, is_decoder_command,
-                                                         replay_tables, write_decoder_config,
+                                                         replay_tables, compact_tables,
+                                                         write_decoder_config,
                                                          write_postprocessing_steps,
                                                          write_run_health)
 from robovast.results_processing.metadata import generate_campaign_metadata
@@ -673,6 +674,18 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements,too-many-b
         success = False
     else:
         output("✓ declared tables built")
+    try:
+        compacted = compact_tables(campaign_dir)
+    except OSError as exc:
+        output(f"✗ the tables could not be compacted into one file each: {exc}")
+        failures.append(f"compacting the tables: {exc}")
+        success = False
+    else:
+        for table, why in sorted(compacted.skipped.items()):
+            output(f"  {table} left one file per run: {why}")
+        if compacted.compacted:
+            output(f"✓ {len(compacted.compacted)} table(s) compacted into one file each "
+                   f"({compacted.bytes_before / 1e6:.0f} MB -> {compacted.bytes_after / 1e6:.0f} MB)")
     if should_stop is not None and should_stop():
         output(f"⏹  {POSTPROCESSING_CANCELLED}")
         return False, POSTPROCESSING_CANCELLED

@@ -1515,7 +1515,7 @@
         "type": "object"
       },
       "ExportRequest": {
-        "description": "What an export of a campaign carries: its tables as files, its bags, its records.\n\nAn export is what a laptop analysis or a hand-off wants: the campaign's logical tables\nwritten one file per table, in a format pandas or DuckDB opens directly, with the\nrecords that produced them and, if asked, the recordings. The archive\n(``GET /data/campaigns/{id}/archive``) is the campaign as the service holds it and\nships no table; an export is built for the request and disposable.",
+        "description": "What an export of a campaign carries: its tables as files, its bags, its records.\n\nAn export is what a laptop analysis or a hand-off wants: the campaign's logical tables\nwritten one file per table, in a format pandas or DuckDB opens directly, with the\nrecords that produced them and, if asked, the recordings. The archive\n(``GET /data/campaigns/{id}/archive``) is the campaign as the service holds it, its\ntables in the decoder's own cache; an export is plain files, built for the request and\ndisposable.",
         "properties": {
           "bags": {
             "default": "none",
@@ -8678,7 +8678,7 @@
     },
     "/data/campaigns/{campaign_id}/archive": {
       "get": {
-        "description": "Stream the campaign as a ``tar.gz``.\n\nBacks ``vast campaign download`` and the web UI's download button. What comes out\nis the campaign's records as this service holds them -- postprocessed if it has\nbeen, raw if it has not -- never its table cache: derived data is an addition to a\ncampaign, never the condition for reading one.\n\nNothing is buffered and no scratch is used: the tree is tarred into the response\nas it is read. Decisive for campaigns that run to terabytes.",
+        "description": "Stream the campaign as a ``tar.gz``.\n\nBacks ``vast campaign download`` and the web UI's download menu. What comes out is\nthe campaign as this service holds it -- its records, what postprocessing derived,\nand its built tables, so it opens in a notebook without building anything -- or,\nwith ``raw=true``, the records alone, which an import postprocesses afresh.\n\nNothing is buffered and no scratch is used: the tree is tarred into the response\nas it is read. Decisive for campaigns that run to terabytes.",
         "operationId": "download_campaign_archive_data_campaigns__campaign_id__archive_get",
         "parameters": [
           {
@@ -8688,6 +8688,16 @@
             "schema": {
               "title": "Campaign Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "raw",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Raw",
+              "type": "boolean"
             }
           }
         ],

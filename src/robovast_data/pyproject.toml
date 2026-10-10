@@ -22,6 +22,14 @@ duckdb = "^1.5"
 pandas = "^2.2"
 pyarrow = ">=17"
 pyyaml = "^6.0"
+# The `vast results build` command; the group it attaches to is robovast-client's.
+click = "^8.1"
+
+# `vast results build`: attached to the group robovast-client defines, which is how
+# `pip install robovast-client[data]` has it. Without the client there is no `vast`, and
+# `Campaign(...).build()` does the same.
+[tool.poetry.plugins."robovast.results_plugins"]
+build = "robovast_data.cli:build"
 
 [build-system]
 requires = ["poetry-core"]

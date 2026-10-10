@@ -806,6 +806,12 @@ database beside them. SQL is answered over the directory itself:
   followed as it records (:mod:`robovast_decode.live`) has its tables written in parts the
   manifest names with a ``live`` stamp, read as they land and merged into one file when the
   run is done.
+* **A finished campaign's table is compacted into one file** (:mod:`robovast_decode.compact`): the
+  final run files merged, rows unchanged and in run order, and each compacted run's entry kept,
+  naming no file of its own. A compacted run written again has its own file, and a view reads
+  that run from there and every other from the compacted file; the next compaction folds it back in.
+  A bulk build gives each worker process its own run's entries and merges what they entered,
+  so the manifest is written a few times a build rather than several times a run.
 * **Queries run in-process on DuckDB** (:mod:`robovast_data.engine`), over views defined
   per query from the manifest, never from a directory listing — so a table being rewritten
   is seen whole or not at all.
@@ -818,9 +824,11 @@ decoder reads its configuration from there.
 **The cache is disposable.** Deleting ``.cache/`` loses nothing but the time to build it
 again, and every surface that clears it relies on exactly that: ``vast campaign tables
 clear``, the MCP ``clear_campaign_tables``, ``DELETE /campaigns/{id}/tables``, the admin
-page's table-cache entry, and ``force`` on a postprocessing re-run. An archive (download,
-share) carries the records and never ``.cache/``, so an imported campaign builds its tables
-from its records on first use like any other.
+page's table-cache entry, and ``force`` on a postprocessing re-run. A share archive carries
+the records and never ``.cache/``. A download carries the top-level cache's manifest and
+table files (``campaign_archive.download_skip``), so it opens without building anything;
+wherever it lands, an entry another decoder version wrote is not current there and is built
+again from the records, and ``--raw`` leaves the cache out altogether.
 
 .. _data-contract:
 

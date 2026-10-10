@@ -128,9 +128,9 @@ def variant_from_record(record) -> str:
     *record* is the file's contents, or ``None`` when the campaign has no such file.
 
     Why this file and not a derived artifact. The variant has to be decidable from the
-    archive ALONE -- a recipient analyses it without our service -- and an archive carries
-    the campaign's records, never its table cache, so the only derived files in it are the
-    ones the campaign's own steps wrote, under names its plugin list chose. The provenance
+    archive ALONE -- a recipient analyses it without our service -- and a shared archive
+    carries the campaign's records, never its table cache, so the only derived files in it
+    are the ones the campaign's own steps wrote, under names its plugin list chose. The provenance
     record is the one thing postprocessing always writes, under a fixed name, and it is
     *self-describing*: it says which files were derived from which sources by which plugin
     -- exactly what the recipient of a ``postprocessed`` archive needs.

@@ -53,8 +53,9 @@ import pyarrow.parquet as pq
 
 from . import DATA_CONTRACT, __version__
 
-#: The campaign-level directory every derived file lives under. RoboVAST already treats a
-#: ``.cache`` directory as rebuildable: archives and exports leave it out.
+#: The campaign-level directory every derived file lives under. RoboVAST treats a ``.cache``
+#: directory as rebuildable: a share and an export leave it out, and a download carries only
+#: the manifest and the table files of the top-level one.
 CACHE_DIR = ".cache"
 TABLES_DIR = "tables"
 MANIFEST = "MANIFEST.json"
@@ -278,6 +279,83 @@ def write_manifest(campaign_dir: str, manifest: dict) -> None:
             os.unlink(tmp)
 
 
+class FileCatalog:
+    """The campaign's manifest on disk: every update is read, changed and written whole under
+    the campaign's lock, so concurrent writers never lose each other's entries."""
+
+    def __init__(self, campaign_dir: str):
+        self.campaign_dir = campaign_dir
+
+    def read(self) -> dict:
+        return read_manifest(self.campaign_dir)
+
+    @contextmanager
+    def update(self):
+        with manifest_lock(self.campaign_dir):
+            manifest = read_manifest(self.campaign_dir)
+            yield manifest
+            write_manifest(self.campaign_dir, manifest)
+
+    def discard(self, rel_paths: Iterable[str]) -> None:
+        """Remove files the manifest just stopped naming."""
+        remove_files(self.campaign_dir, rel_paths)
+
+
+class RunCatalog:
+    """One run's entries, held in memory while a worker builds that run.
+
+    A bulk build hands each worker the entries of its own run (:func:`run_fragment`) and
+    merges what comes back (:func:`merge_fragments`), so the manifest is written once per
+    batch of runs rather than several times per run under the campaign-wide lock. A build
+    reads and writes only its own run's entries, which is what makes the split safe. Files
+    an entry stops naming are kept until the merged manifest is on disk.
+    """
+
+    def __init__(self, manifest: dict):
+        self.manifest = manifest
+        self.superseded: List[str] = []
+
+    def read(self) -> dict:
+        return self.manifest
+
+    @contextmanager
+    def update(self):
+        yield self.manifest
+
+    def discard(self, rel_paths: Iterable[str]) -> None:
+        self.superseded.extend(rel_paths)
+
+
+def run_fragment(manifest: dict, run_key: str) -> dict:
+    """The part of *manifest* one run's build reads: its entries in every table, their
+    schemas, and the campaign file an entry of it was compacted into."""
+    tables = {}
+    schemas = manifest.get("schemas", {})
+    used = {}
+    for table, entry in manifest.get("tables", {}).items():
+        run = entry.get("runs", {}).get(run_key)
+        if run is not None:
+            tables[table] = {"runs": {run_key: run}}
+            if run.get("compacted") and entry.get("campaign"):
+                tables[table]["campaign"] = entry["campaign"]
+            if run.get("schema") in schemas:
+                used[run["schema"]] = schemas[run["schema"]]
+    return {"version": MANIFEST_VERSION, "schemas": used, "tables": tables}
+
+
+def merge_fragments(manifest: dict, fragments: Iterable[dict]) -> None:
+    """Enter the run entries of *fragments* (built from :func:`run_fragment`) in *manifest*.
+
+    Each fragment holds one run's entries; a run's entry replaces the one *manifest* has, and
+    the rest of *manifest* is left as it is.
+    """
+    for fragment in fragments:
+        manifest.setdefault("schemas", {}).update(fragment.get("schemas", {}))
+        for table, entry in fragment.get("tables", {}).items():
+            runs = manifest.setdefault("tables", {}).setdefault(table, {"runs": {}})["runs"]
+            runs.update(entry.get("runs", {}))
+
+
 def _schema_id(manifest: dict, schema: pa.Schema) -> str:
     """The id *schema* is stored under in *manifest*: one copy per distinct schema, not per run."""
     fields = [[f.name, str(f.type)] for f in schema]
@@ -353,12 +431,18 @@ def campaign_table_path(table: str) -> str:
 
 
 def record_campaign_table(manifest: dict, table: str, *, files: List[str], rows: int,
-                          schema: pa.Schema, sources: dict, runs: Optional[int] = None) -> None:
+                          schema: pa.Schema, sources: dict, runs: Optional[int] = None,
+                          compacted: Optional[List[str]] = None) -> None:
     """Enter a table written for the whole campaign at once in *manifest* (in memory).
 
     Its rows carry ``config_name`` and ``run_id`` like any table's, so a reader scoped to one
     run reads that run's rows of it. Such a table is served whole and never built per run.
     *runs* is how many runs it holds rows for, where the writer knows.
+
+    *compacted* are the run keys whose per-run files were merged into it
+    (:mod:`robovast_decode.compact`); their run entries stay, marked ``compacted``, and keep saying
+    what was built from what. A run whose entry is written again after that has its own
+    files, and a reader takes that run's rows from them rather than from this file.
     """
     entry = manifest["tables"].setdefault(table, {"runs": {}})
     entry["campaign"] = {
@@ -371,6 +455,37 @@ def record_campaign_table(manifest: dict, table: str, *, files: List[str], rows:
         "decoder": __version__,
         "contract": DATA_CONTRACT,
     }
+    if compacted is not None:
+        entry["campaign"]["compacted"] = sorted(compacted)
+
+
+def read_run_table(campaign_dir: str, manifest: dict, table: str,
+                   run_key: str) -> Optional[pa.Table]:
+    """The rows *table* holds for the run *run_key*: from the run's own files, or from the
+    campaign file its entry was compacted into; ``None`` when it has none."""
+    entry = manifest.get("tables", {}).get(table, {})
+    run = entry.get("runs", {}).get(run_key) or {}
+    root = cache_root(campaign_dir)
+    if run.get("compacted"):
+        config_name, _, run_id = run_key.rpartition("/")
+        parts = [pq.read_table(os.path.join(root, rel),
+                               filters=[("config_name", "=", config_name),
+                                        ("run_id", "=", int(run_id))])
+                 for rel in (entry.get("campaign") or {}).get("files") or []]
+    else:
+        parts = [pq.read_table(os.path.join(root, rel)) for rel in run.get("files") or []]
+    if not parts:
+        return None
+    return pa.concat_tables(parts, promote_options="permissive")
+
+
+def compacted_runs(manifest: dict, table: str) -> set:
+    """The run keys whose rows of *table* are read from its campaign file: compacted into it,
+    and not written again since."""
+    entry = manifest.get("tables", {}).get(table, {})
+    runs = entry.get("runs", {})
+    return {key for key in (entry.get("campaign") or {}).get("compacted") or []
+            if (runs.get(key) or {}).get("compacted")}
 
 
 def record_run_absent(manifest: dict, table: str, run_key: str, *, sources: dict,
@@ -405,8 +520,9 @@ def record_run_absent(manifest: dict, table: str, run_key: str, *, sources: dict
     return list(before.get("files") or [])
 
 
-__all__ = ["CACHE_DIR", "CONTEXT_COLUMNS", "LIVE_STALE_S", "MANIFEST", "TableBuffer",
-           "cache_root", "campaign_table_path", "fixed", "leading_then_sorted", "live_owned",
-           "manifest_lock", "read_manifest", "record_campaign_table", "record_run_absent",
-           "record_run_table", "remove_files", "run_part_path", "run_table_path", "schema_of",
-           "write_manifest", "write_table", "written_here"]
+__all__ = ["CACHE_DIR", "CONTEXT_COLUMNS", "LIVE_STALE_S", "MANIFEST", "FileCatalog",
+           "RunCatalog", "TableBuffer", "cache_root", "campaign_table_path", "fixed",
+           "leading_then_sorted", "live_owned", "manifest_lock", "merge_fragments",
+           "read_manifest", "record_campaign_table", "record_run_absent", "record_run_table",
+           "remove_files", "run_fragment", "run_part_path", "run_table_path", "schema_of",
+           "compacted_runs", "write_manifest", "write_table", "written_here"]

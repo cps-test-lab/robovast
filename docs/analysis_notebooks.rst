@@ -152,6 +152,13 @@ naming the table, the run and the reason. A table that no run in scope recorded 
 the tables that do exist. Above five million rows, ``table()`` warns before it reads them all
 into memory; narrow it with ``config=`` and ``run=``, or aggregate with ``sql()``.
 
+**Or build them all now.** ``Campaign(path).build()`` builds every table of a campaign on this
+machine with every core but one, writing one progress line, and then compacts each table into one
+file, which is smaller and faster to read (:ref:`compacted tables <results-tables-compacted>`).
+``build(tables=[...])`` builds only those; ``build()`` on one configuration or one run
+(``open_data``) builds it and compacts nothing. A campaign on a service builds its own tables and
+refuses ``build()``.
+
 **Which tables exist depends on the campaign.** ``runs``, ``behaviors`` (scenario_execution's
 ``behaviors.jsonl``), ``run_log``, ``scenario_timestamps``, ``resource_usage``,
 ``system_usage`` and ``run_clock`` are there whatever the simulator and whether or not the run

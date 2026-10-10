@@ -534,9 +534,10 @@ export const robovast = {
     request<ActionResult>('POST', `/admin/upgrade?force=${force}`),
 
   // Direct URL of a campaign's tar.gz (a GET the browser downloads), on the data plane:
-  // the service tars its results directory into the response.
-  archiveUrl: (campaignId: string) =>
-    `${BASE}/data/campaigns/${encodeURIComponent(campaignId)}/archive`,
+  // the service tars its results directory into the response -- with its built tables, or
+  // `raw`, the records alone.
+  archiveUrl: (campaignId: string, raw = false) =>
+    `${BASE}/data/campaigns/${encodeURIComponent(campaignId)}/archive${raw ? '?raw=true' : ''}`,
 
   // SSE stream of one run's tables as its recording grows, on the data plane like the archive:
   // the watcher behind it runs where the pods' deliveries land. `batch` frames carry

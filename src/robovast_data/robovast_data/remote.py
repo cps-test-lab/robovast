@@ -202,6 +202,13 @@ class RemoteCampaign(Reader):
         """
         return self._frame(query, params, tables)
 
+    def build(self, tables=None, **_options):
+        """Not here: a service builds its campaigns' tables itself."""
+        raise NotImplementedError(
+            "build() builds a campaign's tables on this machine, and this campaign is on a "
+            "service, which builds them itself (`vast campaign tables build "
+            f"{self.campaign_id}`); a query here builds what it names")
+
     def config(self, name: str):
         """Not served: a configuration's files are read from the campaign directory."""
         raise NotImplementedError(

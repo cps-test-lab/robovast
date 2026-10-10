@@ -45,12 +45,11 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 from . import clock_map, resource_usage, run_log, run_slices, scenario_markers, system_usage
 from .layout import MAIN_CONTAINER
 from .registry import ROQSIM_BAG
-from .tables import cache_root
+from .tables import read_run_table
 from .types import INTEGER, REAL, TEXT, UNKNOWN, infer_column_types, stored_value
 
 RUN_LOG = "run_log"
@@ -140,12 +139,8 @@ def _inferred(rows: Sequence[dict], leading: Dict[str, pa.DataType], columns: Se
 
 def _job_rows(campaign_dir: str, manifest: dict, table: str, key: str) -> List[dict]:
     """The rows *table* holds for the run *key*."""
-    runs = manifest.get("tables", {}).get(table, {}).get("runs", {})
-    root = cache_root(campaign_dir)
-    rows: List[dict] = []
-    for rel in (runs.get(key) or {}).get("files") or []:
-        rows.extend(pq.read_table(os.path.join(root, rel)).to_pylist())
-    return rows
+    rows = read_run_table(campaign_dir, manifest, table, key)
+    return rows.to_pylist() if rows is not None else []
 
 
 def _clock_of(campaign_dir: str, manifest: dict, key: str) -> clock_map.ClockMap:

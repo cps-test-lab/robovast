@@ -708,10 +708,11 @@ def import_cmd(archive, force, rebuild_store):
     Importing is more than extracting: listings and the web UI answer from ``campaign.db``,
     not from the results tree, so a campaign that is only unpacked is invisible. And when
     the archive is a **raw** one -- carrying no postprocessing record, which is what the
-    share holds -- postprocessing is chained automatically: the campaign's own steps and the
-    campaign-end pass. An archive carries no tables either way; every table is built from
-    the records the first time something names it, so a query answers as soon as the
-    import lands.
+    share holds and what ``vast campaign download --raw`` writes -- postprocessing is chained
+    automatically: the campaign's own steps and the campaign-end pass. A downloaded archive
+    carries its built tables, used as they are where this service's decoder wrote them the
+    same way; any other table is built from the records the first time something names it,
+    so a query answers as soon as the import lands.
 
     Long-running, so it returns once the import is under way: the campaign appears
     immediately at phase ``importing``. Watch it with ``vast campaign wait <campaign-id>``,
@@ -889,7 +890,10 @@ def delete_cmd(campaigns, yes):
 @click.option('--extract', 'extract', is_flag=True,
               help='Extract while downloading into <output>/<campaign-id>/ and keep no '
                    'archive: the tree robovast-data opens, in one step')
-def download_cmd(campaigns, output, force, extract):
+@click.option('--raw', 'raw', is_flag=True,
+              help='The records alone: no built tables and nothing postprocessing produced '
+                   '(<campaign-id>.raw.tar.gz); an import postprocesses it afresh')
+def download_cmd(campaigns, output, force, extract, raw):
     """Download campaign archives from the service, one ``.tar.gz`` each.
 
     That is the whole command: it fetches ``<campaign-id>.tar.gz`` and stops. Nothing is
@@ -899,9 +903,13 @@ def download_cmd(campaigns, output, force, extract):
     unpacked as it streams into ``<output>/<campaign-id>/`` and never written to disk, which
     is the shape ``robovast-data`` and a notebook open.
 
-    The archive is the campaign as the service holds it, postprocessing and all. The
-    share's raw, pre-postprocess snapshot is a different system with different
-    credentials: ``vast share download``.
+    The archive is the campaign as the service holds it: its records, what postprocessing
+    derived, and its built tables, so a notebook or ``robovast-data`` opens it without
+    building anything. ``--raw`` downloads the records alone, as
+    ``<campaign-id>.raw.tar.gz``: no tables and nothing postprocessing recorded producing,
+    so ``vast campaign import`` postprocesses it afresh. The share's copy, taken before
+    postprocessing, is a different system with different credentials: ``vast share
+    download``.
 
     A campaign that is **still running** downloads too, and lands as
     ``<campaign-id>.incomplete.tar.gz`` -- runs that had not finished are simply not in it.
@@ -931,7 +939,8 @@ def download_cmd(campaigns, output, force, extract):
         with service_client() as (client, label):
             click.echo(f"Downloading {len(campaigns)} campaign archive(s) from {label} ...")
             for campaign_id in campaigns:
-                dest = out_dir / (campaign_id if extract else f"{campaign_id}.tar.gz")
+                name = f"{campaign_id}.raw" if raw else campaign_id
+                dest = out_dir / (name if extract else f"{name}.tar.gz")
                 if dest.exists() and not force:
                     click.echo(f"  {dest.name}  already here, skipping "
                                "(use --force to re-download)")
@@ -945,10 +954,12 @@ def download_cmd(campaigns, output, force, extract):
                     progress = make_transfer_progress_callback(campaign_id, start)
                     if extract:
                         dest = Path(extract_campaign_archive(client, campaign_id, str(out_dir),
-                                                             progress_callback=progress))
+                                                             progress_callback=progress,
+                                                             raw=raw))
                     else:
                         dest = Path(download_campaign_archive(client, campaign_id, str(dest),
-                                                              progress_callback=progress))
+                                                              progress_callback=progress,
+                                                              raw=raw))
                 # Ahead of the broad handler below, which would otherwise swallow click's
                 # own control flow and report a usage error as an unexpected failure.
                 except (click.UsageError, click.ClickException):  # pylint: disable=try-except-raise

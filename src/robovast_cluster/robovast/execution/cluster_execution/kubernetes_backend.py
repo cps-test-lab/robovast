@@ -1705,6 +1705,30 @@ class BatchJobRunner:
                                       tick_ratio=tick):
                 self._refuse_a_probe_that_could_not_measure(node_id, calibration)
                 calibration.abandon(node_id, key)
+            else:
+                self._note_allocation(calibration, node_id)
+
+    def _note_allocation(self, calibration, node_id) -> None:
+        """Keep what *node_id*'s figures came to, for the campaign's record of the node.
+
+        Rendered, not recomputed: the pod spec a job gets on that node is what its runs had,
+        so its containers' requests and limits are read from the same manifest the queue
+        sizes from (:meth:`_job_sizing`). Every job of a batch is the same shape, and the
+        figures are frozen once set, so one rendering is every run's.
+        """
+        template = getattr(self, "_sizing_template", None)
+        if template is None:
+            return
+        job, total_jobs = template
+        spec = self.create_job_manifest(job, total_jobs,
+                                        node_figures=self._node_figures(node_id))
+        spec = spec["spec"]["template"]["spec"]
+        containers = list(spec.get("containers") or [])
+        containers += [c for c in (spec.get("initContainers") or [])
+                       if c.get("restartPolicy") == "Always"]
+        calibration.note_allocation(
+            node_id, rule=self._calibration_by_container(),
+            allocated={c.get("name"): dict(c.get("resources") or {}) for c in containers})
 
     def _refuse_a_probe_that_could_not_measure(self, node_id, calibration) -> None:
         """Fail the campaign when a node's probe was refused.
@@ -3146,6 +3170,8 @@ class BatchJobRunner:
         else:
             from .node_admission import AdmissionRefused, campaign_start_key  # noqa: PLC0415
 
+            # Kept for the record of what a calibrated node gave its runs (_note_allocation).
+            self._sizing_template = (jobs[0], total_jobs)
             sizing = self._job_sizing(jobs[0], total_jobs)
             campaign_node = self._campaign_node_id()
             try:
@@ -3529,7 +3555,17 @@ class KubernetesBackend(ExecutionBackend):
         """
         if self._node_facts_cache is None:
             self._node_facts_cache = self._read_node_facts()
-        return self._node_facts_cache.get(label)
+        facts = self._node_facts_cache.get(label)
+        # The campaign's calibration of the machine, read now rather than cached: a node is
+        # calibrated after this map was first built, and its record is written as its first
+        # run is -- by then its figures are frozen.
+        campaign_id = getattr(self, "_campaign_id", None)
+        calibration = (self._admission.calibration(campaign_id)
+                       if self._admission is not None and campaign_id else None)
+        provenance = calibration.provenance(label) if calibration is not None else None
+        if provenance is None:
+            return facts
+        return {**(facts or {}), "calibration": provenance}
 
     def _read_node_facts(self) -> dict:
         """``{node label: facts}`` for every node this cluster has, or ``{}``.
@@ -3608,6 +3644,8 @@ class KubernetesBackend(ExecutionBackend):
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
                   runs: int, options: RunOptions) -> None:
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
+        # The campaign this backend runs, for what it answers about it later (node_facts).
+        self._campaign_id = campaign_id
         execution_params = campaign_data.get("execution", {}) or {}
         from robovast.execution.backends import _scenario_image
         image = _scenario_image(execution_params, options)

@@ -25,6 +25,7 @@ import time
 
 from . import __version__
 from .build import available_tables, build
+from .compact import compact
 
 
 def _config(value):
@@ -53,6 +54,11 @@ def main(argv=None) -> int:
     b.add_argument("--config", help='decoder configuration as JSON, or @file: '
                                     '{"groups": [{"bag_dir": ..., "plugins": [...]}]}')
     b.add_argument("--force", action="store_true", help="rebuild tables already current")
+    s = sub.add_parser("compact", help="merge each table's final run files into one file")
+    s.add_argument("campaign_dir")
+    s.add_argument("--table", action="append", dest="tables", metavar="NAME",
+                   help="a table to compact; repeatable (default: every table)")
+    s.add_argument("--jobs", type=int, default=1, help="tables compacted at once (default: 1)")
     t = sub.add_parser("tables", help="list the tables the recordings can give, and what is built")
     t.add_argument("campaign_dir")
     t.add_argument("--config")
@@ -62,6 +68,19 @@ def main(argv=None) -> int:
         for name, counts in sorted(available_tables(args.campaign_dir, _config(args.config)).items()):
             print(f"{name:45s} built for {counts['built']} of {counts['runs']} recordings")
         return 0
+
+    if args.command == "compact":
+        if args.jobs < 1:
+            parser.error("--jobs must be at least 1")
+        started = time.perf_counter()
+        compacted = compact(args.campaign_dir, args.tables, workers=args.jobs)
+        for table, runs in sorted(compacted.compacted.items()):
+            print(f"compacted  {table}: {runs} run(s)")
+        for table, why in sorted(compacted.skipped.items()):
+            print(f"LEFT    {table}: {why}", file=sys.stderr)
+        print(f"{compacted.bytes_before / 1e6:.1f} MB -> {compacted.bytes_after / 1e6:.1f} MB, "
+              f"{time.perf_counter() - started:.1f}s")
+        return 1 if compacted.skipped else 0
 
     started = time.perf_counter()
     report = build(args.campaign_dir, tables=args.tables, runs=args.runs,

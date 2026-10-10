@@ -181,3 +181,20 @@ def test_a_pod_with_no_node_writes_no_label(tmp_path):
     subprocess.run([sys.executable, script, "--output", str(out), "--node-name", ""],
                    check=True)
     assert "node_label" not in out.read_text(encoding="utf-8")
+
+
+def test_a_node_s_calibration_is_kept_on_its_row(tmp_path):
+    """What a calibrated node measured and gave its runs is part of every run on it: kept
+    once, on the machine's row, where every run already joins."""
+    calibration = {"measured": {"sut": {"peak": 1.5}}, "rule": {"sut": {"size_on": 100.0}},
+                   "allocated": {"sut": {"requests": {"cpu": "1.875", "memory": "896Mi"}}}}
+    answers = {"facts": dict(_FACTS)}
+    with _store(tmp_path, lambda label: answers["facts"]) as store:
+        cid = store.create_campaign("c", "batch", ".", "{}")
+        store.upsert_job(cid, "_jobs/job-0", _sysinfo(), store._node_facts)
+        (before,) = store._conn.execute("SELECT calibration_json FROM node").fetchone()
+        answers["facts"] = {**_FACTS, "calibration": calibration}
+        store.upsert_job(cid, "_jobs/job-1", _sysinfo(), store._node_facts)
+        (after,) = store._conn.execute("SELECT calibration_json FROM node").fetchone()
+    assert before is None, "a node not (yet) calibrated has no record of it"
+    assert json.loads(after) == calibration

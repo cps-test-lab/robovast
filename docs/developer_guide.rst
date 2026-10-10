@@ -1810,9 +1810,9 @@ configuration needs that this deployment lacks -- variation types, postprocessin
 metadata processors and health checks not installed, ``./file.py:Class`` plugins not in the
 archive, ``plugins:`` packages not installed -- and is degraded, never blocking: the
 campaign lists without them, and only postprocessing and a re-run need them. The ``tables``
-stage loads nothing: an archive carries the campaign's records and never ``.cache/``, and its
-tables are built from those records the first time something names them. The stage only says
-whether the records give any table at all.
+stage loads nothing: a table the archive carries is used where this decoder wrote it the same
+way, and any other is built from the records the first time something names it. The stage
+only says whether the records give any table at all.
 
 .. rubric:: The archive layout
 
@@ -2914,8 +2914,9 @@ The **upload-to-share** step mirrors this: a failure records ``share_error`` (du
 being swallowed, and :meth:`~robovast.service.service_base.ServiceBase.run_share` re-triggers it (web *Retrigger upload-to-share*,
 MCP ``run_share``, ``POST /campaigns/{id}/share/run``) — also via ``_dispatch_background``
 (``sharing`` phase). Both re-triggers need no live in-memory campaign entry, so they work after a
-service restart. An archive — a share, ``vast campaign download``, the web UI's download — carries
-the campaign's records and never ``.cache/``; wherever it lands, its tables are built from those
+service restart. A share archive carries the campaign's records and never ``.cache/``; a download
+(``vast campaign download``, the web UI's) carries its built tables too, unless ``--raw``.
+Wherever either lands, a table not written by that decoder the same way is built from the
 records on first use.
 
 A post-run step failure is deliberately **not** a campaign failure: the phase stays ``finished`` and

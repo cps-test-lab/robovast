@@ -34,4 +34,5 @@ except PackageNotFoundError:  # a source tree that was never installed
 #: 2: a field declared as an array is a list column; a sequence of messages is one list per
 #: leaf field; laser scans are tables.
 #: 3: campaign.batch has recalls_recorded and complete; campaign.unit has recalled_from.
-DATA_CONTRACT = 3
+#: 4: campaign.node has calibration_json.
+DATA_CONTRACT = 4

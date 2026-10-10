@@ -908,8 +908,9 @@ class ExportRequest(BaseModel):
     An export is what a laptop analysis or a hand-off wants: the campaign's logical tables
     written one file per table, in a format pandas or DuckDB opens directly, with the
     records that produced them and, if asked, the recordings. The archive
-    (``GET /data/campaigns/{id}/archive``) is the campaign as the service holds it and
-    ships no table; an export is built for the request and disposable.
+    (``GET /data/campaigns/{id}/archive``) is the campaign as the service holds it, its
+    tables in the decoder's own cache; an export is plain files, built for the request and
+    disposable.
     """
 
     #: The tables to write, by their query names (``describe_campaign_data`` lists them).
@@ -2596,6 +2597,13 @@ DEFAULT_PORT = 8800
 COMMAND_LIMIT_S = 300
 
 
+def campaign_archive_query(raw: bool) -> dict:
+    """The query of :meth:`Routes.campaign_archive`: the campaign with its built tables, or
+    with ``raw=true`` its records alone. One spelling for the transport, the CLI helpers and
+    the MCP's link."""
+    return {"raw": "true"} if raw else {}
+
+
 class Routes:
     """Canonical HTTP paths — shared by the service app and the HTTP client so
     the two bindings cannot drift. Phase 0 (campaign lifecycle + version)."""
@@ -3586,13 +3594,15 @@ class RobovastInterface(ABC):
     # control plane; the HTTP client reaches them under ``Routes.DATA``.
 
     @abstractmethod
-    def campaign_tar_stream(self, campaign_id: str):
+    def campaign_tar_stream(self, campaign_id: str, raw: bool = False):
         """Yield the campaign as a ``tar.gz``, in chunks, for ``GET .../archive``.
 
-        What comes out is the campaign's records as this service holds them --
-        postprocessed, if it has been -- minus its table cache, which is rebuilt from them
-        wherever a table is next named. Streamed, never buffered: the tree is tarred into
-        the response as it is read.
+        What comes out is the campaign as this service holds it: its records, what
+        postprocessing derived from them, and its built tables (``.cache/MANIFEST.json`` and
+        ``.cache/tables``), so it opens in a notebook without building anything. *raw* is
+        the records alone: no table cache and nothing postprocessing recorded producing, so
+        an import postprocesses it afresh. Streamed, never buffered: the tree is tarred
+        into the response as it is read.
         """
 
     @abstractmethod
@@ -3672,20 +3682,21 @@ class RobovastInterface(ABC):
         ``RuntimeError`` naming the reason for one that failed.
         """
 
-    def campaign_archive_name(self, campaign_id: str) -> str:
+    def campaign_archive_name(self, campaign_id: str, raw: bool = False) -> str:
         """The file name :meth:`campaign_tar_stream`'s bytes should be offered under.
 
-        ``<campaign-id>.tar.gz`` for a campaign that is over, and that is what this default
-        answers. An implementation that can tell a **running** campaign apart overrides it
-        to say so in the name (``<campaign-id>.incomplete.tar.gz``): a mid-run snapshot has
-        the shape of a finished campaign, so once the file is sitting in a downloads
-        directory its name is the only thing that still distinguishes it.
+        ``<campaign-id>.tar.gz`` for a campaign that is over (``<campaign-id>.raw.tar.gz``
+        for its *raw* records), and that is what this default answers. An implementation
+        that can tell a **running** campaign apart overrides it to say so in the name
+        (``<campaign-id>.incomplete.tar.gz``): a mid-run snapshot has the shape of a
+        finished campaign, so once the file is sitting in a downloads directory its name is
+        the only thing that still distinguishes it.
 
         Concrete rather than abstract because an implementation with no notion of liveness
         -- a client transport, a fake -- has a correct answer available, and forcing it to
         write one out would be inviting a wrong one.
         """
-        return f"{campaign_id}.tar.gz"
+        return f"{campaign_id}.raw.tar.gz" if raw else f"{campaign_id}.tar.gz"
 
     @abstractmethod
     def list_share_archives(self) -> ShareListing:

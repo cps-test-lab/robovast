@@ -47,11 +47,11 @@ components:
   - spawn_arm:
       model: ur5e
       prefix: "ur5e_"
-      pos: [0.0, 0.0, 0.76]
+      pose: {position: {z: 0.76}}
       end_effector:
         model: robotiq_2f85
         site: attachment_site
-        pos: [0.0, 0.0, 0.011]   # the UR -> Robotiq adapter plate
+        pose: {position: {z: 0.011}}   # the UR -> Robotiq adapter plate
       # Start FACING the box. The model's own home puts `shoulder_pan` at 0, which points the arm
       # away from it: this arm's base body carries a 180 deg yaw of its own, so the box at world +x
       # sits at -x in the arm's frame. MEASURED with that default, the grasp needed pan at 2.78 rad,

@@ -483,7 +483,7 @@ def _served_filename(disposition) -> str:
 
 
 def download_campaign_archive(client, campaign_id: str, dest_path: str,
-                              progress_callback=None) -> str:
+                              progress_callback=None, raw: bool = False) -> str:
     """Stream the campaign's ``tar.gz`` through *client* into *dest_path*; return it.
 
     A file lands, and that is all that happens. Stream-*extracting* off the socket would
@@ -498,16 +498,22 @@ def download_campaign_archive(client, campaign_id: str, dest_path: str,
     it was archived comes back as ``<id>.incomplete.tar.gz``, and only the service knows
     that. *dest_path* supplies the directory and the fallback name; the returned path is
     where the archive actually landed, which is the one a caller must report.
-    """
-    from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
 
-    logger.info("Downloading %s from robovast-service ...", campaign_id)
+    The archive carries the campaign's built tables, or with *raw* its records alone
+    (``<id>.raw.tar.gz``).
+    """
+    from robovast.service.interface import (  # pylint: disable=import-outside-toplevel
+        Routes, campaign_archive_query)
+
+    logger.info("Downloading %s%s from robovast-service ...", campaign_id,
+                " (raw)" if raw else "")
     return download_to_file(client, Routes.campaign_archive(campaign_id), dest_path,
-                            progress_callback=progress_callback)
+                            progress_callback=progress_callback,
+                            params=campaign_archive_query(raw))
 
 
 def extract_campaign_archive(client, campaign_id: str, out_dir: str,
-                             progress_callback=None) -> str:
+                             progress_callback=None, raw: bool = False) -> str:
     """Stream the campaign's archive through *client* and extract it under *out_dir*;
     return the campaign directory it made.
 
@@ -522,14 +528,16 @@ def extract_campaign_archive(client, campaign_id: str, out_dir: str,
     import shutil  # pylint: disable=import-outside-toplevel
     import tarfile  # pylint: disable=import-outside-toplevel
 
-    from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
+    from robovast.service.interface import (  # pylint: disable=import-outside-toplevel
+        Routes, campaign_archive_query)
 
     logger.info("Downloading and extracting %s from robovast-service ...", campaign_id)
     url = f"{client.base_url}{Routes.campaign_archive(campaign_id)}"
     os.makedirs(out_dir, exist_ok=True)
     incoming = None
     try:
-        with client.session.get(url, timeout=600, stream=True) as resp:
+        with client.session.get(url, params=campaign_archive_query(raw) or None,
+                                timeout=600, stream=True) as resp:
             client.raise_for_status(resp)
             served = _served_filename(resp.headers.get("Content-Disposition")) or f"{campaign_id}.tar.gz"
             name = served[:-len(".tar.gz")] if served.endswith(".tar.gz") else served
@@ -595,20 +603,20 @@ def download_campaign_export(client, campaign_id: str, export_id: str, dest_path
 
 
 def download_to_file(client, route: str, dest_path: str, progress_callback=None, *,
-                     served_name: bool = True) -> str:
+                     served_name: bool = True, params: "dict | None" = None) -> str:
     """Stream the data-plane *route* through *client* into *dest_path*; return where it landed.
 
     Written through a ``.part`` sibling and renamed on success, so an interrupted transfer
     cannot leave a truncated file under the real name looking complete. With *served_name*
     the service names the file through ``Content-Disposition`` and *dest_path* supplies the
     directory and the fallback name; without it the file lands at *dest_path* exactly. The
-    returned path is where the file actually landed.
+    returned path is where the file actually landed. *params* is the route's query.
     """
     url = f"{client.base_url}{route}"
     os.makedirs(os.path.dirname(os.path.abspath(dest_path)) or ".", exist_ok=True)
     tmp_path = f"{dest_path}.part"
     try:
-        with client.session.get(url, timeout=600, stream=True) as resp:
+        with client.session.get(url, params=params or None, timeout=600, stream=True) as resp:
             # The client's helper, not requests' own: that one reports the status line and
             # the URL and throws the body away, which is where this service writes the
             # actionable sentence ("no campaign 'x' on this service").

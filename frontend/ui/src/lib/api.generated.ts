@@ -1270,10 +1270,10 @@ export interface paths {
          * Download Campaign Archive
          * @description Stream the campaign as a ``tar.gz``.
          *
-         *     Backs ``vast campaign download`` and the web UI's download button. What comes out
-         *     is the campaign's records as this service holds them -- postprocessed if it has
-         *     been, raw if it has not -- never its table cache: derived data is an addition to a
-         *     campaign, never the condition for reading one.
+         *     Backs ``vast campaign download`` and the web UI's download menu. What comes out is
+         *     the campaign as this service holds it -- its records, what postprocessing derived,
+         *     and its built tables, so it opens in a notebook without building anything -- or,
+         *     with ``raw=true``, the records alone, which an import postprocesses afresh.
          *
          *     Nothing is buffered and no scratch is used: the tree is tarred into the response
          *     as it is read. Decisive for campaigns that run to terabytes.
@@ -3066,8 +3066,9 @@ export interface components {
          *     An export is what a laptop analysis or a hand-off wants: the campaign's logical tables
          *     written one file per table, in a format pandas or DuckDB opens directly, with the
          *     records that produced them and, if asked, the recordings. The archive
-         *     (``GET /data/campaigns/{id}/archive``) is the campaign as the service holds it and
-         *     ships no table; an export is built for the request and disposable.
+         *     (``GET /data/campaigns/{id}/archive``) is the campaign as the service holds it, its
+         *     tables in the decoder's own cache; an export is plain files, built for the request and
+         *     disposable.
          */
         ExportRequest: {
             /**
@@ -7403,7 +7404,9 @@ export interface operations {
     };
     download_campaign_archive_data_campaigns__campaign_id__archive_get: {
         parameters: {
-            query?: never;
+            query?: {
+                raw?: boolean;
+            };
             header?: never;
             path: {
                 campaign_id: string;
