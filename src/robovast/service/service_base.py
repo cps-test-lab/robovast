@@ -3297,9 +3297,8 @@ class ServiceBase(RobovastInterface):
                            exc_info=True)
         try:
             state.set_phase(Phase.POSTPROCESSING)
-            # Through the seam every other caller uses, so the implementation decides HOW
-            # to postprocess. Running the pipeline here instead would run it in this process
-            # where the cluster postprocesses in a pod of its own.
+            # Through the seam every other caller uses -- a re-run and an import -- so a
+            # campaign's end is postprocessed exactly as asking for it later would be.
             ok, message = self._postprocess_campaign(
                 campaign_id, Path(results_dir) / campaign_id, state=state)
             if ok:
@@ -5276,7 +5275,6 @@ class ServiceBase(RobovastInterface):
             return None
         return self._run_state_path(campaign_id, config_name, run_id, filename)
 
-    @abstractmethod
     @abstractmethod
     def _scene_runner_context(self, identity: dict, on_wait=None):
         """A zero-argument callable returning a context that yields the runner factory a scene
