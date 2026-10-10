@@ -183,8 +183,8 @@ class NodeBudget:
 
     Per node rather than cluster-wide because a pod runs on one machine: a cluster with room
     in total and none on any single node is the state where jobs are admitted and then sit
-    ``Unschedulable``: the free cores are spread across nodes and no single node
-    holding the 4.75 a pod needed.
+    ``Unschedulable``: the free cores are spread across nodes and no single node holds
+    what one pod needs.
 
     *node_id* is this object's identity -- the same hash ``runs.node_label`` records, and the
     value ``robovast.io/node-id`` carries where the node is labelled. Every dict in the
@@ -587,11 +587,11 @@ class AdmissionController:
                 # a node calibrated smaller genuinely holds more of them.
                 #
                 # **An unlabelled node is a candidate.** It cannot be *pinned* to -- there is
-                # no selector for it -- but it can hold work, and excluding it was a hang
-                # waiting to happen: a cluster whose nodes predate the identity label has NO
-                # candidates at all, so nothing is ever admitted and every campaign waits
-                # forever reporting "queued for capacity" on an idle cluster. Observed exactly
-                # that way. A missing label now costs the pin, never the run.
+                # no selector for it -- but it can hold work, and excluding it would hang:
+                # a cluster whose nodes carry no identity label would have NO candidates at
+                # all, so nothing would ever be admitted and every campaign would wait
+                # forever reporting "queued for capacity" on an idle cluster. A missing label
+                # costs the pin, never the run.
                 fits = [n for n in by_id.values()
                         if item.may_use(n)
                         and (not n.pinnable or n.node_id not in held_for_pin)
@@ -604,26 +604,21 @@ class AdmissionController:
                 may_grow = (item.pin is None and growable
                             and unpinned < GROWTH_UNPINNED_LIMIT)
                 if chosen is None and not may_grow:
-                    # **This owner's items, not the queue's.** The count spanned every owner,
-                    # so a campaign with a handful of jobs queued was told the whole cluster's
-                    # queue depth, reported into its own log as though it were its own.
-                    # The refusal SLOT was made per owner for exactly this confusion; the
-                    # number inside the string was not. The count drops as this pass creates
-                    # the owner's items, so it is accurate mid-pass.
+                    # **This owner's items, not the queue's.** A count spanning every owner
+                    # would tell a campaign the whole cluster's queue depth in its own log,
+                    # as though it were its own; the refusal slot is per owner for the same
+                    # reason. The count drops as this pass creates the owner's items, so it
+                    # is accurate mid-pass.
                     waiting = f"{planned_by_owner[item.owner]} job(s) waiting"
                     # Which of the two filters emptied the list, because they need opposite
                     # responses and the message is the only thing an operator sees. A node
                     # excluded by `may_use` is being measured, or is outside the configured
-                    # pool -- reporting "no node has that free" over an idle cluster sent the
-                    # reader to look for capacity that was never the problem. Observed saying
-                    # "no node has that free (most free: 89 cpu)" for a job needing 4.25,
-                    # while all four nodes were simply out for calibration.
+                    # pool -- reporting "no node has that free" over an idle cluster would
+                    # send the reader to look for capacity that is not the problem.
                     usable = [n for n in by_id.values() if item.may_use(n)]
-                    # What it would need on the node it would actually go to. `need` was left
-                    # at the DECLARED sizing whenever nothing fit -- so a calibrated campaign
-                    # was told its job needs the declared figure while the nodes it was being
-                    # tested against had measured ones asking for substantially less. The fit
-                    # test already used the per-node figure; only the message did not.
+                    # What it would need on the node it would actually go to, matching the
+                    # per-node figure the fit test used rather than the declared sizing,
+                    # which a calibrated node may ask substantially less than.
                     if usable:
                         emptiest = max(usable, key=lambda n: n.free_cpu)
                         need = item.sizing_on(emptiest.node_id)

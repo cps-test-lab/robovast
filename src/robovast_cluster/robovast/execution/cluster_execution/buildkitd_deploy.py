@@ -8,11 +8,9 @@ The alternative is a **fresh** BuildKit per build, spawned inside its own Job by
 on a node reusable between builds, a registry is the only cache there can be. It also pays two
 costs on every single build, neither of which shows up as anything but "the build is slow":
 
-* the base image was pulled again -- measured at 95-110 s per container, on builds where every
-  layer was already a cache hit;
-* ``RUN --mount=type=cache`` was thrown away, so a pip layer that missed re-downloaded its
-  wheels in full. One torch group took 226 s where the same step, with a warm download cache,
-  takes 172 s.
+* the base image is pulled again, even on a build where every layer is already a cache hit;
+* ``RUN --mount=type=cache`` is thrown away, so a pip layer that misses re-downloads its
+  wheels in full rather than from a warm download cache.
 
 A daemon that keeps its store fixes both, and nothing else can: a cold builder has to
 materialise the base whatever the registry holds.

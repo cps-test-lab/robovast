@@ -2251,9 +2251,9 @@ class ClusterService(ServiceBase):
 
     #: The run dirs inside a Job, newest first. Only **real** run dirs: a campaign root holds
     #: ``_jobs/`` beside them (and the other names in
-    #: :data:`~robovast.common.campaign_data.RESERVED_CAMPAIGN_DIRS`), and an earlier version of
-    #: this took the newest file anywhere under the root -- which was reliably a job artifact, so
-    #: it named the run ``_jobs/batch-0`` and pointed every reader at a subtree with no run in it.
+    #: :data:`~robovast.common.campaign_data.RESERVED_CAMPAIGN_DIRS`), and the newest file
+    #: anywhere under the root is reliably a job artifact -- taking it would name the run
+    #: ``_jobs/batch-0`` and point every reader at a subtree with no run in it.
     #:
     #: The shape is the filter: ``<config>/<run-number>``, the run number being digits. Matched on
     #: the layout rather than on a list of names to exclude, because the layout is what the readers

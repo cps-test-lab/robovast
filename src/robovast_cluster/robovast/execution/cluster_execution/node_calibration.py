@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Per-node container sizing, learned from one discarded run per node.
 
-**Why per node at all.** The same trial costs about 1.6x more CPU on the slowest machine of a
-mixed cluster than on the fastest, and wall time does not show it -- a realtime-paced
+**Why per node at all.** The same trial costs more CPU on a slow machine of a mixed cluster
+than on a fast one, and wall time does not show it -- a realtime-paced
 simulator holds one simulated second per wall second, so every machine finishes at roughly
 the same time and the difference lands entirely in CPU consumed. One declared number is
 therefore wrong on every node but the one it was measured on: sized for the fast node it
@@ -28,8 +28,8 @@ for.
 ``_calibration/`` (see ``RESERVED_CAMPAIGN_DIRS``), which nothing walks looking for runs, so
 it cannot enter the results in the first place. Taking one of the campaign's own runs and
 deleting it afterwards would be the more dangerous design by some distance -- a mistake there
-costs results that cannot be recovered -- and it would also hand back a campaign of 46 runs
-where 50 were asked for. This costs the same wall-clock and delivers all 50.
+costs results that cannot be recovered -- and it would also hand back fewer runs than were
+asked for. This costs the same wall-clock and delivers every run.
 
 **A node with an outstanding probe takes no campaign work.** Without that, jobs land there at
 the declared size while the probe is still running, and those runs are then the odd ones out
@@ -37,14 +37,13 @@ on a node whose later runs are calibrated -- reintroducing the very inconsistenc
 exists to remove. The cost is one run's worth of ramp-up at campaign start, in parallel
 across the nodes.
 
-Frozen once set. Continuing to adapt would mean run 5 and run 40 on the same node ran in
-different environments, which is the same defect in a slower form.
+Frozen once set. Continuing to adapt would mean an early and a late run on the same node ran
+in different environments, which is the same defect in a slower form.
 
 **Pilots calibrate nothing.** When no node would receive a second run there is nothing for a
 calibration run to pay for -- discarding one would discard the campaign. The rule needs no
 tuned constant: if the plan has no more jobs than the cluster has nodes, no node gets a
-second one, so the whole mechanism is skipped and the campaign behaves exactly as it did
-before any of this existed.
+second one, so the whole mechanism is skipped and every run uses the declared sizes.
 """
 
 from __future__ import annotations
@@ -103,15 +102,14 @@ MIN_PROBE_SAMPLES = 10
 #: the smallest node -- is a configuration fault, and it is already caught before any job
 #: exists, by the ``preflight`` in ``_start_probes``. What reaches the end of a batch
 #: unmeasured is therefore the other case: a pinned probe that lost a race for *free*
-#: capacity. That drains. Failing on first sight turned a busy moment at campaign start into
-#: a terminal error, and because the batch's own runs have already finished by then it
-#: discarded work that was complete and correct -- with a diagnosis naming a cause that had
-#: never been observed, since the probe's own wait was recorded under a key nobody read.
+#: capacity. That drains. Failing on first sight would turn a busy moment at campaign start
+#: into a terminal error, and because the batch's own runs have already finished by then it
+#: would discard work that is complete and correct.
 #:
 #: Two is enough to tell them apart. A node that sat out one batch and is measured on the
 #: next was contended; one that sits out twice running is not resolving itself, which is the
-#: assumption the terminal error rests on -- so the error is kept, and now made on evidence
-#: rather than on the first opportunity. A single-batch campaign never reaches the limit and
+#: assumption the terminal error rests on -- so the error is made on evidence rather than on
+#: the first opportunity. A single-batch campaign never reaches the limit and
 #: ends with a warning, which is the right outcome for it: the node took no work, so nothing
 #: in its results was sized two different ways.
 UNMEASURED_BATCH_LIMIT = 2
@@ -121,12 +119,12 @@ UNMEASURED_BATCH_LIMIT = 2
 class NodeCalibration:
     """Per-node container CPU, learned once per node per campaign.
 
-    Deliberately in-memory and per campaign. A figure cached across campaigns would be exactly
-    the transferable factor this cluster's own data refuted: measured against two unlike
-    campaigns, container rankings *invert* between nodes and per-``(node, container)`` costs
-    move up to 40%, so a number learned in one campaign mis-sizes the next. Measuring this
-    campaign, on this node, under the contention this campaign actually meets is the only
-    model the data supports -- and it is why the cost is one run per node rather than a
+    Deliberately in-memory and per campaign. A figure cached across campaigns assumes a
+    per-node factor that transfers between workloads, and it does not: between two unlike
+    campaigns the ranking of containers can invert between nodes and a per-``(node,
+    container)`` cost can move substantially, so a number learned in one campaign mis-sizes
+    the next. Measuring this campaign, on this node, under the contention this campaign
+    actually meets is what holds -- and it is why the cost is one run per node rather than a
     benchmark suite.
     """
 
@@ -155,7 +153,7 @@ class NodeCalibration:
     #:
     #: **The decision is campaign-scoped and the numbers that answer it are not.** It compares
     #: the work there is against the nodes there are, and a batch is only part of the work --
-    #: so asking it per batch judges a 150-run search by whichever batch happened to be
+    #: so asking it per batch judges a whole search by whichever batch happened to be
     #: smallest. A search that ramps its repetitions then flips from "applies" to "does not"
     #: mid-campaign while its nodes stay measured, and everything reading the answer is told
     #: the campaign is running on the bootstrap when it is not.
@@ -485,21 +483,20 @@ def calibration_applies(total_jobs: int, node_count: int, growable: bool = False
 #: not the campaign log -- what that prints has ``advice.CPU_HEADROOM`` already applied and
 #: overstates the measurement by that factor.
 #: **The pod these sum to has to fit the SMALLEST node**, because the probe is pinned to the
-#: node it measures and a probe no node can hold is a campaign that cannot calibrate. At
-#: sut=8 the three summed to 13 against a 12-core node, so that node's probe was unplaceable
-#: -- and the failure did not look like a placement problem, which is why the sum is stated
-#: here rather than left to be discovered per role.
+#: node it measures and a probe no node can hold is a node that cannot calibrate -- and that
+#: failure does not look like a placement problem, which is why the sum is stated here
+#: rather than left to be discovered per role.
 #:
-#: **Fitting is not the same as leaving room.** At sut=6 the pod summed to exactly the
-#: spendable cores of the smallest node -- allocatable less the cluster headroom -- which
-#: passes the "could an empty node hold it" check and then places only while that node is
-#: entirely empty. Observed: its probe never ran, so the node accepted no work for the whole
-#: batch and the campaign quietly used three machines out of four. A default should leave
-#: slack rather than land on the boundary.
+#: **Fitting is not the same as leaving room.** A pod that sums to exactly the spendable
+#: cores of the smallest node -- allocatable less the cluster headroom -- passes the "could
+#: an empty node hold it" check and then places only while that node is entirely empty, so
+#: its probe may never run and the node takes no work for the whole batch. A default leaves
+#: slack rather than landing on the boundary.
 #:
-#: 5 keeps roughly a 3x margin over the largest `sut` figure measured across four unlike
-#: machines, which is what this figure needs: enough that the probe never throttles while
-#: measuring, since a throttled probe measures its own ceiling rather than its demand.
+#: The `sut` figure keeps a wide margin over what a navigation stack measures at peak, which
+#: is what this figure needs: enough that the probe never throttles while measuring, since a
+#: throttled probe measures its own ceiling rather than its demand. ``kubectl describe nodes``
+#: shows each node's allocatable cores to check the sum against.
 DEFAULT_BOOTSTRAP_CPU = {"sut": 5, "simulation": 3, "scenario": 2}
 DEFAULT_BOOTSTRAP_MEMORY = {"sut": "2Gi", "simulation": "4Gi", "scenario": "1Gi"}
 DEFAULT_BOOTSTRAP_OTHER = (1, "1Gi")
@@ -807,9 +804,9 @@ def container_cpu_profile(rows, limit_cores=None, percentile: float = 95.0) -> d
     without it.
 
     ``sustained`` is the 95th percentile of the per-tick totals and ``peak`` the largest. The
-    pair exists because one number cannot serve both roles -- measured on the shipped
-    example, a simulator sustains 0.34 cores and peaks at 5.98, so sizing it at either figure
-    alone is wrong by about 18x in one direction or the other.
+    pair exists because one number cannot serve both roles -- a simulator can sustain a
+    fraction of a core and peak at several, so sizing it at either figure alone is wrong by an
+    order of magnitude in one direction or the other.
 
     Returns ``{}`` when there is nothing to read, which the caller must treat as "not
     measured" rather than as zero.
@@ -833,12 +830,12 @@ def container_cpu_profile(rows, limit_cores=None, percentile: float = 95.0) -> d
         # They are there, and they are large. The monitor's CSV covers the container's whole
         # life including bring-up, where psutil reports a newly-seen process's average since
         # it started rather than since the last sample -- and a ROS stack spawns dozens of
-        # processes at once. Measured on a 3-core container: 10.4 "cores" outside the trial
-        # window against 2.82 inside it. Every other consumer of this data filters on
+        # processes at once, so the samples outside the trial window can read several times
+        # the container's limit. Every other consumer of this data filters on
         # ``in_window``, which postprocessing adds later and the raw file does not carry, so
         # calibration is the one reader that meets the artifact -- and it takes the MAX,
-        # which is the worst possible statistic to hand it. Sizing a node from that reserved
-        # 14.4 cores for a 3-core container, and 35 on another.
+        # which is the worst possible statistic to hand it: unfiltered, it would size a
+        # container at many times its own limit.
         totals = [t for t in totals if t <= limit_cores]
         if not totals:
             return {}

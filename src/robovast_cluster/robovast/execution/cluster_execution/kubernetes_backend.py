@@ -117,13 +117,13 @@ def pull_policy_for(image_ref: str) -> str:
     written out** -- never left to Kubernetes' default, which is the trap this exists to
     close. That default is ``IfNotPresent`` *except* for a ``:latest`` tag, where it
     silently becomes ``Always``; the campaign image is a floating ``:latest`` in the
-    ordinary case, so every container of every scenario pod re-contacted the registry on
-    every start even though the node already had the image.
+    ordinary case, so under that default every container of every scenario pod would
+    re-contact the registry on every start even though the node already has the image.
 
-    A batch of thirty-five pods is then ~140 registry round trips delivered in one
-    instant, against a kubelet whose image-pull limiter is five per second
-    (``registryPullQPS``, burst ten). The pods past the burst come back
-    ``ErrImagePull: pull QPS exceeded`` -- not a blip but arithmetic, on every batch.
+    A batch of pods times their containers is then that many registry round trips
+    delivered in one instant, against a kubelet whose image-pull limiter defaults to five
+    per second (``registryPullQPS``, burst ten). Any batch larger than the burst gets
+    ``ErrImagePull: pull QPS exceeded`` for the pods past it -- not a blip but arithmetic.
 
     The policy follows the ref rather than being chosen: a digest names the bytes, so
     "if not present" cannot serve anything stale, while a tag can be re-pushed under us
@@ -338,16 +338,15 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
 
     **What ``limit: request`` buys is an IDENTICAL budget in every run, not a counter that
     reads zero.** A container sized at its own measurement sits against that measurement, so
-    it throttles -- measured here, the system under test was quota-bound in every run of a
-    150-run campaign, at up to 10.5%, against 2 runs in 45 for a declared figure two to three
-    times larger. That is what a tight, measured ceiling looks like and not evidence of harm:
-    over the same pair, realtime factor was *better* calibrated (0.9994 against 0.9941),
-    errors were zero in both, and the verdict rate did not move.
-    
+    it throttles a little in most runs. That is what a tight, measured ceiling looks like and
+    not by itself evidence of harm: ``run_validity_view`` reports ``quota_bound`` and
+    ``throttle_ratio`` per run, and comparing those runs' realtime factor and verdicts with
+    the rest is how to check whether the throttling changed anything a campaign measures.
+
     The property being protected is that the allocation is the same on every run of a node,
     so it cannot become a hidden variable between them. Sizing for a counter of zero instead
-    would mean padding the largest container by 60-100%, which hands back most of the ~1.6x
-    density that measuring exists to find, in exchange for a harm no signal detects.
+    would mean padding the largest container well beyond its measurement, which hands back
+    much of the density that measuring exists to find.
 
     **A probe is judged far more strictly, and that is the asymmetry to keep in view.** It is
     refused outright for throttling past what its own statistic absorbs (see
@@ -1479,7 +1478,7 @@ class BatchJobRunner:
         that lock held. Going back through the queue therefore deadlocks a non-reentrant
         lock, and the symptom is the worst kind: the batch loop never completes its first
         iteration, so nothing is created, nothing is logged, and the campaign simply sits
-        there until its no-progress deadline calls it stalled. Observed exactly that way.
+        there until its no-progress deadline calls it stalled.
         """
         if not node_id or self._calibration is None:
             return None
@@ -3305,9 +3304,9 @@ class BatchJobRunner:
                     #
                     # A cause that blocks only SOME of them is, by that fact alone, not in
                     # the configuration — it is the cluster this batch happened to land in.
-                    # Failing the campaign for it ends a long search mid-flight
-                    # over two jobs of thirty-five, with eight hours of finished work
-                    # behind it. So those jobs are dropped, exactly as a restarted one is,
+                    # Failing the campaign for it would end a long search mid-flight over
+                    # a few jobs of one batch, discarding every batch already finished.
+                    # So those jobs are dropped, exactly as a restarted one is,
                     # and the batch runs on with what is left.
                     if len(blocked) == len(job_names):
                         raise CampaignConfigError(
@@ -3326,7 +3325,7 @@ class BatchJobRunner:
             # buys a more convincing wrong answer rather than a chance of recovery.
             #
             # What is NOT deliberate is failing the campaign for it: one flaky sidecar in
-            # one job of one batch would end a 50-batch search and orphan the batches that
+            # one job of one batch would end a long search and orphan the batches that
             # had already finished. The trial is what the restart invalidates; the batch
             # around it is fine and the batches after it were never in question. So: drop
             # that job, record why, and keep going.

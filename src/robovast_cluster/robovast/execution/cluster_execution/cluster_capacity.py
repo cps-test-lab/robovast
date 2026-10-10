@@ -269,10 +269,9 @@ class ClusterBudgetProvider:
         **Every node, always.** The identity is what the accounting keys on, so a node
         without one is not "a node that cannot be pinned" -- it is a node that collides with
         every other one that has none, and the collision is invisible: two unlabelled nodes
-        are one slot in the controller's dicts, so half the cluster's free capacity is simply
-        never offered. A four-node cluster that has not been re-``setup`` since the label was
-        introduced therefore runs on one node's worth of room, with nothing anywhere saying
-        so.
+        are one slot in the controller's dicts, so most of the cluster's free capacity is
+        simply never offered. A cluster whose nodes were never labelled by ``setup`` would
+        therefore run on one node's worth of room, with nothing anywhere saying so.
 
         So the label is read where it is there, and where it is not the same value is
         **computed** -- ``node_label`` is a plain digest of the node name with no salt, which

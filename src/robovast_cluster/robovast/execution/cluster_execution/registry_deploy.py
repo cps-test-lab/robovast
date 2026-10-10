@@ -22,15 +22,15 @@ prerequisite -- and a site without one could not build at all. This runs one in 
 ``robovast`` pod ``vast cluster setup`` creates (:mod:`.store_pod`), so a build target
 always exists.
 
-**Why not the service pod, where it started.** ``robovast-service`` is a Deployment rolled
-by every ``vast service upgrade``, so the registry restarted on each version bump and its
-blob volume followed the Deployment rather than the cluster. The blobs are what
+**Why not the service pod.** ``robovast-service`` is a Deployment rolled by every
+``vast service upgrade``, so a registry there would restart on each version bump and its
+blob volume would follow the Deployment rather than the cluster. The blobs are what
 already-submitted campaigns are pulled from: they are cluster-lifetime state, created at
 setup and discarded only by ``vast cluster cleanup``.
 
-Moving it changes **no image ref**. The prefix is still the service's published Ingress
-host (see below); what moved is the Ingress' ``/v2`` backend, from the service's Service
-to the ``robovast`` pod's. Push and pull both go on resolving the same public name.
+Where it runs is invisible in **every image ref**. The prefix is the service's published
+Ingress host (see below), whose ``/v2`` backend is the ``robovast`` pod's Service. Push and
+pull both resolve the same public name.
 
 **Why it rides the service's own Ingress rather than a Service DNS name.** An image ref
 is a single string used twice: BuildKit pushes to it from inside a pod (pod network,
@@ -88,8 +88,8 @@ REGISTRY_VOLUME_NAME = "registry-data"
 
 #: The registry's own debug listener, which serves ``/debug/health`` **unauthenticated**.
 #:
-#: Load-bearing once auth is on: the probes used to read ``/v2/``, which then answers 401,
-#: and an ``httpGet`` probe counts anything outside 200-399 as a failure. The container
+#: Load-bearing once auth is on: ``/v2/`` then answers 401, and an ``httpGet`` probe counts
+#: anything outside 200-399 as a failure, so a probe reading it would fail. The container
 #: would never become Ready, the ``robovast`` pod would never come up, and nothing about the
 #: message would point at authentication. Not published by any Service -- it is reachable
 #: only from the kubelet on the pod's own address.
@@ -229,8 +229,8 @@ def registry_volume(storage_path=DEFAULT_REGISTRY_HOST_PATH, storage_class=""):
 
     ``emptyDir`` is not offered: any restart of the ``robovast`` pod would discard every built
     image, and campaign Jobs already submitted against those refs would go straight to
-    ImagePullBackOff rather than fail honestly. Upgrades no longer restart this pod, but a
-    crash, an eviction and a node reboot still do.
+    ImagePullBackOff rather than fail honestly. Upgrades do not restart this pod, but a
+    crash, an eviction and a node reboot do.
 
     A claim is offered because losing the blobs strands refs that submitted campaigns are
     already being pulled from. So a deployment that *has* a StorageClass may put the
