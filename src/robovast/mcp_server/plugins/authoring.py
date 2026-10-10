@@ -27,7 +27,6 @@ import logging
 from fastmcp import FastMCP
 
 from robovast.mcp_server import service_access
-from robovast.mcp_server.service_access import NO_SERVICE
 
 logger = logging.getLogger(__name__)
 
@@ -392,8 +391,9 @@ def describe_world(address: str, targets: str = "", entities: bool = False) -> d
 
 
 def _resolved_request(address: str):
-    """*address* -> ``(client, ExecRequest)`` with no ``command`` set yet, or raise
-    ``ValueError`` naming why (no address, no service).
+    """*address* -> ``(client, ExecRequest)`` with no ``command`` set yet; raises
+    ``ValueError`` for an address that names no workspace and
+    :class:`~robovast.mcp_server.service_access.NoService` when no service answers.
     """
     from robovast.service.interface import ExecRequest
     from robovast.service.project_push import _resolve_workspace_id
@@ -402,9 +402,7 @@ def _resolved_request(address: str):
         raise ValueError(
             "this needs a workspace address (/sources/<workspace_id>/<path>): the answer "
             "comes from the campaign's own image, which only the service knows how to reach")
-    client = service_access.service_client()
-    if client is None:
-        raise ValueError(NO_SERVICE)
+    client = service_access.require_service()
     workspace_id, rel_path = target
     resolved_id = _resolve_workspace_id(client, workspace_id)
     return client, ExecRequest(workspace_id=resolved_id, config_path=rel_path)
