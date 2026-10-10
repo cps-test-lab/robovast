@@ -46,6 +46,7 @@ centroids
 cgroup
 changelog
 checkable
+checkboxes
 classmethods
 CLI
 CMake
@@ -120,6 +121,8 @@ finalizer
 findable
 floorplan
 framebuffer
+frontend
+gcp
 gcs
 geoms
 getter
@@ -149,6 +152,7 @@ hostname
 hostPath
 hostPaths
 htpasswd
+http
 hz
 init
 initContainer
@@ -184,6 +188,7 @@ libs
 lidar
 lifecycle
 linkable
+linter
 lister
 Lite
 Liveness
@@ -244,6 +249,7 @@ normalises
 npm
 ns
 ntfy
+numpy
 observability
 offscreen
 onboarding
@@ -385,11 +391,13 @@ subclasses
 subcommand
 subdirectories
 subdirectory
+subprocess
 substring
 subtree
 SUT
 sut
 symlink
+symlinking
 symlinks
 sys
 sysinfo
@@ -416,6 +424,7 @@ triggered
 TTL
 tz
 ubuntu
+ui
 un
 unbuffered
 unbuilt
@@ -429,6 +438,7 @@ unfetched
 uniformly
 uninterpretable
 unioned
+unirandom
 unjoinable
 unlabelled
 unmeasurable
@@ -456,6 +466,8 @@ uploader
 uploaders
 upserted
 userspace
+uvicorn
+variadic
 vconcat
 Vega
 venv
@@ -477,6 +489,7 @@ Xeon
 XPath
 yaml
 Zenodo
+zenodo
 zlib
 µs
 parquet

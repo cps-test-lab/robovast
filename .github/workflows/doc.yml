@@ -31,6 +31,10 @@ jobs:
           sudo apt install -y enchant-2
       - name: Build
         run: make doc
+      # The CLI reference is rendered from the commands' help text, so a word added to a
+      # docstring in the code reaches the spelling check through this page as well.
+      - name: Check spelling
+        run: make checkspelling
       - name: Upload artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
