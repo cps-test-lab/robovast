@@ -18,10 +18,9 @@
 
 This is the in-cluster counterpart of ``vast serve``: a long-lived Deployment
 running the same FastAPI app (:mod:`robovast.service.app`), reached over a
-ClusterIP Service via ``kubectl port-forward`` (Ingress later). It generalizes
-the ephemeral, per-campaign control channel
-(:mod:`robovast.execution.control_server`) into a campaign-spanning service that
-launches and monitors controller pods on behalf of thin clients.
+ClusterIP Service -- by ``kubectl port-forward``, an Ingress, or a tailnet node. It
+drives every campaign in-process and creates their scenario Jobs itself, on behalf
+of thin clients.
 
 The manifests are pure dicts so they can be **server-side dry-run validated**
 against a real API server without scheduling anything (see
@@ -313,12 +312,11 @@ def grow_results_claim(core, namespace, size, *, dry_run=False):
 
 
 def _service_rbac_manifests(namespace):
-    """ServiceAccount + Role/RoleBinding letting the service launch controllers.
+    """ServiceAccount + Role/RoleBinding letting the service drive campaigns.
 
-    The service creates and monitors **controller pods** (and their logs) in its
-    namespace — the host's role today — so it needs pod create/read/delete plus
-    the ``pods/log`` subresource. It does not itself create scenario Jobs (the
-    controllers do), so no ``batch`` verbs here.
+    The service creates, watches and deletes the scenario Jobs, their pods and the aux
+    pods itself, so its Role carries the ``batch`` and pod verbs that needs -- each rule
+    below says what it is for.
 
     Plus a cluster-scoped read-only ClusterRole (nodes + pods + node metrics) backing the
     ``/usage`` endpoint — see the ClusterRole manifest below.
@@ -400,10 +398,8 @@ def _service_rbac_manifests(namespace):
         # "used" figure across tenants. The ClusterRole name is namespaced so parallel
         # robovast deployments don't collide.
         #
-        # Entirely read-only. Admission is the in-process
-        # controller's (node_admission.py), so the service writes nothing
-        # cluster-scoped. A deployment older than that removal still tries the create and
-        # gets a 403 here -- upgrade it rather than restoring the grant.
+        # Entirely read-only. Admission is the in-process controller's
+        # (node_admission.py), so the service writes nothing cluster-scoped.
         {
             "apiVersion": "rbac.authorization.k8s.io/v1",
             "kind": "ClusterRole",
@@ -1291,15 +1287,12 @@ def _ntfy_env_from_host():
 #: default base image. Read back by ``BaseConfig.get_registry_config()``.
 REGISTRY_CONFIG_SECRET_NAME = "robovast-registry-config"
 
-#: dockerconfigjson Secret holding credentials for an **external** registry, created
-#: when ``ROBOVAST_REGISTRY_SERVER``/``_USERNAME``/``_PASSWORD`` are set at setup.
-#:
-#: Purely a *pull* credential now. Experiment images are built into the registry that
-#: runs in this pod (:mod:`.registry_deploy`), which is open, so nothing needs a push
-#: credential any more. What still needs one is a ``.vast`` naming an image in a private
-#: registry — the campaign pods, the aux/exec pods and the service's own image all pull
-#: through this Secret. The old name is kept so an existing deployment's Secret is
-#: replaced rather than orphaned beside a new one.
+#: dockerconfigjson Secret holding every registry credential this deployment uses
+#: (:func:`_registry_dockerconfig_manifest`): the built-in registry's, once the deployment
+#: is published and the registry in the ``robovast`` pod (:mod:`.store_pod`) therefore
+#: authenticates, and an **external** registry's, when ``ROBOVAST_REGISTRY_SERVER`` /
+#: ``_USERNAME`` / ``_PASSWORD`` are set at setup. The build Job pushes with it; campaign
+#: pods, aux and exec pods, the image warmer and the service's own image pull with it.
 REGISTRY_PUSH_SECRET_NAME = "robovast-registry-push"
 
 
@@ -1308,8 +1301,8 @@ def _registry_env(ingress_host=""):
 
     Two unrelated registries meet here, and conflating them was the old bug:
 
-    * the **build target** — the registry in this pod. Its prefix is just the service's
-      own Ingress host (see :func:`registry_deploy.registry_prefix`), so it is derived,
+    * the **build target** — the registry in the ``robovast`` pod (:mod:`.store_pod`).
+      Its prefix is just the service's own Ingress host (see :func:`registry_deploy.registry_prefix`), so it is derived,
       never configured; a site does not get to point builds somewhere the cluster cannot
       pull from. Without an Ingress there is no reachable registry and no prefix, which
       is the honest answer rather than a ref that fails at pull time.
