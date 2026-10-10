@@ -1947,10 +1947,15 @@ busy
 
 ``blocked``
    It will not start on its own: an image reference that names nothing, missing pull
-   credentials, or a reservation no node can satisfy — one larger than the biggest
-   machine, or a GPU that no node advertises because its device plugin is down. These
-   look the same in ten minutes as in one, so the batch fails after **60 seconds**
-   (``BLOCKED_GRACE_SECONDS``) with Kubernetes' own message.
+   credentials, a reservation no node can satisfy — one larger than the biggest
+   machine, or a GPU that no node advertises because its device plugin is down — or a
+   one-shot init container such as ``fetch-inputs`` that ended ``OOMKilled``. The kubelet
+   starts nothing after such an init container and does not fail the pod, so it stays
+   ``Pending`` with no event; a native sidecar (``restartPolicy: Always``) is restarted
+   instead and is not counted here. These look the same in ten minutes as in one, so
+   after **60 seconds** (``BLOCKED_GRACE_SECONDS``) each such job is dropped and its run
+   recorded as invalid with Kubernetes' own message, or the init container's name; a
+   batch whose every job is blocked fails, since the cause is then in the campaign.
 
 The job *listing* (``vast cluster monitor``, the web UI, ``list_campaign_jobs``)
 reports all three, and a busy job appears there as ``pending`` carrying Kubernetes'

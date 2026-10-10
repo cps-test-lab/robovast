@@ -221,16 +221,17 @@ def resolve_pull_secret(cluster_config, k8s_core, namespace: str) -> str:
 def pod_block_reason(pod) -> "tuple[str, str] | None":
     """``(reason, message)`` if *pod* cannot start on its own, else ``None``.
 
-    Two of the three shapes that leave a pod ``Pending`` and its Job ``active``
+    Three of the four shapes that leave a pod ``Pending`` and its Job ``active``
     indefinitely: a container stuck in an unrecoverable ``waiting`` state (see
-    :data:`POD_BLOCKED_REASONS`), or a pod the scheduler cannot place (see
-    :data:`POD_UNSCHEDULABLE_REASONS`). The third is a volume the kubelet cannot set up,
+    :data:`POD_BLOCKED_REASONS`), a one-shot init container that ended ``OOMKilled`` (see
+    :func:`pod_wedged_init_container`), or a pod the scheduler cannot place (see
+    :data:`POD_UNSCHEDULABLE_REASONS`). The fourth is a volume the kubelet cannot set up,
     which is invisible here because it is recorded in Events rather than in the pod --
     see :func:`pod_awaiting_setup` and :data:`POD_VOLUME_REASONS`.
 
     Checks init *and* regular containers; ``message`` is Kubernetes' own text -- the
     failed image ref and registry error, or the scheduler's per-node accounting --
-    possibly empty.
+    possibly empty, or for the init container, a sentence naming it.
     """
     status = pod.status
     if status is None:
@@ -242,6 +243,11 @@ def pod_block_reason(pod) -> "tuple[str, str] | None":
         waiting = getattr(state, "waiting", None) if state else None
         if waiting and getattr(waiting, "reason", None) in POD_BLOCKED_REASONS:
             return waiting.reason, (getattr(waiting, "message", None) or "").strip()
+    wedged = pod_wedged_init_container(pod)
+    if wedged is not None:
+        return "OOMKilled", (f"init container {getattr(wedged, 'name', None) or '?'} was "
+                             "killed for exceeding its memory limit, and the kubelet does "
+                             "not start the next container after that")
     # Checked after the containers because an unschedulable pod has no container
     # statuses at all -- there is no node on which to create them.
     for cond in (getattr(status, "conditions", None) or []):
@@ -249,6 +255,33 @@ def pod_block_reason(pod) -> "tuple[str, str] | None":
                 and str(getattr(cond, "status", None)) == "False"
                 and getattr(cond, "reason", None) in POD_UNSCHEDULABLE_REASONS):
             return cond.reason, (getattr(cond, "message", None) or "").strip()
+    return None
+
+
+def pod_wedged_init_container(pod):
+    """The status of the one-shot init container *pod* is stuck behind, else ``None``.
+
+    An init container a process was OOM-killed in can still succeed -- a fetch retries a
+    killed ``curl`` -- and the kubelet then records it ``terminated`` with reason
+    ``OOMKilled``, neither starts the next container nor fails the pod: it stays
+    ``Pending`` with no event, and its Job reads ``active``. The kubelet can still move
+    past such a kill, so a caller gives it the blocked grace like any other block.
+
+    A native sidecar (``restartPolicy: Always``) is excluded: the kubelet restarts it, and a
+    sidecar's death is :func:`pod_invalidating_restart`'s to judge.
+    """
+    status = getattr(pod, "status", None)
+    if getattr(status, "phase", None) != "Pending":
+        return None
+    sidecars = {getattr(c, "name", None)
+                for c in getattr(getattr(pod, "spec", None), "init_containers", None) or []
+                if getattr(c, "restart_policy", None) == "Always"}
+    for cs in getattr(status, "init_container_statuses", None) or []:
+        if getattr(cs, "name", None) in sidecars:
+            continue
+        term = getattr(getattr(cs, "state", None), "terminated", None)
+        if term is not None and getattr(term, "reason", None) == "OOMKilled":
+            return cs
     return None
 
 
@@ -788,7 +821,8 @@ def _pod_signals(k8s_core, namespace,
     keeps counting a pod that has already terminated until the job controller catches
     up (see :func:`job_phase`). ``blocked_job_reasons``: Job name →
     ``"<reason>: <message>"`` for pods that cannot start (image pull / container-config
-    errors, a pod the scheduler will not place, a volume that will not mount). ``terminated_reasons``: Job name → reason string for a pod that ended
+    errors, an init step killed for memory, a pod the scheduler will not place, a volume
+    that will not mount; see :func:`pod_block_reason`). ``terminated_reasons``: Job name → reason string for a pod that ended
     abnormally (OOMKilled / evicted / deadline — see :func:`pod_termination_reason`), so
     a *failed* job can explain itself. ``restarted``: Job name → ``{"detail", "containers"}`` for a
     pod whose container the kubelet restarted after a CRASH (see
@@ -887,8 +921,9 @@ def running_scenario_job_names(k8s_core, namespace, label_selector) -> set:
 
 def blocked_job_reasons(k8s_core, namespace, label_selector) -> dict:
     """Job name → ``"<reason>: <message>"`` for Jobs whose pod cannot start **right
-    now** -- an image pull / container-config error, a pod the scheduler cannot place, or
-    a volume the kubelet cannot mount; see :func:`_pod_signals`.
+    now** -- an image pull / container-config error, an init step killed for memory, a pod
+    the scheduler cannot place, or a volume the kubelet cannot mount; see
+    :func:`_pod_signals`.
 
     A truthy result means "these jobs are not starting", NOT "these jobs will never
     start": the mapping includes the ones merely waiting their turn for a busy node or
@@ -941,33 +976,6 @@ def restarted_job_reasons(k8s_core, namespace, label_selector, job_names=None) -
     return {name: entry["detail"] for name, entry
             in restarted_job_forensics(k8s_core, namespace, label_selector,
                                        job_names).items()}
-
-
-def wedged_init_container_reasons(k8s_core, namespace, label_selector) -> dict:
-    """Job name → ``"<reason>: <message>"`` for Jobs whose pod is stuck behind an init
-    container that ended ``OOMKilled``.
-
-    An init container a process was OOM-killed in can still succeed -- a fetch retries a
-    killed ``curl`` -- and the kubelet then records it ``OOMKilled``, neither starts the next
-    container nor fails the pod: it stays ``Pending`` with no event, and its Job reads
-    ``active``. None of :func:`pod_block_reason`'s shapes covers it, so a wait that does not
-    ask this sees a Job that is merely slow. A caller treats the answer as blocked, under
-    the same grace, since the kubelet can still move past such a kill.
-    """
-    out = {}
-    for pod in k8s_core.list_namespaced_pod(namespace, label_selector=label_selector).items:
-        name = _pod_job_name(pod)
-        status = getattr(pod, "status", None)
-        if not name or getattr(status, "phase", None) != "Pending":
-            continue
-        for cs in getattr(status, "init_container_statuses", None) or []:
-            term = getattr(getattr(cs, "state", None), "terminated", None)
-            if term is not None and getattr(term, "reason", None) == "OOMKilled":
-                out[name] = (f"OOMKilled: init container {getattr(cs, 'name', None) or '?'} "
-                             "was killed for exceeding its memory limit, and the kubelet does "
-                             "not start the next container after that")
-                break
-    return out
 
 
 def oom_killed_job_forensics(k8s_core, namespace, label_selector, job_names=None) -> dict:

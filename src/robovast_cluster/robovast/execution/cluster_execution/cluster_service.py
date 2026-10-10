@@ -1856,10 +1856,11 @@ class ClusterService(ServiceBase):
         This re-walks the statuses ``pod_block_reason`` just matched, because that function
         reports the reason and not where it came from -- a signature every campaign caller
         shares and none of them needs widened. The two agree by construction: same statuses,
-        same order, same :data:`POD_BLOCKED_REASONS`. An unschedulable pod matches nothing
-        here, which is the empty string, and the caller reads that as "not a container".
+        same order, same :data:`POD_BLOCKED_REASONS`, then the same
+        :func:`pod_wedged_init_container`. An unschedulable pod matches nothing here, which
+        is the empty string, and the caller reads that as "not a container".
         """
-        from .cluster_execution import POD_BLOCKED_REASONS
+        from .cluster_execution import POD_BLOCKED_REASONS, pod_wedged_init_container
         statuses = list(getattr(pod.status, "init_container_statuses", None) or []) + \
             list(getattr(pod.status, "container_statuses", None) or [])
         for cs in statuses:
@@ -1867,7 +1868,8 @@ class ClusterService(ServiceBase):
             waiting = getattr(state, "waiting", None) if state else None
             if waiting and getattr(waiting, "reason", None) in POD_BLOCKED_REASONS:
                 return getattr(cs, "name", None) or ""
-        return ""
+        wedged = pod_wedged_init_container(pod)
+        return (getattr(wedged, "name", None) or "") if wedged is not None else ""
 
     def _retire_build_context(self, build_id: str) -> None:
         """Discard a just-finished build's staged context."""
@@ -1933,6 +1935,11 @@ class ClusterService(ServiceBase):
             "mirror). Nothing about the project's build: section is involved"),
     }
 
+    #: The pull hints above name an image; an init step killed for memory names none.
+    _BUILD_OOM_HINT = (
+        "the build pod's context-fetch step exceeded its memory limit, so the build never "
+        "started. This is the build infrastructure, not the project's build: section")
+
     def _blocked_build_error(self, build_id: str, reason: str, message: str,
                              container: str, terminal: bool):
         """The structured error for a builder pod that cannot start.
@@ -1952,7 +1959,8 @@ class ClusterService(ServiceBase):
         from robovast.service.interface import ImageBuildError
 
         from .cluster_execution import BLOCKED_GRACE_SECONDS
-        hint = self._BUILD_CONTAINER_HINTS.get(container)
+        hint = (self._BUILD_OOM_HINT if reason == "OOMKilled"
+                else self._BUILD_CONTAINER_HINTS.get(container))
         if hint is None:
             # An unschedulable pod has no offending container -- the scheduler never got
             # that far -- and its message is the per-node accounting, which is the diagnosis.
