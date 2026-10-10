@@ -52,6 +52,7 @@ from robovast.common import yaml_strict
 from robovast.common.config_extends import resolve_extends
 from robovast.common.config_presets import expand_configuration_presets
 from robovast.common.config import PINNED_REF
+from robovast.common.config_channels import SCENARIO, channel
 from robovast.common.containers import ros_repo_name
 
 logger = logging.getLogger(__name__)
@@ -617,25 +618,6 @@ def _scene_descriptor_problems(raw, vast_dir):
     return problems
 
 
-def _env_names(raw):
-    """Names declared in ``execution.env``, accepting both shapes it is written in.
-
-    The documented form is a list of single-key mappings (``- MY_VAR: "..."``); a plain
-    mapping is accepted too.
-    """
-    env = (raw.get("execution") or {}).get("env")
-    names = set()
-    if isinstance(env, dict):
-        names.update(str(k) for k in env)
-    elif isinstance(env, list):
-        for item in env:
-            if isinstance(item, dict):
-                names.update(str(k) for k in item)
-            elif isinstance(item, str):
-                names.add(item.split("=", 1)[0])
-    return names
-
-
 def _scene3d_problems(raw):
     """A ``scene3d`` panel replays the simulator's **recorded state**, so the runs have to record it.
 
@@ -1058,17 +1040,13 @@ def _config_block_problems(config, vast_dir, valid_param_names, declared_plugins
 
     # Scenario-parameter references (only checkable if the scenario was readable).
     if valid_param_names is not None:
-        config_dict = {}
-        for param in config.get("parameters", []) or []:
-            if isinstance(param, dict):
-                config_dict.update(param)
-        unknown = [p for p in config_dict if p not in valid_param_names]
+        unknown = [p for p in channel(config, SCENARIO) if p not in valid_param_names]
         if unknown:
             problems.append(_problem(
                 "parameters",
                 f"Unknown scenario parameter(s): {', '.join(unknown)}. "
                 f"Declared by the scenario: {', '.join(valid_param_names) or '(none)'}.",
-                config=name, field="parameters"))
+                config=name, field="parameters.scenario"))
     return problems
 
 
@@ -1274,33 +1252,30 @@ def _plugin_ref_problems(raw, vast_dir):
     return problems
 
 
-def _build_problems(raw, vast_dir):
-    """Fail-fast checks on a ``build:`` section's workspace-path references.
+def _python_packages_problems(raw, vast_dir):
+    """Every container's workspace-path ``python_packages`` entry must exist in the project.
 
-    A ``build.python_packages`` entry that is a workspace path (a source dir or a
-    ``.whl``) must actually exist in the project; index pins / git URLs are pip
-    specs and are not checked here (not resolvable offline). Tag shape and the
-    ``execution.image`` <-> ``build.tag`` consistency are enforced by the schema.
-
-    Entries may be grouped (a list of specs installed in one pip pass), so this
-    walks one level in: a path is a path in either form.
+    A path entry (a source dir or a ``.whl``) is copied into the image build context, so one
+    that is not there fails the image build after submission. Index pins and git URLs are
+    pip specs and are not checked (not resolvable offline). Entries may be grouped (a list
+    of specs installed in one pip pass), so this walks one level in.
     """
     problems = []
-    build = raw.get("build")
-    if not isinstance(build, dict):
+    containers = (raw.get("execution") or {}).get("containers")
+    if not isinstance(containers, dict):
         return problems
-    authored = build.get("python_packages", []) or []
-    entries = [spec for e in authored
-               for spec in (e if isinstance(e, list) else [e])]
-    for entry in entries:
-        if not isinstance(entry, str) or not entry.strip():
+    for name, block in containers.items():
+        authored = (block or {}).get("python_packages") if isinstance(block, dict) else None
+        if not isinstance(authored, list):
             continue
-        if _missing_workspace_path(entry, vast_dir):
-            problems.append(_problem(
-                "build",
-                f"'{entry}' looks like a workspace path but no such directory/wheel "
-                "exists in the project",
-                field="build.python_packages"))
+        field = f"execution.containers.{name}.python_packages"
+        for entry in (spec for e in authored for spec in (e if isinstance(e, list) else [e])):
+            if _missing_workspace_path(entry, vast_dir):
+                problems.append(_problem(
+                    "build",
+                    f"'{entry}' looks like a workspace path but no such directory/wheel "
+                    "exists in the project",
+                    config=name, field=field))
     return problems
 
 
@@ -1388,7 +1363,7 @@ def _ros_packages_problems(raw):
 def _missing_workspace_path(entry: str, vast_dir: str) -> bool:
     """Whether *entry* reads as a workspace path that is not in the project.
 
-    Shared by ``build.python_packages`` and the top-level ``plugins:`` list: both are pip
+    Shared by a container's ``python_packages`` and the top-level ``plugins:`` list: both are pip
     requirement specs where a *path* form is resolved against the project, so one rule and
     one message for both. Index pins and git URLs are not checked --- they are not
     resolvable offline, and guessing would fail a spec that is simply remote.
@@ -1412,7 +1387,7 @@ def _plugins_problems(raw, vast_dir):
     the network:
 
     * a **workspace path** entry that is not in the project --- the same check
-      ``build.python_packages`` already gets, which top-level ``plugins:`` never had, so a
+      a container's ``python_packages`` gets, which top-level ``plugins:`` never had, so a
       wheel named with a typo surfaced only when a campaign tried to install it;
     * a plugin **already installed** in this workspace whose metadata declares a
       dependency on robovast itself. Harmless while the install resolves against the host,
@@ -1498,11 +1473,9 @@ def validate_project_file(config_path):
     # ...and the run's bag has to hold what the tables and panels read from it.
     problems.extend(_recording_problems(raw, scenario_file))
 
-    # A build: section's workspace-path python_packages must exist (fail-fast at
-    # submit, before any image build runs). Schema-level checks (tag shape, the
-    # execution.image <-> build.tag consistency) are already covered by the config
-    # model in _schema_problems.
-    problems.extend(_build_problems(raw, vast_dir))
+    # A container's workspace-path python_packages must exist (fail-fast at submit,
+    # before any image build runs).
+    problems.extend(_python_packages_problems(raw, vast_dir))
     # ...and a container's source-built ROS packages must be declared in a form a build could
     # act on: a repository, a ref that pins, and no two repos landing in one src/ directory.
     problems.extend(_ros_packages_problems(raw))
