@@ -11,8 +11,8 @@
 // is the finished run's.
 //
 // Two "dropdown dialogs" drive it: a Run picker (the shared Explorer campaign→config→run tree) and an
-// Edit-visualization editor (Monaco, same style as the config editor) that saves the campaign's
-// `visualization:` block as a .vast override and reloads the panels.
+// Edit-visualization editor (Monaco, same style as the config editor) that writes the campaign's
+// `visualization:` block back into its `_config/<name>.vast` in place and reloads the panels.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -561,8 +561,8 @@ export function RunView({
         {/* Beside the picker it feeds: the reload is what puts a newly finished campaign into
             that tree. */}
         <RefreshResultsButton state={refresh} />
-        {/* Refused while the campaign runs: saving writes a .vast override into the campaign's own
-            `_config/`, which the runs that have not started yet are configured from. Editing the
+        {/* Refused while the campaign runs: saving writes into the campaign's own
+            `_config/<name>.vast`, which the runs that have not started yet are configured from. Editing the
             view would change the experiment. A tooltip on a span, since a disabled button fires
             no events for one to listen to. */}
         <Tooltip
@@ -718,7 +718,8 @@ export function RunView({
 }
 
 // The 'edit visualization' dropdown: loads the campaign's `visualization:` block, edits it in Monaco
-// (same style as the config editor), and on Save writes a .vast override, then reloads the panels.
+// (same style as the config editor), and on Save writes it into the campaign's `_config/<name>.vast`
+// in place, then reloads the panels.
 // Save is enabled only when the text actually changed — reloading is otherwise pointless.
 function VisualizationEditor({
   campaignId,

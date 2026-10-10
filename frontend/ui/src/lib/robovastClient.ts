@@ -960,7 +960,7 @@ export const robovast = {
   },
 
   // The campaign's `results_processing.postprocessing` block as editable YAML text (the rerun
-  // dialog). `source` names the effective .vast; saving writes a new override revision.
+  // dialog). Saving writes it back into the campaign's own `_config/<name>.vast`, in place.
   getPostprocessingSource: (campaignId: string) =>
     request<PostprocessingSource>(
       'GET',
