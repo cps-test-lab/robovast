@@ -400,15 +400,15 @@ def _write_postprocessing_provenance_yaml(
 ) -> None:
     """Write postprocessing.yaml under campaign-<id>/_transient/ with all provenance entries.
 
+    Raises ``OSError`` when the record cannot be written: it is what says the campaign is
+    postprocessed, so a pass that could not write it has not finished.
+
     Args:
         campaign_dir: Path to the campaign-<id> directory.
         entries: List of provenance entry dicts.
     """
     transient_dir = Path(campaign_dir) / "_transient"
-    try:
-        transient_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return
+    transient_dir.mkdir(parents=True, exist_ok=True)
     yaml_path = transient_dir / "postprocessing.yaml"
 
     # Paths in entries are relative to results_dir (parent of campaign_dir).
@@ -436,17 +436,14 @@ def _write_postprocessing_provenance_yaml(
         "generated_by": "robovast",
         "entries": relative_entries,
     }
-    try:
-        with open(yaml_path, "w", encoding="utf-8") as f:
-            yaml.dump(
-                data,
-                f,
-                default_flow_style=False,
-                sort_keys=False,
-                allow_unicode=True,
-            )
-    except OSError:
-        pass  # skip if we cannot write
+    with open(yaml_path, "w", encoding="utf-8") as f:
+        yaml.dump(
+            data,
+            f,
+            default_flow_style=False,
+            sort_keys=False,
+            allow_unicode=True,
+        )
 
 
 
@@ -698,7 +695,13 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements,too-many-b
     # and a file has no way to say "finished" but when it is written. Written before the
     # metadata step, and still written when that fails: it records what was derived, which is
     # true either way -- the failure is carried by the return below.
-    _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
+    try:
+        _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
+    except OSError as exc:
+        # Without it the campaign does not read as postprocessed, whatever was derived.
+        output(f"✗ the postprocessing record could not be written: {exc}")
+        failures.append(f"the postprocessing record could not be written: {exc}")
+        success = False
 
     meta_failure = ""
     if skip_metadata:
