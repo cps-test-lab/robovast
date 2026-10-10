@@ -35,13 +35,11 @@ SHM_PATH = "/dev/shm"
 CPU_STAT_PATH = "/sys/fs/cgroup/cpu.stat"
 CPU_STAT_FIELDS = ("nr_periods", "nr_throttled", "throttled_usec")
 
-#: The same counters under cgroup **v1**, which is not a legacy concern: one node of the
-#: cluster this was written against runs an older distribution and is the largest machine in
-#: it, so skipping v1 left ~48% of a campaign's runs unmeasured -- and, because the scheduler
-#: packs by core count, they were the runs on the node that attracted the most work and
-#: produced every observed control-loop miss. A blind spot that tracks node size is worse than
-#: a uniform one: the aggregate looks fine and is drawn from the machines under least
-#: pressure.
+#: The same counters under cgroup **v1**, which is not a legacy concern: a mixed cluster can
+#: hold a node on an older distribution, and when that node is a large one the scheduler,
+#: which packs by core count, sends it a large share of the work. Skipping v1 would leave
+#: exactly those runs unmeasured. A blind spot that tracks node size is worse than a uniform
+#: one: the aggregate looks fine and is drawn from the machines under least pressure.
 CPU_STAT_PATH_V1 = "/sys/fs/cgroup/cpu/cpu.stat"
 
 #: v1 spells the third counter ``throttled_time`` and reports it in **nanoseconds**, where v2
@@ -110,23 +108,21 @@ def cpu_stat_probe():
 #: cgroup v2's memory accounting for the whole container -- what the kernel actually enforces
 #: the limit against. The per-process rows cannot answer this: RSS counts a shared page once
 #: per process, so summing them over a stack of forty ROS nodes sharing libraries and a Fast
-#: DDS shared-memory segment over-reports badly. Measured on one campaign: summed RSS peaked at
-#: 5147 MiB in a container running comfortably under a 2944 MiB limit, while its largest single
-#: process held 1014 MiB. ``memory.peak`` is the high-water mark and needs kernel 5.19+.
+#: DDS shared-memory segment over-reports badly -- the sum can exceed the container's own
+#: limit while the container runs comfortably under it. ``memory.peak`` is the high-water
+#: mark and needs kernel 5.19+.
 MEMORY_PATH = "/sys/fs/cgroup"
 MEMORY_FILES = ("memory.current", "memory.peak", "memory.max")
 
 #: The same three under cgroup **v1**, mapped onto the v2 column names so a campaign spanning
 #: both kinds of node stays comparable -- exactly as :data:`CPU_STAT_PATH_V1` does for the
-#: throttle counters, and for the same reason. That fix was made for CPU alone and the memory
-#: probes were left v2-only, which is not an even trade on a mixed cluster: measured here, the
-#: single v1 node is also the largest, so memory went unmeasured on the majority of the
-#: cluster while reading as merely absent.
+#: throttle counters, and for the same reason: memory read on v2 alone goes unmeasured on
+#: every v1 node while reading as merely absent.
 #:
-#: **It silently disabled the OOM guard there too**, which matters more than the missing
-#: figure. ``oom_kills`` comes from ``memory.events``; absent, it is treated as "not measured"
-#: and never as a refusal, so a probe OOM-killed on such a node would be calibrated from
-#: rather than rejected -- a fragment of a run that died, believed.
+#: **Missing v1 would silently disable the OOM guard there too**, which matters more than the
+#: missing figure. ``oom_kills`` comes from ``memory.events``; absent, it is treated as "not
+#: measured" and never as a refusal, so a probe OOM-killed on such a node would be calibrated
+#: from rather than rejected -- a fragment of a run that died, believed.
 MEMORY_PATH_V1 = "/sys/fs/cgroup/memory"
 MEMORY_FILES_V1 = {
     "memory.usage_in_bytes": "memory_current",

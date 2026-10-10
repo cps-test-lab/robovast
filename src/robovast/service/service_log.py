@@ -16,11 +16,9 @@
 
 """The service's own recent log, held in memory so a client can read it back.
 
-A service writes to stderr, and stderr is not readable back -- so "what has this thing
-been doing?" had no answer from any client at all. Several failures in this codebase are
-annotated with exactly that dead end (a scene cache retrying forever, a build whose reason
-"lived only in the service log", a generator whose own message never left the process).
-This is the source those comments were missing.
+A service writes to stderr, and stderr is not readable back -- so without this, "what has
+this thing been doing?" has no answer from any client: a scene cache retrying, a build's
+reason, a generator's own message would never leave the process.
 
 It is a bounded ring the ``robovast`` logger fills as records are emitted, sliced by byte
 offset so it serves the :class:`~robovast.service.interface.LogChunk` protocol the image

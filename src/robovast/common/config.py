@@ -243,12 +243,13 @@ class ResourcesConfig(BaseModel):
     #:   and clipping is not proportional, so a search proposing harder configurations can
     #:   exceed it -- ``run_validity_view.quota_bound`` says when that happened.
     #: * The **simulator and scenario** are not under test and should split. The simulator's
-    #:   peak-to-mean ratio is roughly 18 (measured: 0.34 cores sustained, 5.98 at its
-    #:   startup burst), so there is no honest single number: reserving the peak costs more
-    #:   than the un-tuned campaign did, and capping at the sustained figure clips a burst
-    #:   that changes nothing the robot experiences. Realtime pacing already normalises what
-    #:   the simulated world looks like, and ``runs.clock_map_*`` records per run whether it
-    #:   kept pace -- so the guard that makes a soft limit safe here is already in the data.
+    #:   peak-to-mean ratio can be an order of magnitude (a fraction of a core sustained,
+    #:   several at its startup burst), so there is no honest single number: reserving the
+    #:   peak costs more than leaving the container untuned, and capping at the sustained
+    #:   figure clips a burst that changes nothing the robot experiences. Realtime pacing
+    #:   already normalises what the simulated world looks like, and ``runs.clock_map_*``
+    #:   records per run whether it kept pace -- so the guard that makes a soft limit safe
+    #:   here is already in the data.
     #:
     #: The reservation is what the cluster packs by, so lowering it is what buys concurrency;
     #: the limit only decides when the kernel starts throttling.

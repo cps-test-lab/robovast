@@ -645,11 +645,10 @@ def _scene3d_problems(raw):
     cannot be looked for on disk -- what *can* be established is whether the configured
     simulator records one at all, which is the mistake actually made.
 
-    Asked of the **backend**, not inferred from the campaign's wheel names. The old check
-    pattern-matched ``roqsim`` in the simulation ref and the installed packages, which was the
-    only signal available before a simulator was a first-class thing -- and which now finds
-    nothing at all in the shape where the simulator runs from its own image and the campaign
-    installs no simulator packages whatsoever.
+    Asked of the **backend**, not inferred from the campaign's wheel names. Pattern-matching
+    ``roqsim`` in the simulation ref and the installed packages finds nothing at all in the
+    shape where the simulator runs from its own image and the campaign installs no simulator
+    packages whatsoever.
 
     A campaign with no backend is not second-guessed: nothing here could tell where its
     recording would come from.

@@ -17,11 +17,11 @@
 """What a log *line* is, and what a log is *full of*.
 
 Filtering answers "show me the lines matching X". It cannot answer the question
-that diagnoses a wedged run — **what is this log full of?** A campaign whose TF was
-rejected wholesale emitted one warning 18226 times; a severity ``grep`` returned 25
-of them, which read as ordinary noise, while the count that *was* the finding sat in
-a field nobody reads. When the flood is the signal, the summary is the diagnosis:
-``TF_OLD_DATA … x18226`` is one line instead of thousands.
+that diagnoses a wedged run — **what is this log full of?** A run whose TF is
+rejected wholesale emits one warning thousands of times; a severity ``grep`` capped
+to a page returns a handful of them, which reads as ordinary noise, while the count
+that *is* the finding sits in a field nobody reads. When the flood is the signal, the
+summary is the diagnosis: ``TF_OLD_DATA … xN`` is one line instead of thousands.
 
 Three layers, bottom up, all pure (no I/O) so the service, the MCP tools and the CLI
 share one set of definitions:
@@ -30,9 +30,9 @@ share one set of definitions:
    are forwarded, so a line arrives wearing up to two prefixes. Parsing them lives
    here, once, because stripping a redundant prefix for *reading* and stripping it to
    group *counting* are the same parse.
-2. **Severity** (:func:`severity_of`) — the one definition in RoboVAST. Callers used
-   to invent a severity regex per call site, and two callers with two patterns means
-   two answers to "is this run healthy?". :data:`DEFAULT_SEVERITY_PATTERN` is that
+2. **Severity** (:func:`severity_of`) — the one definition in RoboVAST. A severity
+   regex per call site would mean two callers with two patterns give two answers to
+   "is this run healthy?". :data:`DEFAULT_SEVERITY_PATTERN` is that
    pattern, published.
 3. **The summary** (:func:`summarize`) — group lines by their :func:`normalize` d
    shape, count each group, report the most frequent.
@@ -161,9 +161,9 @@ def peel_prefixes(line: str) -> LogLine:
     matches, and the last marker found wins: it is the producer's own verdict, and the
     outer layers only say who forwarded it.
 
-    Stopping at the first prefix (which this did until it was fixed) reads such a line
-    as unmarked, and an ``[ERROR]`` behind a launch tag then classifies as a keyword
-    match rather than the error it announces itself to be.
+    Stopping at the first prefix would read such a line as unmarked, and an ``[ERROR]``
+    behind a launch tag would then classify as a keyword match rather than the error it
+    announces itself to be.
     """
     rest = collapse_relay(line).lstrip()
     node = level = ""

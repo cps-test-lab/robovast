@@ -2542,7 +2542,7 @@ class ServiceBase(RobovastInterface):
         # mapping, which is what the author wrote.
         raw_config = load_config(target.config_path)
         campaign_config = validate_config(raw_config)
-        # The shared root, asked for directly: it never varied per workspace.
+        # The shared root, asked for directly: it does not vary per workspace.
         results_dir = str(self._campaigns_root())
         campaign_id = target.campaign_id or campaign_id_for(
             campaign_config, request.campaign_name or None)
@@ -2550,17 +2550,15 @@ class ServiceBase(RobovastInterface):
         config_filter = request.config_filter or None
 
         # NOTE: the config_filter is deliberately **not** validated here. Doing so
-        # meant expanding the whole campaign synchronously on the caller's thread,
-        # which (a) broke this method's documented "returns immediately" contract —
-        # the POST hung for the entire expansion, holding an anyio threadpool slot —
-        # (b) expanded twice (once here, once in the worker), and (c) could not work
+        # would mean expanding the whole campaign synchronously on the caller's thread,
+        # which (a) breaks this method's documented "returns immediately" contract —
+        # the POST would hang for the entire expansion, holding an anyio threadpool
+        # slot — (b) expands twice (once here, once in the worker), and (c) cannot work
         # for campaigns needing an auxiliary container, whose runner only exists
-        # inside the worker's _campaign_context. Expansion now happens exactly once,
-        # in the worker. A bad filter surfaces there as phase=failed with the same
-        # "Available configs:" message in Status.error (+ outcome.json) — which the
-        # in-process driver makes visible immediately; the old submit-time check
-        # existed only because a doomed *controller pod* would have hidden it in
-        # kubectl logs, and there is no such pod any more.
+        # inside the worker's _campaign_context. Expansion happens exactly once, in
+        # the worker. A bad filter surfaces there as phase=failed with the
+        # "Available configs:" message in Status.error (+ outcome.json), which the
+        # in-process driver makes visible immediately.
 
         self._guard_new_campaign()
 
