@@ -115,7 +115,8 @@ def create_upload(address: str, executable: bool = False) -> dict:
         # side-channel URL in this package (files.py, execution.py, results.py) resolves
         # itself the same way rather than depending on a layer above it.
         grant.url = service_access.web_url(client, Routes.upload(grant.token))
-    return grant.model_dump()
+    # Omitted, not empty, when nobody can name an origin: an empty link reads as one to use.
+    return grant.model_dump(exclude={"url"} if not grant.url else None)
 
 
 #: Shared note for the two tools that take *address*. Written once: the two make the same
