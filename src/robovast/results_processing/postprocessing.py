@@ -538,7 +538,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements,too-many-b
             replay yields the rows a live watcher wrote as the runs went.
         table_builder: Builds the campaign-end pass's tables elsewhere than in this process
             -- in parts, on the cluster the runs ran on -- as ``(tables or None for every
-            table) -> compact report``. What it did not build is built here as before, and a
+            table) -> compact report``. What it did not build is built in this process, and a
             failure of it is reported and leaves the building to this process.
 
     Returns:
