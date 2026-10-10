@@ -29,8 +29,9 @@ class _Provider:
 class _Cluster:
     """Jobs that end on their first listing, as *outcome(units, level)* says."""
 
-    def __init__(self, outcome, blocked=None):
+    def __init__(self, outcome, blocked=None, wedged=()):
         self.outcome = outcome
+        self.wedged = set(wedged)   # jobs whose pod waits behind an OOM-killed init step
         self.jobs = {}              # name -> status
         self.created = []           # (name, level, units)
         self.deleted = []
@@ -71,10 +72,21 @@ class _Cluster:
                     conditions=[types.SimpleNamespace(type="PodScheduled", status="False",
                                                       reason="Unschedulable",
                                                       message=reason)])))
+        for name in self.wedged & set(self.jobs):
+            stage = types.SimpleNamespace(name="stage", state=types.SimpleNamespace(
+                waiting=None, running=None,
+                terminated=types.SimpleNamespace(reason="OOMKilled", exit_code=0)))
+            pods.append(types.SimpleNamespace(
+                metadata=types.SimpleNamespace(name=f"{name}-pod", labels={"job-name": name},
+                                               owner_references=None),
+                spec=types.SimpleNamespace(node_name="n1"),
+                status=types.SimpleNamespace(phase="Pending", init_container_statuses=[stage],
+                                             container_statuses=None, conditions=None,
+                                             start_time=None, reason=None)))
         return types.SimpleNamespace(items=pods)
 
 
-def _work(cluster, admission=None, per_job=4, clock_steps=None):
+def _work(cluster, admission=None, per_job=4, clock=None):
     def make_items(units, level):
         size = max(1, per_job >> level)
         items = []
@@ -92,7 +104,8 @@ def _work(cluster, admission=None, per_job=4, clock_steps=None):
                          at_floor=lambda item, level: len(item.units) == 1,
                          submit_kwargs={"started_at": 0.0} if admission else {},
                          sleep=lambda s: None,
-                         find_oom=lambda names: {n for n in names if n in cluster.oom})
+                         find_oom=lambda names: {n for n in names if n in cluster.oom},
+                         clock=clock)
 
 
 def test_every_unit_is_delivered_when_nothing_runs_out_of_memory():
@@ -145,4 +158,23 @@ def test_another_failure_is_not_retried():
     work = _work(cluster)
     with pytest.raises(ShrinkingFailed, match="failed"):
         work.run(list(range(8)))
+    assert {lv for _, lv, _ in cluster.created} == {0}
+
+
+def test_a_pod_stuck_behind_an_oom_killed_init_step_fails_the_work_and_is_deleted():
+    # The kubelet starts nothing after an init container it recorded OOMKilled, and the pod
+    # stays Pending with its Job active: past the blocked grace it is a pod that cannot
+    # start, not a Job still working.
+    cluster = _Cluster(lambda units, level: "running" if 5 in units else "succeeded",
+                       wedged={"t-g0-1"})
+    now = [0.0]
+
+    def sleep(_seconds):
+        now[0] += 30.0
+
+    work = _work(cluster, clock=lambda: now[0])
+    work.sleep = sleep
+    with pytest.raises(ShrinkingFailed, match="t-g0-1: OOMKilled: init container stage"):
+        work.run(list(range(8)))
+    assert "t-g0-1" in cluster.deleted
     assert {lv for _, lv, _ in cluster.created} == {0}

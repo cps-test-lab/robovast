@@ -34,7 +34,10 @@ what a size is (:attr:`ShrinkingJobs.make_items`); this class owns the rest:
   floor (:attr:`ShrinkingJobs.at_floor`) is killed, the work fails, naming its units: they do
   not fit, and saying so is the only honest end.
 * **Other failures are not retried.** A Job that failed for any other reason fails the work
-  with that reason; shrinking would only hide it.
+  with that reason; shrinking would only hide it. So does a pod that cannot start, among
+  them one stuck behind an init container that was OOM-killed
+  (:func:`~.cluster_execution.wedged_init_container_reasons`): its Job reads active, and
+  without that it would be waited for until the work is stopped.
 """
 
 from __future__ import annotations
@@ -45,7 +48,8 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence
 
 from .admitted_jobs import AdmittedJobs, running_jobs
-from .cluster_execution import oom_killed_job_forensics
+from .cluster_execution import (blocked_and_contended_reasons, oom_killed_job_forensics,
+                                wedged_init_container_reasons)
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +92,8 @@ class ShrinkingJobs:
                  label_selector: str, make_items: Callable[[Sequence, int], List[Item]],
                  at_floor: Callable[[Item, int], bool], submit_kwargs=None,
                  poll_seconds: float = 5.0, sleep: Callable[[float], None] = time.sleep,
-                 find_oom: Optional[Callable[[List[str]], set]] = None):
+                 find_oom: Optional[Callable[[List[str]], set]] = None,
+                 clock: Optional[Callable[[], float]] = None):
         self.admission = admission
         self.owner_prefix = owner_prefix
         self.batch_api = batch_api
@@ -101,12 +106,23 @@ class ShrinkingJobs:
                               else lambda _level, kw=dict(submit_kwargs or {}): kw)
         self.poll_seconds = poll_seconds
         self.sleep = sleep
+        #: What the trackers time a pod that cannot start by; theirs when ``None``.
+        self.clock = clock
         self._find_oom = find_oom or (lambda names: set(oom_killed_job_forensics(
             core_api, namespace, label_selector, job_names=names)))
         #: ``{job name: units}`` of every Job that succeeded, across levels.
         self.delivered: Dict[str, Sequence] = {}
         #: One line per level taken back, for the caller's log.
         self.shrinks: List[str] = []
+
+    def _read_blocked(self):
+        """What :class:`AdmittedJobs` reads as blocked, plus a pod stuck behind an init
+        container that was OOM-killed: its Job reads active and nothing else would end it."""
+        blocked, contended = blocked_and_contended_reasons(self.core_api, self.namespace,
+                                                           self.label_selector)
+        wedged = wedged_init_container_reasons(self.core_api, self.namespace,
+                                               self.label_selector)
+        return {**wedged, **blocked}, contended
 
     def _owner(self, level: int) -> str:
         return f"{self.owner_prefix}/g{level}"
@@ -128,7 +144,8 @@ class ShrinkingJobs:
             label_selector=self.label_selector,
             list_remaining=lambda names: running_jobs(self.batch_api, self.namespace,
                                                       self.label_selector, names,
-                                                      on_status=record))
+                                                      on_status=record),
+            read_blocked=self._read_blocked, clock=self.clock)
         state.tracker.submit([(i.name, i.sizing, i.create) for i in items.values()],
                              **self.submit_kwargs(level))
         logger.info("%s level %d: %d job(s) for %d unit(s)", self.owner_prefix, level,
