@@ -1519,10 +1519,9 @@ it, and it sits ``Unschedulable`` with ``Insufficient cpu``. That is the failure
 campaign rarely reaches and several concurrent ones reach reliably, which is what makes it
 look like a concurrency bug rather than an arithmetic one.
 
-**It is measured every cycle, not snapshotted at setup.** This replaced a fixed quota
-sized once when the cluster was set up, which had to be re-sized by hand after anything
-long-lived was added to or removed from the nodes, and was silently wrong until someone
-did. Nothing needs re-running now.
+**It is measured every cycle, not snapshotted at setup.** A quota sized once at setup would
+be silently wrong after anything long-lived is added to or removed from the nodes, until
+someone re-sized it by hand; a reading taken each cycle needs nothing re-run.
 
 **Headroom** protects the shared tenants no campaign owns: ``ROBOVAST_NODE_HEADROOM_CPU``
 (default ``1``) and ``ROBOVAST_NODE_HEADROOM_MEMORY`` (default ``2Gi``), read from the
@@ -1662,15 +1661,15 @@ It is per **container**, so a three-container pod reserves the sum until its nod
 which makes the bootstrap the floor on what calibration costs, and a reason not to set it
 generously on a small or busy cluster.
 
-Why per node at all: the same trial costs about **1.6x more CPU on the slowest machine of a
-mixed cluster than on the fastest**, and wall time does not show it — a realtime-paced
+Why per node at all: in a mixed cluster the same trial can cost **tens of percent more CPU on
+the slowest machine than on the fastest**, and wall time does not show it — a realtime-paced
 simulator holds one simulated second per wall second, so every machine finishes at roughly the
 same time and the difference lands entirely in CPU consumed. One declared number is therefore
 wrong on every node but the one it was measured on.
 
-It is a **validity** matter as much as a throughput one. At a uniform 3.0 cores for the system
-under test, one node was quota-bound in 100 % of its runs at 2.5 and below while three others
-were never quota-bound at any allocation down to 2.0. Equal *cores* are not equal *compute*,
+It is a **validity** matter as much as a throughput one. At one uniform allocation for the
+system under test, a slow node can be quota-bound in every run while faster ones never are.
+Equal *cores* are not equal *compute*,
 so an equal declaration produces unequal conditions — the thing a uniform number was meant to
 prevent.
 
@@ -1752,25 +1751,13 @@ is what says whether a tighter allocation cost the simulator its pacing, and a c
 factor drops is no longer comparable with one sized any other way — worse results rather than
 merely slower ones.
 
-**A peak measured on an idle probe is an unvalidated basis for a hard limit on a loaded
-machine.** That is why this is switchable, and why the probe is one run rather than a
-guarantee. A workload with heavier planning spikes than the one a cluster was measured on has
-not been tested against its own calibration.
-
-**The evidence behind the design**, kept here because it is what rules out the cheaper
-alternatives. Two campaigns of one configuration times twenty runs, so the machine was the only
-variable; forty trials, all passed. Per-container CPU comes from ``resource_usage``, summed per
+**How a node's cost is compared.** Per-container CPU comes from ``resource_usage``, summed per
 tick before averaging (a row is one process name, not a container), then divided by the run's
 realtime factor -- ``cpu_percent`` is per *wall* second, so a node that meets fewer step
-deadlines otherwise reads as cheaper than it is:
-
-Measured on one four-node cluster, the same pod cost **1.6x more CPU per simulated second on
-the slowest node than on the fastest** — and the ordering did not follow clock speed. Your own
-figures come from ``get_campaign_summary``; the point is that the spread exists and is not
-guessable from the hardware.
-
-The ranking tracks **microarchitecture rather than clock**: the two Skylake-derived parts sit
-together at ~2.2 despite a 1.5x clock difference, Zen 3 at 1.71, Raptor Lake at 1.37.
+deadlines otherwise reads as cheaper than it is. Compared that way, the cost of one pod differs
+between the nodes of a mixed cluster, and the ordering follows the processor generation rather
+than the clock speed, so it cannot be guessed from the hardware. Your own figures come from
+``get_campaign_summary``.
 
 **A cached per-node factor is refuted, and that is why this is measured per campaign.** Every
 design that stores a number and reuses it -- a scalar per node, a ``robovast.io/cpu-factor``
@@ -1780,13 +1767,13 @@ rankings **invert between nodes**: one machine was the cheapest for the system u
 among the dearest for the simulator, while another was the reverse, so no single per-node scalar
 can be both greater and less than one at once -- the shape is wrong, not the calibration. Even
 per ``(node, container)`` it does not transfer: between two campaigns one node's simulation cost
-moved +42 % while another's moved +1 %, flipping their order.
+can move a long way while another's barely moves, flipping their order.
 
 **Why a hard limit is sized on the peak and not on p95.** Sizing a limit at ``p95 x 1.25`` looks
 safe and is not: a container clipped at its limit does not lose the clipped work, it queues it,
 so it stays pegged working the backlog off and the next spike arrives into a full budget. A
-configuration whose static clip rate was **0.5 %** produced **44 % saturation and lost 22 % of
-the runs**. That is why the system under test takes the peak as request *and* limit, while
+configuration whose static clip rate is **a fraction of a percent** can stay saturated for much
+of a run and **lose runs outright**. That is why the system under test takes the peak as request *and* limit, while
 everything else splits the two.
 
 **What remains true, and is why a campaign chooses.** A peak measured on an idle probe is

@@ -375,7 +375,6 @@ sha
 shippable
 shm
 sizings
-Skylake
 snapshotter
 SNI
 Sobol
