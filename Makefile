@@ -221,6 +221,8 @@ build: ui-stage
 	cd src/robovast_sim_roqsim && poetry build
 	cd src/robovast_nav && poetry build
 	cd src/robovast_cluster && poetry build
+	cd src/robovast_decode && poetry build
+	cd src/robovast_data && poetry build
 
 .PHONY: release-images
 release-images:

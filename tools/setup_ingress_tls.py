@@ -49,7 +49,7 @@ from pathlib import Path
 # The script lives in tools/; robovast itself is importable from the venv.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from robovast.common.kube import load_kube_config  # noqa: E402  # pylint: disable=wrong-import-position
+from robovast.execution.cluster_execution.kube_client import load_kube_config  # noqa: E402  # pylint: disable=wrong-import-position
 from robovast.execution.cluster_execution.service_deploy import AUTH_SECRET_NAME  # noqa: E402  # pylint: disable=wrong-import-position
 from robovast.execution.cluster_execution.service_deploy import SERVICE_NAME  # pylint: disable=wrong-import-position
 
@@ -184,7 +184,7 @@ def handout(url, ca_path, mcp=True):
             "                   \"Trust this CA to identify websites\".",
             "",
         ]
-    lines += [f"Command line (optional):  pip install robovast && vast login {url}"]
+    lines += [f"Command line (optional):  pip install robovast-client && vast login {url}"]
     if mcp:
         lines += [f"Claude Code (optional):   claude mcp add --transport http robovast \\",
                   f"                            {url}/mcp --header \"Authorization: Bearer <token>\""]
