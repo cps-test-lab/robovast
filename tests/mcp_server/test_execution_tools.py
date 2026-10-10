@@ -1063,6 +1063,23 @@ def test_a_progressing_campaign_still_gets_no_hint():
     assert campaign_next_step({"status": "finished", "postprocessed": True}) == ""
 
 
+def test_a_health_finding_gets_the_finding_step_not_the_stall_step():
+    """A finding already says what the job is doing, so its next step starts from the job
+    and the check it names -- the step ``vast campaign wait`` prints for the same exit."""
+    from robovast.client.campaign_report import campaign_next_step
+    from robovast.client.status import HEALTH_NEXT_STEP, STALL_NEXT_STEP
+
+    step = campaign_next_step({
+        "status": "running", "stalled": True, "stall_reason": "no progress",
+        "health_findings": [{"job_name": "j-0", "level": "error", "check": "sim-time",
+                             "detail": "sim time is not advancing"}],
+    })
+
+    assert step.startswith("j-0: sim-time — sim time is not advancing.")
+    assert HEALTH_NEXT_STEP in step
+    assert STALL_NEXT_STEP not in step
+
+
 def test_a_local_file_check_does_not_call_an_unchecked_world_a_pass(
         tmp_path, monkeypatch, authoring_service):
     """A file on this host is checked without a service, so the simulator never runs: an
