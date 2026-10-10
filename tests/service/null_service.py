@@ -84,8 +84,8 @@ class NullService(ServiceBase):
         self._refuse("postprocessing")
 
     def _table_builder(self, campaign_id, campaign_dir, state=None):
+        """No builder: the tables are built in the process that postprocesses."""
         del campaign_id, campaign_dir, state
-        return None
 
     def _aux_runner_context(self, tag: str, project, *, hold: bool = False,
                             should_stop=None, options=None):
