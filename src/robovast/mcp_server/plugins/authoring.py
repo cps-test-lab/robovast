@@ -218,8 +218,7 @@ def validate_project(address: str, check_world: bool = True,
     ``search_docs("build fails schema cannot catch")`` first.
 
     **Two checks run a container**, each catching a failure otherwise met per trial, after
-    the pull. Both held: a repeat is ~1.5–2.5 s, a cold one ~2–3 s
-    local / 7–15 s cluster.
+    the pull. Both run in a held container, so a repeat costs less than the first.
 
     - ``check_world``: does the world load and its model compile? ``world`` problems carry
       the simulator's own message.
@@ -420,9 +419,8 @@ def _exec_json(client, request, command: str, container: str = "") -> dict:
     Always ``query=True``: these are read-only questions put to an image, so they run in
     the service's query pool. Two reasons. A one-shot exec discards the held container by
     design, so a call here would destroy the container its caller is debugging in. And the
-    pool *holds* the container, so a second
-    question about the same project costs an exec rather than a container start -- measured
-    at ~0.5 s against 6-15 s on the cluster.
+    pool *holds* the container, so a second question about the same project costs an exec
+    rather than a container start.
 
     *container* names which one answers, because they are different images: ``roqsim``
     lives in the simulator's and ``scenario_execution`` in the scenario's.
@@ -449,9 +447,8 @@ def describe_scenario(address: str, scenario_path: str) -> dict:
     container_path = f"/sources/{request.workspace_id}/{scenario_path}"
     payload = _exec_json(
         client, request,
-        # ``python3``: a declared base image has no ``python`` (see image_catalog's
-        # ``_COMMANDS``), so this failed for every project that does not build its
-        # scenario image -- which is most of them.
+        # ``python3``: a declared base image has no ``python`` (as ``CATALOG_COMMANDS`` in
+        # ``robovast.service.image_catalog`` also assumes).
         f"python3 -m scenario_execution.introspection describe {container_path}",
         container="scenario")
     image = client.resolve_image(
@@ -469,14 +466,11 @@ def get_world_body_tree(address: str, world_path: str, pattern: str) -> dict:
     container_path = f"/sources/{request.workspace_id}/{world_path}"
     payload = _exec_json(
         client, request,
-        # No `--json`: `roqsim scenes describe` has no such flag and argparse refuses the whole
-        # command over it (its answer is JSON either way), so this tool could never once have
-        # succeeded against a real image. The stub in its test made the mistake invisible.
+        # No `--json`: `roqsim scenes describe` answers in JSON and has no such flag, which
+        # argparse would refuse.
         f"roqsim scenes describe {container_path} --body-tree {pattern}",
-        # The SIMULATOR's image, which is the only one with roqsim in it. Unqualified,
-        # this resolved to the scenario container -- so on any project whose simulator
-        # comes from the image family it answered "roqsim: command not found", and the
-        # tool had never worked there.
+        # The SIMULATOR's image, which is the only one with roqsim in it; unqualified, this
+        # would resolve to the scenario container.
         container="simulation")
     image = client.resolve_image(
         request.model_copy(update={"container": "simulation"})).image

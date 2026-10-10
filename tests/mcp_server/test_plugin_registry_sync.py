@@ -84,7 +84,7 @@ _FORBIDDEN_NAMES = [
     "nav_get_map_info", "nav_get_map_occupancy_stats",  # the map is drawn by draw_config
     "display_simulation_screenshot",   # -> get_simulation_screenshot
     "resource_usage",                  # -> get_resource_usage
-    # Built, then deliberately dropped: waiting for a campaign is `vast exec wait`, a
+    # Built, then deliberately dropped: waiting for a campaign is `vast campaign wait`, a
     # command a caller can background, because a campaign can run for days and a blocking
     # tool call would occupy its caller for the whole of it. Listed here for the usual
     # reason — a retired name left in a docstring is one an LLM will try to call — and
@@ -628,7 +628,7 @@ def test_no_tool_documents_that_it_raises():
 #: work continues, and nothing waits for it, so an agent reads one status and ends its turn.
 #: But a campaign can run for days, and waiting for it *inside a tool call* occupies the caller
 #: for the whole of it. That wait belongs in a shell command a harness can background
-#: (``vast exec wait``, over the same ``execution.campaign_wait`` loop), which costs no surface
+#: (``vast campaign wait``, over the same ``execution.campaign_wait`` loop), which costs no surface
 #: at all. A build is minutes and always has work behind it in the same turn, so blocking there
 #: costs nothing and needs no background plumbing — hence one tool, not two.
 #:
@@ -672,7 +672,7 @@ def test_no_tool_documents_that_it_raises():
 #: tokens.
 #:
 #: Raised 13_800 → 13_850 for ``health_findings`` on ``get_campaign_status``: what a running job's
-#: own simulator reports about itself, and the reason ``vast wait`` can exit 5. Documented on this
+#: own simulator reports about itself, and the reason ``vast campaign wait`` can exit 5. Documented on this
 #: tool and not only on ``get_job_state`` because this is where the verdict is *read* -- by an agent
 #: deciding what to do next, and by the turn guard, which re-arms on it. An undocumented response
 #: field would be the cheaper trade only in tokens.
