@@ -484,11 +484,12 @@ export const robovast = {
   usageHistory: (window: '1h' | '24h') =>
     request<UsageHistory>('GET', `/usage/history?window=${window}`),
 
-  // What the service DID, from a cursor. Durable, unlike the log and the usage samples: it
-  // outlives the process, which is the whole reason it is a separate route rather than a
-  // section of either. Oldest-first from `since`, so a caller resumes rather than re-reads.
-  serviceEvents: (since = 0, limit = 200) =>
-    request<ServiceEvents>('GET', `/admin/events?since=${since}&limit=${limit}`),
+  // What the service DID, newest `limit` events. Durable, unlike the log and the usage
+  // samples: it outlives the process, which is the whole reason it is a separate route rather
+  // than a section of either. Oldest first within the page, with the `next_seq` a reader
+  // holding a cursor resumes from (`since`).
+  latestServiceEvents: (limit = 200) =>
+    request<ServiceEvents>('GET', `/admin/events?newest=true&limit=${limit}`),
 
   // Which MCP tools agents actually reach for, aggregated over the call log below --
   // never a counter kept beside it, so the two can never disagree. Tools with no calls

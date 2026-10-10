@@ -1124,8 +1124,14 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             how_to_change=settings_report.how_to_change())
 
     @app.get(Routes.ADMIN_EVENTS, response_model=ServiceEvents, tags=["admin"])
-    def get_service_events(since: int = 0, limit: int = 200) -> ServiceEvents:
+    def get_service_events(since: int = 0, limit: int = 200,
+                           newest: bool = False) -> ServiceEvents:
         """What this service did, from cursor *since* -- durable across restarts.
+
+        ``newest=true`` answers the newest *limit* events instead, in the same order and with
+        the same ``next_seq``: what a reader opening the record wants, where a reader holding a
+        cursor resumes from it. The two are exclusive, so a request naming both is refused
+        rather than having one of them ignored.
 
         Its own cursor-keyed route rather than a field on a polled payload, per the tiers in
         ``docs/http_api.rst``: this grows, and the campaign list is re-sent once a second for
@@ -1134,7 +1140,12 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         Not the same thing as ``/admin/log``, which is this process's recent stderr and dies
         with it. The events worth keeping are the ones a restart destroys.
         """
-        rows = _events.read(since=since, limit=limit)
+        if newest and since:
+            raise HTTPException(
+                status_code=400,
+                detail="since and newest=true are exclusive: newest reads the end of the "
+                       "record, since resumes from a cursor")
+        rows = _events.latest(limit=limit) if newest else _events.read(since=since, limit=limit)
         return ServiceEvents(
             events=[ServiceEvent(seq=e.seq, at=e.at, kind=e.kind, severity=e.severity,
                                  actor=e.actor, subject_type=e.subject_type,

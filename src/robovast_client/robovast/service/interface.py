@@ -1530,7 +1530,8 @@ class ServiceEvents(BaseModel):
     """A page of the event log, oldest first, with the cursor to resume from.
 
     Oldest first because a caller is resuming a position rather than browsing: it holds
-    :attr:`next_seq` and asks for what came after. Presenting newest-first is the reader's job.
+    :attr:`next_seq` and asks for what came after. A page asked for with ``newest=true`` is the
+    tail of the record in the same order. Presenting newest-first is the reader's job.
     """
 
     events: list[ServiceEvent] = Field(default_factory=list)

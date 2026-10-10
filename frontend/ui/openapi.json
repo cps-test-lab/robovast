@@ -3687,7 +3687,7 @@
         "type": "object"
       },
       "ServiceEvents": {
-        "description": "A page of the event log, oldest first, with the cursor to resume from.\n\nOldest first because a caller is resuming a position rather than browsing: it holds\n:attr:`next_seq` and asks for what came after. Presenting newest-first is the reader's job.",
+        "description": "A page of the event log, oldest first, with the cursor to resume from.\n\nOldest first because a caller is resuming a position rather than browsing: it holds\n:attr:`next_seq` and asks for what came after. A page asked for with ``newest=true`` is the\ntail of the record in the same order. Presenting newest-first is the reader's job.",
         "properties": {
           "events": {
             "items": {
@@ -5394,7 +5394,7 @@
     },
     "/admin/events": {
       "get": {
-        "description": "What this service did, from cursor *since* -- durable across restarts.\n\nIts own cursor-keyed route rather than a field on a polled payload, per the tiers in\n``docs/http_api.rst``: this grows, and the campaign list is re-sent once a second for\nas long as any tab is open.\n\nNot the same thing as ``/admin/log``, which is this process's recent stderr and dies\nwith it. The events worth keeping are the ones a restart destroys.",
+        "description": "What this service did, from cursor *since* -- durable across restarts.\n\n``newest=true`` answers the newest *limit* events instead, in the same order and with\nthe same ``next_seq``: what a reader opening the record wants, where a reader holding a\ncursor resumes from it. The two are exclusive, so a request naming both is refused\nrather than having one of them ignored.\n\nIts own cursor-keyed route rather than a field on a polled payload, per the tiers in\n``docs/http_api.rst``: this grows, and the campaign list is re-sent once a second for\nas long as any tab is open.\n\nNot the same thing as ``/admin/log``, which is this process's recent stderr and dies\nwith it. The events worth keeping are the ones a restart destroys.",
         "operationId": "get_service_events_admin_events_get",
         "parameters": [
           {
@@ -5415,6 +5415,16 @@
               "default": 200,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "newest",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Newest",
+              "type": "boolean"
             }
           }
         ],
