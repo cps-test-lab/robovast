@@ -237,6 +237,11 @@ def source_size(bag_dir: str) -> int:
     return size + (os.path.getsize(sidecar) if os.path.isfile(sidecar) else 0)
 
 
+def recordings_closed(run: Run) -> bool:
+    """Whether every recording *run* has is closed (:func:`recording_closed`)."""
+    return all(recording_closed(role, bag_dir) for role, bag_dir in _sources(run))
+
+
 def _complete(run: Run, role: str, bag_dir: str) -> bool:
     """A run's table is final once the run wrote its verdict and the recorder closed the bag."""
     return (os.path.isfile(os.path.join(run.path, "test.xml"))
@@ -446,7 +451,10 @@ def _derive_run(campaign_dir: str, campaign_id: str, run: Run, tables: List[str]
                             JobRun(run.key, run.config_name, run.run_id, run.path),
                             tables, manifest, containers)
     report.notes.extend(derivation.notes)
-    complete = os.path.isfile(os.path.join(run.path, "test.xml"))
+    # Final once nothing it reads is still being written: the job's logs and its wall-time
+    # recording go on after the verdict, through the containers' shutdown.
+    complete = (os.path.isfile(os.path.join(run.path, "test.xml"))
+                and recordings_closed(run))
     written = []
     for table in tables:
         rows = derivation.tables.get(table)
@@ -655,4 +663,5 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
 __all__ = ["BAG_METADATA", "BuildReport", "CAMPAIGN_TABLES", "DERIVED_TABLES", "RECORDING_TABLE",
            "Run", "SharedJobError", "available_tables", "bag_information", "build",
            "derived_sources", "find_runs", "recorded_topics", "recording_closed",
+           "recordings_closed",
            "roqsim_recording", "scenario_recording", "settled", "source_size"]
