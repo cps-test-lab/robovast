@@ -139,6 +139,3 @@ def echo_target(label, err: bool = False):
     stderr, for a verb whose stdout is a document a program parses.
     """
     click.echo(f"Target: {label}", err=err)
-    if label.startswith('this machine'):
-        click.echo("  (no service found; point at the deployed one with "
-                   "'vast login <url>' — that is the store its web UI reads)", err=err)
