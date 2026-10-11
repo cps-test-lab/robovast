@@ -83,6 +83,10 @@ class NullService(ServiceBase):
         del campaign_id, campaign_dir, force, skip, state
         self._refuse("postprocessing")
 
+    def _table_builder(self, campaign_id, campaign_dir, state=None):
+        """No builder: the tables are built in the process that postprocesses."""
+        del campaign_id, campaign_dir, state
+
     def _aux_runner_context(self, tag: str, project, *, hold: bool = False,
                             should_stop=None, options=None):
         del tag, project, hold, should_stop, options

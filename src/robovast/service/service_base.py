@@ -1259,18 +1259,21 @@ class ServiceBase(RobovastInterface):
             raise RuntimeError("no auth token bound to this service; build it with build_app")
         return auth.scoped_token(token, scope)
 
-    def campaign_tar_stream(self, campaign_id: str, raw: bool = False):
+    def campaign_tar_stream(self, campaign_id: str, raw: bool = False, *, part: str = "",
+                            compress: bool = True):
         """Tar this host's campaign directory straight into the response.
 
         With its built tables, or *raw* (``campaign_archive.download_skip``). A campaign
         that is still running carries a snapshot marker (see
         ``campaign_archive.iter_campaign_tar``) so what lands cannot be mistaken for a
-        finished one; liveness is this transport's knowledge, from its registry.
+        finished one; liveness is this transport's knowledge, from its registry. *part* and
+        *compress* stage one part of a table build for its pod (``DataPlane``).
         """
         live = self.campaign_is_live(campaign_id)
         return self._data_plane().campaign_tar_stream(
             campaign_id, raw=raw, live=live,
-            facts=self._snapshot_facts(campaign_id) if live else None)
+            facts=self._snapshot_facts(campaign_id) if live and not part else None,
+            part=part, compress=compress)
 
     def campaign_live(self, campaign_id: str, run: str, tables):
         """A subscription to a run's tables as it records; the data plane's, over this root.
@@ -1774,7 +1777,8 @@ class ServiceBase(RobovastInterface):
             output_callback=stage_output_callback(state, logger.info),
             # A re-run is a tracked campaign like any other while it is going, so
             # ``stop_campaign`` reaches it -- and with this, ends it.
-            should_stop=stop_checker(state))
+            should_stop=stop_checker(state),
+            table_builder=self._table_builder(campaign_id, campaign_dir, state))
 
     def run_postprocessing(self, request) -> ActionResult:
         self._admit_storage(f"postprocess {request.campaign_id}")
@@ -2243,6 +2247,16 @@ class ServiceBase(RobovastInterface):
         question would sooner or later offer an entry the service then refuses, or hide one
         it would accept. A property of the implementation, fixed when the service starts,
         not of how busy it is.
+        """
+
+    @abstractmethod
+    def _table_builder(self, campaign_id: str, campaign_dir: Path, state=None):
+        """What builds a campaign's tables where its runs ran, for a postprocessing this
+        service runs; ``None`` to build them in this process.
+
+        The cluster answers with Jobs sized from the campaign's own record
+        (``cluster_execution.table_jobs``) -- the same builder the campaign-end pass uses, so
+        a postprocessing started later, or after a restart, builds as that pass would have.
         """
 
     @abstractmethod
@@ -3298,7 +3312,8 @@ class ServiceBase(RobovastInterface):
         try:
             state.set_phase(Phase.POSTPROCESSING)
             # Through the seam every other caller uses -- a re-run and an import -- so a
-            # campaign's end is postprocessed exactly as asking for it later would be.
+            # campaign's end is postprocessed exactly as asking for it later would be;
+            # NullService refuses, and every other implementation runs the pipeline here.
             ok, message = self._postprocess_campaign(
                 campaign_id, Path(results_dir) / campaign_id, state=state)
             if ok:
