@@ -22,10 +22,9 @@ that needs no decoding at all. This module is the part of that which needs no cl
 
 * **Planning** (:func:`plan_parts`): the unit is a scenario job with its runs, as the decoder
   sees them (:func:`robovast_decode.build.find_runs`), because a job's records are read as its
-  one run's; units are packed in run order into parts of at most *runs_per_part* runs, so a
-  part holds whole configurations where it can and its compacted file compresses as one.
-* **Splitting** (:func:`split_part`): a part that could not be built -- a pod that ran out of
-  memory -- is split into two halves of its units; a part of one unit cannot be split.
+  one run's; units are packed in run order into parts of at most *runs_per_part* runs
+  (:func:`pack_units`), so a part holds whole configurations where it can and its compacted
+  file compresses as one.
 * **Membership** (:func:`write_part`, :func:`read_part`): what the service planned, under
   :data:`TABLE_PARTS_DIR`, which only the service writes; a pod names its part and the
   service stages exactly those runs (:func:`part_skip`).
@@ -80,47 +79,33 @@ def plan_units(campaign_dir: str) -> List[Part]:
     return list(units.values())
 
 
-def plan_parts(campaign_dir: str, runs_per_part: int, prefix: str = "part") -> List[Part]:
-    """The campaign's runs as parts of at most *runs_per_part* runs, in run order.
-
-    A unit larger than the budget is a part of its own: a job's runs are never divided.
-    """
+def pack_units(units: List[Part], runs_per_part: int) -> List[Tuple[Part, List[Part]]]:
+    """*units* packed in order into parts of at most *runs_per_part* runs; ``[(part, its
+    units)]``, the parts unnamed. A unit larger than the budget is a part of its own: a job's
+    runs are never divided."""
     if runs_per_part < 1:
         raise ValueError(f"a part holds at least one run, not {runs_per_part}")
-    parts: List[Part] = []
-    current = Part(name="")
-    for unit in plan_units(campaign_dir):
+    parts: List[Tuple[Part, List[Part]]] = []
+    current, members = Part(name=""), []
+    for unit in units:
         if current.runs and len(current.runs) + len(unit.runs) > runs_per_part:
-            parts.append(current)
-            current = Part(name="")
+            parts.append((current, members))
+            current, members = Part(name=""), []
         current.runs += unit.runs
         current.jobs += unit.jobs
+        members.append(unit)
     if current.runs:
-        parts.append(current)
-    for i, part in enumerate(parts, 1):
-        part.name = f"{prefix}-{i}"
+        parts.append((current, members))
     return parts
 
 
-def split_part(campaign_dir: str, part: Part) -> List[Part]:
-    """*part* as two parts of about half its runs each, by whole units.
-
-    Raises ``ValueError`` for a part of one unit: nothing smaller can be built.
-    """
-    wanted = set(part.runs)
-    units = [u for u in plan_units(campaign_dir) if wanted.intersection(u.runs)]
-    if len(units) < 2:
-        raise ValueError(f"part {part.name} holds one unit ({', '.join(part.runs)}), which "
-                         "cannot be split")
-    half = len(part.runs) / 2
-    first, second = [], []
-    for unit in units:
-        (first if sum(len(u.runs) for u in first) < half else second).append(unit)
-    if not second:
-        second.append(first.pop())
-    return [Part(name=f"{part.name}{suffix}", runs=[r for u in group for r in u.runs],
-                 jobs=[j for u in group for j in u.jobs])
-            for suffix, group in (("a", first), ("b", second))]
+def plan_parts(campaign_dir: str, runs_per_part: int, prefix: str = "part") -> List[Part]:
+    """The campaign's runs as parts of at most *runs_per_part* runs, in run order, named
+    ``<prefix>-<n>`` (:func:`pack_units`)."""
+    parts = [part for part, _units in pack_units(plan_units(campaign_dir), runs_per_part)]
+    for i, part in enumerate(parts, 1):
+        part.name = f"{prefix}-{i}"
+    return parts
 
 
 def _part_path(campaign_dir: str, name: str) -> str:
@@ -255,8 +240,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 __all__ = ["PARTS_CACHE_DIR", "Part", "TABLE_PARTS_DIR", "build_part", "clear_parts",
-           "merge_parts", "part_cache_rel", "part_skip", "plan_parts", "plan_units",
-           "read_part", "split_part", "write_part"]
+           "merge_parts", "pack_units", "part_cache_rel", "part_skip", "plan_parts",
+           "plan_units", "read_part", "write_part"]
 
 
 if __name__ == "__main__":
