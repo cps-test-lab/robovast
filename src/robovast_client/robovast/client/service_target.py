@@ -135,7 +135,7 @@ def echo_target(label, err: bool = False):
 
     Never leave this implicit: a workspace created on this machine is invisible
     to a web UI served by the cluster, and vice versa — the one trap this whole
-    surface has. Auto-detection still prints, so it is announced. *err* sends it to
+    surface has. An auto-detected target is announced too. *err* sends it to
     stderr, for a verb whose stdout is a document a program parses.
     """
     click.echo(f"Target: {label}", err=err)
