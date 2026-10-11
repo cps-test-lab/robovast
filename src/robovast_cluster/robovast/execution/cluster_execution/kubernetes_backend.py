@@ -1547,14 +1547,14 @@ class BatchJobRunner:
         percentiles = self._container_percentiles()
         job_prefix = f"_jobs/{self._job_artifact_path(index)}/"
         read = self._campaign_reader(campaign_root)
-        # Judged over the trials the job ran, as a probe is: the job's counters span every
-        # run it served plus its containers' bring-up and teardown, and only the trials are
-        # what the allocation was for. A run with no window leaves the whole life in.
+        # Judged over the job's trial, as a probe is: its counters span the run plus its
+        # containers' bring-up and teardown, and only the trial is what the allocation was
+        # for. A run with no window leaves the whole life in.
         runs = getattr(self, "_job_runs_by_name", {}).get(job_name) or []
         windows = [read_trial_window(read, f"{run}/") for run in runs]
         if not windows or any(w is None for w in windows):
             logger.warning(
-                "%s: not every run recorded a trial window; its bootstrap check covers the "
+                "%s: its run recorded no trial window; its bootstrap check covers the "
                 "containers' whole lives, bring-up and teardown included", job_name)
             windows = None
         try:
@@ -3204,11 +3204,10 @@ class BatchJobRunner:
             # exists, rather than re-derived from position later -- creation order varies
             # under admission and an index recovered by counting would be wrong.
             self._job_index_by_name = {n: j.index for j, n in zip(jobs, job_names)}
-            # Name -> the runs it served, whose verdicts hold the trial windows its
-            # counters are judged over.
+            # Name -> the run it served, whose verdict holds the trial window its counters
+            # are judged over.
             self._job_runs_by_name = {
-                n: [f"{item.config_name}/{item.run_number}" for item in j.items]
-                for j, n in zip(jobs, job_names)}
+                n: [f"{j.config_name}/{j.run_number}"] for j, n in zip(jobs, job_names)}
             calibration = self._start_probes(jobs, total_jobs)
             # A confined campaign is pinned to its node and does NOT reserve it: it always
             # has another job queued, so a claim would renew for its whole life and shut
