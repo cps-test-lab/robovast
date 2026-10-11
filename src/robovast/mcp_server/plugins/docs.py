@@ -272,25 +272,19 @@ def _resolve_mcp_tools_directive() -> str:
             f".. mcp-tools:: could not be resolved: {type(e).__name__}: {e}") from e
 
 
-def _resolve_directives(text: str, base_dir: Path, tool_listing: bool = True) -> str:
-    """Resolve autodoc, ``literalinclude``, ``mcp-tools``, and inline roles.
+def _resolve_directives(text: str, base_dir: Path) -> str:
+    """Resolve autodoc, ``literalinclude``, and inline roles.
 
     Produces self-contained plain text: autodoc directives are expanded from
     live objects, ``literalinclude`` targets are embedded as code blocks (so
-    example snippets travel with the doc), tool listings are rendered, and
-    cross-reference roles are reduced to their display text. *base_dir* is the
-    directory the document lives in, used to resolve ``literalinclude`` paths.
-    *tool_listing* false leaves ``.. mcp-tools::`` for :func:`_served` to expand.
+    example snippets travel with the doc), and cross-reference roles are reduced
+    to their display text. *base_dir* is the directory the document lives in, used
+    to resolve ``literalinclude`` paths. ``.. mcp-tools::`` is left for
+    :func:`_served` to expand.
 
     Raises:
         DirectiveUnresolved: for the first directive that cannot be expanded.
     """
-    def _replace_mcp_tools(m: re.Match) -> str:
-        return _resolve_mcp_tools_directive() + "\n"
-
-    if tool_listing:
-        text = _MCP_TOOLS_RE.sub(_replace_mcp_tools, text)
-
     lines = text.splitlines(keepends=True)
     result: list[str] = []
     i = 0
@@ -492,8 +486,7 @@ for _name, (_path, _kind, _from) in _sources.items():
             # The tool listing is left for the first read: it loads every MCP plugin, and
             # this module is one of them, still being imported here.
             try:
-                _doc_content[_name] = _resolve_directives(_text, _path.parent,
-                                                          tool_listing=False)
+                _doc_content[_name] = _resolve_directives(_text, _path.parent)
             except DirectiveUnresolved as _e:
                 _doc_unresolved[_name] = str(_e)
                 logger.warning("documentation page %r: %s", _name, _e)
