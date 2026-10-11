@@ -1299,12 +1299,12 @@ REGISTRY_PUSH_SECRET_NAME = "robovast-registry-push"
 def _registry_env(ingress_host=""):
     """The registry config the in-pod service reads back from its own env.
 
-    Two unrelated registries meet here, and conflating them was the old bug:
+    Two unrelated registries meet here, and must not be conflated:
 
     * the **build target** — the registry in the ``robovast`` pod (:mod:`.store_pod`).
-      Its prefix is just the service's own Ingress host (see :func:`registry_deploy.registry_prefix`), so it is derived,
-      never configured; a site does not get to point builds somewhere the cluster cannot
-      pull from. Without an Ingress there is no reachable registry and no prefix, which
+      Its prefix is just the service's own Ingress host (see
+      :func:`registry_deploy.registry_prefix`), so it is derived, never configured; a site
+      does not get to point builds somewhere the cluster cannot pull from. Without an Ingress there is no reachable registry and no prefix, which
       is the honest answer rather than a ref that fails at pull time.
     * the **pull credential** — for images a ``.vast`` names in someone else's private
       registry. Configured, because only the operator knows those credentials.
