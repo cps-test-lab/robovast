@@ -34,7 +34,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 from . import clock_map
 from .junit import read_test_result
@@ -123,20 +123,6 @@ class RunSlice:
 
     def in_window(self, wall: Optional[float]) -> int:
         return in_window(wall, self.start_epoch, self.end_epoch)
-
-
-def describe_missing(label: str, items: Sequence[str], noun: str = "run(s)",
-                     limit: int = 5) -> str:
-    """``"; <label> N <noun>: a, b, c (+2 more)"`` — or ``""`` when there are none.
-
-    Truncated because these lists are unbounded (a broken campaign degrades in every run),
-    and a message that grows with the campaign stops being read at all.
-    """
-    if not items:
-        return ""
-    shown = ", ".join(items[:limit])
-    more = f" (+{len(items) - limit} more)" if len(items) > limit else ""
-    return f"; {label} {len(items)} {noun}: {shown}{more}"
 
 
 def _read_window(run_dir: Path) -> Tuple[Optional[float], Optional[float]]:

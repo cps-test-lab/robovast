@@ -24,7 +24,7 @@ client distribution, because the CLI must answer without the core installed.
 
 import time
 
-from robovast.client.status import (HEALTH_NEXT_STEP, STALL_NEXT_STEP, budget_positions,
+from robovast.client.status import (HEALTH_NEXT_STEP, budget_positions,
                                     error_findings, is_running, stall_report,
                                     stopping_soon_report)
 
@@ -295,9 +295,11 @@ def campaign_next_step(result: dict) -> str:
         # Before the stall verdict deliberately: a finding names a fault class ("sim time is not
         # advancing") where a stall says only "nothing finished in time", and it is true within a
         # minute of the fault rather than one declared budget later.
+        # Not the stall's step: that one sends a reader to ask what the job is doing, which
+        # the finding has already answered.
         first = findings[0]
         return (f"{first.get('job_name', '')}: {first.get('check', '')} — "
-                f"{first.get('detail', '')}. Next: {STALL_NEXT_STEP}")
+                f"{first.get('detail', '')}. Next: {HEALTH_NEXT_STEP}")
     if result.get("stalled") is True:
         return result.get("stall_reason", "")
     if result.get("status") == "finished" and result.get("postprocessed") is False:

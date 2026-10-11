@@ -46,10 +46,11 @@ def print_bag_topics(bag_path: str, bag_dir_name: str = "rosbag2"):
     bag_info = get_bag_info(os.path.join(bag_path, bag_dir_name))
     if not bag_info:
         raise ValueError(f"Could not retrieve bag info for path: {bag_path}")
-    if 'rosbag2_bagfile_information' not in bag_info and 'topics_with_message_count' not in bag_info['rosbag2_bagfile_information']:
+    info = bag_info.get('rosbag2_bagfile_information')
+    if not isinstance(info, dict) or 'topics_with_message_count' not in info:
         raise ValueError(f"Invalid bag info format for path: {bag_path}")
 
-    topics = bag_info['rosbag2_bagfile_information']['topics_with_message_count']
+    topics = info['topics_with_message_count']
     print(f"# Topics in bag at {bag_path}:")
     for topic in topics:
         metadata = topic.get('topic_metadata', {})

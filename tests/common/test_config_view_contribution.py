@@ -37,7 +37,7 @@ def _nav_config(**overrides):
         "sim": {"components.boxes.instances": [
             {"name": "obstacle_0", "pos": [3.0, 4.0], "size": [0.5, 0.5, 1.0], "yaw": 0.2}]},
         "_path": [Position(x=1.0, y=2.0), Position(x=5.0, y=6.0)],
-        "_goal_parameter_name": "goal_poses",
+        "_slot_bindings": {"start": "start_pose", "goal": "goal_poses"},
         "_objects_parameter_name": "static_objects",
     }
     config.update(overrides)
@@ -112,9 +112,31 @@ def test_goals_are_read_from_the_parameter_the_campaign_named():
     # resolved name; guessing a fixed one drew nothing the moment an author picked a third.
     config = _nav_config()
     config["config"]["waypoints"] = config["config"].pop("goal_poses")
-    config["_goal_parameter_name"] = "waypoints"
+    config["_slot_bindings"]["goal"] = "waypoints"
     labels = [m.label for m in config_view.path_contribution(config).markers]
     assert "goal" in labels
+
+
+def test_the_endpoints_are_drawn_from_what_a_path_variation_actually_records():
+    # Fed from the variation's own update_slots rather than a hand-built fixture, so the key
+    # the view reads is the one a variation writes. With a campaign naming its parameters
+    # `robot_start` and `waypoints`, a view reading any other record drew the path alone.
+    from robovast_nav.variation.path_variation import (PathVariationRandom,
+                                                       PathVariationRandomConfig)
+
+    variation = PathVariationRandom.__new__(PathVariationRandom)
+    variation._config_child_indices = {}
+    variation.parameters = PathVariationRandomConfig(
+        scenario={"start": "robot_start", "goal": "waypoints"}, path_length=5.0,
+        num_paths=1, min_distance=1.0, seed=1, robot_diameter=0.3)
+    config = variation.update_slots(
+        {"name": "c0", "config": {}}, {"start": _pose(0, 0), "goal": [_pose(3, 0)]},
+        other_values={"_path": [Position(x=0, y=0), Position(x=3, y=0)]})
+
+    markers = config_view.path_contribution(config).markers
+    assert [(m.kind, m.label) for m in markers] == [
+        ("path", "planned path"), ("pose", "start"), ("pose", "goal")]
+    assert markers[2].pos[:2] == [3.0, 0.0]
 
 
 def test_several_goals_are_numbered():
