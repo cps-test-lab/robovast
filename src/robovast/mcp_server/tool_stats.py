@@ -28,46 +28,49 @@ the process that served it is gone. So the ranking on the admin page is an aggre
 **Recording must never fail a tool call.** Every path here swallows its own failure and
 logs at debug -- the same contract :class:`robovast.service.event_log.EventLog` states for
 itself, for the same reason: what is recorded is a description of the work, not the work.
-An index that is unreachable therefore costs the log, never the call.
 
-Rows go to the central index (:mod:`robovast.common.index_db`), buffered: a Postgres
-round-trip in front of every tool call would make the accounting more expensive than
-some of the tools. The buffer is written out when it fills, when the next call arrives
-after :data:`FLUSH_INTERVAL_S`, before every read, and at process exit -- there is no
-timer thread, because a thread that exists only to write a handful of rows is a thread
-to shut down cleanly, and the read-side flush already makes anything anybody looks at
-current. It is bounded and drops rather than grows if flushing keeps failing, which is
-the same trade in the other direction.
+**Where it lives**: ``<workspaces_root>/mcp_calls.db``, a SQLite file beside the service's
+event log and on the same mounted volume, for the same reason -- a record a restart erases
+is a ring with extra steps. The service opens it at startup (:meth:`ToolCallLog.open`); a
+process that never opens one records nothing and reads an empty log.
+
+Rows are buffered: a write in front of every tool call would make the accounting more
+expensive than some of the tools. The buffer is written out when it fills, when the next
+call arrives after :data:`FLUSH_INTERVAL_S`, before every read, and at process exit --
+there is no timer thread, because a thread that exists only to write a handful of rows is a
+thread to shut down cleanly, and the read-side flush already makes anything anybody looks
+at current. It is bounded and drops rather than grows if flushing keeps failing.
 """
 
 import atexit
 import json
 import logging
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
-from robovast.common import index_db
-from robovast.common.errors import IndexUnreachableError
-
 logger = logging.getLogger(__name__)
+
+#: The file the service keeps the log in, under its workspaces root.
+FILENAME = "mcp_calls.db"
 
 TABLE = "mcp_tool_call"
 
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS {TABLE} (
-    at          double precision NOT NULL,
-    tool        text NOT NULL,
-    duration_ms double precision NOT NULL,
-    ok          boolean NOT NULL,
-    args        text NOT NULL DEFAULT '',
-    answer      text NOT NULL DEFAULT '',
-    actor       text NOT NULL DEFAULT '',
-    session     text NOT NULL DEFAULT ''
+    at          REAL NOT NULL,
+    tool        TEXT NOT NULL,
+    duration_ms REAL NOT NULL,
+    ok          INTEGER NOT NULL,
+    args        TEXT NOT NULL DEFAULT '',
+    answer      TEXT NOT NULL DEFAULT '',
+    actor       TEXT NOT NULL DEFAULT '',
+    session     TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS {TABLE}_at ON {TABLE} (at);
-ALTER TABLE {TABLE} ADD COLUMN IF NOT EXISTS session text NOT NULL DEFAULT '';
 """
 
 #: How much of a payload the log keeps, for ``args`` and for ``answer`` alike. This is the
@@ -96,8 +99,8 @@ FLUSH_INTERVAL_S = 5.0
 #: append it protects.
 _PRUNE_EVERY = 20
 
-#: Never let an unreachable index grow the buffer without bound. Past this the oldest
-#: pending rows are dropped: losing accounting is acceptable, losing the process is not.
+#: Never let a failing write grow the buffer without bound. Past this the oldest pending
+#: rows are dropped: losing accounting is acceptable, losing the process is not.
 MAX_BUFFER = 5000
 
 
@@ -172,7 +175,19 @@ class ToolCallLog:
         self._buffer: list[ToolCall] = []
         self._flushes = 0
         self._last_flush = time.monotonic()
-        self._schema_ready = False
+        self._path: Optional[Path] = None
+
+    def open(self, path) -> None:
+        """Keep the log in the SQLite file at *path*, created if absent."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect(path) as conn:
+            conn.executescript(_SCHEMA)
+        self._path = path
+
+    @staticmethod
+    def _connect(path) -> sqlite3.Connection:
+        return sqlite3.connect(str(path), timeout=5.0, check_same_thread=False)
 
     # -- writing
 
@@ -194,67 +209,45 @@ class ToolCallLog:
             self.flush()
 
     def flush(self) -> int:
-        """Write the buffer to the index. Returns the number of rows written."""
+        """Write the buffer to the file. Returns the number of rows written."""
+        if self._path is None:
+            return 0
         with self._lock:
             pending, self._buffer = self._buffer, []
             self._last_flush = time.monotonic()
         if not pending:
             return 0
         try:
-            with index_db.connect() as conn:
-                self._ensure_schema(conn)
-                statement = (f"COPY {TABLE} "
-                             "(at, tool, duration_ms, ok, args, answer, actor, session) "
-                             "FROM STDIN")
-                with conn.cursor().copy(statement) as copy:
-                    for call in pending:
-                        copy.write_row((call.at, call.tool, call.duration_ms, call.ok,
-                                        call.args, call.answer, call.actor,
-                                        call.session))
+            with self._connect(self._path) as conn:
+                conn.executemany(
+                    f"INSERT INTO {TABLE} "
+                    "(at, tool, duration_ms, ok, args, answer, actor, session) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    [(c.at, c.tool, c.duration_ms, int(c.ok), c.args, c.answer, c.actor,
+                      c.session) for c in pending])
                 self._flushes += 1
                 if self._flushes % _PRUNE_EVERY == 0:
                     self._prune(conn)
-        except IndexUnreachableError as exc:
-            # The deployment may have no index at all; that is a supported way to run the
-            # service, so this is not even a warning the first time.
-            logger.debug("tool call log not written: %s", exc)
-            return 0
         except Exception:  # noqa: BLE001 - see the module docstring
             logger.debug("could not write %d tool call rows", len(pending), exc_info=True)
             return 0
         return len(pending)
 
-    def _ensure_schema(self, conn) -> None:
-        """Create the table, its index and any column it has gained, under the DDL lock.
-
-        The lock every other writer of this index takes, for the reason it documents: two
-        services reaching their first flush together both run this, and neither
-        ``IF NOT EXISTS`` checks the catalog while it creates -- they check, then create,
-        and the loser gets an error rather than the table. Losing it costs only a buffer of
-        accounting rows, which is exactly why it must not be the thing left unlocked.
-        """
-        if self._schema_ready:
-            return
-        from robovast.results_processing.index_schema import \
-            ddl_lock  # pylint: disable=import-outside-toplevel
-        with ddl_lock(conn):
-            conn.execute(_SCHEMA)
-        self._schema_ready = True
-
-    def _prune(self, conn) -> None:
-        conn.execute(f"DELETE FROM {TABLE} WHERE at < %s", (time.time() - MAX_AGE_S,))
+    @staticmethod
+    def _prune(conn) -> None:
+        conn.execute(f"DELETE FROM {TABLE} WHERE at < ?", (time.time() - MAX_AGE_S,))
         conn.execute(
-            f"DELETE FROM {TABLE} WHERE ctid IN ("
-            f"  SELECT ctid FROM {TABLE} ORDER BY at DESC OFFSET %s)", (MAX_ROWS,))
+            f"DELETE FROM {TABLE} WHERE rowid IN ("
+            f"  SELECT rowid FROM {TABLE} ORDER BY at DESC LIMIT -1 OFFSET ?)", (MAX_ROWS,))
 
     # -- reading
 
     def read_stats(self) -> list[ToolStat]:
         """One row per tool that has been called, busiest first."""
         rows = self._query(
-            f"SELECT tool, COUNT(*), COUNT(*) FILTER (WHERE NOT ok), AVG(duration_ms), "
+            f"SELECT tool, COUNT(*), SUM(CASE WHEN ok THEN 0 ELSE 1 END), AVG(duration_ms), "
             f"MAX(duration_ms), MAX(at) FROM {TABLE} GROUP BY tool ORDER BY COUNT(*) DESC")
-        return [ToolStat(tool=r[0], calls=r[1], errors=r[2], mean_ms=float(r[3] or 0.0),
+        return [ToolStat(tool=r[0], calls=r[1], errors=r[2] or 0, mean_ms=float(r[3] or 0.0),
                          max_ms=float(r[4] or 0.0), last_at=r[5]) for r in rows]
 
     @staticmethod
@@ -262,7 +255,7 @@ class ToolCallLog:
         """The ``WHERE`` both reads share, so a count and its page never disagree."""
         where, params = [], []
         if tool:
-            where.append("tool = %s")
+            where.append("tool = ?")
             params.append(tool)
         if failed_only:
             where.append("NOT ok")
@@ -284,8 +277,8 @@ class ToolCallLog:
         params.append(max(0, int(offset)))
         rows = self._query(
             f"SELECT at, tool, duration_ms, ok, args, answer, actor, session FROM {TABLE}"
-            f"{clause} ORDER BY at DESC LIMIT %s OFFSET %s", tuple(params))
-        return [ToolCall(*r) for r in rows]
+            f"{clause} ORDER BY at DESC LIMIT ? OFFSET ?", tuple(params))
+        return [ToolCall(r[0], r[1], r[2], bool(r[3]), r[4], r[5], r[6], r[7]) for r in rows]
 
     def count_calls(self, *, tool: str = "", failed_only: bool = False) -> int:
         """How many rows match, ignoring any page bound.
@@ -298,20 +291,12 @@ class ToolCallLog:
         return int(rows[0][0]) if rows else 0
 
     def _query(self, sql: str, params: tuple = ()) -> list:
-        """Read, treating an absent table as an empty log.
-
-        The table is created by the first flush, so a service that has served no tool call
-        yet has none -- that is an empty log, not an error, and it must read as one.
-        """
+        """Read; a process that has opened no log reads an empty one."""
+        if self._path is None:
+            return []
         self.flush()
-        with index_db.connect(readonly=True) as conn:
-            if not self._table_exists(conn):
-                return []
+        with self._connect(self._path) as conn:
             return conn.execute(sql, params).fetchall()
-
-    @staticmethod
-    def _table_exists(conn) -> bool:
-        return bool(conn.execute("SELECT to_regclass(%s)", (TABLE,)).fetchone()[0])
 
 
 #: The one log the middleware writes to and the admin routes read from. Both reach it

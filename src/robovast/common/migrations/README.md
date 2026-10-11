@@ -3,30 +3,54 @@
 Everything about versioning and migration in robovast starts here. If you were asked to
 "add a migration step", this file tells you which surface you mean and exactly what to do.
 
-## The three version surfaces
+## The four version surfaces
 
 | surface | constant | where the steps live | migrates |
 |---|---|---|---|
+| campaign archive layout | `ARCHIVE_LAYOUT` (`archive/__init__.py`) | `archive/vN_to_vM.py` | forward, on import |
 | `.vast` config | `SUPPORTED_CONFIG_VERSION` (`config/__init__.py`) | `config/vN_to_vM.py` | forward, on read |
 | campaign store (`campaign.db`) | `SCHEMA_VERSION` (`../store.py`) | `../store.py`, beside `_SCHEMA` | forward, on open |
 | host ↔ container protocol | `COMPAT_VERSION` (`../execution.py`) | not a ladder — a supported window | n/a |
 
-`registry.py` enumerates them programmatically, so nothing has to be kept in sync by hand.
+`registry.py` enumerates the three ladders programmatically, so nothing about them has to be
+kept in sync by hand; the protocol window is not a ladder and is not listed there.
 
-**The central index has no ladder, on purpose.** It is *derived* from the campaign
-directories: re-ingesting a campaign is the definition of correct, so a version that says
-"this copy predates the column you asked for" would only ever describe a copy that should
-be rebuilt. The tables are created and widened as rows arrive
-(`results_processing/index_schema.py`), and the recovery for any shape question is to run
-postprocessing again -- which re-executes no trial. `campaign.db` is the opposite case and
-keeps its ladder: it is authored as the campaign runs and cannot be regenerated from
-anything.
+**A campaign's built tables have no ladder, on purpose.** They are *derived* from the
+campaign's records into its `.cache/`, and building them again is the definition of correct:
+each table's manifest entry records the decoder version and the data contract it was written
+under, what another version or contract wrote is built again the next time the table is named, and a manifest of another
+format is refused with the instruction to clear the campaign's tables. `campaign.db` is the
+opposite case and keeps its ladder: it is authored as the campaign runs and cannot be
+regenerated from anything.
 
 **Why the sqlite ladders are not in this package.** `store.py`'s `_MIGRATIONS` has to sit
 beside `_SCHEMA`: a new column must be mirrored into both *in the same order*, and
 `test_fresh_and_migrated_schemas_match` exists to catch a drift between them. Moving the
 ladder away from the schema would break the coupling that test protects. Finding everything
 in one place does not require moving everything into one place — so this file is the map.
+
+## Adding a campaign archive layout step
+
+The layout versions everything in a campaign tree that has no number of its own: where its
+records sit, and the formats of `_execution/outcome.json`, `launch.yaml`, `execution.yaml` and
+the rest. It is the one source of truth for those formats -- no record carries a schema field
+of its own. Move it when a record moves or its format changes in a way an older reader would
+misread.
+
+Write `migrate(campaign_dir)` in a new `archive/vN_to_vM.py`, append it to `_MIGRATIONS` in
+`archive/__init__.py`, raise `ARCHIVE_LAYOUT` by one (an assert ties the two), and test the
+step in `tests/common/test_archive_migrations.py`.
+
+- **A step rewrites the extracted tree in place** and touches only paths inside the campaign
+  directory it is given.
+- **It never imports the model its record is read with now** (`robovast.client.status`,
+  `robovast.common.config`, `robovast.common.store`). Enforced by `test_no_step_reads_a_current_model`.
+- **Append only.** An edit changes what an archive already written becomes.
+
+Every archive carries `_execution/archive.json`, written by both streams in
+`robovast.execution.campaign_archive`. An archive with none is layout 1, the first layout, so
+absent is a version, not an error. An import (`ingest_campaign`'s `archive` stage) walks the
+ladder first; a newer layout imports with the verdict `newer`, named.
 
 ## Adding a `.vast` config migration step
 
@@ -36,7 +60,7 @@ make new-config-migration        # scaffolds the step file, the list entry, and 
 
 Then implement the transform in the generated `config/vN_to_vM.py`.
 
-### The two rules
+### The three rules
 
 1. **A step is a pure `dict -> dict` and must never import `robovast.common.config`.**
    This is the rule that keeps old steps correct. A step that reads the *current* model
@@ -103,15 +127,16 @@ would be refused.
 
 ## Reading an old config
 
-Three policies, all in `__init__.py`. Pick by what the caller is doing, not by convenience:
+Three policies, all in `load_config` (`../common.py`). Pick by what the caller is doing, not by
+convenience:
 
 | policy | used by | old version |
 |---|---|---|
 | strict | authoring, launching a **new** campaign | rejected |
-| subsection | reading one section (e.g. `results_processing`) | warn only |
+| subsection | reading one section (e.g. `results_processing`) | logged, not refused |
 | upgrade-in-memory | displaying/importing/retriggering an **archived** campaign | laddered in memory |
 
-`upgrade_config()` takes a dict and is what every reading path uses.
+`upgrade_config()` takes a dict and is what every in-memory upgrade uses.
 `upgrade_config_file()` preserves comments (`ruamel.yaml`) and is only for rewriting a file
 a human will then edit.
 

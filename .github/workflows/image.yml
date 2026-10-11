@@ -4,11 +4,13 @@ on:
   push:
     branches:
       - main
+      - next
     tags:
       - 'v*'
   pull_request:
     branches:
       - main
+      - next
   workflow_dispatch:
 
 # Two pushes to main minutes apart otherwise both run to completion, each publishing the same
@@ -178,16 +180,25 @@ jobs:
         id: cache
         run: |
           pkg="ghcr.io/${{ github.repository }}-buildcache:base-${{ matrix.slug }}"
+          # A push writes the cache of the branch it is on -- main's, or next's -- and a tag push
+          # writes main's; every build reads main's, and a branch other than main its own too.
+          line=main
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "branch" ]; then
+            line="${{ github.ref_name }}"
+          fi
           {
             echo "from<<EOF"
             echo "type=registry,ref=${pkg}-main"
+            if [ "$line" != main ]; then
+              echo "type=registry,ref=${pkg}-${line}"
+            fi
             if [ "${{ github.event_name }}" = "pull_request" ]; then
               echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
           if [ "${{ github.event_name }}" = "push" ]; then
-            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+            echo "to=type=registry,ref=${pkg}-${line},mode=max" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
             echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
           else
@@ -376,16 +387,20 @@ jobs:
       # replaced was evicted every few runs by its own 10 GB cap, which masked the hazard by
       # forgetting. A registry cache does not forget, so the pin is now the only thing stopping a
       # stale tree from being served indefinitely.
+      #
+      # The commit is the one container/robovast/Dockerfile.roqsim pins, read from this branch's
+      # checkout: moving that pin is how the image changes, so each branch builds the roqsim its
+      # own pin names, and a local build (container/robovast/build.sh) reads the same line.
       - name: Resolve the roqsim commit
         id: roqsim
         run: |
-          ref="${{ vars.ROQSIM_REF || 'main' }}"
-          sha=$(git ls-remote https://github.com/cps-test-lab/roqsim.git "$ref" | awk 'NR==1{print $1}')
+          sha=$(sed -n 's/^ARG ROQSIM_REF=\([0-9a-f]\{40\}\)[[:space:]]*$/\1/p' \
+                container/robovast/Dockerfile.roqsim | head -n 1)
           if [ -z "$sha" ]; then
-            echo "cannot resolve '$ref' in cps-test-lab/roqsim (private repo needs a token)" >&2
+            echo "container/robovast/Dockerfile.roqsim pins no ROQSIM_REF=<40-hex sha>" >&2
             exit 1
           fi
-          echo "roqsim: $ref -> $sha"
+          echo "roqsim: pinned $sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       # By DIGEST, from merge-base's output -- not by tag. This used to reconstruct a tag from
@@ -418,16 +433,25 @@ jobs:
         id: cache
         run: |
           pkg="ghcr.io/${{ github.repository }}-buildcache:roqsim-${{ matrix.slug }}"
+          # A push writes the cache of the branch it is on -- main's, or next's -- and a tag push
+          # writes main's; every build reads main's, and a branch other than main its own too.
+          line=main
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "branch" ]; then
+            line="${{ github.ref_name }}"
+          fi
           {
             echo "from<<EOF"
             echo "type=registry,ref=${pkg}-main"
+            if [ "$line" != main ]; then
+              echo "type=registry,ref=${pkg}-${line}"
+            fi
             if [ "${{ github.event_name }}" = "pull_request" ]; then
               echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
           if [ "${{ github.event_name }}" = "push" ]; then
-            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+            echo "to=type=registry,ref=${pkg}-${line},mode=max" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
             echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
           else
@@ -735,16 +759,25 @@ jobs:
         id: cache
         run: |
           pkg="ghcr.io/${{ github.repository }}-buildcache:sidecar"
+          # A push writes the cache of the branch it is on -- main's, or next's -- and a tag push
+          # writes main's; every build reads main's, and a branch other than main its own too.
+          line=main
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "branch" ]; then
+            line="${{ github.ref_name }}"
+          fi
           {
             echo "from<<EOF"
             echo "type=registry,ref=${pkg}-main"
+            if [ "$line" != main ]; then
+              echo "type=registry,ref=${pkg}-${line}"
+            fi
             if [ "${{ github.event_name }}" = "pull_request" ]; then
               echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
           if [ "${{ github.event_name }}" = "push" ]; then
-            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+            echo "to=type=registry,ref=${pkg}-${line},mode=max" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
             echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
           else
@@ -830,16 +863,25 @@ jobs:
         id: cache
         run: |
           pkg="ghcr.io/${{ github.repository }}-buildcache:controller"
+          # A push writes the cache of the branch it is on -- main's, or next's -- and a tag push
+          # writes main's; every build reads main's, and a branch other than main its own too.
+          line=main
+          if [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref_type }}" = "branch" ]; then
+            line="${{ github.ref_name }}"
+          fi
           {
             echo "from<<EOF"
             echo "type=registry,ref=${pkg}-main"
+            if [ "$line" != main ]; then
+              echo "type=registry,ref=${pkg}-${line}"
+            fi
             if [ "${{ github.event_name }}" = "pull_request" ]; then
               echo "type=registry,ref=${pkg}-pr-${{ github.event.number }}"
             fi
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
           if [ "${{ github.event_name }}" = "push" ]; then
-            echo "to=type=registry,ref=${pkg}-main,mode=max" >> "$GITHUB_OUTPUT"
+            echo "to=type=registry,ref=${pkg}-${line},mode=max" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
             echo "to=type=registry,ref=${pkg}-pr-${{ github.event.number }},mode=max" >> "$GITHUB_OUTPUT"
           else

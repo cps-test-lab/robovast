@@ -107,26 +107,6 @@ export const PRE_RUN_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
 
 export const isRunning = (c: CampaignSummary) => RUNNING_PHASES.has(c.phase)
 export const isFailed = (c: CampaignSummary) => c.phase === 'failed'
-// The phases in which a campaign has ENDED with results worth reading. `stopped` and `crashed`
-// belong here as much as `finished` does: the runs they completed are on disk and their analysis
-// runs like any other campaign's, so gating on `finished` alone hid exactly the campaigns whose
-// partial results someone had a reason to go looking at. A stopped campaign in particular could
-// never qualify however often its data was rebuilt -- `status_recovery.record_step_outcome`
-// deliberately preserves `stopped` across a re-postprocess, so the phase never becomes `finished`.
-//
-// `failed` stays out, and for a reason about the data rather than about tidiness: a failed campaign
-// never finished projecting its results, so its root is missing pieces postprocessing needs, which
-// is why the controller skips postprocessing for it.
-const ENDED_WITH_RESULTS_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
-  'finished', 'stopped', 'crashed',
-])
-
-// Results are ready to explore only once the campaign ENDED AND its configured postprocessing
-// pipelines ran: the end is reached *before* postprocessing chains, and a campaign that defines no
-// postprocessing never gets the derived data the Results views query. The single gate for what the
-// Results topic (Explorer / Run / Data) shows.
-export const hasResults = (c: CampaignSummary) =>
-  ENDED_WITH_RESULTS_PHASES.has(c.phase) && c.postprocessed
 // Whether the campaign recorded anything at all. `num_runs` is tallied from its `campaign.db`, so
 // zero means there is no store to read — the campaign never started, or ended before writing one.
 // Nothing can be replayed or queried for such a campaign, so the Run view does not offer it.
@@ -136,30 +116,19 @@ export const hasResults = (c: CampaignSummary) =>
 export const hasRecordedRuns = (c: CampaignSummary) =>
   c.num_runs > 0 || (c.num_composition_failed ?? 0) > 0
 
-// The phases in which a campaign can already have finished runs on disk. The earlier live phases
-// (`initializing`, `building`, `variation`, …) run nothing, so offering a preview there would be an
-// invitation to an empty view for a reason that has not happened yet. `finishing` and
-// `postprocessing` still qualify: the runs are all there and the index is not written until
-// postprocessing ends, so a preview is still the only way to see them.
-const PREVIEWABLE_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
-  'running', 'finishing', 'postprocessing',
-])
+// Results are there to explore as soon as the campaign has runs, and while its trials run: a
+// run's tables are built from its recording as it grows, `run_view` lists a run from the moment
+// its directory exists, and a run still recording is read live (`runs.live`). The recorded-run
+// count alone would admit a running campaign only after its first verdict; a campaign still
+// building or composing has no run directory yet. Neither the end of the campaign nor its postprocessing is waited
+// for -- what postprocessing adds (the derived tables, the notebooks) appears in the views that
+// read it once it exists. The single gate for what the Results topic (Explorer / Run / Data)
+// shows.
+// Phases in which a run directory can exist before its verdict: what a live run view shows.
+const TRIAL_PHASES: ReadonlySet<string> = new Set<CampaignPhase>(['running', 'finishing'])
 
-// Whether the Run view may replay this campaign's finished runs *while it is still running*.
-// A preview: the 3D scene replays from each run's own capture file, and nothing else works, because
-// a running campaign has no rows in the index at all (they are written by postprocessing).
-//
-// Deliberately NOT gated on `num_runs`, and this is the whole point of the predicate rather than a
-// detail: those counts come from the `run` rows of `campaign.db`, which the controller writes only
-// once a batch has FINISHED — a batch-mode campaign has exactly one batch, so `num_runs` is 0 for
-// its entire life. Gating on it made the preview unreachable for exactly the campaigns it exists
-// for, while looking correct, because the file is read live even though it is not written live.
-//
-// So this asks only whether runs can exist yet. Whether any actually do is answered where it can be
-// answered honestly — by the run listing, which is the picker's source anyway. A campaign on its
-// first run is offered and says "no run has finished yet", a state that resolves itself within one
-// run; that is the deliberate cost of not asking a question no cheap signal can answer.
-export const isPreviewable = (c: CampaignSummary) => PREVIEWABLE_PHASES.has(c.phase)
+export const hasResults = (c: CampaignSummary) =>
+  hasRecordedRuns(c) || TRIAL_PHASES.has(c.phase)
 
 export type CreateCampaignRequest = Schemas['CreateCampaignRequest']
 
@@ -189,6 +158,7 @@ export type RetriggerReport = Schemas['RetriggerReport']
 export type RetriggerAxis = Schemas['RetriggerAxis']
 
 export type ActionResult = Schemas['ActionResult']
+export type CampaignTablesCleared = Schemas['CampaignTablesCleared']
 export type DeleteCampaignsResponse = Schemas['DeleteCampaignsResponse']
 export type CampaignDeletion = Schemas['CampaignDeletion']
 
@@ -246,9 +216,41 @@ export function readUploadProgress(status: Status | undefined): UploadProgress |
 export type SearchHistory = Schemas['SearchHistory']
 export type BatchObjective = Schemas['BatchObjective']
 
-// An incremental slice of a campaign's controller.log. Poll from `next_offset`
+// An incremental slice of a byte-addressed log (the service's own). Poll from `next_offset`
 // and append `text`; stop once `eof` is set (mirrors service/interface.py:LogChunk).
 export type LogChunk = Schemas['LogChunk']
+
+// A campaign's infrastructure log as rows read from its phase files. Pass `cursor` back to
+// continue after these rows; stop once `eof` is set (mirrors service/interface.py:CampaignLogChunk).
+export type CampaignLogRow = Schemas['CampaignLogRow']
+export type CampaignLogChunk = Schemas['CampaignLogChunk']
+
+/** What a campaign log read is narrowed to; the service applies it as it reads. */
+export interface CampaignLogQuery {
+  /** One phase's name (`run`, `build`, …); absent for every phase. */
+  phase?: string
+  /** `DEBUG` … `CRITICAL`: rows at least this severe. */
+  minLevel?: string
+  /** A case-insensitive regex over the message and the logger. */
+  grep?: string
+}
+
+/** The query string of a campaign log read, `cursor` included when one is given. Empty
+ *  values are left out, so an unfiltered read has no query at all. */
+export function campaignLogQuery(cursor = '', q: CampaignLogQuery = {}): string {
+  const params = new URLSearchParams()
+  if (cursor) params.set('cursor', cursor)
+  if (q.phase) params.set('phase', q.phase)
+  if (q.minLevel) params.set('min_level', q.minLevel)
+  if (q.grep) params.set('grep', q.grep)
+  const s = params.toString()
+  return s ? `?${s}` : ''
+}
+
+// A job's log as rows parsed from the log files its containers wrote. Pass `cursor` back to
+// continue after these rows; stop once `eof` is set (mirrors service/interface.py:JobLogChunk).
+export type JobLogRow = Schemas['JobLogRow']
+export type JobLogChunk = Schemas['JobLogChunk']
 
 // One execution unit of a campaign's current batch (a run locally, a k8s Job on
 // the cluster). Mirrors interface.py:JobSummary/JobCounts/ListJobsResponse.
@@ -312,6 +314,7 @@ export interface VariationPreview {
 export type PreviewConfiguration = Schemas['PreviewConfiguration']
 
 export type PreviewResponse = Schemas['PreviewResponse']
+export type StepProgress = Schemas['StepProgress']
 export type WorldDescription = Schemas['WorldDescription']
 
 export type VariationTypeParam = Schemas['VariationTypeParam']
@@ -322,14 +325,17 @@ export type VariationTypesResponse = Schemas['VariationTypesResponse']
 
 // -- results data query (eval viewer) ---------------------------------------
 
-export interface DataTable {
-  schema: string
-  table: string
-  columns: string[]
-  rows: number | null
-}
+export type DataTable = Schemas['DataTable']
 
 export type DataDescribe = Schemas['DataDescribe']
+
+// -- exports: the tables as files, the records, the bags, in one tar.gz ----------------------
+
+export type ExportRequest = Schemas['ExportRequest']
+
+export type ExportRef = Schemas['ExportRef']
+
+export type ExportStatus = Schemas['ExportStatus']
 
 export type DataQueryResult = Schemas['DataQueryResult']
 
@@ -521,16 +527,30 @@ export const robovast = {
   serviceCache: () => request<ServiceCache>('GET', '/admin/cache'),
   clearServiceCache: () => request<ServiceCache>('DELETE', '/admin/cache'),
 
-  // Returns as soon as the roll is asked for, NOT when the new pod is serving: with one
-  // replica Kubernetes starts the new pod before stopping the old, so the pod answering
-  // this is still up. Watch upgradeInfo().running_digest for the handover.
+  // Returns as soon as the roll is asked for, NOT when the new pod is serving: the
+  // Deployment recreates its one pod, so the pod answering this is the one about to stop.
+  // Watch upgradeInfo().running_digest for the handover.
   upgradeService: (force: boolean) =>
     request<ActionResult>('POST', `/admin/upgrade?force=${force}`),
 
   // Direct URL of a campaign's tar.gz (a GET the browser downloads), on the data plane:
-  // the service tars its results directory into the response.
-  archiveUrl: (campaignId: string) =>
-    `${BASE}/data/campaigns/${encodeURIComponent(campaignId)}/archive`,
+  // the service tars its results directory into the response -- with its built tables, or
+  // `raw`, the records alone.
+  archiveUrl: (campaignId: string, raw = false) =>
+    `${BASE}/data/campaigns/${encodeURIComponent(campaignId)}/archive${raw ? '?raw=true' : ''}`,
+
+  // SSE stream of one run's tables as its recording grows, on the data plane like the archive:
+  // the watcher behind it runs where the pods' deliveries land. `batch` frames carry
+  // `{table, rows}` (at most 2000 rows each, several per decoded batch), `eof` follows the run's
+  // verdict -- at once for a run that is not live -- and `streamerror` then `eof` names a refusal.
+  // Not resumable: a client that reconnects reads what landed so far through the query route and
+  // follows from there (see lib/panels/liveFeed.ts).
+  liveRunStreamUrl: (
+    campaignId: string, configName: string, runId: number | string, tables: string[],
+  ) =>
+    `${BASE}/data/campaigns/${encodeURIComponent(campaignId)}/live?` +
+    `run=${encodeURIComponent(`${configName}/${runId}`)}&` +
+    `tables=${encodeURIComponent(tables.join(','))}`,
 
   // The same for a workspace's project files — a control-plane route, not the data plane:
   // a workspace is not on the results volume.
@@ -563,10 +583,10 @@ export const robovast = {
       `/campaigns/${encodeURIComponent(campaignId)}/search/history`,
     ),
 
-  getCampaignLogs: (campaignId: string, offset = 0) =>
-    request<LogChunk>(
+  getCampaignLogs: (campaignId: string, cursor = '', q: CampaignLogQuery = {}) =>
+    request<CampaignLogChunk>(
       'GET',
-      `/campaigns/${encodeURIComponent(campaignId)}/logs?offset=${offset}`,
+      `/campaigns/${encodeURIComponent(campaignId)}/logs${campaignLogQuery(cursor, q)}`,
     ),
 
   createCampaign: (req: Partial<CreateCampaignRequest> & { workspace_id: string }) =>
@@ -584,23 +604,25 @@ export const robovast = {
   listJobs: (campaignId: string) =>
     request<ListJobsResponse>('GET', `/campaigns/${encodeURIComponent(campaignId)}/jobs`),
 
-  getJobLog: (campaignId: string, jobName: string, offset = 0) =>
-    request<LogChunk>(
+  getJobLog: (campaignId: string, jobName: string, cursor = '') =>
+    request<JobLogChunk>(
       'GET',
       `/campaigns/${encodeURIComponent(campaignId)}/job-log?job_name=${encodeURIComponent(
         jobName,
-      )}&offset=${offset}`,
+      )}&cursor=${encodeURIComponent(cursor)}`,
     ),
 
-  // SSE stream URLs for live logs. `new EventSource(url)` streams deltas, auto-reconnects,
-  // and resumes from the last byte offset via Last-Event-ID — see LogPanel. The pull methods
-  // above stay for MCP/CLI parity; the browser prefers these.
-  campaignLogStreamUrl: (campaignId: string) =>
-    `${BASE}/campaigns/${encodeURIComponent(campaignId)}/logs/stream`,
+  // SSE stream URLs for live logs. `new EventSource(url)` streams frames, auto-reconnects,
+  // and resumes from the last event id via Last-Event-ID: a row cursor for the campaign log
+  // (see useCampaignLogStream) and for a job log (see useJobLogStream), a byte offset for the
+  // service log (see LogPanel). The pull methods above read the same logs once; the browser
+  // prefers these. The campaign stream takes the same filters as its pull.
+  campaignLogStreamUrl: (campaignId: string, q: CampaignLogQuery = {}) =>
+    `${BASE}/campaigns/${encodeURIComponent(campaignId)}/logs/stream${campaignLogQuery('', q)}`,
 
   // SSE stream of the campaign list itself: the server pushes the full list on
   // connect and on every change (a server-side loop over listCampaigns), in the order
-  // asked for. The Monitor page consumes this instead of polling; EventSource reconnects
+  // asked for. The Campaigns page consumes this instead of polling; EventSource reconnects
   // natively.
   campaignsStreamUrl: (sort: CampaignListSort = DEFAULT_CAMPAIGN_SORT) => {
     const q = campaignSortQuery(sort)
@@ -611,10 +633,19 @@ export const robovast = {
   // the serving process keeps. No id: there is one service, and it is the one answering.
   serviceLogStreamUrl: () => `${BASE}/admin/log/stream`,
 
+  // One job's log as rows: `data:` frames carry a JSON array of JobLogRow, `event: eof` ends it.
   jobLogStreamUrl: (campaignId: string, jobName: string) =>
     `${BASE}/campaigns/${encodeURIComponent(campaignId)}/job-log/stream?job_name=${encodeURIComponent(
       jobName,
     )}`,
+
+  // A tap on a running job: `line` events carry `{t_wall, line}` as the job's simulator prints
+  // them, `eof` carries `{exit_code, timed_out}`. Not resumable -- a relay of the moment, not a
+  // record -- and recorded against the run as a probe, so it is opened only on a reader's word.
+  jobTapStreamUrl: (campaignId: string, jobName: string, selection: string[], maxSeconds: number) =>
+    `${BASE}/campaigns/${encodeURIComponent(campaignId)}/job-tap?job_name=${encodeURIComponent(
+      jobName,
+    )}&selection=${encodeURIComponent(selection.join(','))}&max_seconds=${maxSeconds}`,
 
   stop: (campaignId: string) =>
     request<ActionResult>('POST', `/campaigns/${encodeURIComponent(campaignId)}/stop`),
@@ -644,9 +675,10 @@ export const robovast = {
       )}&source=webui${reason ? `&reason=${encodeURIComponent(reason)}` : ''}`,
     ),
 
-  // Launch a NEW campaign from this one's frozen config and pinned image — the source is
-  // untouched, and the returned id is the new campaign's, not this one's. The service runs the
-  // pre-flight and refuses (400) on a blocking axis, naming each one; `force` launches anyway.
+  // Launch a NEW campaign from this one's frozen config and the image digests its launch
+  // recorded — the source is untouched, and the returned id is the new campaign's, not this
+  // one's. The service runs the pre-flight and refuses (400) on a blocking axis, naming each
+  // one; `force` launches anyway, except past a record lacking a digest.
   retriggerCampaign: (campaignId: string, force = false) =>
     request<CampaignRef>('POST', `/campaigns/${encodeURIComponent(campaignId)}/retrigger`, {
       force,
@@ -709,9 +741,7 @@ export const robovast = {
   listProjectFiles: (id: string) => listFilesAt(sourcesUrl(id, '')),
 
   // One level of a campaign's output tree: the child directories (trailing `/`) and files of
-  // `<campaign>/<path>`. The Run view's preview picker walks the tree down this way — root for
-  // the configurations, then one call per configuration for its runs — because a running
-  // campaign has no index rows to ask instead, and a recursive listing of a large campaign is
+  // `<campaign>/<path>`. Not recursive unless asked: a recursive listing of a large campaign is
   // tens of thousands of paths to learn a few dozen names.
   // A trailing slash is what makes the address a *directory* in this space (`/results/<c>/nav/`
   // lists, `/results/<c>/nav` reads), so it is appended here rather than left to every caller.
@@ -794,10 +824,13 @@ export const robovast = {
       path,
     }),
 
-  previewConfigurations: (id: string, maxConfigs = 0, path = '') =>
+  // With wait=false the service composes in the background: the first call answers `composing`;
+  // poll until `ready` or `failed`.
+  previewConfigurations: (id: string, maxConfigs = 0, path = '', wait = true) =>
     request<PreviewResponse>('POST', `/workspaces/${encodeURIComponent(id)}/preview`, {
       max_configs: maxConfigs,
       path,
+      wait,
     }),
 
   // What the simulator says this workspace's world offers. Runs a container in the campaign's
@@ -941,12 +974,47 @@ export const robovast = {
       { campaign_id: campaignId, content },
     ),
 
-  runPostprocessing: (campaignId: string, force = false) =>
+  // `force` clears the campaign's built tables and builds the declared ones again; `replay`
+  // clears them and builds every table the records can give for every run, then the declared
+  // pass — the check that a replay yields the rows the live watcher wrote.
+  runPostprocessing: (campaignId: string, opts: { force?: boolean; replay?: boolean } = {}) =>
     request<ActionResult>(
       'POST',
       `/campaigns/${encodeURIComponent(campaignId)}/postprocessing/run`,
-      { campaign_id: campaignId, force, skip: [] },
+      { campaign_id: campaignId, force: !!opts.force, replay: !!opts.replay, skip: [] },
     ),
+
+  // Build a finished campaign's tables now instead of the first time each is named; returns at
+  // once, and progress goes to the campaign log's TABLES section. `tables` omitted or empty
+  // builds every table the campaign's records can give.
+  buildCampaignTables: (campaignId: string, tables: string[] = []) =>
+    request<ActionResult>(
+      'POST',
+      `/campaigns/${encodeURIComponent(campaignId)}/tables/build`,
+      { campaign_id: campaignId, tables },
+    ),
+
+  // Remove a campaign's built tables to free storage; each is built again on use.
+  clearCampaignTables: (campaignId: string) =>
+    request<CampaignTablesCleared>(
+      'DELETE', `/campaigns/${encodeURIComponent(campaignId)}/tables`),
+
+  // Start an export: the campaign's tables as one file each, its records and, if asked, its
+  // bags, built on the service into one tar.gz. Returns at once with the export's id; poll
+  // `getExportStatus` until `done`, then `exportUrl` is the file.
+  createExport: (campaignId: string, body: ExportRequest) =>
+    request<ExportRef>(
+      'POST', `/campaigns/${encodeURIComponent(campaignId)}/exports`, body),
+
+  getExportStatus: (campaignId: string, exportId: string) =>
+    request<ExportStatus>(
+      'GET',
+      `/campaigns/${encodeURIComponent(campaignId)}/exports/${encodeURIComponent(exportId)}`),
+
+  // Direct URL of a finished export's tar.gz, on the data plane like the archive: a 404 until
+  // the export is done, a 409 once it failed.
+  exportUrl: (campaignId: string, exportId: string) =>
+    `${BASE}/data/campaigns/${encodeURIComponent(campaignId)}/exports/${encodeURIComponent(exportId)}`,
 
   // (Re)trigger upload-to-share for a finished campaign. Works from disk after a
   // restart; the target provider comes from the service environment.

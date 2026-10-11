@@ -109,10 +109,9 @@ def test_summarize_counts_the_relayed_flood_as_one_pattern():
     assert view["patterns_total"] == 1 and view["patterns"][0]["count"] == 500
 
 
-def test_summarize_ignores_tail_because_a_summary_is_not_a_page():
-    with_tail = view_log(_TEXT, summarize=True, tail=1)
-    without = view_log(_TEXT, summarize=True)
-    assert with_tail["patterns"] == without["patterns"]
+def test_summarize_refuses_tail_because_a_summary_is_not_a_page():
+    with pytest.raises(ValueError, match="tail=1 cannot be combined with summarize"):
+        view_log(_TEXT, summarize=True, tail=1)
 
 
 def test_summarize_honours_top():

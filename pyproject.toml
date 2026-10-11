@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "robovast"
-version = "2.2.0"
+version = "2.2.1"
 description = "Variation Automation and Scalable Testing for Robotic Systems: vary a scenario, run the sweep as recorded simulation runs on Docker or Kubernetes, query the results."
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
@@ -46,7 +46,7 @@ nbclient = {version = ">=0.10,<1.0", optional = true}
 lxml-html-clean = {version = "^0.1", optional = true}
 scipy = {version = "^1.16", optional = true}
 pydantic = "^2.12"
-scenario-execution = "^1.3.0"
+scenario-execution = "^1.8.0"
 # FAIR/PROV metadata generation, one module. Both call sites defer the import.
 rdflib = {version = "^7.0", optional = true}
 pyld = {version = "^2.0", optional = true}
@@ -102,18 +102,14 @@ robovast-sim-roqsim = {path = "src/robovast_sim_roqsim", optional = true}
 # capability it can decline. The direction matters and is the whole reason the split is
 # safe -- robovast-client depends on nothing of ours, so this edge cannot become a cycle.
 robovast-client = {path = "src/robovast_client"}
-# The central index driver. Not optional: every campaign's data lives in Postgres now, so
-# a robovast without it can neither ingest nor read -- and pretending otherwise would
-# surface as an ImportError from somewhere deep instead of the one sentence
-# IndexUnreachableError already says.
-#
-# Deliberately NOT in robovast-client. That package exists to run four HTTP verbs in ~30 MB
-# against a service that does the work; a database driver there would be the fourth
-# dependency its own comment refuses without a reason surviving "could the service do this
-# instead?" -- and the service does.
-#
-# The binary wheel so an image needs no libpq or compiler at build time.
-psycopg = {extras = ["binary"], version = "^3.2"}
+# Tables from a campaign's records: the decoder the service, the notebook package and a
+# laptop build them with, and the reading of recorded values (resource quantities) it
+# shares with the service. Not optional, and it depends on nothing of ours.
+robovast-decode = {path = "src/robovast_decode"}
+# The query engine: SQL over a campaign directory's tables, and the views over them. The
+# service answers every query through it, so a notebook using the same package reads the
+# same rows. Not optional; it depends on robovast-decode and nothing else of ours.
+robovast-data = {path = "src/robovast_data"}
 
 [tool.poetry.group.docs.dependencies]
 sphinx = "^7.0.0"
@@ -153,6 +149,16 @@ test = ["pytest", "ribs", "shapely", "optuna", "cmaes", "rdflib", "pyld", "nbfor
 [tool.poetry.plugins."robovast.cli_startup"]
 env-file = "robovast.common.env_file:load_env_file"
 
+[tool.poetry.plugins."robovast.results_plugins"]
+# `vast results`: the group is the client's, so that `robovast-data` can attach `build` to it
+# too; these verbs need the core.
+publish = "robovast.results_processing.cli:publish_cmd"
+backfill-provenance = "robovast.results_processing.cli:backfill_provenance_cmd"
+merge-campaigns = "robovast.results_processing.cli:merge_results_cmd"
+generate-metadata = "robovast.results_processing.cli:generate_metadata_cmd"
+postprocess-commands = "robovast.results_processing.cli:list_postprocessing_commands"
+publish-commands = "robovast.results_processing.cli:list_publication_plugins"
+
 [tool.poetry.plugins."robovast.cli_plugins"]
 # The verbs that need the core -- a service implementation, Docker, the UI build, the
 # results reader. They attach to the client's root group like any other plugin, so a
@@ -161,7 +167,6 @@ serve = "robovast.common.cli.core_commands:serve"
 serve-data = "robovast.common.cli.core_commands:serve_data"
 ui = "robovast.common.cli.core_commands:ui"
 configuration = "robovast.configuration.configuration_utils.cli:configuration"
-results = "robovast.results_processing.cli:results"
 # `vast share`: four of its six verbs instantiate a share provider, so the group needs
 # the core. `export`/`import` only drive the service and could live in the client, but
 # one group split across two distributions is worse than the asymmetry.
@@ -174,6 +179,10 @@ share = "robovast.execution.share_cli:share"
 # The core registers no service implementation. `vast serve` resolves the one it runs in
 # the `robovast.execution_backends` group (see service/serve_backends.py), which the
 # `robovast-cluster` distribution populates; the core alone serves nothing and says so.
+
+# `vast doctor`'s checks for what the core needs on this machine (Docker).
+[tool.poetry.plugins."robovast.doctor_checks"]
+docker = "robovast.common.cli.doctor:doctor_checks"
 
 [tool.poetry.plugins."robovast.share_providers"]
 nextcloud = "robovast.execution.share_providers.nextcloud:NextcloudShareProvider"
@@ -210,10 +219,6 @@ shell = "robovast.common.input_generation:Shell"
 
 [tool.poetry.plugins."robovast.postprocessing_commands"]
 command = "robovast.results_processing.postprocessing_plugins:Command"
-compress = "robovast.results_processing.postprocessing_plugins:Compress"
-resource_usage = "robovast.results_processing.postprocessing_plugins:ResourceUsage"
-rosbags_process = "robovast.results_processing.postprocessing_plugins:RosbagsProcess"
-run_log = "robovast.results_processing.postprocessing_plugins:RunLog"
 
 [tool.poetry.plugins."robovast.publication_plugins"]
 zip = "robovast.results_processing.publication_plugins.zip:Zip"
@@ -243,7 +248,8 @@ prompts = "robovast.mcp_server.plugins.prompts:PromptsPlugin"
 # merges first-party imports into the third-party block and deletes the blank line
 # between them, "fixing" 147 files by making every one of them worse. That is why the
 # repo has never had a clean isort run: the failures were the tool's, not the code's.
-known_first_party = ["robovast", "robovast_nav", "robovast_sim_roqsim"]
+known_first_party = ["robovast", "robovast_data", "robovast_decode", "robovast_nav",
+                     "robovast_sim_roqsim"]
 src_paths = ["src", "tests"]
 # GRID (0) -- aligned to the opening paren, several names per line. Chosen by measuring
 # every mode against the tree: the imports here have no one consistent style, so all six

@@ -43,7 +43,9 @@ venv: venv/.robovast_installed
 venv/.robovast_installed: Makefile pyproject.toml src/robovast_nav/pyproject.toml \
                           src/robovast_sim_roqsim/pyproject.toml \
                           src/robovast_cluster/pyproject.toml \
-                          src/robovast_client/pyproject.toml
+                          src/robovast_client/pyproject.toml \
+                          src/robovast_decode/pyproject.toml \
+                          src/robovast_data/pyproject.toml
 	@if [ ! -d venv ]; then \
 		echo "Creating virtual environment..."; \
 		python3 -m venv venv; \
@@ -73,6 +75,8 @@ venv/.robovast_installed: Makefile pyproject.toml src/robovast_nav/pyproject.tom
 		&& pip install -e src/robovast_nav \
 		&& pip install -e src/robovast_sim_roqsim \
 		&& pip install -e src/robovast_cluster \
+		&& pip install -e src/robovast_decode \
+		&& pip install -e src/robovast_data \
 		&& pip install -e src/robovast_client
 
 	@touch venv/.robovast_installed
@@ -136,7 +140,8 @@ refresh-build-pins: ## Re-resolve base-image digests and the dated apt archives 
 # The source-side counterpart of the target above, separate because the two refresh different kinds
 # of ground: that one takes whatever a third party published, this one moves the image onto a new
 # commit of code we write, which is a release decision and wants its own diff. BRANCH= to resolve
-# something other than main.
+# something other than main: a bare branch for every source, or SOURCE=BRANCH for one of them
+# (BRANCH=roqsim=next); several, space-separated.
 #
 # Named after `release-images` rather than after its sibling above, because it is the release flow
 # it belongs to: what these pins decide is which sources that command bakes. One name for it, and
@@ -148,7 +153,7 @@ refresh-build-pins: ## Re-resolve base-image digests and the dated apt archives 
 # having no idea those checkouts exist.
 .PHONY: release-images-update-versions
 release-images-update-versions: ## Move the commits release-images bakes (roqsim, scenario-execution) onto their branch heads (asks first; WRITE=1 to skip the question)
-	@python3 tools/refresh_source_pins.py $(if $(WRITE),--write,--ask) $(if $(BRANCH),--branch $(BRANCH),)
+	@python3 tools/refresh_source_pins.py $(if $(WRITE),--write,--ask) $(foreach b,$(BRANCH),--branch $(b))
 
 .PHONY: new-config-migration
 new-config-migration: ## Scaffold a .vast config migration step (see migrations/README.md)
@@ -219,7 +224,7 @@ build: ui-stage
 
 .PHONY: release-images
 release-images:
-	@test -n "$(PROJECT)" || { echo "Usage: make release-images PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1] [ROQSIM_REF=<ref>] [ROS_DISTRO=<distro>] [UBUNTU_MIRROR=<url>] [UBUNTU_SNAPSHOT=<stamp|none>]"; echo "Publishes all four family images (robovast, robovast-roqsim, robovast-controller, robovast-sidecar) under one tag, and prints the two lines that configure them: ROBOVAST_PROJECT and ROBOVAST_PROJECT_TAG."; echo "TAG defaults to latest, which floats. Pass TAG=\$$(date +%F) to publish an immutable set -- one tag covers the whole family, so a tag is what pins a deployment."; echo "PUSH=1 publishes without asking; without it you are asked before the first build, and answering no builds without publishing."; echo "CONFIG_WRITE=1 writes ROBOVAST_PROJECT/ROBOVAST_PROJECT_TAG into ~/.config/robovast/env; by default the two lines are only printed."; echo "ROQSIM_REF pins which roqsim commit is cloned into the simulator image. Without it, the script's default branch is used."; echo "UBUNTU_MIRROR fetches the dated Ubuntu archive from a mirror of the snapshot service instead (the two ROS images only). It swaps the host and nothing else -- same pinned versions, and the published images name the snapshot service, not the mirror."; echo "UBUNTU_SNAPSHOT=none goes with a mirror of the ROLLING archive: it drops the dated path and installs what that archive serves today, so the images are labelled unrebuildable. A deliberate trade, not a speed-up."; exit 1; }
+	@test -n "$(PROJECT)" || { echo "Usage: make release-images PROJECT=docker.io/<namespace> [TAG=<tag>] [PUSH=1] [ROQSIM_REF=<ref>] [ROS_DISTRO=<distro>] [UBUNTU_MIRROR=<url>] [UBUNTU_SNAPSHOT=<stamp|none>]"; echo "Publishes all four family images (robovast, robovast-roqsim, robovast-controller, robovast-sidecar) under one tag, and prints the two lines that configure them: ROBOVAST_PROJECT and ROBOVAST_PROJECT_TAG."; echo "TAG defaults to latest, which floats. Pass TAG=\$$(date +%F) to publish an immutable set -- one tag covers the whole family, so a tag is what pins a deployment."; echo "PUSH=1 publishes without asking; without it you are asked before the first build, and answering no builds without publishing."; echo "CONFIG_WRITE=1 writes ROBOVAST_PROJECT/ROBOVAST_PROJECT_TAG into ~/.config/robovast/env; by default the two lines are only printed."; echo "ROQSIM_REF pins which roqsim commit is cloned into the simulator image. Without it, the commit container/robovast/Dockerfile.roqsim pins is used."; echo "UBUNTU_MIRROR fetches the dated Ubuntu archive from a mirror of the snapshot service instead (the two ROS images only). It swaps the host and nothing else -- same pinned versions, and the published images name the snapshot service, not the mirror."; echo "UBUNTU_SNAPSHOT=none goes with a mirror of the ROLLING archive: it drops the dated path and installs what that archive serves at build time, so the images are labelled unrebuildable. A deliberate trade, not a speed-up."; exit 1; }
 	./container/release_images.sh --project "$(PROJECT)" $(if $(PUSH),--push,--ask-push) \
 		$(if $(TAG),--tag "$(TAG)",) \
 		$(if $(UBUNTU_MIRROR),--ubuntu-mirror "$(UBUNTU_MIRROR)",) \
@@ -401,16 +406,16 @@ publish-client: build-client
 	cd src/robovast_client && poetry publish
 
 # Post-release stamped and repeatable, for the same reason publish-client-test is; see the
-# comment there and tools/next_testpypi_version.py. One stamp for all five, because
+# comment there and tools/next_testpypi_version.py. One stamp for all seven, because
 # `robovast` requires its siblings at exactly the version being released: a number free on
 # every one of their TestPyPI histories is the only one the pin can resolve to. The root's
 # path dependencies are rewritten to that pin the way the publish workflow does it
 # (tools/pin_released_siblings.py), so the rehearsal uploads the wheel the release will --
 # a path dependency reaches the metadata as a direct reference, which the index refuses.
 #
-# Order follows the dependency edges: client and sim-roqsim (pinned by robovast), then
-# robovast, then nav and cluster (which require it) -- each has to be on the index by the
-# time the next one's install is resolved. It does NOT depend on `build`, which builds at
+# Order follows the dependency edges: client, sim-roqsim, decode and data (pinned by
+# robovast; data requires decode), then robovast, then nav and cluster (which require it)
+# -- each has to be on the index by the time the next one's install is resolved. It does NOT depend on `build`, which builds at
 # the tree's plain version; every manifest is restored on the way out, including on failure.
 #
 # DRY_RUN=1 stamps and builds but uploads nothing -- the check for "what would this
@@ -420,9 +425,9 @@ publish-test: ui-stage
 	@echo "💡 If this fails with 403, run: poetry config pypi-token.testpypi pypi-<your-token>"
 	@set -e; \
 	base=$$(poetry version -s); \
-	stamp=$$(python3 tools/next_testpypi_version.py "$$base" robovast robovast-client robovast-nav robovast-cluster robovast-sim-roqsim); \
+	stamp=$$(python3 tools/next_testpypi_version.py "$$base" robovast robovast-client robovast-nav robovast-cluster robovast-sim-roqsim robovast-decode robovast-data); \
 	echo "Rehearsing the set as $$stamp; every pyproject.toml stays at $$base."; \
-	for spec in "robovast-client:src/robovast_client" "robovast-sim-roqsim:src/robovast_sim_roqsim" "robovast:." "robovast-nav:src/robovast_nav" "robovast-cluster:src/robovast_cluster"; do \
+	for spec in "robovast-client:src/robovast_client" "robovast-sim-roqsim:src/robovast_sim_roqsim" "robovast-decode:src/robovast_decode" "robovast-data:src/robovast_data" "robovast:." "robovast-nav:src/robovast_nav" "robovast-cluster:src/robovast_cluster"; do \
 		dist=$${spec%%:*}; dir=$${spec#*:}; \
 		echo "Publishing $$dist $$stamp to TestPyPI..."; \
 		( cd "$$dir" && \

@@ -167,14 +167,14 @@ def test_it_flips_once_postprocessing_writes_its_record(svc):
     assert svc.get_status(CID).postprocessed is True
 
 
-def test_a_record_declaring_no_entries_is_not_postprocessed(svc):
-    """The record is written even when every step failed or none was configured. Reading its
-    mere presence as success would promote a campaign with no derived data at all — the one
-    direction of error a reader cannot detect by looking."""
+def test_a_record_declaring_no_entries_is_postprocessed(svc):
+    """A campaign with no steps of its own writes a record with no entries once its tables are
+    built; that pass finished, so it is postprocessed. A failed pass is told apart by its
+    recorded error (below), not by an empty record."""
     campaign = _campaign(svc, with_derived_data=False)
     _record(campaign, [])
     _track(svc, postprocessed=False)
-    assert svc.get_status(CID).postprocessed is False
+    assert svc.get_status(CID).postprocessed is True
 
 
 def test_a_recorded_failure_is_never_promoted(svc):
@@ -196,3 +196,71 @@ def test_a_restart_mid_build_does_not_change_the_answer(svc):
     with svc._lock:                                           # noqa: SLF001
         svc._campaigns.pop(CID)                               # noqa: SLF001
     assert tracked is svc.get_status(CID).postprocessed is False
+
+
+# -- a replay reads as postprocessed, and yields what the live watcher wrote -----------------
+#
+# A campaign's tables are written twice over: as the run goes, by the watcher that follows
+# its recordings and derives its job's tables whole (:mod:`robovast_decode.live`), and again
+# by a replay, which clears them and builds every table the records can give. Both are the
+# same decoder over the same records, so the rows are the same -- and a replayed campaign is
+# a postprocessed one.
+
+_VAST = """\
+version: 5
+execution:
+  containers: {}
+results_processing:
+  postprocessing:
+    - rosbags_tf_to_csv: {frames: all, require: [base_link, robot_gt]}
+    - rosbags_rosout_to_csv
+    - rosbags_clock_to_csv
+"""
+_TABLES = ["poses", "rosout", "run_log", "run_clock", "scenario_timestamps"]
+
+
+def _sorted_rows(table):
+    import json
+    from robovast_decode.tables import CONTEXT_COLUMNS
+    table = table.drop_columns([c for c in CONTEXT_COLUMNS if c in table.column_names])
+    return sorted(json.dumps(r, sort_keys=True, default=str) for r in table.to_pylist())
+
+
+def test_a_replayed_campaign_reads_as_postprocessed_with_the_live_tables(svc):
+    from robovast.results_processing.campaign_tables import write_decoder_config
+    from robovast.results_processing.postprocessing import run_postprocessing
+    from robovast_decode.live import Watcher
+    from robovast_decode.tables import read_manifest, read_run_table
+    from tests.results_processing.conftest import write_campaign_db
+    from tests.robovast_decode.conftest import make_campaign
+
+    root = svc._campaigns_root() / CID                     # noqa: SLF001
+    make_campaign(root, verdict=False)
+    write_campaign_db(root, CID)
+    (root / "_config").mkdir()
+    (root / "_config" / "campaign.vast").write_text(_VAST)
+    write_decoder_config(str(root), str(root / "_config" / "campaign.vast"))
+    (root / "_jobs" / "job-0" / "logs" / "system.log").write_text(
+        "[INFO] [1780000000.0] [scenario_execution_ros]: Executing scenario 'nav-0'\n"
+        "[INFO] [1780000001.0] [scenario_execution_ros]: Scenario 'nav-0' succeeded.\n")
+
+    # The live side: the watcher follows the run and finalises it at the verdict.
+    watcher = Watcher(str(root))
+    watcher.demand("cfg/0", _TABLES)
+    assert set(_TABLES) <= watcher.following("cfg/0")
+    (root / "cfg" / "0" / "test.xml").write_text("<testsuite/>")
+    watcher.changed([str(root / "cfg" / "0" / "test.xml")])
+    assert watcher.following("cfg/0") == set()
+    live = {t: read_run_table(str(root), read_manifest(str(root)), t, "cfg/0")
+            for t in _TABLES}
+    assert svc.get_status(CID).postprocessed is False, "tables alone are not a postprocess"
+
+    ok, message = run_postprocessing(str(root.parent), campaign=CID, replay=True,
+                                     skip_metadata=True)
+    assert ok, message
+    assert svc.get_status(CID).postprocessed is True
+    for table, rows in live.items():
+        # Read through the manifest: the campaign-end pass compacts the tables into one file.
+        replayed = read_run_table(str(root), read_manifest(str(root)), table, "cfg/0")
+        assert replayed.schema == rows.schema, table
+        assert _sorted_rows(replayed) == _sorted_rows(rows), table

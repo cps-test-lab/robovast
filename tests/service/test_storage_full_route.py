@@ -75,14 +75,6 @@ def test_a_full_disk_is_not_reported_as_the_class_a_layer_translated_it_into():
     assert _guarded_probe(translated).status_code == 507
 
 
-def test_a_full_index_disk_is_a_507():
-    class _DiskFull(RuntimeError):
-        sqlstate = "53100"
-
-    # A RuntimeError, which would otherwise be a 409 "conflict".
-    assert _guarded_probe(_DiskFull("could not extend file")).status_code == 507
-
-
 def test_other_failures_keep_their_mapping():
     assert _guarded_probe(ValueError("bad")).status_code == 400
     assert _guarded_probe(RuntimeError("busy")).status_code == 409

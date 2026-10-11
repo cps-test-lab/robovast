@@ -33,3 +33,17 @@ describe('serviceCache', () => {
     )
   })
 })
+
+// Every cache the service reports is one row and one share of the clear, whatever its name: the
+// built campaign tables are a cache beside the compiled worlds, not a special case.
+describe('a further cache', () => {
+  const withTables = {
+    ...report,
+    caches: [...report.caches, { name: 'table cache', size_bytes: 2_000, entries: 7 }],
+  }
+
+  it('counts toward what is held and what a clear frees', () => {
+    expect(heldBytes(withTables)).toBe(12_500)
+    expect(clearableBytes(withTables)).toBe(8_500)
+  })
+})

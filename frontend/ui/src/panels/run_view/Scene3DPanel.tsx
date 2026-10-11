@@ -1,58 +1,61 @@
 // Scene3DPanel (type `scene3d`): the 3D world view -- the run view's full-bleed base layer.
 //
-// It reads the two artifacts that define a replay, and nothing else:
+// It reads two things, and nothing else:
 //
 //   * the **scene** descriptor (`scene.json`/`scene.bin`) -- the geometry: a body tree with rest
 //     transforms and named joints. Static per *world*, so it is not a per-run artifact and is not
 //     shipped by every campaign: the service compiles it on demand, in the campaign's own image, the
 //     first time somebody opens a 3D view, and caches it by world identity. The panel asks
 //     `GET /campaigns/{id}/scene`, POSTs once if nothing is cached, and loads the URL it is handed.
-//   * the **run capture** (`capture.json`/`capture.bin`) -- the motion: named joint-value and
-//     body-pose tracks over a time base. Per run, and only the simulator that ran can produce it.
+//   * the run's **motion**, from its tables: `sim_poses` (a pose per body per sample) and
+//     `joint_states` (a value per joint per sample), decoded by the service from the simulator's own
+//     recording -- for a finished run and, as it grows, for one still recording. The tables address
+//     the geometry by *name*, so nothing has to be listed, and joint rows drive the loader's
+//     `jointMap`.
 //
-// Both formats are specified in robovast/docs/run_capture.rst; roqsim is the first producer of each.
-//
-// This replaces reading a `poses` table out of the postprocessed results. That path needed a rosbag,
-// a `rosbags_tf_to_csv` step and a postprocessing run before anything moved, imposed a naming contract
-// on the simulator ("emit a TF frame per moving body, named after the body") plus a `bind` list for its
-// exceptions, and could only ever animate world-parented bodies -- so an articulated robot replayed
-// rigid. None of that survives: tracks address the geometry by *name*, so nothing has to be listed,
-// and joint tracks drive the loader's `jointMap`, which no panel used before.
-//
-// The panel talks to a `MotionSource` (see lib/scene3d/motionSource.ts), not to a file. A live source
-// implements the same interface, so following a running simulation is a new source rather than a new
-// panel -- and because every update arrives through `subscribe`, that path is exercised here from the
-// first frame rather than merely declared.
+// The panel talks to a `MotionSource` (see lib/scene3d/motionSource.ts), not to a table: the source
+// (lib/scene3d/rowMotion.ts) loads a window of time around the clock and pages through it, and for a
+// live run appends the rows the provider's subscription delivers. Every update arrives through
+// `subscribe`, so a finished run and a live one are one code path here.
 //
 // Bindings (vast visualization.panels):
-//   capture:
-//     path: <path>                 run capture manifest (default capture/capture.json)
+//   motion:
+//     poses: <table>     the pose table (default sim_poses)
+//     joints: <table>    the joint table (default joint_states)
 //
-// Geometry needs no binding at all: the run's capture names the world it used, so `- scene3d:` on its
-// own is a complete panel. `scene.scope`/`capture.scope` are gone -- with the descriptor resolved by
-// content key there is nothing to declare, and nothing to declare *wrongly* (a campaign-scope
-// descriptor pointed at a world that varies per config rendered confidently wrong geometry).
+// Geometry needs no binding at all: the service resolves the world the run used, so `- scene3d:` on
+// its own is a complete panel.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
 import { registerPanel } from '@/lib/panels/registry'
+import { isLiveProvider } from '@/lib/panels/dataProvider'
 import type { PanelProps } from '@robovast/panel-kit'
 import { robovast } from '@/lib/robovastClient'
-import type { MotionSink, MotionSource } from '@/lib/scene3d/motionSource'
+import type { MotionMeta, MotionSink, MotionSource } from '@/lib/scene3d/motionSource'
 import { CANVAS } from '@/colors'
-import { openRunCapture } from '@/lib/scene3d/runCapture'
+import {
+  DEFAULT_JOINT_TABLE, DEFAULT_POSE_TABLE, openRowMotion, type RowReader,
+} from '@/lib/scene3d/rowMotion'
 import type { SceneModel } from '@/lib/scene3d/sceneLoader'
 import { sceneModels, type SceneLease } from '@/lib/scene3d/sceneModelCache'
 import { useSceneGeometry } from '@/lib/scene3d/useSceneGeometry'
 import { SceneViewport } from '@/lib/scene3d/viewport'
 import { registerSceneReset } from './sceneReset'
 
-/** Where a run's capture manifest lives unless the panel says otherwise. Exported because RunView
- *  needs the same answer to find the run's time base -- a `scene3d` panel implies a capture whether or
- *  not it spells one out, and two copies of this string would drift. */
-export const DEFAULT_CAPTURE_PATH = 'capture/capture.json'
+/** Half the window of motion kept loaded around the clock, in seconds. Wide enough that ordinary
+ *  scrubbing stays inside it; the source pages the window at the query's row cap, so a wider one
+ *  costs queries, not correctness. */
+const HALF_WINDOW_S = 30
+/** How close to the window's edge the clock may get before the next one is asked for. */
+const REFILL_MARGIN_S = 10
+
+/** The columns of a pose row the source reads, so a page carries no more than it needs. */
+const POSE_COLUMNS = ['timestamp', 'frame', 'position.x', 'position.y', 'position.z',
+  'orientation.x', 'orientation.y', 'orientation.z', 'orientation.w']
+const JOINT_COLUMNS = ['timestamp', 'joint', 'position']
 
 /** What the scene could not be driven by, so an empty-looking view can explain itself. */
 interface Mismatch {
@@ -64,9 +67,9 @@ interface Mismatch {
 }
 
 function Scene3DPanel({ spec, clock, data }: PanelProps) {
-  const captureCfg = (spec.config.capture ?? {}) as { path?: unknown }
-  const capturePath = String(captureCfg.path ?? DEFAULT_CAPTURE_PATH)
-  const captureUrl = data.runFileUrl(capturePath)
+  const motionCfg = (spec.config.motion ?? {}) as { poses?: unknown; joints?: unknown }
+  const poseTable = String(motionCfg.poses ?? DEFAULT_POSE_TABLE)
+  const jointTable = String(motionCfg.joints ?? DEFAULT_JOINT_TABLE)
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const viewportRef = useRef<SceneViewport | null>(null)
@@ -75,9 +78,11 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
   const sourceRef = useRef<MotionSource | null>(null)
   const sinkRef = useRef<MotionSink | null>(null)
 
-  const [captureError, setCaptureError] = useState<string | null>(null)
+  const [motionError, setMotionError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [mismatch, setMismatch] = useState<Mismatch | null>(null)
+  /** Whether the source has any sample yet -- a live run's tables can be empty for a while. */
+  const [empty, setEmpty] = useState(false)
 
   /** Seat the scene at the sample nearest `t`. Nothing here allocates: the source pushes into the
    *  sink, which is the loader's own imperative API, and the viewport redraws continuously. */
@@ -91,15 +96,18 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
 
   /** Match the source's tracks against the scene and seat the current sample.
    *
-   *  Called from *both* loaders, because either can win the race: checking only when the capture
-   *  arrives would skip the report whenever the capture resolved first (its callback would find no
-   *  model yet), and a capture recorded against a different world would then render confidently and
-   *  wrongly -- the one failure this report exists to catch.
+   *  Called from *both* loaders, because either can win the race: checking only when the motion
+   *  arrives would skip the report whenever the motion resolved first (its callback would find no
+   *  model yet), and a run recorded against a different world would then render confidently and
+   *  wrongly -- the one failure this report exists to catch. For a live run it runs per batch, so
+   *  a body that appears mid-run is checked when it does.
    */
   const syncFromSource = useCallback(() => {
     const source = sourceRef.current
     const model = modelRef.current
-    if (!source || !model) return
+    if (!source) return
+    setEmpty(source.indexAt(0) < 0)
+    if (!model) return
     const known = new Set([...model.bodies, ...model.joints])
     const names = source.tracks().map((t) => t.name)
     const unresolved = names.filter((n) => !known.has(n))
@@ -195,39 +203,72 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
     }
   }, [sceneUrl, syncFromSource])
 
-  // Open the motion source. Guarded the same way, so a late resolve from the campaign we just left
-  // can never be applied to the one now showing.
+  // Open the motion source over the provider. The reader is the provider's page and, for a live
+  // run, its subscription; the world the run used comes from `sim_recording` (one row per run) so
+  // a mismatch can be named. Guarded the same way as the geometry, so a late resolve from the run
+  // we just left can never be applied to the one now showing.
   useEffect(() => {
     let cancelled = false
-    setCaptureError(null)
+    setMotionError(null)
     setMismatch(null)
     setLoading(true)
-    let unsubscribe: (() => void) | null = null
+    const columns = { [poseTable]: POSE_COLUMNS, [jointTable]: JOINT_COLUMNS }
+    const host = isLiveProvider(data) ? data : null
+    const reader: RowReader = {
+      page: (table, t0, t1, maxRows) =>
+        data.seriesPage(table, { t0, t1, maxRows, columns: columns[table] })
+          .then((page) => ({ rows: page.rows, truncated: page.truncated })),
+      ...(host?.live ? { follow: (table, listener) => host.subscribeLive(table, listener) } : {}),
+    }
+    const source = openRowMotion(reader, { poseTable, jointTable })
+    sourceRef.current?.dispose()
+    sourceRef.current = source
+    const unsubscribe = source.subscribe(syncFromSource)
 
-    openRunCapture(captureUrl)
-      .then((source) => {
-        if (cancelled) {
-          source.dispose()
-          return
-        }
-        sourceRef.current?.dispose()
-        sourceRef.current = source
-        setLoading(false)
-        // Every update arrives here -- for a file that is once, when the buffer is parsed; for a live
-        // source it is per batch. The panel has one way to hear about data either way.
-        unsubscribe = source.subscribe(syncFromSource)
+    // The window the source has been asked for, so the clock is compared against an ask rather
+    // than against what happens to be loaded -- a live run's tail grows past any ask.
+    let window: [number, number] | null = null
+    const askAround = (t: number) => {
+      if (window && t >= window[0] + REFILL_MARGIN_S && t <= window[1] - REFILL_MARGIN_S) return
+      window = [t - HALF_WINDOW_S, t + HALF_WINDOW_S]
+      source.fetch(window[0], window[1]).then(
+        () => {
+          if (cancelled) return
+          setLoading(false)
+          setMotionError(null)
+        },
+        (err: unknown) => {
+          if (cancelled) return
+          setLoading(false)
+          setMotionError(err instanceof Error ? err.message : String(err))
+        },
+      )
+    }
+    askAround(clock.t)
+    const unclock = clock.subscribe(() => askAround(clock.t))
+
+    // Provenance, for the mismatch report. Read once; a run's world does not change.
+    const meta: MotionMeta = { frame: 'world', timeBase: 'sim' }
+    host?.rows('sim_recording', { columns: ['world', 'seed'], maxRows: 1 })
+      .then((rows) => {
+        const row = rows[0]
+        if (cancelled || !row) return
+        meta.world = row.world == null ? undefined : String(row.world)
+        meta.producer = 'simulator recording'
+        // The source hands out one meta object for its life; filling it in is how a provenance
+        // that arrives after the source opened reaches the next mismatch report.
+        Object.assign(source.meta(), meta)
       })
-      .catch((err: unknown) => {
-        if (cancelled) return
-        setLoading(false)
-        setCaptureError(err instanceof Error ? err.message : String(err))
-      })
+      .catch(() => undefined) // a run with no `sim_recording` still has its motion
 
     return () => {
       cancelled = true
-      unsubscribe?.()
+      unclock()
+      unsubscribe()
     }
-  }, [captureUrl, syncFromSource])
+    // The clock is read for its position; its identity is per run, like the provider's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, poseTable, jointTable, syncFromSource])
 
   // Dispose whatever this mount still owns. Separate from the loaders so their guards stay simple.
   useEffect(
@@ -247,7 +288,7 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
   return (
     <Box sx={{ position: 'relative', width: '100%', height: '100%', bgcolor: CANVAS }}>
       <Box ref={containerRef} sx={{ position: 'absolute', inset: 0 }} />
-      {loading && !captureError && !buildingText ? (
+      {loading && !motionError && !buildingText ? (
         <CircularProgress size={24} sx={{ position: 'absolute', top: 16, left: 16 }} />
       ) : null}
       {/* Building geometry is a *named* wait, not a spinner: a cold cluster miss is up to two minutes,
@@ -299,22 +340,27 @@ function Scene3DPanel({ spec, clock, data }: PanelProps) {
           {scene.note}
         </Alert>
       ) : null}
-      {captureError ? (
+      {motionError ? (
         <Alert severity="warning" sx={{ position: 'absolute', bottom: 8, left: 8, maxWidth: 620 }}>
-          No motion to replay: <code>{capturePath}</code> could not be read ({captureError}).
-          Recording a capture is the simulator backend&apos;s to enable — see its documentation.
-          Both the recording and the capture are written when the run stops cleanly, so a run
-          killed by a per-run timeout has neither.
+          No motion to replay: <code>{poseTable}</code> and <code>{jointTable}</code> could not be
+          read ({motionError}). Both are decoded from the simulator&apos;s own recording, which is
+          the simulator backend&apos;s to enable — see its documentation.
+        </Alert>
+      ) : empty && !loading ? (
+        <Alert severity="info" sx={{ position: 'absolute', bottom: 8, left: 8, maxWidth: 620 }}>
+          {isLiveProvider(data) && data.live
+            ? 'No motion recorded yet — the scene moves once the run’s first samples land.'
+            : 'No motion recorded for this run.'}
         </Alert>
       ) : mismatch ? (
         <Alert severity="warning" sx={{ position: 'absolute', bottom: 8, left: 8, maxWidth: 620 }}>
           {mismatch.resolved
             ? `${mismatch.resolved} of ${mismatch.total} tracks drive this scene; `
-            : 'None of this capture’s tracks name anything in this scene; '}
+            : 'None of this run’s tracks name anything in this scene; '}
           unmatched: <code>{mismatch.unresolved.join(', ')}</code>
           {mismatch.world ? (
             <>
-              . The capture names world <code>{mismatch.world}</code>
+              . The recording names world <code>{mismatch.world}</code>
               {mismatch.producer ? ` (producer ${mismatch.producer})` : ''} — check it is the world
               this scene was exported from.
             </>

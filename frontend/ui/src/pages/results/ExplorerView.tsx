@@ -16,9 +16,10 @@ import ClearRoundedIcon from '@mui/icons-material/ClearRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import { useTheme } from '@mui/material/styles'
 import {
-  robovast, hasRecordedRuns, hasResults, isPreviewable, type CampaignSummary,
+  robovast, hasRecordedRuns, hasResults, type CampaignSummary,
 } from '@/lib/robovastClient'
 import {
+  isLiveRow,
   resolveSelection,
   selectionNodeId,
   selectionOf,
@@ -28,7 +29,6 @@ import { LOG_TAB_SLUG, type ResultsSel } from '@/lib/hashNav'
 import { openCampaignConfig, openResultsView } from '@/lib/nav'
 import { mayHaveStagedConfig } from '@/lib/campaignConfig'
 import { ConfigIcon, RunViewIcon } from '@/components/viewIcons'
-import { PreviewChip } from '@/lib/preview/PreviewChip'
 import { RunLogTab, type LogTabScope } from '@/components/runLog/RunLogTab'
 import { ResultsTree, runsQuery } from './ResultsTree'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
@@ -68,24 +68,23 @@ export function ExplorerView({
   // The rows are the tree's own query (same key, so this is served from its cache), and a finished
   // campaign's are fixed — so this is a derivation, not something to keep watching.
   // The container's own predicate, so this view admits exactly what the three share a selection
-  // over. A finished+postprocessed campaign is the full view: its notebooks and its queryable rows.
-  // A campaign that is still running has neither, and shows only its Log tab — a run's containers
-  // write their output as they go, so that one tab has a source before postprocessing has run.
-  // Kept defensive like the Data browser's own filter, since `campaigns` is a prop.
-  const explorable = useMemo(
-    () => campaigns.filter((c) => hasResults(c) || isPreviewable(c)),
-    [campaigns],
-  )
+  // over. Kept defensive like the Data browser's own filter, since `campaigns` is a prop.
+  const explorable = useMemo(() => campaigns.filter(hasResults), [campaigns])
 
   // Looked up in `explorable`, not in every campaign handed over: a campaign this view declines is
-  // one it must not query either. Selecting a running campaign in the Run view leaves it in the
-  // shared selection, and finding it here would set the Explorer fetching a preview's listings.
+  // one it must not query either.
   const campaign = explorable.find((c) => c.campaign_id === campaignId)
   const rows = useQuery({ ...runsQuery(campaign), enabled: !!campaign })
   const resolved = useMemo(
     () => resolveSelection(rows.data?.rows ?? [], campaign?.mode === 'search', sel),
     [rows.data, campaign?.mode, sel],
   )
+  // Whether the selected run is still recording (`run_view.live`): its log is then streamed from
+  // the job rather than read from the `run_log` table postprocessing merges.
+  const selRun = resolved.sel.level === 'run' ? resolved.sel : null
+  const liveRun = !!selRun && (rows.data?.rows ?? []).some((r) =>
+    String(r.config_name) === selRun.configName
+    && Number(r.run_id) === Number(selRun.runId) && isLiveRow(r))
   // A URL naming a config or run this campaign does not have is a wrong link, not a stale one:
   // there is nothing to wait for, so it falls back to the campaign node once the rows are in.
   useEffect(() => {
@@ -133,8 +132,7 @@ export function ExplorerView({
 
       {!explorable.length ? (
         <Alert severity="info" variant="outlined">
-          No finished campaigns yet — results appear here once a campaign finishes and is
-          postprocessed.
+          No campaign has recorded a run yet — results appear here as soon as one has.
         </Alert>
       ) : (
         <Box
@@ -200,7 +198,7 @@ export function ExplorerView({
             onTab={(next) => commit(resolved.sel, next)}
             canReplay={!!campaign && hasRecordedRuns(campaign)}
             canConfig={!!campaign && mayHaveStagedConfig(campaign.phase)}
-            preview={!!campaign && isPreviewable(campaign)}
+            live={liveRun}
           />
         </Box>
       )}
@@ -216,7 +214,7 @@ function SelectionDetail(
     onTab: (tab: string) => void
     canReplay: boolean
     canConfig: boolean
-    preview: boolean
+    live: boolean
   },
 ) {
   if (!props.campaignId) {
@@ -276,25 +274,21 @@ function NotebookPanel({
   onTab,
   canReplay,
   canConfig,
-  preview,
+  live,
 }: NodeProps & {
   tab: string
   onTab: (tab: string) => void
   canReplay: boolean
   canConfig: boolean
-  preview: boolean
+  live: boolean
 }) {
   // The selection's levels are the backend's level names, so this needs no translation — a
   // 'batch' node asks for the campaign's `batch:` notebook.
   const { level, configName, runId } = nodeParams(sel)
 
-  // Not asked for a campaign that is still running: a notebook is executed against the index, so
-  // there is no answer to fetch yet, and a failed request would be reported as a problem where the
-  // truth is simply "not until this finishes".
   const vis = useQuery({
     queryKey: ['visualizations', campaignId],
     queryFn: () => robovast.listCampaignVisualizations(campaignId),
-    enabled: !preview,
     retry: false,
     staleTime: 60_000,
   })
@@ -315,7 +309,7 @@ function NotebookPanel({
       onTab(workloads[0]?.name ?? (showLog ? LOG_TAB_SLUG : ''))
   }, [names, tab, showLog]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const logScope: LogTabScope = { campaignId, level, configName, runId, preview }
+  const logScope: LogTabScope = { campaignId, level, configName, runId, live }
 
   // A failed workload list is reported *beside* the tabs rather than instead of them: the log
   // does not depend on it, and hiding a working view because an unrelated request failed is
@@ -343,9 +337,6 @@ function NotebookPanel({
           ))}
           {showLog ? <Tab value={LOG_TAB_SLUG} label="Log" sx={{ minHeight: 36, py: 0 }} /> : null}
         </Tabs>
-        {/* Beside the tabs, where the reader is looking when they wonder why there is only one:
-            the chip carries the reason. */}
-        {preview ? <PreviewChip /> : null}
         {/* The campaign this selection belongs to, whatever node is picked: the frozen `_config/`
             is the campaign's, so unlike the jump beside it this one is not a run-level shortcut. */}
         {canConfig ? (
@@ -373,14 +364,8 @@ function NotebookPanel({
           </Tooltip>
         ) : null}
       </Stack>
-      {vis.isPending && !preview && tab !== LOG_TAB_SLUG ? <CircularProgress size={18} /> : null}
-      {preview && !showLog ? (
-        <Typography variant="caption" color="text.secondary">
-          This campaign is still running. Select one of its finished runs to read its log — its
-          charts and notebooks are built by postprocessing when the campaign ends.
-        </Typography>
-      ) : null}
-      {!preview && !workloads.length && !showLog && !vis.isPending ? (
+      {vis.isPending && tab !== LOG_TAB_SLUG ? <CircularProgress size={18} /> : null}
+      {!workloads.length && !showLog && !vis.isPending ? (
         <Typography variant="caption" color="text.secondary">
           No notebook visualizations declared for this {level}. Select a run to read its log.
         </Typography>

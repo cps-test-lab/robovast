@@ -25,7 +25,7 @@ which every scenario produces. No measures (use a custom extractor for QD).
 import logging
 from pathlib import Path
 
-from robovast.common.campaign_data import read_test_result
+from robovast_decode.junit import read_test_result
 
 from ..extractor import (Extractor, ExtractResult, NoSampleError,
                          completed_run_dirs)

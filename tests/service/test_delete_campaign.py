@@ -14,23 +14,12 @@ import pytest
 CID = "gone-2026-09-01-101500"
 
 
-class _NullIndexConn:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_exc):
-        return False
-
-
 @pytest.fixture(name="env")
 def _env(tmp_path, monkeypatch):
     from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
-    monkeypatch.setattr("robovast.results_processing.index_schema.forget_campaign",
-                        lambda conn, cid: {})
-    monkeypatch.setattr("robovast.common.index_db.connect",
-                        lambda *a, **k: _NullIndexConn())
+    monkeypatch.delenv("ROBOVAST_ARCHIVE_DIR", raising=False)
     results = tmp_path / "results"
     (results / CID / "cfg" / "0").mkdir(parents=True)
     (results / CID / "cfg" / "0" / "out.bag").write_bytes(b"x" * 16)
@@ -71,6 +60,19 @@ def test_a_path_that_cannot_be_removed_fails_the_delete_and_is_named(env):
     # Once the owner has made it removable, deleting again finishes the job.
     assert transport.delete_campaign(CID).ok
     assert not (results / CID).exists()
+
+
+def test_a_delete_names_one_directory_under_the_results_root(env, tmp_path):
+    """The naming pattern alone lets a separator through, and an absolute id is honoured
+    as a directory to read: neither may reach the delete."""
+    transport, results = env
+    elsewhere = tmp_path / "elsewhere-2026-09-01-101500"
+    (elsewhere / "cfg").mkdir(parents=True)
+    for cid in (str(elsewhere), f"../{elsewhere.name}", f"{CID}/cfg"):
+        with pytest.raises(ValueError, match="not a valid campaign id"):
+            transport.delete_campaign(cid)
+    assert (elsewhere / "cfg").is_dir()
+    assert (results / CID / "cfg").is_dir()
 
 
 def test_a_delete_drops_what_is_cached_about_the_campaign(env):

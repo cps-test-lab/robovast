@@ -9,11 +9,12 @@ Public API:
 * the refusals: :class:`ConfigTooNew`, :class:`ConfigTooOld`, :class:`UnmigratableConfig`.
 
 ``README.md`` in this directory is the entry point for adding a migration step, and lists
-all three version surfaces (config, campaign store, host<->container).
+all four version surfaces (archive layout, config, campaign store, host<->container).
 """
 
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .config import (BASELINE_CONFIG_VERSION, MIGRATION_MARKER, SUPPORTED_CONFIG_VERSION,
@@ -112,12 +113,36 @@ def read_vast(vast_path) -> dict:
     Read directly rather than through ``load_config``: this is a *diagnosis* of a file that may
     well be too old to validate, and the strict reader would raise before the report could say
     so -- turning the answer into the failure it was asked about.
+
+    Raises ``ValueError`` when the document is not a mapping, since nothing that classifies
+    or migrates a configuration can read one.
     """
     import yaml  # pylint: disable=import-outside-toplevel
 
     with open(vast_path, "r", encoding="utf-8") as handle:
         documents = list(yaml.safe_load_all(handle))
-    return (documents[0] if documents else None) or {}
+    raw = (documents[0] if documents else None) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{Path(vast_path).name} holds a {type(raw).__name__}, not a mapping "
+                         f"of configuration keys")
+    return raw
+
+
+def round_trip_yaml():
+    """A ``ruamel.yaml`` loader that rewrites a ``.vast`` as a person wrote it.
+
+    It keeps the comments, the quoting and every document, so a rewrite changes only what
+    its caller changed. For every rewrite of a file a person will read or edit again.
+    """
+    from ruamel.yaml import YAML  # pylint: disable=import-outside-toplevel
+
+    yaml = YAML()
+    yaml.preserve_quotes = True
+    # Wide enough that nothing is re-wrapped. Left at the default, ruamel reflows any flow
+    # mapping past ~80 columns -- including ones the caller never touched -- so the diff of
+    # a two-key change rewrites lines all over the file and stops showing what changed.
+    yaml.width = 4096
+    return yaml
 
 
 def upgrade_config_file(path, *, write: bool = False):
@@ -137,15 +162,7 @@ def upgrade_config_file(path, *, write: bool = False):
     subclass, so the pure ``dict -> dict`` steps work on it unchanged and comments attached
     to untouched keys survive.
     """
-    from ruamel.yaml import YAML  # pylint: disable=import-outside-toplevel
-
-    yaml = YAML()
-    yaml.preserve_quotes = True
-    # Wide enough that nothing is re-wrapped. Left at the default, ruamel reflows any flow
-    # mapping past ~80 columns -- including ones the step never touched -- so a migration
-    # that changed two keys rewrites lines all over the file, and the diff stops showing
-    # what the migration did.
-    yaml.width = 4096
+    yaml = round_trip_yaml()
     with open(path, "r", encoding="utf-8") as handle:
         documents = list(yaml.load_all(handle))
     if not documents or documents[0] is None:

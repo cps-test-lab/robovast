@@ -228,22 +228,32 @@ def filter_configs(configs):
 def get_scenario_parameters(scenario_file):
     """Get scenario parameters from scenario file.
 
+    A cache entry records every file its parse read, the scenario and each file it imports,
+    and is served only while none of them has changed.
+
     Args:
         scenario_file: Path to the scenario file
     """
-    file_cache = FileCache(os.path.dirname(scenario_file), "robovast_scenario_parameters_" +
+    file_cache = FileCache(os.path.dirname(scenario_file), "robovast_scenario_parameters_and_inputs_" +
                            os.path.basename(scenario_file).replace("/", "_").replace(".", "_"), [])
 
-    cached_params = file_cache.get_cached_file([scenario_file], binary=True, content=True)
-    if cached_params:
-        return pickle.loads(cached_params)
-    else:
-        from scenario_execution import \
-            get_scenario_parameters as \
-            _external_get_scenario_parameters  # pylint: disable=import-outside-toplevel
-        params = _external_get_scenario_parameters(scenario_file)
-        file_cache.save_file_to_cache([scenario_file], pickle.dumps(params), content=True, binary=True)
-        return params
+    cache_file = file_cache.get_cache_filename()
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "rb") as f:
+                _, inputs = pickle.load(f)
+        except (OSError, pickle.UnpicklingError, EOFError, ValueError, TypeError):
+            inputs = None
+        if inputs:
+            cached = file_cache.get_cached_file(inputs, binary=True, content=True)
+            if cached:
+                return pickle.loads(cached)[0]
+
+    from scenario_execution import \
+        get_scenario_parameters_and_inputs  # pylint: disable=import-outside-toplevel
+    params, inputs = get_scenario_parameters_and_inputs(scenario_file)
+    file_cache.save_file_to_cache(inputs, pickle.dumps((params, inputs)), content=True, binary=True)
+    return params
 
 
 def is_scenario_parameter(value, scenario_file):

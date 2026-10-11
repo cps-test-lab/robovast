@@ -91,14 +91,21 @@ def _outputs_lines(cls):
         if len(slots) > 1:
             lines.append(f"    sim:      {{{slots[1]}: <key of the simulator backend>}}")
         lines += ["", "Slots: " + ", ".join(f"``{s}``" for s in slots) + ".",
-                  "Every slot must be bound, each to exactly one channel.", ""]
+                  "Every slot must be bound to at least one of ``scenario:``, ``sim:`` and "
+                  "``sut:``; a slot may be bound on several channels.", ""]
+        optional = getattr(config_class, "OPTIONAL_OUTPUT_SLOTS", ()) or ()
+        if optional:
+            lines += ["Optional slots, bound only when a destination wants them: "
+                      + ", ".join(f"``{s}``" for s in optional) + ".", ""]
     else:
         lines += [
             "This variation writes one value. Name its destination with **exactly one** of "
-            "``scenario:`` (a parameter the scenario file declares) or ``sim:`` (a key of "
-            "the simulator backend, or a path under its dotted root):", "",
+            "``scenario:`` (a parameter the scenario file declares), ``sim:`` (a key of "
+            "the simulator backend, or a path under its dotted root) or ``sut:`` "
+            "(``<source>.<path>`` into a declared config file of the system under test):", "",
             ".. code-block:: yaml", "",
-            "    scenario: <parameter>", "    # or", "    sim: <backend key or path>", ""]
+            "    scenario: <parameter>", "    # or", "    sim: <backend key or path>",
+            "    # or", "    sut: <source>.<path>", ""]
 
     inputs = getattr(config_class, "INPUT_SLOTS", ()) or ()
     if inputs:

@@ -47,7 +47,10 @@ import math
 from typing import Any, Optional
 
 from robovast.common.config import DEFAULT_SHM_SIZE
-from robovast.common.quantity import to_bytes, to_cores
+# The fractions of a container's CPU periods throttled, and of a trial window stalled, above
+# which a run is reported: defined, with how each was set, beside the view that applies them.
+from robovast_data.views import STALL_WARN_RATIO, THROTTLE_WARN_RATIO
+from robovast_decode.quantity import to_bytes, to_cores
 
 #: Headroom over sustained CPU use. Absorbs the p95->peak gap.
 CPU_HEADROOM = 1.25
@@ -69,54 +72,6 @@ MEM_GRANULARITY_BYTES = 128 * 1024 * 1024
 #: a p95 over seven points is the maximum wearing a percentile's name.
 MIN_TICKS = 30
 
-#: Fraction of a container's CPU enforcement periods that may be throttled before it is worth
-#: reporting. Not zero: a handful of throttled periods during bring-up is normal, and saying so
-#: every time would train a reader to ignore the finding.
-#:
-#: **Calibrated, not guessed** -- an earlier 1% was chosen by intuition and would have stayed
-#: silent on a configuration that lost 6 runs of 50. A CFS period is 100 ms and a nav2 control
-#: loop runs at 20 Hz, so ONE throttled period is two missed deadlines: the scale that matters
-#: is far below a percent. Measured across a five-point sweep of the same campaign, varying
-#: only the SUT's limit:
-#:
-#: ===============  ======  ========  =======
-#: throttled         misses  failures  verdict
-#: ===============  ======  ========  =======
-#: 0.018%                1         0  fine
-#: 0.385%                0         1  fine
-#: 0.580%                5         2  marginal
-#: 0.629%                2         0  marginal
-#: 0.790%               58         6  broken
-#: ===============  ======  ========  =======
-#:
-#: Note it is **not monotone**: throttling varies 1.4x across that range while the stack's own
-#: miss count varies 12x, and 0.580% did more damage than 0.629%. This counter is a blunt
-#: screen, not a predictor -- which is exactly why the finding it raises says "inconclusive,
-#: go and look at the stack's own health". 0.5% sits below the cliff and above the two
-#: configurations that were demonstrably fine.
-#:
-#: Calibrated for a 20 Hz control loop. A stack with a slower loop tolerates proportionally
-#: more, so this is a default rather than a law.
-THROTTLE_WARN_RATIO = 0.005
-
-#: Fraction of a trial window in which EVERY task in a container was runnable and none was
-#: running -- PSI ``cpu.pressure`` ``full`` -- before it is worth reporting as contention.
-#:
-#: **Not calibrated, unlike :data:`THROTTLE_WARN_RATIO`, and the difference is deliberate.**
-#: That one comes from a five-point sweep in which the stack's own miss count was counted at
-#: each level; nothing equivalent has been run for this counter, because it did not exist to
-#: measure. What is written here is a floor derived from the control loop rather than from
-#: observed damage: a 20 Hz loop has a 50 ms budget, so 1% of a 150 s run is 1.5 s of total
-#: blackout, which is 30 missed deadlines if it arrives in one burst and none if it is spread
-#: a microsecond at a time. That range is exactly why this is a SCREEN and its finding says
-#: "go and look at the stack's own health" rather than asserting harm.
-#:
-#: To calibrate it the way the throttle threshold was: run one configuration at a fixed
-#: allocation against varying co-tenancy, and count control-loop misses per stall level. Until
-#: that exists, treat a crossing as a question rather than an answer, and treat the number as
-#: provisional -- it is placed to be crossed rarely on a healthy node, not to mark a cliff
-#: anybody has seen.
-STALL_WARN_RATIO = 0.01
 
 #: How far from the suggestion a declaration has to be before it is worth saying anything.
 #: Reservations are guesses; flagging a 10% miss would train the reader to ignore the advice.
@@ -124,7 +79,7 @@ OVER_RESERVED_RATIO = 1.5
 UNDER_RESERVED_RATIO = 1.0
 
 #: What ``resource_usage`` calls the main container, regardless of what the ``.vast`` named
-#: it. Mirrors ``common/log_tail.MAIN_CONTAINER``.
+#: it. Mirrors ``robovast_decode.layout.MAIN_CONTAINER``.
 MEASURED_MAIN_CONTAINER = "robovast"
 
 #: Headroom over the shared-memory peak. Same rule as memory, and for a sharper version of
@@ -156,30 +111,35 @@ DEFAULT_SHM_SIZE_BYTES = to_bytes(DEFAULT_SHM_SIZE)
 #:
 #: The inner query is load-bearing: one row of ``resource_usage`` is one PROCESS NAME, not a
 #: container, so per-tick values must be summed before any max or percentile -- a tick is
-#: concurrent demand, and the largest single process is not it.
+#: concurrent demand, and the largest single process is not it. A tick is ``wall_ts``, the
+#: moment the monitor sampled: ``timestamp`` is sim time and is empty wherever the clock map
+#: cannot place a sample, which would pool those ticks into one.
 USAGE_SQL = """
     SELECT container,
            PERCENTILE(cores, 95) AS cpu_p95, MAX(cores) AS cpu_peak,
            SUM(cores) AS core_seconds,
            MAX(bytes) AS mem_peak, COUNT(*) AS ticks
-    FROM (SELECT container, config_name, run_id, timestamp,
+    FROM (SELECT container, config_name, run_id, wall_ts,
                  SUM(cpu_percent) / 100.0 AS cores,
                  SUM(memory_rss_bytes) AS bytes
           FROM resource_usage WHERE in_window = 1
-          GROUP BY container, config_name, run_id, timestamp)
+          GROUP BY container, config_name, run_id, wall_ts)
     GROUP BY container
 """
 
 #: The run's shared-memory pool: the highest any run peaked at, and the limit that was in
-#: force. From ``runs`` rather than from the per-tick table because that is where the builder
-#: puts the high-water mark -- and because an older campaign then yields NULLs instead of a
-#: missing table, which is a value this module can reason about rather than an error.
+#: force. ``/dev/shm`` is one pool per run, so its value repeats across a tick's process rows
+#: and across containers: each run's high-water mark is a ``MAX`` over its rows, never a sum.
+#: A run whose monitor did not sample the pool has NULL there, which this module reads as
+#: unmeasured rather than as zero.
 #:
 #: Not filtered to the trial window, unlike :data:`USAGE_SQL`: a participant allocates its
 #: segments while it starts up, and a SIGBUS during bring-up loses the run just as completely.
 SHM_SQL = """
-    SELECT MAX(shm_peak_bytes) AS shm_peak, MAX(shm_limit_bytes) AS shm_limit
-    FROM runs
+    SELECT MAX(peak) AS shm_peak, MAX(pool) AS shm_limit
+    FROM (SELECT config_name, run_id,
+                 MAX(shm_used_bytes) AS peak, MAX(shm_total_bytes) AS pool
+          FROM resource_usage GROUP BY config_name, run_id)
 """
 
 #: Container memory as the KERNEL accounts it, which is what the limit is enforced against.
@@ -748,14 +708,11 @@ def _campaign_sizing(query_rows) -> "str | None":
     so an inferred mode is answered as well as a stated one. ``None`` for a campaign recorded
     before the key existed -- which is the mode every campaign had then.
     """
-    try:
-        # `->` then `->>`, not SQLite's json_extract with a '$.a.b' path: the index is
-        # Postgres, which has no such function, and the call would fail outright rather
-        # than return the NULL the `except` below is written for.
-        rows = query_rows("SELECT config_json::jsonb -> 'execution' ->> 'sizing' AS sizing "
-                          "FROM campaign.campaign LIMIT 1")
-    except Exception:  # noqa: BLE001 - no campaign table attached is not an error here
-        return None
+    # `config_json` is TEXT holding JSON: `->` descends, `->>` ends the path as TEXT, and
+    # a missing key is the NULL a campaign without the key is read as.
+    rows = _measured(query_rows)(
+        "SELECT config_json::JSON -> 'execution' ->> 'sizing' AS sizing "
+        "FROM campaign.campaign LIMIT 1")
     return rows[0].get("sizing") if rows else None
 
 
@@ -963,14 +920,13 @@ def contention_advice(contention_rows: list[dict], declared_rows: list[dict]) ->
 #: speed a function of how busy it is -- a variable no campaign declares or records.
 WANTED_CPU_GOVERNOR = "performance"
 
-#: ``->>`` rather than SQLite's ``json_extract``, which Postgres does not have. The cast is
-#: explicit because the column is text: an unparseable value fails here rather than reading
-#: as an absent governor, and "this node did not report" is a different finding from "this
-#: node was on ondemand" -- the whole point of the check below.
+#: The cast is explicit because the column is text: an unparseable value fails here rather
+#: than reading as an absent governor, and "this node did not report" is a different finding
+#: from "this node was on ondemand" -- the whole point of the check below.
 GOVERNOR_SQL = """
-    SELECT DISTINCT sysinfo_json::jsonb ->> 'node_label'   AS node,
-                    sysinfo_json::jsonb ->> 'cpu_name'     AS cpu,
-                    sysinfo_json::jsonb ->> 'cpu_governor' AS governor
+    SELECT DISTINCT sysinfo_json::JSON ->> 'node_label'   AS node,
+                    sysinfo_json::JSON ->> 'cpu_name'     AS cpu,
+                    sysinfo_json::JSON ->> 'cpu_governor' AS governor
     FROM campaign.job
     WHERE sysinfo_json IS NOT NULL
 """
@@ -1017,23 +973,31 @@ def governor_advice(rows: list[dict]) -> list[dict]:
 def campaign_advice(query_rows) -> dict[str, Any]:
     """Advice for a campaign, given a ``query_rows(sql) -> list[dict]`` callable.
 
+    *query_rows* raises :class:`~robovast.results_processing.data_query.DataQueryError` for
+    a table or column the campaign does not have -- a campaign predating a probe or a field
+    -- which reads as nothing measured. Anything else it raises propagates: a failed lookup
+    is not an absent measurement.
+
     Returns ``{"advice": [...]}`` -- a key rather than a bare list so a caller can merge it
     into a larger summary, and so a future non-resource advice source has somewhere to land.
     """
+    measured = _measured(query_rows)
     declared = query_rows(DECLARED_SQL)
-    try:
-        system_mem = query_rows(SYSTEM_MEM_SQL)
-    except Exception:  # noqa: BLE001 - no such table on a campaign predating the probe
-        system_mem = []
-    try:
-        throttle = query_rows(THROTTLE_SQL)
-    except Exception:  # noqa: BLE001 - no such table on a campaign predating the probe
-        throttle = []
-    try:
-        governor = query_rows(GOVERNOR_SQL)
-    except Exception:  # noqa: BLE001 - no job table, or a campaign predating the field
-        governor = []
-    return {"advice": (governor_advice(governor)
-                       + throttle_advice(throttle, declared, sizing=_campaign_sizing(query_rows))
-                       + resource_advice(query_rows(USAGE_SQL), declared, system_mem)
-                       + shm_advice(query_rows(SHM_SQL), declared))}
+    return {"advice": (governor_advice(measured(GOVERNOR_SQL))
+                       + throttle_advice(measured(THROTTLE_SQL), declared,
+                                         sizing=_campaign_sizing(query_rows))
+                       + resource_advice(measured(USAGE_SQL), declared,
+                                         measured(SYSTEM_MEM_SQL))
+                       + shm_advice(measured(SHM_SQL), declared))}
+
+
+def _measured(query_rows):
+    """*query_rows*, answering ``[]`` for a query the campaign's data cannot answer."""
+    from robovast.results_processing.data_query import DataQueryError
+
+    def rows(sql: str) -> list[dict]:
+        try:
+            return query_rows(sql)
+        except DataQueryError:
+            return []
+    return rows

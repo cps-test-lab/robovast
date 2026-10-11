@@ -28,6 +28,34 @@
         "title": "ActionResult",
         "type": "object"
       },
+      "ArrowQueryRequest": {
+        "description": "A read-only ``SELECT`` answered as an Arrow IPC stream (``POST /campaigns/{id}/query.arrow``).\n\nThe typed twin of ``query.csv``: a ``LIST`` column arrives as a list and every column in\nits type, with no row cap. What ``robovast-data`` reads a service's tables through.",
+        "properties": {
+          "sql": {
+            "title": "Sql",
+            "type": "string"
+          },
+          "tables": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tables"
+          }
+        },
+        "required": [
+          "sql"
+        ],
+        "title": "ArrowQueryRequest",
+        "type": "object"
+      },
       "BatchObjective": {
         "description": "One search batch's objective figures.\n\n``min``/``max``/``mean`` are RAW and direction-free, so no reader has to know whether the\ncampaign maximizes before it can read a field name; ``best_so_far`` is the one figure that\napplies the direction. ``None`` statistics with ``n_scored == 0`` mark a batch that measured\nnothing \u2014 a gap, never a zero \u2014 and ``best_so_far`` carries forward across it.",
         "properties": {
@@ -41,6 +69,11 @@
               }
             ],
             "title": "Best So Far"
+          },
+          "complete": {
+            "default": false,
+            "title": "Complete",
+            "type": "boolean"
           },
           "idx": {
             "title": "Idx",
@@ -92,6 +125,7 @@
         },
         "required": [
           "best_so_far",
+          "complete",
           "idx",
           "max",
           "mean",
@@ -173,11 +207,17 @@
             "default": "",
             "title": "Path",
             "type": "string"
+          },
+          "wait": {
+            "default": true,
+            "title": "Wait",
+            "type": "boolean"
           }
         },
         "required": [
           "max_configs",
-          "path"
+          "path",
+          "wait"
         ],
         "title": "Body_preview_configurations_workspaces__workspace_id__preview_post",
         "type": "object"
@@ -343,6 +383,27 @@
         "title": "BudgetItem",
         "type": "object"
       },
+      "BuildCampaignTablesRequest": {
+        "description": "Build a finished campaign's tables now rather than when each is first named.\n\nNot needed for any answer: a table is built the first time a query, a panel or an\nexport names it. This only moves that cost to now, for a campaign about to be analyzed\nat length. ``tables`` names the ones to build; empty builds every table its records can\ngive.",
+        "properties": {
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "tables": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tables",
+            "type": "array"
+          }
+        },
+        "required": [
+          "campaign_id"
+        ],
+        "title": "BuildCampaignTablesRequest",
+        "type": "object"
+      },
       "BuildImageRequest": {
         "description": "Build the derived images a workspace project's containers declare.\n\nEvery entry in ``execution.containers`` that adds ``system_packages``,\n``python_packages`` or ``ros_packages`` is built on top of its ``image``; one that adds nothing is\npulled as-is and never built. So this is zero or more images, tagged by container\nname \u2014 not one \"experiment image\", and not tied to any particular role.\n\nThe declarative content lives in the ``.vast``; this request only names the\nproject, so the client stays free of any registry knowledge.\nIdempotent/content-addressed: if an image for the same inputs already exists it is\nreused (no build runs).",
         "properties": {
@@ -435,6 +496,94 @@
         "title": "CampaignDeletion",
         "type": "object"
       },
+      "CampaignLogChunk": {
+        "description": "The rows of a campaign's infrastructure log that arrived after *cursor*.\n\nRead from the phase files under the campaign's ``_execution/`` (the archived runs of a\nrepeatable phase under ``sections/`` included), which grow while the campaign runs,\nso a running campaign and a finished one answer alike. The filters a\nread was given are applied while reading, so ``rows`` is what they kept and the\ncursor still advances over what they skipped.",
+        "properties": {
+          "cursor": {
+            "default": "",
+            "title": "Cursor",
+            "type": "string"
+          },
+          "eof": {
+            "default": false,
+            "title": "Eof",
+            "type": "boolean"
+          },
+          "phases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Phases",
+            "type": "array"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignLogRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "cursor",
+          "eof",
+          "phases",
+          "rows"
+        ],
+        "title": "CampaignLogChunk",
+        "type": "object"
+      },
+      "CampaignLogRow": {
+        "description": "One record of a campaign's infrastructure log.\n\nA stamped line of a phase file (``<date> <level> <logger>: <message>``, or the\n``[<level>] [<t>] [<node>]:`` form a run's containers relay into ``controller.log``)\nwith the unstamped lines under it joined into ``message``; an unstamped line with no\nrecord above it is its own row at level ``NOTE`` -- build and pip output, mostly.",
+        "properties": {
+          "level": {
+            "default": "NOTE",
+            "title": "Level",
+            "type": "string"
+          },
+          "logger": {
+            "default": "",
+            "title": "Logger",
+            "type": "string"
+          },
+          "message": {
+            "default": "",
+            "title": "Message",
+            "type": "string"
+          },
+          "phase": {
+            "default": "",
+            "title": "Phase",
+            "type": "string"
+          },
+          "seq": {
+            "default": 0,
+            "title": "Seq",
+            "type": "integer"
+          },
+          "wall_ts": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall Ts"
+          }
+        },
+        "required": [
+          "level",
+          "logger",
+          "message",
+          "phase",
+          "seq",
+          "wall_ts"
+        ],
+        "title": "CampaignLogRow",
+        "type": "object"
+      },
       "CampaignOrigin": {
         "description": "Where a campaign's configuration came from. **A record, never a link.**\n\nCampaigns stay workspace-independent: nothing in the execution path reads this back, a\nre-run still relaunches from the frozen ``_config/`` (see\n:mod:`robovast.service.retrigger`), and the workspace named here may have been edited,\nrenamed or deleted since -- or, for an ingested campaign, may never have existed on this\ndeployment at all. It answers \"where did this come from?\", which is a fact about the past,\nand not \"where do I relaunch it from?\", which is always the campaign's own snapshot.\n\n**The workspace fields name where the configuration ORIGINATES, not what the launch read.**\nFor a re-run they are copied from the parent's own origin at launch, so a chain of re-runs\nkeeps naming the workspace at its root. Denormalised rather than resolved by walking\n``from_campaign``, for three reasons: the campaign listing is paginated, so a reader may not\nhold the parent at all; a parent is routinely deleted, and provenance that evaporates with it\nis provenance nobody can rely on; and a chain then costs no recursion.\n\n:attr:`kind` is the single authority on which shape this is. It is *currently* derivable\n(a non-empty ``from_campaign`` means a re-run), but a reader that derives it instead would\nhave to be revisited the first time an origin appears that is neither -- so switch on\n``kind`` and never on whether ``from_campaign`` is empty.\n\n**A re-run says which config version it read.** An archived campaign's frozen ``.vast`` is\nmigrated on the way into the re-run's staging copy, so two runs of \"the same campaign\" can\nread different config versions -- which makes them different experiments, and a reader\ncomparing their results has to be able to see it. :attr:`config_version_from` is recorded\non every re-run, so \"read a current config\" is a fact rather than a silence:\n:attr:`config_migration_steps` is empty when nothing had to be carried forward, and\n:attr:`config_version_from` is ``None`` only when nothing was recorded at all.",
         "properties": {
@@ -495,7 +644,7 @@
         "type": "object"
       },
       "CampaignPanelsResponse": {
-        "description": "The run-view panels for a campaign: the ones its snapshot ``.vast``\ndeclares under ``visualization.results.run_view.panels``, plus the\ncontributed ones no ``.vast`` has to write (the ``playback`` transport\nalways, a ``scene3d`` for a simulator that records a capture). Each entry\nis the flattened panel dict (``type`` + ``position`` + panel-specific data\nbindings), rendered by the web run-view against the campaign's results tables.\n``timeline`` (optional, ``visualization.results.run_view.timeline``) names\nthe table + column that defines the playback range for non-ROS runs.\n``transport_only`` answers, for the run view, whether any of it is content.",
+        "description": "The run-view panels for a campaign: the ones its snapshot ``.vast``\ndeclares under ``visualization.results.run_view.panels``, plus the\ncontributed ones no ``.vast`` has to write (the ``playback`` transport\nalways, a ``scene3d`` for a simulator that records its scene state). Each entry\nis the flattened panel dict (``type`` + ``position`` + panel-specific data\nbindings), rendered by the web run-view against the campaign's results tables.\n``timeline`` (optional, ``visualization.results.run_view.timeline``) names\nthe table + column that defines the playback range for non-ROS runs.\n``transport_only`` answers, for the run view, whether any of it is content.",
         "properties": {
           "campaign_id": {
             "title": "Campaign Id",
@@ -727,6 +876,26 @@
         "title": "CampaignSummary",
         "type": "object"
       },
+      "CampaignTablesCleared": {
+        "description": "What clearing one campaign's built tables removed. Each is built again on use.",
+        "properties": {
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "freed_bytes": {
+            "default": 0,
+            "title": "Freed Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "freed_bytes"
+        ],
+        "title": "CampaignTablesCleared",
+        "type": "object"
+      },
       "CampaignVisualization": {
         "description": "One ``evaluation.visualization`` notebook workload + the node levels it\ndefines a notebook for (a subset of ``run``/``config``/``batch``/``campaign``).\nA ``batch`` notebook is only reachable on a search campaign, whose tree has the\nbatch nodes to select.",
         "properties": {
@@ -896,7 +1065,7 @@
         "type": "object"
       },
       "DataDescribe": {
-        "description": "Schema of a campaign's tables in the index (+ the ``campaign`` schema).\n\nEach ``tables`` entry is a :class:`DataTable`, whose schema is the key ``schema`` in\nevery dump it appears in.",
+        "description": "Schema of a campaign's tables, views and ``campaign`` record.\n\nEach ``tables`` entry is a :class:`DataTable`, whose schema is the key ``schema`` in\nevery dump it appears in.",
         "properties": {
           "campaign_id": {
             "title": "Campaign Id",
@@ -981,6 +1150,17 @@
       "DataTable": {
         "description": "One queryable table, as :meth:`describe_campaign_data` reports it.",
         "properties": {
+          "built": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Built"
+          },
           "column_notes": {
             "additionalProperties": true,
             "title": "Column Notes",
@@ -998,6 +1178,18 @@
             "title": "Description",
             "type": "string"
           },
+          "failed": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Failed",
+            "type": "object"
+          },
+          "kind": {
+            "default": "",
+            "title": "Kind",
+            "type": "string"
+          },
           "rows": {
             "anyOf": [
               {
@@ -1008,6 +1200,17 @@
               }
             ],
             "title": "Rows"
+          },
+          "runs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runs"
           },
           "schema": {
             "default": "",
@@ -1021,10 +1224,14 @@
           }
         },
         "required": [
+          "built",
           "column_notes",
           "columns",
           "description",
+          "failed",
+          "kind",
           "rows",
+          "runs",
           "schema",
           "table"
         ],
@@ -1288,6 +1495,134 @@
         "title": "ExecStopResult",
         "type": "object"
       },
+      "ExportRef": {
+        "description": "A started export: its id, and where its file will be once it is done.",
+        "properties": {
+          "export_id": {
+            "title": "Export Id",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "export_id",
+          "url"
+        ],
+        "title": "ExportRef",
+        "type": "object"
+      },
+      "ExportRequest": {
+        "description": "What an export of a campaign carries: its tables as files, its bags, its records.\n\nAn export is what a laptop analysis or a hand-off wants: the campaign's logical tables\nwritten one file per table, in a format pandas or DuckDB opens directly, with the\nrecords that produced them and, if asked, the recordings. The archive\n(``GET /data/campaigns/{id}/archive``) is the campaign as the service holds it, its\ntables in the decoder's own cache; an export is plain files, built for the request and\ndisposable.",
+        "properties": {
+          "bags": {
+            "default": "none",
+            "enum": [
+              "none",
+              "mcap",
+              "sqlite3"
+            ],
+            "title": "Bags",
+            "type": "string"
+          },
+          "format": {
+            "default": "parquet",
+            "enum": [
+              "parquet",
+              "csv"
+            ],
+            "title": "Format",
+            "type": "string"
+          },
+          "records": {
+            "default": true,
+            "title": "Records",
+            "type": "boolean"
+          },
+          "tables": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tables"
+          }
+        },
+        "title": "ExportRequest",
+        "type": "object"
+      },
+      "ExportStatus": {
+        "description": "Where one export has got to (poll like an image build's :class:`ImageBuildStatus`).",
+        "properties": {
+          "bytes": {
+            "default": 0,
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "done": {
+            "default": false,
+            "title": "Done",
+            "type": "boolean"
+          },
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
+          "export_id": {
+            "title": "Export Id",
+            "type": "string"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "tables": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Tables",
+            "type": "object"
+          }
+        },
+        "required": [
+          "bytes",
+          "done",
+          "error",
+          "export_id",
+          "finished_at",
+          "started_at",
+          "tables"
+        ],
+        "title": "ExportStatus",
+        "type": "object"
+      },
       "FileMeta": {
         "description": "Result of a write/upload \u2014 metadata only, never the content.\n\nEchoing content back would double its token cost for no benefit.",
         "properties": {
@@ -1318,6 +1653,28 @@
           "sha256"
         ],
         "title": "FileMeta",
+        "type": "object"
+      },
+      "FrameTimes": {
+        "description": "The stamps of every frame of one image topic of a run, in seconds of the run's clock.",
+        "properties": {
+          "times": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Times",
+            "type": "array"
+          },
+          "topic": {
+            "title": "Topic",
+            "type": "string"
+          }
+        },
+        "required": [
+          "times",
+          "topic"
+        ],
+        "title": "FrameTimes",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -1616,11 +1973,6 @@
             "title": "Pending",
             "type": "integer"
           },
-          "postprocessing": {
-            "default": 0,
-            "title": "Postprocessing",
-            "type": "integer"
-          },
           "running": {
             "default": 0,
             "title": "Running",
@@ -1644,12 +1996,97 @@
           "failed",
           "killed",
           "pending",
-          "postprocessing",
           "running",
           "total",
           "waiting"
         ],
         "title": "JobCounts",
+        "type": "object"
+      },
+      "JobLogChunk": {
+        "description": "The rows of a job's log that arrived after *cursor*.\n\nRead from the job's ``logs/system*.log`` files in the campaign directory, which grow\nwhile the job runs, so a running job and a finished one answer alike.\nRows within a chunk are in stamp order; across chunks, in the order they arrived. The\nfinished, deduplicated record of a run's log is the ``run_log`` table.",
+        "properties": {
+          "cursor": {
+            "default": "",
+            "title": "Cursor",
+            "type": "string"
+          },
+          "eof": {
+            "default": false,
+            "title": "Eof",
+            "type": "boolean"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/JobLogRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "cursor",
+          "eof",
+          "rows"
+        ],
+        "title": "JobLogChunk",
+        "type": "object"
+      },
+      "JobLogRow": {
+        "description": "One record of a job's log: a stamped line and the unstamped lines that follow it.",
+        "properties": {
+          "container": {
+            "default": "",
+            "title": "Container",
+            "type": "string"
+          },
+          "level": {
+            "default": "",
+            "title": "Level",
+            "type": "string"
+          },
+          "message": {
+            "default": "",
+            "title": "Message",
+            "type": "string"
+          },
+          "node": {
+            "default": "",
+            "title": "Node",
+            "type": "string"
+          },
+          "severity": {
+            "default": "",
+            "title": "Severity",
+            "type": "string"
+          },
+          "time_source": {
+            "default": "none",
+            "title": "Time Source",
+            "type": "string"
+          },
+          "wall_ts": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall Ts"
+          }
+        },
+        "required": [
+          "container",
+          "level",
+          "message",
+          "node",
+          "severity",
+          "time_source",
+          "wall_ts"
+        ],
+        "title": "JobLogRow",
         "type": "object"
       },
       "JobState": {
@@ -1730,7 +2167,7 @@
         "type": "object"
       },
       "JobSummary": {
-        "description": "One execution unit of a campaign's current batch.\n\nA \"job\" is whatever the backend fans a batch out into: a **Kubernetes Job** on the\ncluster backend, which may pack several runs. ``job_name`` is the id\n:meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional\nhuman-friendly label (batch/job-index on the cluster).",
+        "description": "One execution unit of a campaign's current batch.\n\nA \"job\" is whatever the backend fans a batch out into: a **Kubernetes Job** on the\ncluster backend, running one run. ``job_name`` is the id\n:meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional\nhuman-friendly label (batch/job-index on the cluster).",
         "properties": {
           "detail": {
             "anyOf": [
@@ -1997,7 +2434,7 @@
         "type": "object"
       },
       "LogChunk": {
-        "description": "An incremental slice of a campaign's ``controller.log``.\n\nThe controller runs in the driving process, so its log is a local file there\n(the service). Clients poll from a byte\n*offset* and append \u2014 ``next_offset`` is where to resume; ``eof`` is True once\nthe campaign has reached a terminal phase and no more will be written.",
+        "description": "An incremental slice of a byte-addressed log: the service's own, an image build's.\n\nClients poll from a byte *offset* and append \u2014 ``next_offset`` is where to resume;\n``eof`` is True once nothing more will be written.",
         "properties": {
           "eof": {
             "default": false,
@@ -2086,11 +2523,6 @@
             "title": "Calls",
             "type": "array"
           },
-          "detail": {
-            "default": "",
-            "title": "Detail",
-            "type": "string"
-          },
           "limit": {
             "default": 0,
             "title": "Limit",
@@ -2100,11 +2532,6 @@
             "default": 0,
             "title": "Offset",
             "type": "integer"
-          },
-          "status": {
-            "default": "ok",
-            "title": "Status",
-            "type": "string"
           },
           "total": {
             "default": 0,
@@ -2119,10 +2546,8 @@
         },
         "required": [
           "calls",
-          "detail",
           "limit",
           "offset",
-          "status",
           "total",
           "truncated"
         ],
@@ -2180,13 +2605,8 @@
         "type": "object"
       },
       "McpToolStats": {
-        "description": "The ranking, plus what the record covers.\n\n:attr:`status` distinguishes the two ways this can be empty, which a bare list cannot:\nno tool has been called yet, or the index that holds the log is unreachable and the\nanswer is unknown. A reader that drew the second as the first would be inventing a fact.",
+        "description": "The ranking, plus what the record covers.",
         "properties": {
-          "detail": {
-            "default": "",
-            "title": "Detail",
-            "type": "string"
-          },
           "max_age_s": {
             "default": 0.0,
             "title": "Max Age S",
@@ -2197,11 +2617,6 @@
             "title": "Max Rows",
             "type": "integer"
           },
-          "status": {
-            "default": "ok",
-            "title": "Status",
-            "type": "string"
-          },
           "tools": {
             "items": {
               "$ref": "#/components/schemas/McpToolStat"
@@ -2211,10 +2626,8 @@
           }
         },
         "required": [
-          "detail",
           "max_age_s",
           "max_rows",
-          "status",
           "tools"
         ],
         "title": "McpToolStats",
@@ -2260,12 +2673,20 @@
             },
             "title": "Refused",
             "type": "array"
+          },
+          "resync": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Resync",
+            "type": "array"
           }
         },
         "required": [
           "bytes",
           "files",
-          "refused"
+          "refused",
+          "resync"
         ],
         "title": "OutputsIngested",
         "type": "object"
@@ -2409,7 +2830,7 @@
         "type": "object"
       },
       "PreviewResponse": {
-        "description": "Result of :meth:`RobovastInterface.preview_configurations`.",
+        "description": "Result of :meth:`RobovastInterface.preview_configurations`.\n\n``state`` is ``ready`` for a preview that waited for the expansion (the default). A\npreview asked for with ``wait=False`` answers ``composing`` while the expansion runs in\nthe background (``progress`` then counts its steps once the first is counted), ``ready``\nonce every other field holds, and ``failed`` when the expansion raised, with ``error``\nsaying why; the counts and ``configurations`` are empty in every state but ``ready``.",
         "properties": {
           "aux_containers": {
             "items": {
@@ -2438,10 +2859,35 @@
             "title": "Configurations",
             "type": "array"
           },
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StepProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "runs_per_config": {
             "default": 0,
             "title": "Runs Per Config",
             "type": "integer"
+          },
+          "state": {
+            "default": "ready",
+            "enum": [
+              "composing",
+              "ready",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
           },
           "total_trials": {
             "default": 0,
@@ -2459,7 +2905,10 @@
           "config_panels",
           "configs",
           "configurations",
+          "error",
+          "progress",
           "runs_per_config",
+          "state",
           "total_trials",
           "truncated"
         ],
@@ -2719,6 +3168,7 @@
         "type": "object"
       },
       "RunPostprocessingRequest": {
+        "description": "(Re)run one campaign's postprocessing.\n\n``force`` clears the campaign's built tables first, so what it declares is built again\nand its steps run with ``force``; ``replay`` clears them and builds every table the\nrecords can give, for every run, before the campaign-end pass -- the rows a live watcher\nwrote as the runs went, built again from the records.",
         "properties": {
           "campaign_id": {
             "title": "Campaign Id",
@@ -2727,6 +3177,11 @@
           "force": {
             "default": false,
             "title": "Force",
+            "type": "boolean"
+          },
+          "replay": {
+            "default": false,
+            "title": "Replay",
             "type": "boolean"
           },
           "skip": {
@@ -3742,6 +4197,16 @@
             "title": "Updated At",
             "type": "number"
           },
+          "variation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StepProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "waiting_for_capacity": {
             "default": false,
             "title": "Waiting For Capacity",
@@ -3781,9 +4246,31 @@
           "stopping_soon",
           "stopping_verdict",
           "updated_at",
+          "variation",
           "waiting_for_capacity"
         ],
         "title": "StatusResponse",
+        "type": "object"
+      },
+      "StepProgress": {
+        "description": "How far composing a ``.vast`` has got: *done* of *total* variation steps, one step per\nvariation of each configuration block. A step can expand into any number of\nconfigurations, so this counts work, not configurations.",
+        "properties": {
+          "done": {
+            "default": 0,
+            "title": "Done",
+            "type": "integer"
+          },
+          "total": {
+            "default": 0,
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "done",
+          "total"
+        ],
+        "title": "StepProgress",
         "type": "object"
       },
       "TrackDeviation": {
@@ -5760,6 +6247,111 @@
         ]
       }
     },
+    "/campaigns/{campaign_id}/exports": {
+      "post": {
+        "description": "Start an export of the campaign: its tables as files, its records, its bags.",
+        "operationId": "create_export_campaigns__campaign_id__exports_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportRef"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Export",
+        "tags": [
+          "results"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/exports/{export_id}": {
+      "get": {
+        "description": "Where an export has got to; its file is on the data plane once it is done.",
+        "operationId": "get_export_status_campaigns__campaign_id__exports__export_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "export_id",
+            "required": true,
+            "schema": {
+              "title": "Export Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Export Status",
+        "tags": [
+          "results"
+        ]
+      }
+    },
     "/campaigns/{campaign_id}/job-exec": {
       "post": {
         "operationId": "exec_in_job_campaigns__campaign_id__job_exec_post",
@@ -5842,6 +6434,7 @@
     },
     "/campaigns/{campaign_id}/job-log": {
       "get": {
+        "description": "A job's log rows after *cursor*, running or finished.",
         "operationId": "get_job_log_campaigns__campaign_id__job_log_get",
         "parameters": [
           {
@@ -5864,12 +6457,12 @@
           },
           {
             "in": "query",
-            "name": "offset",
+            "name": "cursor",
             "required": false,
             "schema": {
-              "default": 0,
-              "title": "Offset",
-              "type": "integer"
+              "default": "",
+              "title": "Cursor",
+              "type": "string"
             }
           }
         ],
@@ -5878,7 +6471,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LogChunk"
+                  "$ref": "#/components/schemas/JobLogChunk"
                 }
               }
             },
@@ -5903,7 +6496,7 @@
     },
     "/campaigns/{campaign_id}/job-log/stream": {
       "get": {
-        "description": "Server-sent events: one job's log, tailed live (``Last-Event-ID`` resumes).\n\nA **finished** job is served too, not only a running one. What the events mean,\nand which residual case is still an error, is ``_sse_log_stream``'s to say.",
+        "description": "Server-sent events: one job's log rows as they are written (``Last-Event-ID``\nresumes). A finished job is served too; see ``_sse_rows_stream``.",
         "operationId": "stream_job_log_campaigns__campaign_id__job_log_stream_get",
         "parameters": [
           {
@@ -6079,6 +6672,76 @@
         ]
       }
     },
+    "/campaigns/{campaign_id}/job-tap": {
+      "get": {
+        "description": "Server-sent events: a tap on a **running** job, relaying what its simulator\npublishes now for at most ``max_seconds`` (capped at the service's bound). ``line``\nevents carry the lines, ``eof`` the exit code; ``selection`` is comma-separated and\nmeans topics in the ROS shape, empty for the topic list. Recorded as a probe of the\nrun; see ``_sse_tap_stream``.",
+        "operationId": "tap_job_campaigns__campaign_id__job_tap_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "job_name",
+            "required": true,
+            "schema": {
+              "title": "Job Name",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "selection",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Selection",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "max_seconds",
+            "required": false,
+            "schema": {
+              "default": 120,
+              "title": "Max Seconds",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Tap Job",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
     "/campaigns/{campaign_id}/jobs": {
       "get": {
         "operationId": "list_jobs_campaigns__campaign_id__jobs_get",
@@ -6123,6 +6786,7 @@
     },
     "/campaigns/{campaign_id}/logs": {
       "get": {
+        "description": "A campaign's infrastructure log rows after *cursor*, running or finished.",
         "operationId": "get_campaign_logs_campaigns__campaign_id__logs_get",
         "parameters": [
           {
@@ -6136,12 +6800,42 @@
           },
           {
             "in": "query",
-            "name": "offset",
+            "name": "cursor",
             "required": false,
             "schema": {
-              "default": 0,
-              "title": "Offset",
-              "type": "integer"
+              "default": "",
+              "title": "Cursor",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "phase",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Phase",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_level",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Min Level",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "grep",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Grep",
+              "type": "string"
             }
           }
         ],
@@ -6150,7 +6844,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LogChunk"
+                  "$ref": "#/components/schemas/CampaignLogChunk"
                 }
               }
             },
@@ -6175,7 +6869,7 @@
     },
     "/campaigns/{campaign_id}/logs/stream": {
       "get": {
-        "description": "Server-sent events: a campaign's controller log, tailed live. Resumable \u2014\nsend ``Last-Event-ID`` to continue from the last line received.",
+        "description": "Server-sent events: a campaign's infrastructure log rows as they are written\n(``Last-Event-ID`` resumes; the same filters as the pull). A finished campaign is\nserved too; see ``_sse_rows_stream``.",
         "operationId": "stream_campaign_logs_campaigns__campaign_id__logs_stream_get",
         "parameters": [
           {
@@ -6184,6 +6878,46 @@
             "required": true,
             "schema": {
               "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Cursor",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "phase",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Phase",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_level",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Min Level",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "grep",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Grep",
               "type": "string"
             }
           }
@@ -6784,7 +7518,7 @@
     },
     "/campaigns/{campaign_id}/query": {
       "post": {
-        "description": "Run a read-only ``SELECT``, scoped to ``campaign_id``.\n\n``max_bytes`` raises the reply's size ceiling for a client that renders the rows\nrather than reading them; omitted, it stays at the context-sized default, so an\nagent cannot spend its window on one ``SELECT *`` by forgetting a parameter.\n\n``campaigns`` widens the scope to the ids it names -- the A/B comparison, the\nwhole search arm. It is a parameter rather than the default because the index\nholds every campaign: a query that spans them by *omission* returns rows of the\nright shape from the wrong experiment, and nothing about the reply says so.",
+        "description": "Run a read-only ``SELECT``, scoped to ``campaign_id``.\n\n``max_bytes`` raises the reply's size ceiling for a client that renders the rows\nrather than reading them; omitted, it stays at the context-sized default, so an\nagent cannot spend its window on one ``SELECT *`` by forgetting a parameter.\n\n``campaigns`` widens the scope to the ids it names -- the A/B comparison, the\nwhole search arm. It is a parameter rather than the default because a query that\nspans campaigns by *omission* returns rows of the right shape from the wrong\nexperiment, and nothing about the reply says so.",
         "operationId": "query_campaign_data_sql_campaigns__campaign_id__query_post",
         "parameters": [
           {
@@ -6830,6 +7564,57 @@
           }
         },
         "summary": "Query Campaign Data Sql",
+        "tags": [
+          "results"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/query.arrow": {
+      "post": {
+        "description": "Stream the same read-only ``SELECT`` as an Arrow IPC stream: typed, no row cap.\n\nThe CSV twin spells every value as text and a list column as ``[...]``; this keeps\nthe types, which is what ``robovast-data`` reads a service's tables through. The\nrequest's ``tables`` are the caller's own relations -- each an Arrow IPC stream in\nbase64 -- registered under their names for this query alone, so a DataFrame a\nnotebook made joins the campaign's tables on the service.",
+        "operationId": "query_campaign_data_arrow_campaigns__campaign_id__query_arrow_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArrowQueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Query Campaign Data Arrow",
         "tags": [
           "results"
         ]
@@ -6887,7 +7672,7 @@
     },
     "/campaigns/{campaign_id}/retrigger": {
       "post": {
-        "description": "Launch a new campaign from an existing one's frozen config and pinned image. The source campaign is not modified. Refused (400) when the pre-flight blocks on an axis, naming each one; force launches anyway.",
+        "description": "Launch a new campaign from an existing one's frozen config, running exactly the image digests its launch record holds and resolving none again. The source campaign is not modified. Refused (400) when the pre-flight blocks on an axis, naming each one; force launches anyway, except past a record lacking a digest for something the campaign runs.",
         "operationId": "retrigger_campaign_campaigns__campaign_id__retrigger_post",
         "parameters": [
           {
@@ -7634,6 +8419,102 @@
         ]
       }
     },
+    "/campaigns/{campaign_id}/tables": {
+      "delete": {
+        "description": "Remove one campaign's built tables to free storage; each is built again on use.",
+        "operationId": "clear_campaign_tables_campaigns__campaign_id__tables_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignTablesCleared"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clear Campaign Tables",
+        "tags": [
+          "results"
+        ]
+      }
+    },
+    "/campaigns/{campaign_id}/tables/build": {
+      "post": {
+        "description": "Build a finished campaign's tables now; never needed, since each is built on use.",
+        "operationId": "build_campaign_tables_campaigns__campaign_id__tables_build_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BuildCampaignTablesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Build Campaign Tables",
+        "tags": [
+          "results"
+        ]
+      }
+    },
     "/campaigns/{campaign_id}/track_deviation": {
       "get": {
         "operationId": "get_track_deviation_campaigns__campaign_id__track_deviation_get",
@@ -7797,7 +8678,7 @@
     },
     "/data/campaigns/{campaign_id}/archive": {
       "get": {
-        "description": "Stream the campaign as a ``tar.gz``, or a plain tar with ``uncompressed``.\n\nBacks ``vast campaign download``, the web UI's download button and the\npostprocessing pod's stage, which asks for the plain tar, being in the cluster.\nWhat comes out is the campaign as this service holds\nit -- postprocessed if it has been, raw if it has not; derived data is an addition\nto a campaign, never the condition for reading one. ``stage``, ``skip_bags``,\n``batch_jobs`` and ``part`` narrow it to what a postprocessing pod reads\n(:class:`ArchiveSelection`).\n\nNothing is buffered and no scratch is used: the tree is tarred into the response\nas it is read. Decisive for campaigns that run to terabytes.",
+        "description": "Stream the campaign as a ``tar.gz``.\n\nBacks ``vast campaign download`` and the web UI's download menu. What comes out is\nthe campaign as this service holds it -- its records, what postprocessing derived,\nand its built tables, so it opens in a notebook without building anything -- or,\nwith ``raw=true``, the records alone, which an import postprocesses afresh.\n\nNothing is buffered and no scratch is used: the tree is tarred into the response\nas it is read. Decisive for campaigns that run to terabytes.",
         "operationId": "download_campaign_archive_data_campaigns__campaign_id__archive_get",
         "parameters": [
           {
@@ -7811,52 +8692,12 @@
           },
           {
             "in": "query",
-            "name": "stage",
+            "name": "raw",
             "required": false,
             "schema": {
               "default": false,
-              "title": "Stage",
+              "title": "Raw",
               "type": "boolean"
-            }
-          },
-          {
-            "in": "query",
-            "name": "skip_bags",
-            "required": false,
-            "schema": {
-              "default": false,
-              "title": "Skip Bags",
-              "type": "boolean"
-            }
-          },
-          {
-            "in": "query",
-            "name": "batch_jobs",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Batch Jobs",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "uncompressed",
-            "required": false,
-            "schema": {
-              "default": false,
-              "title": "Uncompressed",
-              "type": "boolean"
-            }
-          },
-          {
-            "in": "query",
-            "name": "part",
-            "required": false,
-            "schema": {
-              "default": "",
-              "title": "Part",
-              "type": "string"
             }
           }
         ],
@@ -7881,6 +8722,217 @@
           }
         },
         "summary": "Download Campaign Archive",
+        "tags": [
+          "data"
+        ]
+      }
+    },
+    "/data/campaigns/{campaign_id}/exports/{export_id}": {
+      "get": {
+        "description": "Stream a finished export as a ``tar.gz``.\n\nBacks ``vast campaign export`` and the web UI's Export dialog. A 404 until the\nexport is done (the status route on the control plane says how far it is), a 409\ncarrying the reason once it failed. Answered from the export's files alone, so the\nstandalone data container serves what the control plane built.",
+        "operationId": "download_campaign_export_data_campaigns__campaign_id__exports__export_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "export_id",
+            "required": true,
+            "schema": {
+              "title": "Export Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Campaign Export",
+        "tags": [
+          "data"
+        ]
+      }
+    },
+    "/data/campaigns/{campaign_id}/frame": {
+      "get": {
+        "description": "One camera frame of a run: as ``image/jpeg`` no wider than 640 px, or whole.\n\nThe last frame at or before ``t``, the first when none is; the newest without\n``t``. Its stamp, in the seconds every table of the run uses, is the\n``X-Frame-Time`` header. With ``full`` the frame is what the camera produced --\n``application/x-npy`` holding the pixels in the encoding's own dtype (the encoding\nin ``X-Frame-Encoding``), or a compressed image's own bytes -- and its frame is\n``X-Frame-Id``. A live run's frame comes from the watcher following its recording,\na finished run's from an index built on first request. ``404`` for a run without\nthe topic or with no frame of it yet, with the reason.",
+        "operationId": "get_campaign_frame_data_campaigns__campaign_id__frame_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the run, as <config>/<run_id>",
+            "in": "query",
+            "name": "run",
+            "required": true,
+            "schema": {
+              "description": "the run, as <config>/<run_id>",
+              "title": "Run",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the image topic",
+            "in": "query",
+            "name": "topic",
+            "required": true,
+            "schema": {
+              "description": "the image topic",
+              "title": "Topic",
+              "type": "string"
+            }
+          },
+          {
+            "description": "a moment in seconds of the run's clock; the newest frame without it",
+            "in": "query",
+            "name": "t",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "a moment in seconds of the run's clock; the newest frame without it",
+              "title": "T"
+            }
+          },
+          {
+            "description": "the whole frame instead of the JPEG preview: a raw image as its pixels in numpy's .npy format, a compressed one as recorded",
+            "in": "query",
+            "name": "full",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "the whole frame instead of the JPEG preview: a raw image as its pixels in numpy's .npy format, a compressed one as recorded",
+              "title": "Full",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-npy": {},
+              "image/jpeg": {},
+              "image/png": {}
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Campaign Frame",
+        "tags": [
+          "data"
+        ]
+      }
+    },
+    "/data/campaigns/{campaign_id}/frame-index": {
+      "get": {
+        "description": "The stamp of every frame of a run's image topic, in recording order.\n\nWhat a scrubber steps through: the moments ``GET .../frame?t=`` answers exactly.\nThe same sources as the frame route; ``404`` for a run without the topic.",
+        "operationId": "get_campaign_frame_index_data_campaigns__campaign_id__frame_index_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the run, as <config>/<run_id>",
+            "in": "query",
+            "name": "run",
+            "required": true,
+            "schema": {
+              "description": "the run, as <config>/<run_id>",
+              "title": "Run",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the image topic",
+            "in": "query",
+            "name": "topic",
+            "required": true,
+            "schema": {
+              "description": "the image topic",
+              "title": "Topic",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrameTimes"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Campaign Frame Index",
         "tags": [
           "data"
         ]
@@ -7952,6 +9004,81 @@
         ]
       }
     },
+    "/data/campaigns/{campaign_id}/live": {
+      "get": {
+        "description": "Stream a run's tables as they are decoded while it records, as server-sent events.\n\nA ``batch`` event carries ``{\"table\": name, \"rows\": [...]}`` -- at most\n:data:`LIVE_FRAME_ROWS` rows, so one decoded batch may be several events -- and\na table's batches add up to what a query of the finished run gives. A table the\nrun's recordings do not carry yet is followed from the moment a topic that gives it\nappears. With ``frames``, a ``frame`` event per named image topic carries\n``{\"topic\", \"t\", \"jpeg_base64\"}``, the newest frame, at most every\n:data:`LIVE_FRAME_S` seconds and only while it changes. ``heartbeat`` after\n:data:`LIVE_HEARTBEAT_S` seconds of silence. ``eof`` once the run has its verdict\nand its recordings are closed and read to their end; at once for a run that is not\nlive, since its rows are all there for a query. ``streamerror`` then ``eof`` for a\ncampaign or run that is not here, a run key or table list that is not one, and a\nclient that fell :data:`~robovast.service.live.QUEUE_MAX` batches behind, which is\ndropped rather than buffered without bound. A non-finite float is ``null`` in a\nrow, a timestamp its ISO text, and bytes base64.",
+        "operationId": "stream_campaign_live_data_campaigns__campaign_id__live_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the run, as <config>/<run_id>",
+            "in": "query",
+            "name": "run",
+            "required": true,
+            "schema": {
+              "description": "the run, as <config>/<run_id>",
+              "title": "Run",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the tables to follow, comma-separated",
+            "in": "query",
+            "name": "tables",
+            "required": true,
+            "schema": {
+              "description": "the tables to follow, comma-separated",
+              "title": "Tables",
+              "type": "string"
+            }
+          },
+          {
+            "description": "image topics whose newest frame to send as it changes, comma-separated",
+            "in": "query",
+            "name": "frames",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "image topics whose newest frame to send as it changes, comma-separated",
+              "title": "Frames",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Campaign Live",
+        "tags": [
+          "data"
+        ]
+      }
+    },
     "/data/campaigns/{campaign_id}/outputs": {
       "put": {
         "description": "Take a tar of run outputs into the campaign. Streamed, never buffered.\n\nA campaign that is not here is a 404, reached before any member is written: the\nsource resolves the directory before it reads the stream.",
@@ -7990,6 +9117,100 @@
           }
         },
         "summary": "Upload Campaign Outputs",
+        "tags": [
+          "data"
+        ]
+      }
+    },
+    "/data/campaigns/{campaign_id}/points": {
+      "get": {
+        "description": "One point cloud of a run as an Arrow IPC stream, one column per field.\n\nThe cloud at or before ``t`` (the last without it), or with ``after`` the first one\nafter ``t``. Its stamp is ``X-Frame-Time``, its frame ``X-Frame-Id``. ``404`` for a\nrun or topic that is not here, a topic that is not a point cloud, and a step past\nthe last cloud, with the reason.",
+        "operationId": "get_campaign_points_data_campaigns__campaign_id__points_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the run, as <config>/<run_id>",
+            "in": "query",
+            "name": "run",
+            "required": true,
+            "schema": {
+              "description": "the run, as <config>/<run_id>",
+              "title": "Run",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the point cloud topic",
+            "in": "query",
+            "name": "topic",
+            "required": true,
+            "schema": {
+              "description": "the point cloud topic",
+              "title": "Topic",
+              "type": "string"
+            }
+          },
+          {
+            "description": "a moment in seconds of the run's clock; the last cloud without it",
+            "in": "query",
+            "name": "t",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "a moment in seconds of the run's clock; the last cloud without it",
+              "title": "T"
+            }
+          },
+          {
+            "description": "the first cloud strictly after t (the run's first without t), to step through the topic",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "the first cloud strictly after t (the run's first without t), to step through the topic",
+              "title": "After",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/vnd.apache.arrow.stream": {}
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "description": "Not Found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Campaign Points",
         "tags": [
           "data"
         ]

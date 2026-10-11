@@ -77,14 +77,21 @@ def normalize_url(url: str) -> str:
     return url
 
 
+def user_config_dir() -> Path:
+    """Where a user's RoboVAST settings live: ``$XDG_CONFIG_HOME/robovast``, else
+    ``~/.config/robovast``. The one directory for every per-user file -- the login, the
+    user-level ``.env`` -- so a second one is never invented beside it."""
+    base = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    root = Path(base).expanduser() if base else Path.home() / ".config"
+    return root / "robovast"
+
+
 def config_path() -> Path:
-    """The login file, honouring ``ROBOVAST_CONFIG`` and then ``XDG_CONFIG_HOME``."""
+    """The login file, honouring ``ROBOVAST_CONFIG`` and then :func:`user_config_dir`."""
     override = os.environ.get(CONFIG_ENV_VAR, "").strip()
     if override:
         return Path(override).expanduser()
-    base = os.environ.get("XDG_CONFIG_HOME", "").strip()
-    root = Path(base).expanduser() if base else Path.home() / ".config"
-    return root / "robovast" / "config.json"
+    return user_config_dir() / "config.json"
 
 
 def load() -> dict:
@@ -114,6 +121,9 @@ def save(url: str, token: str, name: str = "") -> Path:
     # Create with 0600 from the start rather than chmod-ing afterwards: between the two
     # there is a moment when a secret is world-readable.
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # The mode above applies only when the file is created; one that already exists keeps
+    # its own, so it is set here, before the token is written into it.
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w") as handle:
         json.dump(payload, handle, indent=2)
         handle.write("\n")

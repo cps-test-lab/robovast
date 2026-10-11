@@ -158,8 +158,10 @@ class Map2DPanelType:
             fetched.parent.mkdir(parents=True, exist_ok=True)
             fetched.write_bytes(read(base + image))
             viz = MapVisualizer()
-            if not viz.load_map(str(local)):
-                raise ValueError(f"could not load the map {path}")
+            try:
+                viz.load_map(str(local))
+            except (FileNotFoundError, ValueError) as e:
+                raise ValueError(f"could not load the map {path}: {e}") from e
             viz.create_figure(ax=ax)
         return True
 

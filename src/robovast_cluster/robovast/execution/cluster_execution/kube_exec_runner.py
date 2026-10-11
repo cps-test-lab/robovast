@@ -218,6 +218,30 @@ class KubeExecRunner:
         return exec_stream(pod, self._namespace, container,
                            list(argv), limit_s=limit_s)
 
+    def stream_in(self, target, argv: list, *, limit_s: float, on_line, should_stop,
+                  env: dict | None = None) -> tuple[int | None, bool]:
+        """:func:`~.kube_client.exec_stream` into *target*, relaying each line as it arrives.
+
+        The same primitive as :meth:`exec_in`, with its per-line callbacks wired to
+        *on_line* -- stdout and stderr alike -- and its *should_stop* to this one's. A stop
+        there is raised as :class:`~robovast.common.errors.CampaignStopped`, because for the
+        campaign worker a stopped exec is an abandoned one; for a tap it is the normal end,
+        so it is caught here and reported as ``(None, False)``. *env* is ignored for the
+        reason :meth:`exec_in` gives.
+        """
+        del env
+        from robovast.common.errors import CampaignStopped
+
+        from .kube_client import exec_stream
+        pod, container = target
+        try:
+            code, _out, _err, timed_out = exec_stream(
+                pod, self._namespace, container, list(argv), limit_s=limit_s,
+                on_stdout_line=on_line, on_stderr_line=on_line, should_stop=should_stop)
+        except CampaignStopped:
+            return None, False
+        return code, timed_out
+
     def exec_in_held(self, spec: ExecSpec, limit_s: int, detach: bool,
                      slot: str = SLOT_USER) -> tuple[int, str, str, bool]:
         # Both forms come from the spec, which carries the liveness check a detached

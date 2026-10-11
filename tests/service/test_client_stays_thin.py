@@ -29,6 +29,10 @@ CLIENT_PYPROJECT = CLIENT_SRC.parent / "pyproject.toml"
 #: whether the service could do the work instead.
 ALLOWED_DEPENDENCIES = {"python", "pydantic", "click", "requests"}
 
+#: The extras ``robovast-client`` offers, and what each adds. An extra is only ever asked for:
+#: ``pip install robovast-client`` stays the HTTP three.
+ALLOWED_EXTRAS = {"data": ["robovast-data"]}
+
 
 def _client_modules():
     """Module names from the client tree, not hand-listed: a list written out by hand
@@ -41,13 +45,28 @@ def _client_modules():
         yield ".".join(parts)
 
 
+def _poetry():
+    return tomllib.loads(CLIENT_PYPROJECT.read_text(encoding="utf-8"))["tool"]["poetry"]
+
+
 def test_the_declared_dependencies_are_only_the_http_three():
-    declared = set(tomllib.loads(CLIENT_PYPROJECT.read_text(encoding="utf-8"))
-                   ["tool"]["poetry"]["dependencies"])
+    declared = {name for name, spec in _poetry()["dependencies"].items()
+                if not (isinstance(spec, dict) and spec.get("optional"))}
     assert declared == ALLOWED_DEPENDENCIES, (
         f"robovast-client's dependencies changed to {sorted(declared)}. It is installed "
         "by people who have a service URL and nothing else; anything heavier than an "
         "HTTP client belongs behind that service.")
+
+
+def test_an_optional_dependency_is_only_reachable_through_a_named_extra():
+    poetry = _poetry()
+    optional = {name for name, spec in poetry["dependencies"].items()
+                if isinstance(spec, dict) and spec.get("optional")}
+    extras = poetry.get("extras", {})
+    assert extras == ALLOWED_EXTRAS, (
+        f"robovast-client's extras changed to {extras}; each is a deliberate next step up "
+        "from driving a service, named in ALLOWED_EXTRAS with what it adds.")
+    assert optional == {name for names in extras.values() for name in names}
 
 
 # Runs in a subprocess: the blocker below refuses most of the world, which pytest itself

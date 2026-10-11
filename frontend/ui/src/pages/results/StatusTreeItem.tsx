@@ -58,10 +58,10 @@ export const StatusTreeItem = forwardRef(function StatusTreeItem(
           <TreeItem2IconContainer {...getIconContainerProps()}>
             <TreeItem2Icon status={status} />
           </TreeItem2IconContainer>
-          {/* No dot where no verdict is knowable. A campaign being previewed has none until it is
-              postprocessed, and painting every run of every configuration with the same neutral
-              marker says nothing while looking like it says something — fifty identical dots read
-              as a verdict on fifty runs. The campaign's own node keeps its dot: that one IS a
+          {/* No dot where no verdict is knowable. A run still recording has none until it ends,
+              and painting every run of every configuration with the same neutral marker says
+              nothing while looking like it says something — fifty identical dots read as a
+              verdict on fifty runs. The campaign's own node keeps its dot: that one IS a
               verdict, and it is the one that pulses. */}
           {item && item.kind !== 'placeholder' && !item.noVerdict ? (
             <Box

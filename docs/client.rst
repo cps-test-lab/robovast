@@ -26,6 +26,18 @@ Nothing here is a reduced version of a command that exists elsewhere. Every verb
 client offers only *drives* a service, so a client install is a complete install rather
 than a truncated one.
 
+**The next step up is a campaign's data on this machine.**
+
+.. code-block:: bash
+
+   pip install "robovast-client[data]"
+   vast results build ~/Downloads/<campaign-id>.tar.gz
+
+The ``data`` extra adds ``robovast-data`` — the decoder, DuckDB and pandas — and with it
+``vast results build``, which builds a downloaded campaign's tables and compacts them
+(:ref:`results-tables-ahead`), and the notebook API over them (:ref:`results-notebooks`). It
+is the heavy step, which is why the client does not take it without being asked.
+
 
 What you can do with it
 =======================
@@ -41,19 +53,29 @@ Every group is named after what it acts on, so the group tells you what you are 
    * - ``vast login <url>`` / ``vast logout``
      - Store or forget the service credentials, verified before saving.
    * - ``vast workspace init|update|download|list|delete``
-     - Move a directory into a service workspace, and back out again.
-   * - ``vast workspace validate|preview``
-     - Check a project, and see what its sweep expands to — both before spending compute.
+     - Move a directory into a service workspace, and back out again. ``list --json``
+       prints what the MCP ``list_workspaces`` tool returns.
+   * - ``vast workspace validate|preview|world``
+     - Check a project, see what its sweep expands to, and describe the world its simulator
+       will load — all before launching a campaign.
    * - ``vast workspace run <ws> [vast]``
      - **Launch a campaign.** The one way to run a ``.vast``. ``--push DIR`` pushes and
        launches in one step; ``--wait-and-download`` blocks and pulls the results down.
    * - ``vast campaign list|status``
      - What has run, and where one campaign has got to. The list marks a live campaign whose
-       queue priority or hold is not the default (``[prio -1]``, ``[paused]``).
+       queue priority or hold is not the default (``[prio -1]``, ``[paused]``). ``--json``
+       prints one JSON object with the fields the MCP ``list_campaigns`` and
+       ``get_campaign_status`` tools return (stall verdict, health findings and ``next_step``
+       included), with the ``Target:`` line on stderr so stdout parses.
    * - ``vast campaign wait <id>``
      - Block until a campaign is genuinely over. The exit code is the answer.
    * - ``vast campaign stop|stop-job|log``
-     - Stop a campaign, kill one wedged job, read its infrastructure log.
+     - Stop a campaign, kill one wedged job, read its infrastructure log as rows
+       (``--follow`` keeps reading; ``--phase``, ``--min-level`` and ``--grep`` narrow it;
+       ``--json`` prints the rows as the interface names them).
+   * - ``vast campaign tap <job> [id]``
+     - Follow what one running job's simulator publishes now, for a bounded time (``--select
+       a,b``, ``--max-seconds``). Recorded against the run as a probe.
    * - ``vast campaign priority|pause|resume``
      - Which campaign the cluster queue admits first, and whether one admits at all. Orders
        what is queued; runs already started finish either way (:ref:`cluster-admission`).
@@ -66,9 +88,23 @@ Every group is named after what it acts on, so the group tells you what you are 
        line. Exits non-zero if any was not fully deleted; a running one is refused.
    * - ``vast campaign download <id>``
      - Pull a campaign's archive down as a ``.tar.gz``.
+   * - ``vast campaign export <id>``
+     - Have the service build an export -- the tables as parquet or CSV files, the records,
+       the bags if asked (``--tables``, ``--format``, ``--bags``, ``--no-records``) -- wait
+       for it, and pull it down as one ``.tar.gz`` (:ref:`results-export`).
+   * - ``vast campaign import <archive>``
+     - Take a downloaded campaign archive into the service, and postprocess it if it needs
+       it.
+   * - ``vast campaign postprocess <id>``
+     - (Re)run a campaign's analysis postprocessing; ``--force`` clears its built tables
+       first.
+   * - ``vast campaign tables build|clear <id>``
+     - Build a campaign's tables for every run now, in the background, or remove the built
+       ones to free storage (each is built again on use).
    * - ``vast service info|resources``
      - Which service is answering, which code it runs and whether it has a queue to order;
-       whether the cluster has room.
+       whether the cluster has room. ``--json`` prints what the MCP ``get_service_info`` and
+       ``get_resource_usage`` tools return.
    * - ``vast service cache [--clear]``
      - What the service's rebuildable caches hold; ``--clear`` frees what nothing is using.
    * - ``vast service log``
@@ -76,14 +112,25 @@ Every group is named after what it acts on, so the group tells you what you are 
    * - ``vast service restart``
      - Roll the deployed service onto the newest image at its tag, through its own API —
        no kubeconfig needed. Reconciles nothing else; see :doc:`deployment`.
+   * - ``vast service mcp-stats``
+     - Which MCP tools agents call, and what they answered (``--calls``, ``--failed``,
+       ``--csv``).
    * - ``vast container exec|stop``
      - Run a command in the experiment image, to test a container before a campaign does.
    * - ``vast files ls|cat|get|put|rm``
      - Read and write single files by address.
    * - ``vast image build|wait|status|log``
      - Have the service build the derived images a project's containers declare.
+       ``status --json`` prints what the MCP ``get_image_build_status`` tool returns,
+       ``next_step`` included.
    * - ``vast doctor``
      - Check the login, the service, and that ``vast`` is on your PATH.
+   * - ``vast install-completion``
+     - Install shell completion for ``vast``, for the shell ``$SHELL`` names.
+
+A verb whose ``--json`` names an MCP tool prints the document that tool returns, built by the
+same function, and draws its plain lines from that document. With ``--json``, stdout carries
+only the JSON and the ``Target:`` line goes to stderr.
 
 That is the whole loop — validate, preview, launch, wait, fetch — and none of it needs the
 core. What the core adds is *local analysis*: ``vast config`` reads and expands a ``.vast``
@@ -97,12 +144,31 @@ deliberately on both sides, and each side additionally owns what only it can do 
 and long waits here, results queries and diff-based authoring there.
 
 
+.. _client-exit-codes:
+
+Exit codes
+----------
+
+Every verb exits with one of these, defined once as the members of
+``robovast.execution.wait_exit.CommonExit``:
+
+.. wait-exit-codes:: robovast.execution.wait_exit.CommonExit
+
+Only a waiting verb adds outcome codes of its own, numbered above these, from 3 up, so
+that none reads as a usage error: ``vast campaign wait``
+(:ref:`its codes <client-wait-exit-codes>`) and ``vast image wait``
+(:ref:`its codes <client-image-wait-exit-codes>`). ``vast container exec`` exits
+as failed when its command does, and prints the command's own status instead of passing it
+through.
+
+
 .. _client-partial-surface:
 
 What is absent, and what is only partly here
 ============================================
 
-**Absent:** ``vast serve``, ``vast config``, ``vast results``, ``vast ui``. They are not
+**Absent:** ``vast serve``, ``vast serve-data``, ``vast config``, ``vast results``,
+``vast share``, ``vast ui``. They are not
 hidden or disabled — the distribution does not register them, so ``vast --help`` on a
 client install lists exactly what it can run. That is the point of installing it alone.
 
@@ -171,8 +237,11 @@ Then check it, and run it:
 .. code-block:: bash
 
    vast workspace validate my-experiment my.vast   # every problem at once
-   vast workspace preview  my-experiment my.vast   # how many configurations is that?
+   vast workspace preview  my-experiment my.vast   # how many configurations, and their names (what --filter selects from)
    vast workspace run my-experiment my.vast --description "pilot: new inflation radius"
+
+``run --filter`` takes a name or glob, or several separated by commas (``--filter
+'config1-1-1,config2-*'``), and runs every configuration any of them matches.
 
 ``validate`` prints each problem with its severity and exits non-zero unless every check it
 covers ran and passed — including the two that need a container: the world check, and parsing
@@ -225,7 +294,9 @@ Its exit codes
 **The exit code is the answer.** The codes are defined once, as the members of
 ``robovast.execution.wait_exit.CampaignWaitExit``: the command raises them, and this table, its
 ``--help`` and every list of them an MCP tool or prompt hands out are rendered from them.
-Anything else refers to a code by its name.
+Anything else refers to a code by its name. Success and failure are the common codes, and a
+usage error is ``USAGE_ERROR`` as for every verb (:ref:`client-exit-codes`); the other
+outcomes are numbered above those.
 
 .. wait-exit-codes:: robovast.execution.wait_exit.CampaignWaitExit
 

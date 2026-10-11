@@ -30,7 +30,7 @@ diagnosis without paying for the whole stream:
 * ``grep`` — keep lines matching a regex.
 * ``min_severity`` — keep lines the shared classifier rates at least that severe.
   Distinct from ``grep`` on purpose: ``grep`` is free text, this is
-  :func:`~robovast.common.log_summary.severity_of`, so a caller stops hand-writing
+  :func:`~robovast_decode.log_summary.severity_of`, so a caller stops hand-writing
   a severity regex (and stops getting a different answer than the status does).
 * ``tail`` — keep the last N of what survived.
 * ``summarize`` — return *distinct patterns with counts* instead of lines.
@@ -41,7 +41,7 @@ diagnosis without paying for the whole stream:
 On top of that, each line of a forwarded log carries a relay prefix stamped on by
 whatever passed it along; it is dropped where the payload already says the same thing.
 The prefix grammar, the severity vocabulary and the pattern counter all live in
-:mod:`robovast.common.log_summary`, so the service's campaign health and these tools
+:mod:`robovast_decode.log_summary`, so the service's campaign health and these tools
 cannot disagree about what "an error line" is.
 
 **Nothing is hidden silently.** Every view reports how many lines it left out, so a
@@ -52,7 +52,7 @@ import re
 
 # Imported as a module, not by name, so the parameters below can carry the names a
 # caller would choose (``summarize``, ``collapse_relay``) without shadowing them.
-from robovast.common import log_summary, scenario_markers
+from robovast_decode import log_summary, scenario_markers
 
 
 def view_log(text: str, *, grep: str = "", min_severity: str = "", tail: int = 0,
@@ -64,11 +64,12 @@ def view_log(text: str, *, grep: str = "", min_severity: str = "", tail: int = 0
     what a caller chasing an error wants:
 
     1. ``hide_shutdown`` drops what each run said after its scenario reached a
-       verdict (:mod:`robovast.common.scenario_markers`).
+       verdict (:mod:`robovast_decode.scenario_markers`).
     2. ``grep`` keeps only lines matching that regex (case-insensitive).
     3. ``min_severity`` (``"warn"`` / ``"error"``) keeps only lines that severe.
     4. ``summarize`` groups and counts what survived — **or**, when it is false,
-       ``tail`` keeps the last N lines.
+       ``tail`` keeps the last N lines. The two are exclusive: a ``tail`` given with
+       ``summarize`` is refused, since a summary has no lines to keep the last of.
     5. ``collapse_relay`` strips a redundant per-line relay prefix.
 
     ``hide_shutdown`` comes first so the rest describe the *trial*: a ``tail`` applied
@@ -100,10 +101,15 @@ def view_log(text: str, *, grep: str = "", min_severity: str = "", tail: int = 0
         tool's own ``offset``.
 
     Raises:
-        ValueError: if *grep* is not a valid regex, or *min_severity* is not a known
-            severity — a silently ignored filter would read as "no such lines in the
-            log".
+        ValueError: if *grep* is not a valid regex, *min_severity* is not a known
+            severity, or *tail* is given with *summarize* — a silently ignored filter
+            would read as "no such lines in the log".
     """
+    if summarize and tail:
+        raise ValueError(
+            f"tail={tail} cannot be combined with summarize=True: a summary groups every "
+            f"line that matched into patterns, so there is no last N to keep. Drop tail, "
+            f"or drop summarize to read lines.")
     lines = text.splitlines()
     total = len(lines)
 

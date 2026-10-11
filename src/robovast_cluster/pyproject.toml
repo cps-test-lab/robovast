@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "robovast-cluster"
-version = "2.2.0"
+version = "2.2.1"
 description = "Kubernetes execution for RoboVAST: cluster campaigns, deployment, and the operator commands."
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
@@ -52,6 +52,11 @@ cleanup = "robovast.execution.cluster_execution.cli:cleanup"
 [tool.poetry.plugins."robovast.service_plugins"]
 upgrade = "robovast.execution.cluster_execution.cli:upgrade"
 token = "robovast.execution.cluster_execution.cli:cluster_token"
+
+# `vast doctor`'s checks for deploying and operating a cluster: kubectl, helm, gcloud, the
+# kubeconfig, the API server, RBAC, capacity and the deployment in it.
+[tool.poetry.plugins."robovast.doctor_checks"]
+cluster = "robovast.execution.cluster_execution.doctor:doctor_checks"
 
 [tool.poetry.plugins."robovast.cluster_configs"]
 minikube = "robovast.execution.cluster_config.minikube:MinikubeClusterConfig"

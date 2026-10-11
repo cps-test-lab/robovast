@@ -19,11 +19,17 @@
 The service is the single execution authority and the only place a campaign's files
 are: there is no in-process fallback, so a tool that cannot reach it says so rather than
 doing something else. That makes *how* a tool obtains a client a shared decision, not a
-per-module one: :func:`service_client` for a tool that answers "no service" itself, and
-:func:`require_service` for one whose ``except`` already turns a raised refusal into its
-error dict.
+per-module one: :func:`require_service` for a tool that needs one, and
+:func:`service_client` for one that also answers without.
+
+It is also where a tool's failure becomes an answer: :func:`answering_errors` wraps every
+registered tool, so an exception a tool lets escape reaches the caller as
+:func:`error_result`'s document.
 """
 
+import contextvars
+import functools
+import inspect
 import logging
 
 logger = logging.getLogger(__name__)
@@ -38,8 +44,9 @@ NO_SERVICE = ("no robovast-service reachable — point at the deployed one "
 
 class NoService(RuntimeError):
     """Raised by :func:`require_service` when no service answers; its message is
-    :data:`NO_SERVICE`, so a tool's ``except`` reports the same sentence the tools that
-    check for ``None`` return."""
+    :data:`NO_SERVICE`."""
+
+    include_traceback = False
 
     def __init__(self):
         super().__init__(NO_SERVICE)
@@ -78,24 +85,31 @@ def exec_path_unavailable(e: BaseException) -> bool:
             or getattr(e, "code", "") == EXEC_PATH_UNAVAILABLE)
 
 
+#: The classes the service answers as a refusal rather than a 500 (``_guard`` in
+#: :mod:`robovast.service.app`): mounted in the service a tool is handed them raw, and
+#: over HTTP as the refusal's message, so both read as the message alone.
+_REFUSALS = (ValueError, KeyError, RuntimeError)
+
+
 def error_result(e: BaseException) -> dict:
-    """A tool's error dict, carrying the caller's next move when the error knows it.
+    """The one error document, ``{"error"[, "next_step"]}``, for anything a tool raised.
 
-    ``next_step`` is already the convention on the paths that *succeed* — a literal command
-    with the ids filled in — because an answer that hands back only an id leaves "and now
-    wait for it" to be remembered. A refusal is where the next move is least obvious, and
-    carried nothing: the reported bug behind this helper was an agent told "the image is not
-    built" right after it had built the image, with no way to learn that a sibling build was
-    still running.
-
-    So an :class:`~robovast.common.errors.ActionableError` passes its hint through here, and
-    every other exception is reported exactly as before. Absence of ``next_step`` is
-    meaningful: it says there is nothing obvious to do, not that someone forgot.
-
-    A refusal whose *class* a caller must act on rather than print is answered with what
-    that class costs here — see :func:`exec_path_unavailable` and
-    :data:`EXEC_PATH_CONSEQUENCE`.
+    * No service -- :class:`NoService`, or a
+      :class:`~robovast.service.interface.ServiceUnreachable` naming the address it
+      tried -- is :data:`NO_SERVICE`, the sentence that says not to work around it.
+    * A deployment that cannot exec is its cause and :data:`EXEC_PATH_CONSEQUENCE`.
+    * A full disk is :data:`~robovast.common.errors.STORAGE_FULL_DETAIL`, not an errno.
+    * A refusal is its message, plus the ``next_step`` an
+      :class:`~robovast.common.errors.ActionableError` carries. Absent ``next_step`` means
+      there is nothing obvious to do.
+    * Anything else is a bug: its type, message and frames, as
+      :func:`~robovast.client.status.failure_detail` renders one.
     """
+    from robovast.service.interface import ServiceUnreachable
+    if isinstance(e, NoService):
+        return {"error": NO_SERVICE}
+    if isinstance(e, ServiceUnreachable):
+        return {"error": f"{e}. {NO_SERVICE}"}
     if exec_path_unavailable(e):
         # The consequence, not only the cause. The cause is already a complete sentence at
         # the source; what each tool could not say on its own is what is unavailable *here*,
@@ -106,11 +120,52 @@ def error_result(e: BaseException) -> dict:
         # The sentence the HTTP surface answers with, rather than an errno and a path on
         # the service host: mounted in the service, a tool is handed the raw OSError.
         return {"error": STORAGE_FULL_DETAIL}
-    result = {"error": str(e)}
-    next_step = getattr(e, "next_step", "")
-    if next_step:
-        result["next_step"] = next_step
-    return result
+    if isinstance(e, _REFUSALS) or not getattr(e, "include_traceback", True):
+        # ``str(KeyError("x"))`` is ``"'x'"``.
+        message = e.args[0] if isinstance(e, KeyError) and e.args else e
+        result = {"error": str(message)}
+        next_step = getattr(e, "next_step", "")
+        if next_step:
+            result["next_step"] = next_step
+        return result
+    from robovast.client.status import failure_detail
+    return {"error": f"{type(e).__name__}: {failure_detail(e)}"}
+
+
+#: The error documents answered during one tool call, for the call log to count the call as
+#: failed. A list, set per call by the caller: a sync tool runs in a copy of the context on
+#: a worker thread, and appends to the same list.
+ERRORS_ANSWERED: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+    "robovast_mcp_errors_answered", default=None)
+
+
+def answering_errors(fn):
+    """*fn*, answering any exception it raises with :func:`error_result`.
+
+    Applied to every registered tool (:func:`~robovast.mcp_server.registry.load_plugins`).
+    """
+    def answer(e: Exception) -> dict:
+        result = error_result(e)
+        errors = ERRORS_ANSWERED.get()
+        if errors is not None:
+            errors.append(result["error"])
+        return result
+
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def tool(*args, **kwargs):
+            try:
+                return await fn(*args, **kwargs)
+            except Exception as e:  # noqa: BLE001 - every failure gets the one answer
+                return answer(e)
+    else:
+        @functools.wraps(fn)
+        def tool(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as e:  # noqa: BLE001 - every failure gets the one answer
+                return answer(e)
+    return tool
 
 
 #: Set by :func:`use_in_process_service` when the MCP app is mounted inside the service.

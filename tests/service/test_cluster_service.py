@@ -26,6 +26,7 @@ from robovast.execution.cluster_execution.container_runner import (AUX_LABEL,
 from robovast.execution.control_server import (STOP_POSTPROCESSING, STOP_RUNS, Phase)
 from robovast.service.interface import CreateCampaignRequest, JobKind
 from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
+from tests.service import behaviour_log
 
 
 @pytest.fixture
@@ -64,16 +65,15 @@ def test_nothing_is_adopted_before_the_auth_token_is_bound():
                         cluster_config_kwargs={}, reap_on_start=True)
     cs.reap_orphans = lambda: calls.append("reap")
     cs.resume_interrupted_campaigns = lambda: calls.append("resume") or {}
-    cs.reattach_live_postprocessing = lambda: calls.append("reattach")
 
     assert calls == [], "the constructor adopted before anything could bind the secret"
     cs.bind_auth_token("master-secret")
     cs.start_serving()
-    assert calls == ["reap", "resume", "reattach"]
+    assert calls == ["reap", "resume"]
     assert cs.scoped_token("campaign:c-1")
 
     cs.start_serving()
-    assert calls == ["reap", "resume", "reattach"], "adopted twice"
+    assert calls == ["reap", "resume"], "adopted twice"
 
 
 def test_a_service_that_adopts_nothing_stays_quiet():
@@ -190,6 +190,24 @@ def test_run_options_carry_upload_to_share(cs):
     assert default.upload_to_share is False
 
 
+def test_run_options_carry_the_campaigns_image_project(cs):
+    """``vast workspace run --image-project`` reaches the campaign it names.
+
+    Dropped here, composition, the scenario image, the sidecar and the aux helpers of that
+    campaign all resolved from the service's own project, and the flag did nothing on a cluster
+    while reading as if it had.
+    """
+    opts = cs._run_options(CreateCampaignRequest(
+        workspace_id="ws-x", image_project="registry.example.com/dev",
+        image_project_tag="feature-x"))
+    assert opts.image_project == "registry.example.com/dev"
+    assert opts.image_project_tag == "feature-x"
+
+    # Not asked for: the service's own, which the resolvers read when they get None.
+    default = cs._run_options(CreateCampaignRequest(workspace_id="ws-x"))
+    assert default.image_project is None and default.image_project_tag is None
+
+
 # -- a build the service cannot do is a config error, not a crash ------------
 
 def _project_needing_a_build(tmp_path, python_packages=None):
@@ -197,7 +215,7 @@ def _project_needing_a_build(tmp_path, python_packages=None):
     from robovast.common.config import validate_config
     (tmp_path / "p.vast").write_text("")
     campaign_config = validate_config({
-        "version": 4,
+        "version": 7,
         "execution": {"runs": 1, "containers": {"scenario": {
             "image": "base:1",
             "python_packages": python_packages or ["shapely>=2.0"]}}}})
@@ -247,17 +265,12 @@ def test_a_broken_build_section_is_a_config_error_too(cs, monkeypatch, tmp_path)
 
 # -- jobs (live) ------------------------------------------------------------
 
-def _job(name, *, succeeded=0, active=0, failed=0, full=None, suspend=False, kind=None,
-         jobgroup="scenario-runs"):
+def _job(name, *, succeeded=0, active=0, failed=0, full=None, suspend=False, kind=None):
     ann = {"job-name-full": full} if full is not None else {}
-    # No ``labels`` attribute at all unless a kind or a jobgroup other than the batch's is
-    # asked for: that is a Job created before the label existed, and the listing has to read
-    # it as one of the campaign's runs.
-    labels = {"jobgroup": jobgroup}
-    if kind is not None:
-        labels["job-kind"] = kind
-    meta = ({"name": name} if kind is None and jobgroup == "scenario-runs"
-            else {"name": name, "labels": labels})
+    # No ``labels`` attribute at all unless a kind is asked for: the listing has to read an
+    # unlabelled Job as one of the campaign's runs.
+    meta = ({"name": name} if kind is None
+            else {"name": name, "labels": {"jobgroup": "scenario-runs", "job-kind": kind}})
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(**meta),
         status=types.SimpleNamespace(succeeded=succeeded, active=active, failed=failed),
@@ -334,10 +347,7 @@ def test_list_jobs_classifies_and_counts(cs, monkeypatch):
     resp = cs.list_jobs("camp-2026-07-17-120000")
 
     assert seen["namespace"] == "ns1"
-    # One selector for both of the campaign's jobgroups -- its trials and its conversion --
-    # because this is polled every couple of seconds per live campaign and a second listing
-    # would double the Job and pod reads behind it.
-    assert "jobgroup in (scenario-runs,postprocessing)" in seen["label_selector"]
+    assert "jobgroup=scenario-runs" in seen["label_selector"]
     assert "campaign-id=camp-2026-07-17-120000" in seen["label_selector"]
     assert (resp.counts.running, resp.counts.completed, resp.counts.failed,
             resp.counts.pending, resp.counts.total) == (1, 1, 1, 1, 4)
@@ -382,40 +392,6 @@ def test_a_calibration_probe_is_listed_but_not_counted_as_a_run(cs, monkeypatch)
     assert (resp.counts.running, resp.counts.total) == (1, 1)
 
 
-def test_the_postprocessing_conversion_is_listed_but_not_counted_as_a_run(cs, monkeypatch):
-    """The conversion is what a campaign in its ``postprocessing`` phase is doing, and the
-    only thing it is doing: without it the jobs list is empty for as long as the conversion
-    takes, which reads as an idle campaign rather than a busy one.
-
-    It is not a trial, so it stays out of the counts on the same terms as a probe -- they
-    feed the run meter, the ``done/total`` label and the ETA's divisor -- and it is named for
-    the work rather than for its Job, whose name is the campaign id with a hash on it.
-    """
-    jobs = [
-        _job("j-run", succeeded=1, full="camp-2026-07-17-120000-batch-0-job-0"),
-        _job("robovast-postproc-camp-2026-07-17-120000", active=1,
-             jobgroup="postprocessing"),
-    ]
-
-    class _Batch:
-        def list_namespaced_job(self, namespace, label_selector):
-            return types.SimpleNamespace(items=jobs)
-
-    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
-    monkeypatch.setattr(cs, "_k8s", lambda: _CoreWithPods(
-        [_job_pod("robovast-postproc-camp-2026-07-17-120000")]))
-    resp = cs.list_jobs("camp-2026-07-17-120000")
-
-    conversion = next(j for j in resp.jobs
-                      if j.job_name == "robovast-postproc-camp-2026-07-17-120000")
-    assert conversion.kind == "postprocessing"
-    assert conversion.status == "running"
-    assert conversion.display_name == "rosbag conversion"
-    assert resp.counts.postprocessing == 1
-    assert resp.counts.running == 0, "the conversion is not a running trial"
-    assert (resp.counts.completed, resp.counts.total) == (1, 1)
-
-
 def _job_pod(job_name, phase="Running"):
     return types.SimpleNamespace(
         metadata=types.SimpleNamespace(
@@ -437,41 +413,6 @@ class _CoreWithPods:
 
     def list_node(self):
         return self._nodes
-
-
-def test_get_job_log_resolves_a_pod_by_campaign_and_job_alone(cs, monkeypatch):
-    """Every row the jobs list shows has to open, the conversion's included.
-
-    The pair (campaign, Job name) already identifies one pod, so the selector carries no
-    jobgroup term: adding one would decide which of the campaign's own jobs may be read
-    here, and a row whose log 404s is worse than no row at all.
-    """
-    from contextlib import nullcontext
-
-    seen = {}
-
-    class _Core:
-        def list_namespaced_pod(self, namespace, label_selector):
-            seen["label_selector"] = label_selector
-            return types.SimpleNamespace(
-                items=[_job_pod("robovast-postproc-camp-2026-07-17-120000")])
-
-    class _Tail:
-        lock = nullcontext()
-        merged = types.SimpleNamespace(slice_from=lambda offset: ("converting 3 bags\n", 18))
-
-        def read(self, core, pod, namespace, now):
-            return True
-
-    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
-    monkeypatch.setattr(cs, "_job_log_tail", lambda campaign_id, job_name: _Tail())
-    chunk = cs.get_job_log("camp-2026-07-17-120000",
-                           "robovast-postproc-camp-2026-07-17-120000")
-
-    assert "jobgroup" not in seen["label_selector"]
-    assert "campaign-id=camp-2026-07-17-120000" in seen["label_selector"]
-    assert "job-name=robovast-postproc-camp-2026-07-17-120000" in seen["label_selector"]
-    assert chunk.text == "converting 3 bags\n"
 
 
 def test_list_jobs_reports_active_but_pending_pod_as_pending(cs, monkeypatch):
@@ -1169,128 +1110,20 @@ def _pod(name="pod-1", phase="Running", sidecars=()):
         status=types.SimpleNamespace(phase=phase))
 
 
-def test_get_job_log_streams_running_pod(cs, monkeypatch):
-    seen = {}
-
-    class _Core:
-        def list_namespaced_pod(self, namespace, label_selector):
-            seen["label_selector"] = label_selector
-            return types.SimpleNamespace(items=[_pod(phase="Running")])
-
-        def read_namespaced_pod_log(self, name, namespace, container, **_kw):
-            seen.update(name=name, container=container)
-            return "hello world\n"
-
-    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
-    chunk = cs.get_job_log("camp-2026-07-17-120000", "j-run")
-
-    assert "job-name=j-run" in seen["label_selector"]
-    assert seen["name"] == "pod-1" and seen["container"] == "robovast"
-    assert chunk.text == "hello world\n"
-    assert chunk.next_offset == len(b"hello world\n")
-    assert chunk.eof is False  # pod still running → keep polling
-    # byte-offset slicing resumes mid-stream
-    assert cs.get_job_log("camp-2026-07-17-120000", "j-run", offset=6).text == "world\n"
-
-
-def test_get_job_log_terminal_pod_sets_eof(cs, monkeypatch):
-
-    class _Core:
-        def list_namespaced_pod(self, namespace, label_selector):
-            return types.SimpleNamespace(items=[_pod(phase="Succeeded")])
-
-        def read_namespaced_pod_log(self, name, namespace, container, **_kw):
-            return "done\n"
-
-    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
-    assert cs.get_job_log("camp", "j").eof is True
-
-
 def _api_exception(status):
     """The kube API's "container is waiting to start" (400) / "gone" (404)."""
     from kubernetes import client
     return client.exceptions.ApiException(status=status)
 
 
-def test_get_job_log_reads_a_pending_pods_sidecars(cs, monkeypatch):
-    """A Pending pod is still read: its native sidecars are already logging.
-
-    Kubelet runs native sidecars during the init phase, so the pod stays ``Pending``
-    while the simulator starts — and a simulator that cannot load its world says so
-    there and then keeps the pod Pending forever. Short-circuiting on the phase discards
-    exactly the output that explains the hang.
-    """
-
-    class _Core:
-        def list_namespaced_pod(self, namespace, label_selector):
-            return types.SimpleNamespace(
-                items=[_pod(phase="Pending", sidecars=["simulation"])])
-
-        def read_namespaced_pod_log(self, name, namespace, container, **_kw):
-            if container == "simulation":
-                return "2026-08-07T10:00:00Z could not load world\n"
-            raise _api_exception(400)  # the scenario container has not started yet
-
-    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
-    chunk = cs.get_job_log("camp", "j")
-    assert "could not load world" in chunk.text
-    assert "[simulation]" in chunk.text
-    assert chunk.eof is False  # still Pending → keep polling
-
-
-def test_get_job_log_merges_all_three_containers(cs, monkeypatch):
-    """The reported break: sidecars moved to initContainers and vanished from the panel.
-
-    Every line must carry a ``[container]`` prefix — that is what the web UI colors —
-    and the three containers must interleave by kubelet's per-line timestamp rather than
-    arriving in three blocks.
-    """
-
-    logs = {
-        "robovast": "2026-08-07T10:00:02Z executing scenario\n",
-        "simulation": "2026-08-07T10:00:01Z mujoco model loaded\n",
-        "sut": "2026-08-07T10:00:03Z bt_navigator ready\n",
-    }
-
-    class _Core:
-        def list_namespaced_pod(self, namespace, label_selector):
-            return types.SimpleNamespace(
-                items=[_pod(sidecars=["simulation", "sut"])])
-
-        def read_namespaced_pod_log(self, name, namespace, container, **_kw):
-            return logs[container]
-
-    monkeypatch.setattr(cs, "_k8s", lambda: _Core())
-    lines = cs.get_job_log("camp", "j").text.splitlines()
-    assert [line.split("]")[0] + "]" for line in lines] == [
-        "[simulation]", "[robovast]", "[sut]"]  # timestamp order, not spec order
-    assert "mujoco model loaded" in lines[0]
-
-
-def _no_pod(cs, monkeypatch, tmp_path, files, jobs=None):
-    """A job whose pod is gone, and a campaign holding *files* (rel path -> bytes).
-
-    *jobs* maps the Kubernetes Jobs that still exist to their ``OUTPUT_DIR``; any other name
-    reads as a Job that is gone.
-    """
-    from kubernetes import client
+def _no_pod(cs, monkeypatch, tmp_path, files):
+    """A job whose pod is gone, and a campaign holding *files* (rel path -> bytes)."""
 
     class _Core:
         def list_namespaced_pod(self, namespace, label_selector):
             return types.SimpleNamespace(items=[])
 
-    class _Batch:
-        def read_namespaced_job(self, name, namespace):
-            if name not in (jobs or {}):
-                raise client.exceptions.ApiException(status=404)
-            env = [types.SimpleNamespace(name="OUTPUT_DIR", value=jobs[name])]
-            container = types.SimpleNamespace(env=env)
-            return types.SimpleNamespace(spec=types.SimpleNamespace(
-                template=types.SimpleNamespace(
-                    spec=types.SimpleNamespace(containers=[container]))))
-
     monkeypatch.setattr(cs, "_k8s", lambda: _Core())
-    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
     monkeypatch.setattr(cs, "_campaigns_root", lambda: tmp_path)
     for rel, blob in files.items():
         path = tmp_path / rel
@@ -1298,104 +1131,15 @@ def _no_pod(cs, monkeypatch, tmp_path, files, jobs=None):
         path.write_bytes(blob)
 
 
-def test_get_job_log_of_a_finished_job_is_read_from_the_campaign(cs, monkeypatch, tmp_path):
-    """No pod is the normal state of a finished job, not an error.
-
-    The pod's uploader delivered ``/out`` into the campaign as it ended, so the log is read
-    from there: resolved through the job-link manifest to the artifact dir, main container
-    first, the sidecars after it, and tagged the way the live tail tags them so a run reads
-    the same whichever source served it.
-    """
-    from robovast.common.execution import JOB_LINKS_MANIFEST_REL
-    _no_pod(cs, monkeypatch, tmp_path, {
-        f"camp/{JOB_LINKS_MANIFEST_REL}": b"cfg/0/job: ../../_jobs/cfg-0\n",
-        "camp/_jobs/cfg-0/logs/system.log": b"mujoco model loaded\nrun ended\n",
-        "camp/_jobs/cfg-0/logs/system_simulation.log": b"sim up\n",
-        "camp/_jobs/cfg-0/logs/rosout.csv": b"not a container log\n",
-    })
-
-    chunk = cs.get_job_log("camp", "cfg/0")
-
-    assert chunk.eof, "an archived log is complete"
-    lines = chunk.text.splitlines()
-    assert [line.split("]")[0] + "]" for line in lines] == [
-        "[robovast]", "[robovast]", "[simulation]"]
-    assert "mujoco model loaded" in lines[0]
-    assert "not a container log" not in chunk.text
-    # The offset protocol continues past the archive the same way it does past a live tail.
-    assert cs.get_job_log("camp", "cfg/0", offset=chunk.next_offset).text == ""
-
-
-def test_get_job_log_of_a_listed_job_whose_pod_is_gone_reads_its_artifacts(
-        cs, monkeypatch, tmp_path):
-    """The job listing names Jobs by their Kubernetes name, which the job-link manifest does
-    not key on. The Job itself says where its artifacts went, for as long as it exists."""
-    _no_pod(cs, monkeypatch, tmp_path, {
-        "camp/_jobs/batch-0/job-9/logs/system.log": b"run ended\n",
-    }, jobs={"camp-batch0-9": "/out/_jobs/batch-0/job-9"})
-
-    chunk = cs.get_job_log("camp", "camp-batch0-9")
-
-    assert chunk.eof and "run ended" in chunk.text
-
-
-def test_get_job_log_of_a_queued_job_waits_rather_than_failing(cs, monkeypatch, tmp_path):
-    """A job queued for capacity has no pod and no artifacts yet, and will have both. A
-    stream opened on it from the job listing must wait for its first line, not report the
-    job as unknown."""
+def test_a_job_the_admission_queue_plans_is_queued(cs):
     from robovast.execution.cluster_execution.node_admission import PLANNED
 
-    _no_pod(cs, monkeypatch, tmp_path, {})
+    assert cs._job_is_queued("camp", "camp-batch0-9") is False, "no queue, nothing queued"
     cs._admission = types.SimpleNamespace(
         states=lambda owner: {"camp-batch0-9": PLANNED} if owner == "camp" else {})
-
-    chunk = cs.get_job_log("camp", "camp-batch0-9", offset=0)
-
-    assert chunk.text == "" and chunk.eof is False and chunk.next_offset == 0
-
-
-def test_get_job_log_of_a_job_that_delivered_nothing_is_absent(cs, monkeypatch, tmp_path):
-    """A job with no pod AND no delivered logs is reported absent, not as an empty log."""
-    _no_pod(cs, monkeypatch, tmp_path, {})
-    with pytest.raises(KeyError):
-        cs.get_job_log("camp", "gone")
-
-
-def test_get_job_log_reads_incrementally_across_polls(cs, monkeypatch):
-    """A second poll fetches only a trailing window, not the whole log, yet the
-    byte-offset stream continues seamlessly as the pod log grows."""
-    calls = []  # since_seconds seen per read_namespaced_pod_log call
-
-    def line(sec, nano, msg):
-        return f"2026-07-21T10:00:{sec:02d}.{nano:09d}Z {msg}"
-
-    class _Core:
-        def __init__(self):
-            self.rows = [(0, line(0, 1, "boot"))]  # (wall_second, timestamped line)
-
-        def list_namespaced_pod(self, namespace, label_selector):
-            return types.SimpleNamespace(items=[_pod(phase="Running")])
-
-        def read_namespaced_pod_log(self, name, namespace, container,
-                                    timestamps=False, since_seconds=None):
-            calls.append(since_seconds)
-            sel = self.rows if since_seconds is None else self.rows[-1:]
-            text = "\n".join(r[1] for r in sel)
-            return text + "\n" if text else ""
-
-    core = _Core()
-    monkeypatch.setattr(cs, "_k8s", lambda: core)
-
-    first = cs.get_job_log("camp", "j")
-    assert first.text == "boot\n"          # timestamp stripped for a single container
-    assert calls[0] is None                # first poll reads the whole log
-
-    core.rows.append((0, line(0, 2, "step 1")))  # log grows
-    second = cs.get_job_log("camp", "j", offset=first.next_offset)
-    assert second.text == "step 1\n"       # only the delta crosses the wire
-    assert calls[1] is not None            # later polls read a bounded window
-    # Full assembled text is still addressable from offset 0.
-    assert cs.get_job_log("camp", "j", offset=0).text == "boot\nstep 1\n"
+    assert cs._job_is_queued("camp", "camp-batch0-9") is True
+    assert cs._job_is_queued("other", "camp-batch0-9") is False
+    assert cs._job_is_queued("camp", "camp-batch0-8") is False
 
 
 # -- stop (terminates in-flight cluster workloads) --------------------------
@@ -1434,8 +1178,8 @@ def test_stop_flags_state_and_tears_down_this_campaign(cs, monkeypatch):
 
 
 def test_stop_during_postprocessing_says_what_it_leaves(cs, monkeypatch):
-    """The postprocessing Job is in ``jobgroup=postprocessing``, so the teardown below
-    cannot reach it and the flag is what ends it (``await_job`` polls it).
+    """Postprocessing runs in the service process, so the flag is what ends it: the
+    pipeline polls it between steps.
 
     The reply has to say so, because the outcome differs from stopping a run: the runs are
     over and every result they produced is kept -- what the stop gives up is the derived
@@ -1691,7 +1435,7 @@ def _stepped_campaign(tmp_path, revision):
         yaml.safe_dump({"image_revision": revision}))
     (tmp_path / "_config").mkdir(parents=True, exist_ok=True)
     (tmp_path / "_config" / "p.vast").write_text(yaml.safe_dump(
-        {"version": 4, "execution": {"containers": {"scenario": {"image": "reg/combined:1"},
+        {"version": 7, "execution": {"containers": {"scenario": {"image": "reg/combined:1"},
                                                     "simulation": {}}}}))
     return tmp_path
 
@@ -1728,7 +1472,7 @@ def test_scene_geometry_refuses_rather_than_borrow_the_scenario_image(tmp_path):
         yaml.safe_dump({"image_revision": "reg/scenario@sha256:" + "a" * 64}))
     (tmp_path / "_config").mkdir(parents=True)
     (tmp_path / "_config" / "p.vast").write_text(yaml.safe_dump(
-        {"version": 4, "execution": {"containers": {"scenario": {"image": "reg/scenario:1"},
+        {"version": 7, "execution": {"containers": {"scenario": {"image": "reg/scenario:1"},
                                                     "simulation": {"image": "reg/sim:1"}}}}))
     with pytest.raises(scene_cache.SceneUnavailable) as err:
         scene_cache.world_identity(tmp_path, {"world": "w.yaml", "overrides": {}})
@@ -1746,7 +1490,7 @@ def _scene_identity_for(tmp_path, world, archive=True):
     # The frozen `.vast` names the simulator, which is who says how to rebuild the geometry.
     vast = tmp_path / "_config" / "p.vast"
     vast.parent.mkdir(parents=True, exist_ok=True)
-    vast.write_text("version: 4\nexecution:\n  mode: ros2\n  containers:\n    simulation:\n"
+    vast.write_text("version: 7\nexecution:\n  mode: ros2\n  containers:\n    simulation:\n"
                     "      backend: roqsim\n      config: roqsim_scenes:depot\n")
     meta = {"image_revisions": {"simulation": "reg/sim@sha256:" + "b" * 64}}
     with patch("robovast.common.campaign_data.read_execution_metadata", lambda _p: meta):
@@ -1883,7 +1627,10 @@ _ROS_EXECUTION = {"mode": "ros2", "containers": {"simulation": {"image": "sim:1"
 
 
 def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False),
-                       execution=None):
+                       execution=None, live_run=None):
+    """*live_run* is the run key the pod's own ``find`` answers with, and the run whose
+    behaviour log then sits in the campaign directory -- where the file agent delivers it, and
+    where the scenario's tree is folded from. ``None`` is a job that has written no run yet."""
     # A running job, as the real precondition returns one: the state read reports the status it was
     # checked against rather than asserting "running" a second time.
     monkeypatch.setattr(cs, "_require_running_job",
@@ -1905,6 +1652,13 @@ def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False
     core = _Core()
     monkeypatch.setattr(cs, "_k8s", lambda: core)
 
+    if live_run is not None:
+        campaign_root = Path(tempfile.mkdtemp()) / "results"
+        monkeypatch.setattr(cs, "_campaigns_root", lambda: campaign_root)
+        config, run_id = live_run.split("/")
+        behaviour_log.write_store(campaign_root / "camp-1", {config: [int(run_id)]})
+        behaviour_log.write_log(campaign_root / "camp-1" / config / run_id)
+
     class _Service:
         calls: list = []
 
@@ -1913,8 +1667,8 @@ def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False
             # Matched on the joined argv: every read runs through a shell that sources the run's
             # ROS overlay first, so the command is inside one element rather than being them.
             joined = " ".join(argv)
-            if "scenario_execution.tree_state" in joined:
-                return (0, '{"found": true, "running": {"name": "drive_to"}}', "", False)
+            if "-regex" in joined and live_run is not None:
+                return (0, live_run + "\n", "", False)
             if "resource_usage_" in joined:
                 return (0, "", "", False)
             return exec_result
@@ -1925,17 +1679,21 @@ def _cluster_job_state(cs, monkeypatch, *, pods, exec_result=(0, "{}", "", False
 
 
 def test_cluster_get_job_state_execs_into_the_job_s_pod(cs, monkeypatch):
-    """The exec target is the Job's pod. ``/out`` is *this pod's* emptyDir, so
-    naming it is exact even though a Kubernetes Job may pack several runs and its ``job_name`` is
-    not a run key."""
+    """The exec target is the Job's pod. ``/out`` is *this pod's* emptyDir, so naming it is
+    exact even though its ``job_name`` is not a run key. The scenario's tree is the one
+    exception: it is folded from the run's log in the campaign directory, not read in the pod,
+    and the run it is of is the one the pod named."""
     core, runner = _cluster_job_state(
-        cs, monkeypatch, pods=[_Pod("scenario-abc-x9")],
+        cs, monkeypatch, pods=[_Pod("scenario-abc-x9")], live_run="cfgA/1",
         exec_result=(0, '{"findings": [], "state": {"sim_ts": 4.0}}', "", False))
 
     state = cs.get_job_state("camp-1", "scenario-abc")
 
     assert state.simulator == {"findings": [], "state": {"sim_ts": 4.0}}
+    assert state.run == "cfgA/1"
     assert state.scenario["running"]["name"] == "drive_to"
+    assert state.scenario["log"].endswith("/camp-1/cfgA/1/behaviors.jsonl")
+    assert not [c for c in runner.calls if "tree_state" in " ".join(c[1])]
     target, argv = [c for c in runner.calls if "tool --json" in " ".join(c[1])][0]
     # The job dir: this is a live run, and that is where its simulator's records are.
     # The container comes from the pod, not from a constant repeated here. This campaign steps its
@@ -1964,7 +1722,7 @@ def test_the_scenario_tree_is_read_even_when_the_simulator_cannot_report(cs, mon
     """The two readers are independent on purpose: a scenario's tree is there whatever the
     simulator is, and the stuck action is the more useful half. Coupling them would let the
     absence of one hide the other."""
-    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")])
+    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")], live_run="cfgA/1")
     monkeypatch.setattr("robovast.common.simulators.health_command",
                         lambda execution, *, run_dir, base_dir="": None)
 
@@ -1973,6 +1731,18 @@ def test_the_scenario_tree_is_read_even_when_the_simulator_cannot_report(cs, mon
     assert state.simulator is None
     assert state.scenario["running"]["name"] == "drive_to"
     assert any("does not report its own state" in line for line in state.unavailable)
+
+
+def test_a_job_whose_run_is_not_known_yet_has_no_tree_to_fold(cs, monkeypatch):
+    """A Job between starting and its first record names no run, so there is no log to fold;
+    said as such rather than searched for, because the run the reader would find under ``/out``
+    on its own is a guess the service cannot check."""
+    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")])
+
+    state = cs.get_job_state("camp-1", "scenario-abc")
+
+    assert state.run is None and state.scenario is None
+    assert any("could not be resolved" in line for line in state.unavailable)
 
 
 def test_the_health_pull_resolves_every_running_pod_on_the_cluster(cs, monkeypatch):
@@ -1995,8 +1765,8 @@ def test_the_health_pull_resolves_every_running_pod_on_the_cluster(cs, monkeypat
 
     targets = cs._health_targets("camp-1")
 
-    # ``/out`` and not a run key: this pod's own emptyDir holds only this job's runs, and a packed
-    # Job has no single run dir to name even in principle.
+    # ``/out`` and not a run key: this pod's own emptyDir holds only this job's run, and the Job's
+    # name is not a run key.
     # Both paths, because the simulator's records and the job's artifacts are different subtrees:
     # the job dir first (where a LIVE run's clock record is), the run dir after it. The run dir is
     # the resolved one -- the fixture's runner returns no run key, so it falls back to the job root,
@@ -2018,14 +1788,12 @@ def test_the_health_pull_asks_a_calibration_probe_as_it_asks_a_run(cs, monkeypat
     the jobs' -- and the health read is part of that shape: a process the service starts inside
     the simulator's container, charged to the simulator's memory. A probe spared it is sized
     without it, and every job then meets, over a limit with no room for it, the one cost the probe
-    never saw. The postprocessing conversion is the job that carries no run, and stays skipped."""
+    never saw."""
     pod = _Pod("scenario-abc-x9", sidecars=("simulation", "sut"))
     _cluster_job_state(cs, monkeypatch, pods=[pod], execution=_ROS_EXECUTION)
     monkeypatch.setattr(cs, "list_jobs", lambda cid: types.SimpleNamespace(jobs=[
         types.SimpleNamespace(job_name="scenario-abc", status="running",
                               kind=JobKind.CALIBRATION),
-        types.SimpleNamespace(job_name="scenario-pp", status="running",
-                              kind=JobKind.POSTPROCESSING),
     ]))
 
     assert [name for name, *_ in cs._health_targets("camp-1")] == ["scenario-abc"]
@@ -2063,9 +1831,9 @@ def test_a_one_shot_init_container_is_not_a_role(cs, monkeypatch):
     assert "robovast, sut" in str(raised.value)
 
 
-def test_an_unpacked_job_is_located_too(cs, monkeypatch):
-    """An unpacked Job is one run, but its NAME is not the run key -- so the run still has to be
-    resolved here rather than left to the readers. Both of them can search a couple of levels
+def test_a_jobs_run_is_located(cs, monkeypatch):
+    """A Job is one run, but its NAME is not the run key -- so the run has to be resolved here
+    rather than left to the readers. Both of them can search a couple of levels
     down for their own file, which is two other components modelling this layout, answering with
     a heuristic ("the newest below here") where the service has the fact. Worse, searching around
     a directory MASKS a wrong one: pointed at ``_jobs/batch-0`` a reader looks past it and then
@@ -2078,26 +1846,12 @@ def test_an_unpacked_job_is_located_too(cs, monkeypatch):
     del runner
 
 
-def test_a_packed_job_names_the_run_it_is_on(cs, monkeypatch):
-    """A packed Job runs its items one after another, so exactly one is live -- and every section
-    of the reply must describe that one. Pointed at the Job's whole ``/out``, the three readers
-    each picked a run for themselves and the caller could not tell which."""
-    execution = {**_ROS_EXECUTION, "runs_per_job": 4}
-    _core, _runner = _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")],
-                                      execution=execution)
-    monkeypatch.setattr(cs, "_exec_runner", lambda: types.SimpleNamespace(
-        exec_in=lambda target, argv, limit_s, env=None: (0, "cfgb/2\n", "", False)))
-
-    assert cs._job_live_run("c", "scenario-abc", ("p", "c"), "/out") == ("/out/cfgb/2", "cfgb/2")
-
-
 def test_the_live_run_search_looks_for_run_dirs_and_not_for_the_newest_file(cs, monkeypatch):
     """A campaign root holds ``_jobs/`` beside its runs, and the job artifacts under it are the
     files most recently written -- so taking the newest file anywhere named the run ``_jobs/batch-0``
     and pointed every reader at a subtree with no run in it. The search is for the run LAYOUT."""
-    execution = {**_ROS_EXECUTION, "runs_per_job": 4}
     seen = {}
-    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")], execution=execution)
+    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")])
     monkeypatch.setattr(cs, "_exec_runner", lambda: types.SimpleNamespace(
         exec_in=lambda target, argv, limit_s, env=None: (
             seen.setdefault("argv", " ".join(argv)), "", "", False) and (0, "", "", False)))
@@ -2143,11 +1897,10 @@ def test_a_stepped_simulator_still_resolves_through_the_plan(cs, monkeypatch):
     assert cs._job_pod_target("c", "j", "simulation") == ("scenario-abc-x9", "robovast")
 
 
-def test_a_packed_job_that_has_written_nothing_keeps_the_job_root(cs, monkeypatch):
+def test_a_job_that_has_written_nothing_keeps_the_job_root(cs, monkeypatch):
     """A run between starting and its first record is normal. The readers' own "nothing here yet"
     is a better answer than a failure from the step that was only trying to be more precise."""
-    execution = {**_ROS_EXECUTION, "runs_per_job": 4}
-    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")], execution=execution)
+    _cluster_job_state(cs, monkeypatch, pods=[_Pod("scenario-abc-x9")])
     monkeypatch.setattr(cs, "_exec_runner", lambda: types.SimpleNamespace(
         exec_in=lambda target, argv, limit_s, env=None: (0, "", "", False)))
 
@@ -2168,8 +1921,7 @@ def test_results_dir_decides_where_driven_campaigns_live(tmp_path):
     """``vast serve --results-dir`` decides ClusterService's results root.
 
     The results volume is where a cluster campaign lives: its pods deliver their runs into
-    it, per-run extraction reads it through a path, and postprocessing derives ``data.db``
-    from it. Without the flag that root is ``local_results_root``'s
+    it, per-run extraction reads it through a path, and postprocessing runs against it. Without the flag that root is ``local_results_root``'s
     ``<workspaces_root>/../results``, which in the deployed pod is one directory outside
     the only mount it has: every restart would discard it, and since resume reads it before
     the port is bound, a restart with live campaigns could never finish.
@@ -2476,3 +2228,36 @@ def test_a_job_with_no_pod_yet_reports_no_node(cs, monkeypatch):
     _one_running_job(cs, monkeypatch, phase="Pending")
 
     assert cs.list_jobs("camp-2026-07-17-120000").jobs[0].node is None
+
+
+_PER_CLUSTER = {"cpu": [{"lab.example": 4}, {"cloud.example": 8}], "memory": "8Gi"}
+
+
+def _backend_of_service(monkeypatch, recorded):
+    """The backend a service builds for a campaign, with *recorded* as its deployed context."""
+    if recorded is None:
+        monkeypatch.delenv("ROBOVAST_KUBE_CONTEXT", raising=False)
+    else:
+        monkeypatch.setenv("ROBOVAST_KUBE_CONTEXT", recorded)
+    svc = ClusterService(namespace="ns1", cluster_config_name="rke2",
+                         cluster_config_kwargs={}, reap_on_start=False)
+    monkeypatch.setattr(svc, "_cluster_config", lambda: None)
+    monkeypatch.setattr(svc, "_admission_controller", lambda: None)
+    return svc._build_backend(None)
+
+
+def test_a_service_with_a_recorded_context_resolves_a_per_cluster_list(monkeypatch):
+    from robovast.execution.cluster_execution.cluster_context import resolve_resources
+    backend = _backend_of_service(monkeypatch, "cloud.example")
+    assert resolve_resources(_PER_CLUSTER, backend.kube_context) == {
+        "cpu": 8, "memory": "8Gi"}
+
+
+def test_a_service_without_a_recorded_context_refuses_naming_the_remedy(monkeypatch):
+    """The launch carries no context, so telling the caller to pass one names a flag that
+    changes nothing; what records the context is redeploying the service."""
+    from robovast.execution.cluster_execution.cluster_context import resolve_resources
+    backend = _backend_of_service(monkeypatch, None)
+    with pytest.raises(ValueError, match="vast service upgrade") as caught:
+        resolve_resources(_PER_CLUSTER, backend.kube_context)
+    assert "lab.example" in str(caught.value) and "cloud.example" in str(caught.value)

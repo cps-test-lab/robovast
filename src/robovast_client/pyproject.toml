@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "robovast-client"
-version = "2.2.0"
+version = "2.2.1"
 description = "Talk to a RoboVAST service: upload projects, launch campaigns, wait for them, fetch results."
 authors = ["Frederik Pasch <fred-labs@mailbox.org>"]
 license = "Apache-2.0"
@@ -27,6 +27,13 @@ python = ">=3.12,<3.14"
 pydantic = "^2.12"
 click = "^8.1"
 requests = "^2.31"
+# `vast results build`, and a campaign's data in pandas: the next step up from driving a
+# service, and the heavy one -- the decoder, DuckDB and pandas. Only with the extra:
+# `pip install robovast-client[data]`.
+robovast-data = {version = "^2.2.0", optional = true}
+
+[tool.poetry.extras]
+data = ["robovast-data"]
 
 # The `vast` command itself. It lives here because every audience has one: the core and
 # `robovast-cluster` attach their verbs to this group through `robovast.cli_plugins`.
@@ -47,6 +54,7 @@ campaign = "robovast.client.campaign_cli:campaign"
 service = "robovast.client.service_cli:service"
 cluster = "robovast.client.cluster_cli:cluster"
 container = "robovast.client.container_cli:container"
+results = "robovast.client.results_cli:results"
 
 [build-system]
 requires = ["poetry-core"]

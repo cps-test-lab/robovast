@@ -157,10 +157,9 @@ def test_seed_parameter_is_refused_until_per_run_delivery_exists():
     failure_rate back into a bit -- strictly worse than the current behaviour, where an
     unseeded run draws its own.
 
-    The simulator's own episode counter cannot stand in for it either: jobs are packed by
-    simulator settings, not by configuration (execution/packer.py, FixedK groups on
-    WorkItem.sim_key), so one process's episodes run across several cells and "episode i"
-    is not "repetition i". Refuse until a per-run seed exists.
+    The simulator's own episode counter cannot stand in for it either: every run is its own
+    job and simulator process, so each counts from the first episode and "episode i" is not
+    "repetition i". Refuse until a per-run seed exists.
     """
     with pytest.raises(ValueError, match='per-run'):
         RepetitionsConfig(policy='adaptive', seed_parameter={'sim': 'seed'})

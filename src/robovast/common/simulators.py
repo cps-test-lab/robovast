@@ -42,9 +42,11 @@ it declares strings and container specs, and anything needing the simulator itse
 
 from __future__ import annotations
 
+import shlex
 from typing import Optional
 
 from robovast.common.config import (ALWAYS_ON_PANELS, SCENARIO_CONTAINER, SIMULATION_CONTAINER,
+                                    RecordingConfig,
                                     SUT_CONTAINER, flatten_panel_shorthand)
 
 #: Entry-point group backends register in.
@@ -167,11 +169,17 @@ class SimulatorBackend:
         """
         return None
 
-    def env(self, cfg, execution: dict) -> dict:
+    def env(self, cfg, execution: dict, recording: Optional[RecordingConfig]) -> dict:
         """Environment the simulator reads, merged into every container.
 
         A campaign's own ``execution.env`` wins over this: these are defaults a backend
         knows, not decisions it takes away.
+
+        *recording* is the campaign's ``recording:`` block, or ``None`` when it has none --
+        which means "record everything", not "record nothing". A backend that records
+        reads its own section of it here (roqsim reads ``recording.roqsim``) and asks the
+        simulator for exactly that, so the knobs a campaign sets reach the process that
+        honours them by the same route as every other variable the backend contributes.
         """
         return {}
 
@@ -248,20 +256,22 @@ class SimulatorBackend:
         """
         return []
 
-    def produces_run_capture(self, cfg, execution: dict) -> bool:
-        """Whether runs write the capture a ``scene3d`` panel replays.
+    def records_scene_state(self, cfg, execution: dict) -> bool:
+        """Whether runs record the simulator state a ``scene3d`` panel replays.
 
-        Replaces sniffing a campaign's wheel names for ``roqsim``: a capability question
-        the simulator can answer, asked of whichever simulator is actually configured.
+        The panel replays a run from the tables its recording decodes to (``sim_poses``,
+        ``joint_states``, ``sim_recording``, ``sim_entities``), so this is a capability
+        question the simulator can answer, asked of whichever simulator is actually
+        configured rather than sniffed from a campaign's wheel names.
         """
         return False
 
     def default_panels(self, cfg, execution: dict) -> list:
         """Run-view panels this backend contributes, as ``{<type>: <props>}`` entries.
 
-        The same reasoning as :meth:`env`: a campaign whose runs record a capture always wants
-        the panel that replays it, so there is nothing for the ``.vast`` to decide and nothing
-        it should have to write. A backend that produces no such artifact returns ``[]`` --
+        The same reasoning as :meth:`env`: a campaign whose runs record their scene state
+        always wants the panel that replays it, so there is nothing for the ``.vast`` to decide
+        and nothing it should have to write. A backend that produces no such artifact returns ``[]`` --
         Gazebo has no scene-descriptor export, so it has no 3D panel to offer and must not
         claim one.
 
@@ -283,14 +293,15 @@ class SimulatorBackend:
         generator, with ``{out}`` for the output directory. It runs in the campaign's own
         simulator image, so it may name that image's tools.
 
-        Companion to :meth:`produces_run_capture`: one says a run records the motion a
+        Companion to :meth:`records_scene_state`: one says a run records the motion a
         ``scene3d`` panel replays, this one says the geometry it is replayed against can be
         rebuilt. ``None`` -- the default -- means this backend has no exporter, which is a
         normal answer: Gazebo has none.
 
         The descriptor *format* is RoboVAST's (``scene.json`` + ``scene.bin``, and a
-        ``.generated.json`` manifest; see ``docs/run_capture.rst``), so a second backend
-        implements against it rather than inventing one. What belongs here is only the
+        ``.generated.json`` manifest; see the scene descriptor section of
+        ``docs/simulators.rst``), so a second backend implements against it rather than
+        inventing one. What belongs here is only the
         command: which tool, and how it spells its arguments -- ``overrides`` in particular,
         whose serialization is the simulator's own convention.
 
@@ -325,6 +336,36 @@ class SimulatorBackend:
         :meth:`simulation_screenshot` is, so a backend writes the command it would type.
         """
         return None
+
+    def tap_command(self, cfg, execution: dict, *, run_dir: str,
+                    selection: list) -> Optional[list]:
+        """Command whose stdout is a **live** run's present state, line by line, or ``None``.
+
+        The tap: the service starts it in the running simulation container on demand and
+        relays its stdout for a bounded time (``tap_job`` on every surface). Where
+        :meth:`health_command` is a fixed read the service polls, this one *follows*, so it
+        is asked only while somebody is watching and never by a poll.
+
+        The default is the **shape's** answer, because in the ROS shape the simulator's
+        container speaks ROS whatever the simulator is: *selection* names topics and the
+        command is :func:`ros_tap_command` -- ``ros2 topic echo`` per topic, ``ros2 topic
+        list`` for an empty selection so a caller learns what it can select. The stepped
+        shape has no process to ask beside the scenario's own, so it answers ``None``. A
+        backend overrides either way: to name a tool of its own, or to say ``None`` because
+        its recording is already the live view, as roqsim does.
+
+        ``None`` is a normal answer, reported by the service as "no tap for" this
+        simulator, never as a tap that printed nothing.
+
+        Returned as **argv**, never a shell string: the service runs it inside the run's own
+        environment (the ROS overlay sourced), and quoting it once there is what keeps a topic
+        name from being re-parsed by a shell on the way. *run_dir* is where this run's records
+        are inside the container, for a backend whose tool reads them.
+        """
+        del cfg, run_dir
+        if shape_for(execution.get("mode")) != SHAPE_ROS:
+            return None
+        return ros_tap_command(selection)
 
     def run_state_file(self, cfg, execution: dict) -> Optional[str]:
         """The run-relative recording :meth:`simulation_screenshot` renders from, or ``None``.
@@ -422,6 +463,54 @@ def health_command(execution: dict, *, run_dir: str, base_dir: str = "") -> Opti
     block = ((execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {})
     cfg = _validated_cfg(backend, block, name)
     return backend.health_command(cfg, execution, run_dir=run_dir)
+
+
+#: The word in a tap selection that asks for ``ros2 topic echo --csv``: one value per line
+#: rather than a YAML document per message, which is what a reader plotting a stream wants.
+TAP_CSV = "csv"
+
+
+def ros_tap_command(selection: list) -> list:
+    """``ros2 topic echo`` for every topic in *selection*, as argv; the topic list for none.
+
+    One command whatever the selection, so the exec starts exactly one process and stops
+    exactly one: a single topic is echoed directly, several are echoed side by side under one
+    shell with each line prefixed by its topic, since a stream of two interleaved YAML
+    documents cannot be read otherwise. :data:`TAP_CSV` in the selection is a flag, not a
+    topic. Empty is ``ros2 topic list`` once, which ends on its own.
+
+    ``PYTHONUNBUFFERED`` because ``ros2`` is Python and its stdout is a pipe here, not a
+    terminal: block-buffered, a tap of a slow topic would show nothing for its whole bounded
+    life and then everything as it was killed.
+    """
+    names = [str(name) for name in selection or [] if str(name) != TAP_CSV]
+    for name in names:
+        if not name.strip() or any(ch.isspace() for ch in name):
+            raise ValueError(f"a topic name has no whitespace: {name!r}")
+    if not names:
+        return ["ros2", "topic", "list"]
+    echo = ["ros2", "topic", "echo"] + (["--csv"] if TAP_CSV in (selection or []) else [])
+    if len(names) == 1:
+        return ["env", "PYTHONUNBUFFERED=1", *echo, names[0]]
+    tagged = [f"{shlex.join(echo + [name])} | while IFS= read -r line; do "
+              f"printf '%s %s\\n' {shlex.quote(name)} \"$line\"; done"
+              for name in names]
+    return ["env", "PYTHONUNBUFFERED=1", "/bin/bash", "-c", " & ".join(tagged) + " & wait"]
+
+
+def tap_command(execution: dict, *, run_dir: str, selection: list,
+                base_dir: str = "") -> Optional[list]:
+    """The configured backend's :meth:`SimulatorBackend.tap_command`, or ``None``.
+
+    Same seam as :func:`health_command`. A campaign with no backend at all gets the base
+    class's answer -- the shape's -- because the ROS shape's tap is a property of the shape
+    and a simulator RoboVAST merely launches still publishes topics.
+    """
+    name = backend_name(execution or {})
+    backend = resolve_backend(name, base_dir) if name else SimulatorBackend()
+    block = ((execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {})
+    cfg = _validated_cfg(backend, block, name) if name else None
+    return backend.tap_command(cfg, execution, run_dir=run_dir, selection=list(selection or []))
 
 
 def simulation_screenshot_command(execution: dict, *, state: str, at: Optional[float],
@@ -529,7 +618,8 @@ def backend_name(execution: dict) -> Optional[str]:
     return (block or {}).get("backend") if isinstance(block, dict) else None
 
 
-def apply_backend(execution: dict, base_dir: str = "") -> dict:
+def apply_backend(execution: dict, base_dir: str = "",
+                  recording: Optional[RecordingConfig] = None) -> dict:
     """Return *execution* with its backend's contributions merged in.
 
     Called once, where the raw ``execution`` mapping is turned into what the execution
@@ -538,6 +628,11 @@ def apply_backend(execution: dict, base_dir: str = "") -> dict:
 
     The campaign always wins: a backend supplies defaults for keys the author left out,
     and never overrides one they set.
+
+    *recording* is the campaign's ``recording:`` block, handed to :meth:`SimulatorBackend.env`
+    so the environment stored here already carries what the simulator is asked to record.
+    A caller that only wants the container plan may leave it out: the plan does not read
+    the environment, and an absent block means the simulator records everything.
     """
     name = backend_name(execution)
     if not name:
@@ -581,7 +676,7 @@ def apply_backend(execution: dict, base_dir: str = "") -> dict:
         ref = backend.simulation_ref(cfg, execution)
         if ref:
             result["simulation"] = ref
-    contributed = backend.env(cfg, execution)
+    contributed = backend.env(cfg, execution, recording)
     if contributed:
         result["_backend_env"] = contributed
     return result
@@ -898,7 +993,8 @@ def sim_input_files(execution: dict, block: dict, base_dir: str = "",
     return [str(p) for p in (declared or [])]
 
 
-def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
+def sim_job_overlay(execution: dict, block: dict, base_dir: str = "",
+                    recording: Optional[RecordingConfig] = None) -> dict:
     """What one job's resolved ``sim`` block contributes: ``{command, env, document}``.
 
     :func:`apply_backend`'s per-job twin, and deliberately the *same* hooks: the command and
@@ -907,6 +1003,10 @@ def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
     one thing at composition and another at dispatch.
 
     ``document`` is what the execution backend writes to :data:`SIM_OVERRIDES_MOUNT`, or ``None``.
+
+    *recording* is the same block :func:`apply_backend` was given: the overlay's ``env`` is
+    merged over the campaign-level contribution, so a job asked with a different block
+    would silently rewrite what the run records.
     """
     empty = {"command": None, "env": {}, "document": None}
     name = backend_name(execution or {})
@@ -918,7 +1018,7 @@ def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
     sim_container = contributed.get(SIMULATION_CONTAINER) or {}
     return {
         "command": sim_container.get("command"),
-        "env": backend.env(cfg, execution) or {},
+        "env": backend.env(cfg, execution, recording) or {},
         "document": backend.sim_document(cfg, execution),
     }
 
@@ -993,6 +1093,7 @@ __all__ = [
     "SIMULATION_CONTAINER",
     "SUT_CONTAINER",
     "SimulatorBackend",
+    "TAP_CSV",
     "apply_backend",
     "backend_name",
     "backend_own_keys",
@@ -1001,6 +1102,8 @@ __all__ = [
     "merge_sim_block",
     "resolve_backend",
     "resolve_sim_path",
+    "ros_tap_command",
     "shape_for",
     "sim_job_overlay",
+    "tap_command",
 ]

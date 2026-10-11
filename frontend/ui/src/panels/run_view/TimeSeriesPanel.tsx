@@ -154,6 +154,12 @@ function TimeSeriesPanel({ spec, clock, data }: PanelProps) {
             <b style={{ color: s.color }}>{fmt(at?.[s.column])}</b>
           </Box>
         ))}
+        {/* A live series keeps its newest rows: the line starts after the run did, and says so. */}
+        {query.data.dropped ? (
+          <Box sx={{ color: CHART_LABEL, opacity: 0.8 }}>
+            live · oldest {query.data.dropped} rows dropped
+          </Box>
+        ) : null}
       </Box>
       <Box ref={containerRef} sx={{ position: 'relative', flexGrow: 1, minHeight: 0 }}>
         <canvas ref={canvasRef} style={{ display: 'block' }} />

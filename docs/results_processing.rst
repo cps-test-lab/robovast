@@ -3,9 +3,15 @@
 Results Processing
 ==================
 
-Every RoboVAST execution produces a results directory with a well-defined layout.
-This page documents the output structure and how to postprocess and merge results
-using the ``vast results`` command group.
+**A campaign's directory is its database.** Everything a campaign recorded — its rosbags, its
+containers' logs, its resource samples, the files its runs wrote, and ``campaign.db`` — stays in
+that directory as the record of what happened, and every table anybody queries is built from
+those records. The tables themselves are a cache beside them (``<campaign>/.cache/``): deleting
+it loses nothing but the time to build them again.
+
+This page describes what a campaign records, which tables its records give and how each is
+built, how a campaign's ``.vast`` shapes them, what runs when a campaign ends, and how to query
+the result — from the web UI, an agent, or a notebook on your own machine.
 
 
 .. _results-output-structure:
@@ -14,8 +20,9 @@ Output Structure
 ----------------
 
 The results directory is named with ``--results-dir``: on the serve command the
-deployment runs for where campaigns land, and on each ``vast results`` verb for which
-tree to read.
+deployment runs for where campaigns land, and on the ``vast results`` verbs that read a
+tree (``publish``, ``generate-metadata``, ``merge-campaigns``; ``backfill-provenance``
+takes it as its argument).
 
 Top-Level Layout
 ^^^^^^^^^^^^^^^^
@@ -24,11 +31,13 @@ Top-Level Layout
 
    <results-dir>/
    └── <campaign-name>-<timestamp>/          # One per execution (e.g. dynamic_obstacle-2026-03-04-152130)
-       ├── metadata.yaml                     # Campaign metadata (auto-generated)
+       ├── campaign.db                       # The campaign's store: units, runs, jobs, batches
+       ├── metadata.yaml                     # Campaign metadata (written by postprocessing)
        ├── _config/                          # Campaign-level configuration snapshot
-       ├── _execution/                       # Execution metadata
-       ├── _transient/                       # Intermediate/preprocessed data
+       ├── _execution/                       # Execution metadata and phase logs
+       ├── _transient/                       # Resolved configurations and generated scripts
        ├── _jobs/                            # Per-job artifacts (sysinfo, resource usage, logs)
+       ├── .cache/                           # Built tables; rebuilt from the records on demand
        └── <config-name-1>/                  # One directory per configuration variant
        └── <config-name-2>/
 
@@ -41,8 +50,9 @@ Campaign-Level Directories
 A copy of all input files used during execution — and the source a **retrigger** reconstructs the
 campaign from. To run a campaign again exactly as it ran, use **Retrigger campaign** in the web UI's
 campaign actions menu, ``start_campaign(from_campaign=<id>)`` over MCP, or
-``POST /campaigns/<id>/retrigger``: all three read this snapshot together with the image recorded in
-``_execution/`` and start a new campaign, leaving this one untouched.
+``POST /campaigns/<id>/retrigger``: all three read this snapshot together with the image digests
+recorded in ``_execution/launch.yaml`` and start a new campaign that runs exactly those digests,
+leaving this one untouched.
 
 Doing it by hand instead pushes the snapshot as a workspace and runs that:
 
@@ -52,8 +62,10 @@ Doing it by hand instead pushes the snapshot as a workspace and runs that:
    vast workspace run replay <config-name>.vast
 
 That path **rebuilds** the image rather than reusing the one the campaign recorded, so it needs the
-sources the ``build:`` section names — which are *not* archived here. It is the escape hatch for when
-the recorded image is gone; otherwise prefer the retrigger, which reuses the exact bytes.
+sources the ``build:`` section names — which are *not* archived here — and resolves and records
+every image afresh. It is the escape hatch for when the recorded image is gone, or the campaign's
+launch record lacks a digest a retrigger needs (``vast campaign rerun <id> --to-workspace <name>``
+does the push for you); otherwise prefer the retrigger, which reuses the exact bytes.
 All three launches are gated by the same pre-flight over these records; see
 :ref:`results-retrigger-preflight`.
 
@@ -70,6 +82,8 @@ The structure inside is domain-specific, but typically includes:
    │   └── analysis_campaign.ipynb
    └── <run-files defined within vast-config> # e.g. launch files, models, scripts, parameters
 
+.. _results-execution-dir:
+
 ``_execution/`` — Execution Metadata
 """""""""""""""""""""""""""""""""""""
 
@@ -78,33 +92,44 @@ The structure inside is domain-specific, but typically includes:
    _execution/
    ├── launch.yaml                           # How the campaign was ASKED FOR (see below)
    ├── execution.yaml
+   ├── tables.yaml                           # The decoder's configuration (see Configuring the decoder)
    ├── plugin_install.log                    # ``plugin install`` phase (pip output; only when plugins are declared)
    ├── variation.log                         # ``variation`` phase (config-variation expansion)
    ├── controller.log                        # ``run`` phase — campaign controller log
-   ├── postprocessing.log                    # ``postprocessing`` phase (rosbag→CSV + index ingest)
+   ├── postprocessing.log                    # ``postprocessing`` phase (steps, campaign-end pass)
+   ├── tables.log                            # a table build asked for ahead of use
    ├── share.log                             # ``share`` phase (export to share, when re-run)
+   ├── sections/                             # earlier runs of the repeatable phases
    ├── import.log                            # ``importing`` phase (only on an imported campaign)
-   └── import.json                           # per-stage ingest report (only on an imported campaign)
+   ├── import.json                           # per-stage import report (only on an imported campaign)
+   └── importing.json                        # left only by an import that never concluded
 
-Each pre-/post-run **phase** writes its own log file here; the service concatenates
-them in phase order into the single live campaign log the web UI streams. The
-``plugin install`` phase (present only when the ``.vast`` declares ``plugins:``) runs
-first and captures the ``pip install`` output live, exactly like ``building``,
-``variation`` and ``postprocessing``.
+Each pre-/post-run **phase** writes its own log file here, and the files are the record. The
+service reads them in phase order as one campaign log of **rows** -- ``vast campaign log``, the
+``get_campaign_log`` MCP tool and the web UI's Log tab all read the same rows, live while the
+campaign runs and complete afterwards. A row is one record: a stamped line
+(``<date> <level> <logger>: <message>`` as the campaign's log handler writes it, or the
+``[<level>] [<t>] [<node>]:`` line a run's containers relay into ``controller.log`` locally)
+with the unstamped lines under it -- a traceback -- joined into its message; an unstamped line
+with no record above it, which is what build and ``pip`` output are, is its own row at level
+``NOTE``. Every row names its phase (``IMPORT``, ``BUILD``, ``PLUGIN INSTALL``, ``VARIATION``,
+``RUN``, ``POSTPROCESSING``, ``SHARE``, ``TABLES``), its stamp, level and logger, and a reader
+narrows what it is shown by phase, by a minimum level and by a regex over the message and the
+logger -- the service applies the filters as it reads, and a reader continues from where it
+was with an opaque cursor whether or not it filtered. The ``plugin install`` phase (present
+only when the ``.vast`` declares ``plugins:``) captures the ``pip install`` output live,
+exactly like ``building``, ``variation`` and ``postprocessing``.
 
-**A re-triggered step appends to its own phase file**, so the campaign log shows what the
-step you just asked for actually did rather than only what the original run did.
-``postprocessing.log`` grows on each ``run_postprocessing``; a re-triggered upload-to-share
-writes ``share.log``, which is a phase of its own because an upload is not postprocessing and
-a divider naming the wrong step is worse than no divider. (The share that runs *inside* a
-campaign is part of the controller's own narrative and stays under ``run``.)
+**Postprocessing, the upload to the share and a table build can each run again**, any number of
+times and in any order, so each has its own section: the campaign log's ``POSTPROCESSING``,
+``SHARE`` and ``TABLES``. A run of one starts an empty file, and the finished one is kept under
+``_execution/sections/``, numbered in the order the runs happened — so the campaign log shows
+what the step you just asked for did, after what the earlier ones did.
 
 ``import.log`` is the same idea for the one phase that can *precede* everything else:
 a campaign taken in from an archive or the share writes it while the bytes are still
 arriving — which is why the campaign's ``_execution/`` directory is created before the
-extraction rather than by it. An import whose account of itself only began after the
-download would have no account of the download, which is the slowest and least
-inspectable part of it.
+extraction rather than by it, so the import's account of itself covers the download too.
 
 ``execution.yaml`` contains:
 
@@ -114,42 +139,58 @@ inspectable part of it.
 - ``execution_type``: ``cluster`` or ``local``
 - ``image``: the configured execution image reference (may be a floating tag such as
   ``…:latest``)
-- ``image_revision``: the **immutable digest** the run pods actually used
-  (``repo@sha256:…``), captured at run time on the cluster backend. Re-postprocessing
-  reuses this exact image, so a later re-run deserializes the recorded bags against the
-  same image the runs used even if the tag has since moved.
+- ``images``: every container's image as composition resolved it, keyed by container name
+- ``image_revision``: the **immutable digest** the scenario container ran (``repo@sha256:…``)
+- ``image_revisions``: the digest each container ran, keyed by container name and role — the
+  same digests ``launch.yaml`` holds, since both are written from the one pinned plan
 - ``cluster_info``: Node count, labels, CPU manager policies (cluster only)
 
 .. _campaign-launch-record:
 
 ``launch.yaml`` records the **request**, where ``execution.yaml`` records what happened:
 ``config_filter``, ``campaign_name``, ``runs`` (as *requested*), ``postprocess``,
-``upload_to_share`` and ``backend``. It exists because the request was otherwise
-unrecoverable — ``config_filter`` in particular was consumed during config expansion and kept
-nowhere — so "was this the full sweep or a one-config pilot?" could not be answered about a finished
-campaign, by a person or by a retrigger.
+``upload_to_share``, ``priority`` and ``paused``. It answers "was this the full sweep or a
+one-config pilot?" about a finished campaign, for a person and for a retrigger —
+``config_filter`` in particular is consumed during config expansion and recorded nowhere else.
+
+It also records **every image the campaign runs, as a digest**, and is the one authority for
+them:
+
+``images``
+   each planned container's digest, keyed by container name and by every role it backs.
+``sidecar_image``
+   the data-plane image of every pod — a Job's ``fetch-inputs``, ``uploader`` and ``agent``, an
+   aux pod's ``transfer``.
+``aux_images``
+   the helper images composition ran in its ``aux-<member>`` pods, keyed by aux container name.
+
+Each is fixed to a digest, and written here, before the pod that runs it is created; an image
+whose digest cannot be read refuses the launch (:ref:`image-digest-pinning`). A re-run and an
+adoption after a service restart run these digests and resolve nothing again.
 
 Read the two together for ``runs``: ``launch.yaml``'s ``runs: 0`` means "take the ``.vast``'s
 ``execution.runs``", so ``0`` beside ``execution.yaml``'s ``runs: 3`` says the ``.vast`` asked for 3,
 while ``1`` beside ``1`` on a ``.vast`` declaring 3 says someone piloted it. ``metadata.yaml`` nests
 this under ``execution.launch`` so a published campaign is one document. It is written by the service
-before the run starts (which is why it is a separate file: ``execution.yaml`` is written *by* the run,
+before the run starts, which is why it is a separate file: ``execution.yaml`` is written *by* the run,
 and a campaign that fails before its first batch would otherwise have no record of what it was asked
-to do). Campaigns from before this file existed simply have none.
+to do. A campaign without the file has no launch record.
 
 ``controller.log`` captures the campaign controller's own log for the whole run —
-batch/search progress, backend job dispatch, postprocessing and stopping
-decisions. For cluster runs the ``robovast-service`` writes this as it drives the
-campaign (and the web UI streams it live); it is preserved in the campaign so a
-downloaded or shared campaign is self-documenting without a live cluster.
+batch/search progress, backend job dispatch and stopping decisions. For cluster runs the
+``robovast-service`` writes this as it drives the campaign (and the web UI streams it live);
+it is preserved in the campaign so a downloaded or shared campaign is self-documenting without a
+live cluster.
 
-``_transient/`` — Intermediate Data
-"""""""""""""""""""""""""""""""""""""
+``_transient/`` — Resolved Configuration
+"""""""""""""""""""""""""""""""""""""""""
 
 .. code-block:: text
 
    _transient/
    ├── configurations.yaml                   # Fully resolved configuration parameters
+   ├── job_links.yaml                        # Which job each run belongs to
+   ├── postprocessing.yaml                   # Provenance record, written last by postprocessing
    ├── entrypoint.sh                         # Generated container entrypoint script
    ├── secondary_entrypoint.sh               # Generated secondary container entrypoint script
    └── collect_sysinfo.py                    # System info collection script
@@ -159,6 +200,14 @@ configuration variant, including internal computed fields like navigation path w
 (``_path``), raster points (``_raster_points``), resolved file paths, and
 ``_variations`` (list of applied variation plugins with name, start time, duration,
 and any plugin-specific fields).
+
+``job_links.yaml`` maps each ``<config>/<run>/job`` to its job directory. It is written before
+the first job starts — the ``job`` symlink beside a run appears only once its batch ends — so it
+is what the decoder resolves a run's job through, including for a run still going.
+
+``postprocessing.yaml`` names what each postprocessing step wrote and from what. It is written
+**last**, and its presence is what marks a campaign as postprocessed (see
+:ref:`results-postprocessing`).
 
 Configuration Directory
 ^^^^^^^^^^^^^^^^^^^^^^^
@@ -201,10 +250,8 @@ The last two are **records**, not inputs: what a run reads is the mounted overri
 (``sim``) and the rewritten config copies (``sut``). They sit beside the configuration so
 that what each channel was given is readable without diffing two copies of a stack's
 configuration. The campaign-level ``_transient/configurations.yaml`` carries the same values
-for every configuration in one document.
-
-All three are also read into the index, so a factor can be filtered and grouped by whichever
-channel it was written on — see :ref:`channel-param-columns`.
+for every configuration in one document, and every varied factor is a column of the ``runs``
+table whichever channel it was written on — see :ref:`channel-param-columns`.
 
 Run Directory
 ^^^^^^^^^^^^^
@@ -216,84 +263,324 @@ number, plus a ``job`` symlink to that run's job-level artifacts:
 
    <run-number>/
    ├── test.xml                              # JUnit test result (pass/fail, duration)
+   ├── behaviors.jsonl                       # scenario-execution's behaviour-tree log
+   ├── rosbag2/                              # the run's bag, recorded by RoboVAST [ROS mode]
    ├── job -> ../../_jobs/job-N              # symlink to this run's job artifacts (see below)
-   └── <test-specific files>                 # Domain-specific scenario output, e.g. out.csv,
-                                             #   or a scenario-recorded rosbag2/ bag directory
+   └── <test-specific files>                 # Domain-specific output, e.g. out.csv
 
-Anything the *scenario* itself produces (``test.xml``, scenario-recorded
-``rosbag2/``, domain output) stays in the run directory. Infrastructure and
-monitoring artifacts (``sysinfo.yaml``, ``resource_usage_*.csv``, the system
-log, and the entrypoint's ``/rosout`` + ``/clock`` recording) belong to the **job**
-and live under ``_jobs/job-N/`` — reachable via the ``job`` link, e.g.
-``<run>/job/sysinfo.yaml`` (see :ref:`job-directory`). The links are made when a batch
-ends, so the runs of a batch that was stopped have none. Which job each run belongs to is
-recorded in ``_transient/job_links.yaml`` from before the first job starts, and that is
-what RoboVAST resolves a run's job through.
+Anything the *scenario* itself produces (``test.xml``, ``behaviors.jsonl``, domain output) and
+the run's own ``rosbag2/`` stay in the run directory. Infrastructure and monitoring artifacts
+(``sysinfo.yaml``, ``resource_usage_*.csv``, the containers' logs, and the entrypoint's
+``/rosout`` + ``/clock`` recording) belong to the **job** and live under ``_jobs/job-N/`` —
+reachable via the ``job`` link, e.g. ``<run>/job/sysinfo.yaml`` (see :ref:`job-directory`). The
+links are made when a batch ends, so the runs of a batch that was stopped have none; which job
+each run belongs to is recorded in ``_transient/job_links.yaml`` from before the first job
+starts, and that is what RoboVAST resolves a run's job through.
 
-Postprocessing adds two derived files to the run directory: ``run_log.csv``, the job's
-container logs joined with ``/rosout`` and sliced to this run (see
-:ref:`merged-run-log`), and ``resource_usage.csv``, the job's resource-monitor samples
-sliced the same way (see :ref:`per-run-resource-usage`). They live here, rather than beside
-the job artifacts they were built from, because a run is what they describe — and because
-the ingest that turns data files into tables globs run directories.
+**Every** ``*.csv`` **and** ``*.jsonl`` **file below a run directory is a table**, named after
+the file (see :ref:`results-tables`). Nothing derived is written back here: the tables built
+from a run's recording live in the campaign's ``.cache/``. The one exception is a video, which
+the decoder encodes into the run directory because a browser plays it from there (see
+:ref:`the videos table <videos-table>`).
 
-Every file a ``rosbags_*`` step derives from this run's bag lands here too, for the same
-reason — ``poses.csv``, one ``action_<name>_feedback.csv`` and ``action_<name>_status.csv``
-per converted action, ``nav2_behavior_tree.csv``, the costmap and per-topic CSVs. They are
-the same for every campaign, so a downloaded campaign carries them. Each is named, with what it was derived from, in
-``_transient/postprocessing.yaml``.
+``rosbag2/`` is the run's bag, and RoboVAST records it: the job's entrypoint starts
+``ros2 bag record`` before the scenario and stops it after, holding what the ``.vast``'s
+:ref:`recording: <recording-config>` block says (everything, by default). It is a standard
+ROS 2 bag in MCAP storage, written **through** rather than cached and split into a new segment
+every 10 s, so a running run's bag is readable as it grows: a closed segment is read whole, the
+open one up to its last complete record. The storage plugin flushes in 4 KiB steps, so the newest messages
+of a quiet topic wait at most until the split closes the segment. ``metadata.yaml``, listing the
+recorded topics and message counts, appears only when the recorder stops -- a bag is complete
+exactly when it is closed. It is distinct from the job-level ``/rosout`` recording under
+``_jobs/job-N/logs/``.
 
-The conversion reads each bag once, and reads from it only the topics some configured handler
-converts: the bag reader is filtered to those topics, so a recorded topic no step asks for
-(a camera or laser-scan stream, say) is skipped by the storage plugin rather than handed to
-the converter and deserialized.
+A write-through recorder's I/O pattern differs from a cached one's -- more, smaller writes
+while the run is going instead of a burst at the end. A metric sensitive to the recorder's
+own load (a control-loop rate, a latency measured on the recording host) is therefore not
+compared across that boundary without saying so.
 
-A common example of test-specific output is a scenario-recorded ``rosbag2/``
-directory (standard ROS 2 bag in MCAP storage, with a ``metadata.yaml`` listing
-recorded topics and message counts). It is present only when the scenario
-records a bag, and is distinct from the separate, job-level ``/rosout``
-recording under ``_jobs/job-N/logs/``.
+Every bag directory also holds ``message_definitions.json``: the full definition of each type
+it recorded, written by the run's own container at its end, where the types are installed.
+rosbag2 embeds most definitions in the recording itself but none for an action-derived type
+(an action's ``_FeedbackMessage``), so this file is what lets such a topic be decoded where the
+system under test is not installed — by ``robovast-decode``, on any machine with Python. A type
+neither the recording, this file nor the ROS distribution's standard set defines is reported
+in the ``_recording`` table with that reason rather than skipped.
+
+.. _job-directory:
+
+Job Directory
+^^^^^^^^^^^^^
+
+``_jobs/job-N/`` holds the artifacts of one *job* — the unit of dispatch (one
+Kubernetes Job, or one local ``docker compose`` run). There is one job per run,
+and each run links to its job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``).
+
+.. code-block:: text
+
+   _jobs/job-N/
+   ├── sysinfo.yaml                          # Hardware info (platform, CPU, memory) — stable
+   ├── resource_usage_main.csv               # Main container CPU/memory over the job
+   ├── resource_usage_<secondary>.csv        # Per secondary container [if multi-container]
+   ├── system_usage_main.csv                 # Main container cgroup counters over the job
+   ├── system_usage_<secondary>.csv          # Per secondary container [if multi-container]
+   └── logs/
+       ├── system.log                        # Main container system log
+       ├── system_<secondary>.log            # Secondary container log [if multi-container]
+       └── rosout_bag/                       # /rosout and /clock recording, wall time [ROS mode]
+
+These are the sources of the **derived tables** (:ref:`results-derived-tables`): the logs and
+the ``rosout_bag/`` recording give ``run_log`` and ``scenario_timestamps``, the
+``resource_usage_*.csv`` files ``resource_usage``, the ``system_usage_*.csv`` files
+``system_usage``. They span the whole job, bring-up and teardown included, and the derivation
+marks what falls inside the run's trial.
+
+``resource_usage_*.csv`` files have columns ``timestamp`` (wall epoch seconds), ``pid``,
+``name``, ``cpu_percent``, ``memory_rss_bytes``, ``shm_used_bytes`` and ``shm_total_bytes``,
+one row per process per ~1 s, one file per container. Both files span every *instance* of the
+container as well: a container the kubelet restarts runs the sampler again against the same
+file, which continues the record under its one header rather than replacing it, so the samples
+of the instance that died — the high-water mark climbing towards its limit — are kept beside the
+ones of the instance that came after. The seam shows as the cumulative counters going backwards:
+the calibration reader drops that tick as a cgroup replaced, and a run whose container crashed is
+``invalid`` in the intervention ledger (:doc:`architecture`), so its per-run aggregates are never
+compared with a run that kept one instance throughout.
+
+
+.. _results-tables:
+
+Tables
+------
+
+A table is a set of parquet files under ``<campaign>/.cache/tables/``, cataloged by
+``.cache/MANIFEST.json``: one file per run as it is built, and one file for the whole table once it
+is compacted (:ref:`compacted tables <results-tables-compacted>`). Every table carries
+``campaign_id``, ``config_name`` and ``run_id`` in its own rows, so it joins to ``runs`` and to
+every other table on ``(config_name, run_id)``.
+
+Where the tables come from
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 30 48
+
+   * - Kind
+     - Tables
+     - Built from
+   * - **Bag tables**
+     - ``poses``, ``nav2_behavior_tree``, ``costmaps``, ``action_<name>_feedback`` /
+       ``_status``, ``rosbag2_<topic>``, ``videos``
+     - a run's own recording, ``<run>/rosbag2/``
+   * - Infrastructure recording
+     - ``rosout``, ``clock_map``
+     - the job's wall-time recording, ``_jobs/…/logs/rosout_bag/``
+   * - Simulator recording
+     - ``sim_poses``, ``joint_states``, ``clock_map``, ``sim_recording``, ``sim_entities``
+     - roqsim's own recording, ``<run>/roqsim_bag/roqsim.mcap``, beside the scenario recording
+       or, for a stepped run, instead of it
+   * - **Derived tables**
+     - ``run_log``, ``scenario_timestamps``, ``resource_usage``, ``system_usage``,
+       ``run_clock``
+     - a job's container logs, resource samples and infrastructure recording, cut to each run
+   * - **Authored files**
+     - one per file stem: ``behaviors``, ``nav2_behaviors``, a scenario's ``out``, …
+     - every ``*.csv`` and ``*.jsonl`` below a run directory
+   * - ``_recording``
+     - one
+     - every recording of the run: what it holds, and what is not a table and why
+   * - Campaign tables
+     - ``run_health``, ``postprocessing_steps``
+     - written once for the whole campaign by its campaign-end pass
+       (:ref:`results-campaign-end`)
+   * - The campaign's record
+     - ``runs``; the ``campaign`` schema (``campaign.campaign``, ``campaign.unit``,
+       ``campaign.run``, ``campaign.job``, ``campaign.batch``, ``campaign.node``,
+       ``campaign.container_failure``)
+     - ``campaign.db``, read whole on every query — never cached
+
+**Bag tables.** Every recorded topic is a table unless there is a reason it is not. A campaign
+that configures nothing gets, from its scenario recording:
+
+* ``/tf`` + ``/tf_static`` → ``poses``, every frame that resolves against ``map``
+  (:ref:`pose-contract`);
+* ``/behavior_tree_log`` → ``nav2_behavior_tree``, one row per status change
+  (``timestamp, node_name, uid, previous_status, current_status, event_timestamp``);
+* every ``nav_msgs/msg/OccupancyGrid`` topic → ``costmaps``, one row per grid with its geometry
+  and its int8 cells zlib-compressed and base64-encoded, a ``topic`` column keeping the layers
+  apart;
+* every action's ``/<name>/_action/feedback`` and ``status`` → ``action_<name>_feedback`` and
+  ``action_<name>_status``, flattened;
+* every other topic → ``rosbag2_<topic>`` (``/collision`` → ``rosbag2_collision``), one row per
+  message with its fields as columns — nested fields joined with ``.``, an array as one
+  ``LIST`` column, a sequence of messages as one ``LIST`` column per leaf field
+  (:ref:`data-contract`) — and ``timestamp`` in nanoseconds.
+
+Not tabulated, with the reason in ``_recording``: images, compressed images and point clouds,
+which are bulk data read from the recording where they are wanted; the scenario recording's
+``/clock`` and ``/rosout``, which come from the infrastructure recording; and
+``/parameter_events``. The ``videos`` table exists only where the campaign asks for it
+(``rosbags_to_webm``, see :ref:`results-decoder-config`), because encoding a camera costs far more
+than tabulating it.
+
+A recording is read once per build, and only the messages some requested table needs are
+deserialized; custom message types decode from the definitions embedded in the bag and its
+``message_definitions.json``, so no ROS installation is involved.
+
+**Simulator recording.** roqsim records a run as one mcap, ``<run>/roqsim_bag/roqsim.mcap``,
+whose channels are JSON documents sampled at the capture rate and whose provenance travels as
+mcap metadata. It is decoded like a bag, and is the only recording a **stepped** (ROS-less)
+run has:
+
+* ``poses`` → ``sim_poses``, one row per named body per sample, in the :ref:`pose contract
+  <pose-contract>`'s simulator shape: ``timestamp`` (exact sim seconds), ``wall_time``,
+  ``frame``, position, quaternion ``(x, y, z, w)`` and world-frame twist;
+* ``joints`` → ``joint_states``: ``timestamp``, ``wall_time``, ``joint``, ``position``, one row
+  per hinge or slide joint per sample;
+* ``clock`` → ``clock_map``, the same ``(wall_ts, sim_ts)`` samples the infrastructure recording
+  gives, so ``run_clock`` and the derived tables work unchanged for a stepped run. A run whose
+  job also has the infrastructure recording's ``/clock`` keeps that one, and the channel is
+  listed in ``_recording`` with that reason;
+* the ``roqsim.recording`` metadata → ``sim_recording``, one row per run: ``format_version``,
+  ``world``, ``overrides_json``, ``seed``, ``packages_json``, ``capture_fps`` (``num/den``),
+  ``timestep``, ``model_json`` -- the last record of the name wins;
+* the ``roqsim.entities`` metadata → ``sim_entities``: ``name``, ``kind``, ``body``,
+  ``present``, the rows of the last roster the run wrote.
+
+The ``state`` channel, the raw simulator state roqsim itself reads back, is not a table and says
+so in ``_recording``. The recording is closed once its writer wrote the footer -- a killed run's
+file ends where its last chunk did, and is decoded to there.
+
+**Authored files.** A run's own data file is a table with no registration: a scenario's metrics
+file, a simulator's pose stream, a postprocessing step's output, scenario-execution's
+``behaviors.jsonl``. The table is the file's stem, lower-cased, with anything but ``[a-z0-9_]``
+turned into ``_``. Column types are inferred from the values; a ``#`` preamble before a CSV's
+header is skipped; a table carrying a quaternion gains ``orientation.yaw``. Refused, for that
+table and run with the reason: two files claiming one table, a CSV row with more fields than its
+header, and a file whose name is a table the run's records already give (rename the file).
+
+.. _results-recording-table:
+
+**The** ``_recording`` **table** is one row per topic of every recording of the run —
+``recording``, ``topic``, ``type``, ``messages``, ``bytes``, and either the ``table`` it went to
+or the ``reason`` it is not one. An undecodable topic is a row here naming its type and why,
+rather than a table that is silently missing, and the tables it feeds carry the same reason
+(:ref:`results-table-cache`)::
+
+   SELECT topic, type, reason FROM _recording WHERE reason IS NOT NULL
+
+.. _results-table-cache:
+
+Built on first use, and kept
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+**A table is built for a run the first time something names it.** Something names it when:
+
+* a SQL query reads it — the tables its statement names, and the tables any view it names
+  reads, built for the runs in scope. A top-level ``WHERE`` that restricts a table to some runs
+  with ``config_name = …`` / ``run_id = …`` or ``IN (…)`` narrows the build to those runs;
+* a notebook or script calls ``table()`` (:ref:`results-notebooks`);
+* a run-view panel or an endpoint reads it;
+* the campaign ends, and its campaign-end pass builds what it declares
+  (:ref:`results-campaign-end`).
+
+The build is done by ``robovast-decode``, a pure-Python distribution (mcap, rosbags, pyarrow):
+no ROS install, no execution image, no container. The service, a notebook on a laptop and the
+``robovast-decode`` command line build the same rows from the same records.
+
+``.cache/MANIFEST.json`` records, per table and run, the files that make it up, their schema,
+the source bytes they were built from, the decoder version that built them — and, for a run that
+has no rows for a table or only part of them, the reason. A compacted run's entry keeps all of
+that and names no file of its own: its rows are in the table's compacted file.
+
+.. _results-tables-compacted:
+
+**A finished campaign's table is one file.** Building one file per run is what lets a query
+build only the runs it names; once the runs are final it only costs — thousands of small files,
+each with its own footer and its own copy of the columns naming the run. The campaign-end pass,
+``vast campaign tables build`` and ``vast results build`` therefore *compact* each table: its final
+run files are merged into one file, rows unchanged and in run order, each floating-point column
+stored in whichever encoding makes it smallest. A query for one configuration or one run still
+reads only its part of the file. What compacts is only what a reader may take as it is — written by
+this decoder, final, with no reason — so a run still recording keeps its own files, and a compacted
+run built again (a newer decoder, a late sidecar) is read from its own file until the next compaction
+folds it back in. A table whose runs disagree on a column's type is left one file per run, and
+the pass names it.
+
+**A table a topic stopped decoding for is incomplete, and says why.** A topic whose type
+neither the recording, its sidecar nor the ROS distribution defines gives its table no rows; a
+message that does not decode as its type ends the topic there, and its table keeps the rows from
+before it. Either way the run's entry for each table the topic feeds carries the reason, naming
+the topic and its type — a build and a session following the run record the same. The run is
+listed under the table's ``failed`` with that reason in ``describe_campaign_data`` (and counted
+there in ``Campaign.tables``), and counted in ``built`` where it has rows; a query over the table
+answers with the rows there are and names it as incomplete for that run beside them; and
+``robovast-decode build`` prints it as ``PARTIAL`` and exits non-zero.
+
+A later request builds only what is missing: a table not yet asked for, a run whose records have
+grown, a recording whose definitions sidecar came or changed since (it decides what decodes), or
+anything a different decoder version wrote. A run that has not finished — no ``test.xml`` yet, or
+a recording still open — is looked at again on the next request, so **SQL works while a campaign
+is running** and follows it as it goes.
+
+A run being followed *as it records* (:mod:`robovast_decode.live`) is the exception: a session
+reads each new record of the growing bag, flushes the handlers' rows in batches, and writes them
+as parquet **parts** the manifest names under the run's entry with a ``live`` stamp. A query reads
+every part written so far and leaves the entry to the session while the stamp is fresh; once the
+run has its verdict and the recorder closed the bag, the parts are merged into the run's one
+file and the entry is complete. A stamp that has gone stale belongs to a session that died, and
+the table is built whole from the recording like any other. The :ref:`derived tables
+<results-derived-tables>` of a run being followed are not read in parts: they are derived
+again, whole, from the job's files as they are, on the same period, written with the same
+``live`` stamp, and recorded as a build records them once the run has its verdict and its
+recordings are closed.
+
+**The cache is disposable.** Clearing it (:ref:`results-tables-ahead`) loses nothing but the time
+to rebuild; archives and downloads leave it out, and an imported or downloaded campaign builds its
+tables from its records the first time they are named. A campaign's exports
+(:ref:`results-export`) live under it too, and go with it.
 
 .. _run-clock:
 
 One clock per run
-"""""""""""""""""
+^^^^^^^^^^^^^^^^^
 
-**Every table a postprocessing step derives from a bag timestamps its rows with the bag's
-receive time.** Under ``bag_record(use_sim_time: true)`` that is the *simulator's* clock, and it
-is the right one to key on: it is what the simulator actually stepped, so it is identical across
-simulators and independent of how fast the machine ran — the same trial can take 520 s of wall
-time on one backend and 100 s on another and still span the same sim seconds.
+**Every table built from a recording timestamps its rows with the bag's receive time.** Under
+``recording.ros2.use_sim_time: true`` that is the *simulator's* clock, and it is the right one to key
+on: it is what the simulator actually stepped, so it is identical across simulators and independent
+of how fast the machine ran — the same trial can take very different wall times on two backends
+and still span the same sim seconds.
 
 That shared clock is what lets the poses, the costmaps and the behaviour trees be read against
 each other at all, and it is the timeline the web :ref:`Run view <run-view>` scrubs. So a topic
-that carries a **clock of its own** must be converted, with its original stamp kept in a
-separately-named column rather than used as ``timestamp``. There is a real instance:
-``/behavior_tree_log`` is stamped by nav2 from a wall clock even under ``use_sim_time``, roughly
-1.8e9 s away from sim time. Keying ``nav2_behavior_tree`` on it made the table unjoinable with
-every other one and put each transition outside the run's timeline entirely, so the behaviour-tree
-panel had nothing to show at any playback time; it is now the receive time, with nav2's stamp in
-``event_timestamp``.
+that carries a **clock of its own** keeps its original stamp in a separately-named column rather
+than using it as ``timestamp``. nav2's ``/behavior_tree_log`` is one: nav2 stamps its events from
+a wall clock even under ``use_sim_time``, so ``nav2_behavior_tree`` is keyed on the receive time
+and carries nav2's stamp as ``event_timestamp``.
 
-Recording ``/clock`` in the scenario's ``bag_record(...)`` is worth the negligible space: it makes
-the sim↔wall mapping recoverable, so a foreign-clock topic can be *related* to sim time afterwards
-instead of guessed at.
+Seconds everywhere, except in a topic's own ``rosbag2_<topic>`` table, whose ``timestamp`` is in
+nanoseconds.
+
+Keeping ``/clock`` in the run's bag -- it is there unless ``recording.ros2`` leaves it out -- is
+worth the negligible space: it makes the sim↔wall mapping recoverable, so a foreign-clock topic can
+be *related* to sim time afterwards instead of guessed at.
 
 .. _pose-contract:
 
 The pose contract
-"""""""""""""""""
+^^^^^^^^^^^^^^^^^
 
 A pose table answers one question — *where was this thing, and when* — and more than one producer
-can answer it. ``poses`` comes from ``/tf`` in a rosbag; ``sim_poses`` is written by the simulator
-itself, during the run, and is the only pose data a **stepped** (non-ROS) run has, since there is
-no bag to derive anything from. A stack on some other middleware, a motion-capture ingest, or a
-real-robot log joins them by emitting the same columns; nothing has to be registered, because the
-ingest globs ``*.csv`` in each run directory and names the table after the file.
+can answer it. ``poses`` comes from ``/tf`` in a rosbag; ``sim_poses`` is decoded from the
+simulator's own recording, taken inside the simulator during the run, and is the only pose data a
+**stepped** (non-ROS) run has, since there is no bag to derive anything from. A stack on some
+other middleware, a motion-capture ingest, or a real-robot log joins them by writing a file with
+the same columns into the run directory; nothing has to be registered, because every data file
+of a run is a table named after the file.
 
-One table per producer, sharing the schema. That keeps ``postprocessing_steps`` provenance 1:1 and
-stops a panel filtering ``frame: base_link`` from silently plotting two interleaved series; a query
-that wants both writes one ``UNION ALL``.
+One table per producer, sharing the schema. That keeps provenance 1:1 and stops a panel
+filtering ``frame: base_link`` from silently plotting two interleaved series; a query that wants
+both writes one ``UNION ALL``.
 
 .. list-table::
    :header-rows: 1
@@ -306,7 +593,7 @@ that wants both writes one ``UNION ALL``.
        motion-capture rigid body.
    * - ``timestamp``
      - The join key described above, and never re-keyed. What it *measures* depends on the
-       producer: **arrival** time for a table converted from a transport, which no derivative may
+       producer: **arrival** time for a table built from a transport, which no derivative may
        be taken from; the **exact simulated** time for one the simulator wrote itself.
    * - ``stamp``
      - **Measurement** time: when the pose was true, from the producer itself. NULL when it cannot
@@ -323,130 +610,138 @@ that wants both writes one ``UNION ALL``.
    * - ``orientation.x/y/z/w``
      - Quaternion, and the only attitude a producer emits.
    * - ``orientation.yaw``
-     - Derived at ingest; see below.
+     - Derived when the table is built; see below.
    * - ``twist.linear.*``, ``twist.angular.*``
      - World-frame velocity, empty when the producer cannot know it (TF carries none).
 
 **World coordinates, as an invariant rather than a column.** Every row is in the run's single
-global frame, so there is no ``reference_frame`` to read or to get wrong. This holds today rather
-than being aspirational: the TF handler resolves every frame against ``map`` and fails loudly when
-a required frame yields no map-relative pose, the ROS launches make ``map`` identical to the
-simulator's world by an identity edge, and MuJoCo's ``xpos``/``xquat`` are world-frame by
-construction. A producer that cannot express world coordinates does not satisfy the contract.
+global frame, so there is no ``reference_frame`` to read or to get wrong. The TF handler resolves
+every frame against ``map`` and fails loudly when a required frame yields no map-relative pose,
+the ROS launches make ``map`` identical to the simulator's world by an identity edge, and
+MuJoCo's ``xpos``/``xquat`` are world-frame by construction. A producer that cannot express world
+coordinates does not satisfy the contract.
 
-**Difference ``stamp``, join ``timestamp``.** Arrival time is only as fine as the ``/clock`` grid
-the recorder's own clock advances on, and is jittered by delivery on top — neither of which is the
-interval the robot moved over. The failure is not subtle and does not look like noise. Measured on
-one campaign: a ground-truth pose published every 18 ms onto a 10 ms grid arrived
-20/20/20/20/10 ms, so a robot driving at a constant 0.238 m/s read as an alternating
-0.214 / 0.428 m/s — the displacement between samples was identical in every bucket, and only the
-denominator was wrong. Making the grid divide the period removes that systematic alias but not the
-delivery jitter; only ``stamp`` removes both. ``calculate_speeds_from_poses`` picks the base for
-you and reports which it used in ``time_base``, so a comparison can assert both sides took their
-derivative from the same column. Read that column together with the table it came from: ``time_base: timestamp``
-is the *exact* base on a simulator-written table and the *degraded* one on a transport-derived
-table that carries no ``stamp``, and the two are not comparable despite the identical label.
+**Difference** ``stamp``, **join** ``timestamp``. Arrival time is only as fine as the ``/clock``
+grid the recorder's own clock advances on, and is jittered by delivery on top — neither of which
+is the interval the robot moved over. The failure is not subtle and does not look like noise: a
+pose published at a period the ``/clock`` grid does not divide arrives at alternating intervals,
+so a robot at constant speed reads as alternating between two speeds while the displacement
+between samples is identical. Making the grid divide the period removes that systematic alias
+but not the delivery jitter; only ``stamp`` removes both. ``calculate_speeds_from_poses`` picks
+the base for you and reports which it used in ``time_base``, so a comparison can assert both
+sides took their derivative from the same column. Read that column together with the table it
+came from: ``time_base: timestamp`` is the *exact* base on a simulator-written table and the
+*degraded* one on a transport-derived table that carries no ``stamp``, and the two are not
+comparable despite the identical label.
 
-**Every table that follows the contract gets a track summary, ``pose_track_view``.** One row per
+**Every table that follows the contract gets a track summary,** ``pose_track_view``. One row per
 track, meaning one ``frame`` of one run as one table recorded it: ``points``, ``length_m``,
 ``duration_s``, ``avg_speed_m_s``, ``max_speed_m_s``, ``max_step_m``, start and end pose, and the
-bounding box.
-It is computed over every recorded pose, on each table's measurement clock (``stamp`` where the
-table has one, else ``timestamp``), with ``position.z`` in the length where the table carries it.
-``source`` names the table, since the same entity recorded by two producers is two tracks. A
-sample with no measurement time, such as a latched ``/tf_static`` transform, is not a point on a
-track. A reposition counts as travel: a body spawned at the origin and then placed at its start
-pose adds that jump to ``length_m``, and ``max_step_m`` (the largest single step) is where it
-shows. The view is built over whichever pose tables the index holds, so a new producer's table
-appears in it on the next ingest without being registered.
+bounding box. It is computed over every recorded pose, on each table's measurement clock
+(``stamp`` where the table has one, else ``timestamp``), with ``position.z`` in the length where
+the table carries it. ``source`` names the table, since the same entity recorded by two producers
+is two tracks. A sample with no measurement time, such as a latched ``/tf_static`` transform, is
+not a point on a track. A reposition counts as travel: a body spawned at the origin and then
+placed at its start pose adds that jump to ``length_m``, and ``max_step_m`` (the largest single
+step) is where it shows. The view covers every pose-contract table of the campaign, so a new
+producer's table appears in it without being registered.
 
 .. code-block:: sql
 
    SELECT source, frame, points, length_m, duration_s, max_speed_m_s
    FROM pose_track_view
-   WHERE campaign_id = '<id>' AND config_name = '<config>' AND run_id = 0;
+   WHERE config_name = '<config>' AND run_id = 0;
 
 **Quaternion in, yaw out.** Producers emit a quaternion and nothing else: roll/pitch/yaw is lossy
 the moment a body pitches or rolls, which rules out a drone, a tilting arm, or a robot on a ramp.
-The ingest then derives ``orientation.yaw`` for any table that has the quaternion columns and no
+The build then derives ``orientation.yaw`` for any table that has the quaternion columns and no
 yaw, because the 2D consumers — the costmap panel's heading marker, the nav MCP tools, the
 notebooks — all want a heading and none of them should reimplement quaternion math in SQL,
-JavaScript and pandas separately. It is a projection, and a ``_column_notes`` entry says so.
+JavaScript and pandas separately. It is a projection: correct for a body in the plane, and the
+quaternion is the one to read for a body that has left it.
 
 .. _clock-map:
 
 Wall → sim: the clock map
-"""""""""""""""""""""""""
+^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Everything a run *logs* is stamped in wall time — rosout's receive time, and whatever each
 container printed. Everything it is *analyzed* on is sim seconds. Relating the two is a per-run
 **clock map**: a list of ``(wall_ts, sim_ts)`` samples, interpolated piecewise-linearly.
 
-**A single offset is wrong**, which is why this is a sampled map and not a number. Measured on a
-recorded run, ``dt/dw = 1.369`` — the simulator ran 1.37× faster than the wall clock, so an offset
-taken at the start is ~8 s out by the end of a 29 s run. Sim time can also pause.
+**A single offset is wrong**, which is why this is a sampled map and not a number. A simulator
+running faster or slower than the wall clock drifts away from an offset taken at the start, and
+sim time can also pause.
 
 Two producers, one format:
 
-* **ROS** — the *entrypoint's own* recorder (``/rosout`` and ``/clock``) writes a bag in **wall** time for the whole container's life, so each
-  ``/clock`` message is an exact (wall receive, sim content) pair. Deliberately not the scenario's
-  ``bag_record``: that one is sim-time on both axes, so it cannot carry the mapping, and it starts
-  mid-run where the interesting failures are already over.
-* **roqsim (non-ROS)** — ``roqsim.capture`` streams ``<recording>.clock_map.csv`` beside the ``.npz``,
-  flushed per sample so a run killed by a timeout still has one.
+* **ROS** — the *entrypoint's own* recorder (``/rosout`` and ``/clock``) writes a bag in **wall**
+  time for the whole container's life, so each ``/clock`` message is an exact (wall receive, sim
+  content) pair; its ``clock_map`` table holds the samples. Deliberately not the run's own bag:
+  under ``use_sim_time`` that one is sim-time on both axes, so it cannot carry the mapping, and it
+  is recorded for single-run jobs only.
+* **roqsim (non-ROS)** — the ``clock`` channel of its own recording, one sample per capture
+  step, in a file that is flushed at least once a second so a run killed by a timeout still has
+  its map up to the last closed chunk.
 
 The samples are **decimated**: one is dropped only when linear interpolation reproduces it within
 5 ms, so a steady stretch costs two rows while a pause or a change of real-time factor keeps
-exactly the samples that describe it (12000 ``/clock`` messages → 26 rows, measured).
+exactly the samples that describe it.
 
 **Outside the sampled range there is no answer, and none is invented.** The samples begin when the
 simulator started publishing its clock, typically well after the container did, so a line logged
-during image boot has no sim time — a different statement from "we could not compute it".
-``runs.clock_map_source`` (``ros_clock_bag`` / ``roqsim_run_npz`` / ``none``) says which producer
-answered, so a reader can tell a *missing* map from a *quiet* one.
+during image boot has no sim time — a different statement from "we could not compute it". The
+``run_clock`` table says, per run, which producer answered (``clock_map_source``:
+``ros_clock_bag`` / ``roqsim`` / ``none``), how many samples it has and the wall and sim
+spans they cover, so a reader can tell a *missing* map from a *quiet* one;
+``clock_map_sim_span_s / clock_map_wall_span_s`` is the run's realtime factor.
+
+.. _results-derived-tables:
+
+Derived tables
+^^^^^^^^^^^^^^
+
+A job's container logs, its resource samples and its infrastructure recording are written once
+per job, and a job runs one run. The derived tables are built from them for that run, on its
+clock and marked against its trial window. They are built for every run of every campaign; no
+configuration asks for them. A campaign whose job-link manifest points several runs at one job
+is refused rather than read: which of them a job's row belongs to cannot be read off the
+records.
 
 .. _merged-run-log:
 
 ``run_log`` — everything the run said
-""""""""""""""""""""""""""""""""""""""
+"""""""""""""""""""""""""""""""""""""""
 
-One row per log **event**, across every container, on the run's own playback clock. Written by
-the auto-injected ``run_log`` postprocessing plugin as ``<run>/run_log.csv``, which the usual
-one-file-one-table ingest turns into the ``run_log`` table.
+One row per log **event**, across every container, on the run's own playback clock.
 
 It is a **join**, not a concatenation, because a run's output arrives twice: a launch container
-forwards its nodes' output to stdout *and* those nodes publish ``/rosout``. On a measured
-three-container campaign 473 of 521 rosout rows are the same event as a ``system*.log`` line, so
-appending both would report most of the run twice. Matching is exact on ``(node, wall_ns, first
-line of message)``, keyed on the **producer's** stamp — keying rosout on the bag's *receive* time
-instead matched 0 of 521, because the transport delay puts every pair on a different nanosecond.
+forwards its nodes' output to stdout *and* those nodes publish ``/rosout``, so most rosout rows
+are the same event as a ``system*.log`` line, and appending both would report most of the run
+twice. Matching is exact on ``(node, wall_ns, first line of message)``, keyed on the
+**producer's** stamp — the bag's *receive* time puts every pair on a different nanosecond.
 
 The join also supplies what neither source has alone: ``/rosout`` names the node but never the
 *container* it ran in, and that is what a reader filters by. It comes from the file the stdout
 twin was found in.
 
-**A packed job's log is split between its runs, not shared with all of them.** The artifacts are
-written per *job*, and with ``execution.runs_per_job > 1`` one job runs several configurations in
-sequence into one log. Each line is claimed by exactly one run, so a run's rows are its own —
-another configuration's trial is a different experiment, not context for this one. A run whose
-job artifacts cannot be located, or which shares a job and never wrote ``test.xml``, gets no rows
-and is named in the plugin's message; ``get_job_log`` is the whole-container view.
+A run whose job artifacts cannot be located gets no rows, and the build says so;
+``get_job_log`` is the whole-container view.
 
-Columns: ``sim_time``, ``wall_ts``, ``time_source``, ``in_window``, ``container``, ``node``,
-``source``, ``level``, ``severity``, ``message``, ``file``, ``function``, ``line``.
+Columns: ``seq``, ``sim_time``, ``wall_ts``, ``time_source``, ``in_window``, ``container``,
+``node``, ``source``, ``level``, ``severity``, ``message``, ``file``, ``function``, ``line``.
 
-* ``source`` — ``rosout`` or ``stdout``. ``WHERE source = 'rosout'`` is the rosout slice; there is
-  no separate ``rosout`` table, which would be a strict subset of this one.
+* ``seq`` — the merge's own order within the run: ``ORDER BY seq``, never by storage order.
+* ``source`` — ``rosout`` or ``stdout``. ``WHERE source = 'rosout'`` is the rosout slice.
 * ``time_source`` — how the row got its wall time: ``stamp`` (the producer's own, ns precision),
   ``inherited`` (a continuation line, e.g. a traceback frame, taking the time of the event it
   belongs to), or ``none`` (nothing stamped anywhere before it).
 
   **Producers stamp their own lines**, which is why ``stamp`` is the normal case rather than a
   ROS-only luxury: rclpy writes the stamp, and so do the entrypoints' ``log`` helper and
-  scenario-execution's logger. There is no capture step anywhere — a helper mounted in every
-  container to timestamp each line as it is read means a second copy of every log line on disk
-  (119 KB against a 108 KB ``system.log``, measured) to describe output that is RoboVAST's own
-  and can simply say when it spoke.
+  scenario-execution's logger. Every line of a container's log therefore carries a prefix, the
+  infrastructure's own included: ``[INFO] [1786264427.117714] [entrypoint]: Running as UID:
+  1000``.
 
   Third-party output that stamps nothing (a gz warning, a vanilla sidecar) is **never dropped**:
   it gets a row per line, inheriting from a neighboring event where one exists and reporting
@@ -454,16 +749,17 @@ Columns: ``sim_time``, ``wall_ts``, ``time_source``, ``in_window``, ``container`
   not backfilled from the next stamp, which would render exactly like a real time and claim the
   container booted at whatever second the first node came up.
 * ``in_window`` — 0 for a line outside this run's own wall window: its bring-up, its verdict, its
-  teardown. Real output, kept rather than dropped, and flagged so a query can tell "during the
-  trial" from "getting ready for it" and "cleaning up after it".
+  teardown. Real output, kept rather than dropped, and
+  flagged so a query can tell "during the trial" from "getting ready for it" and "cleaning up
+  after it".
 
   It is **not** the boundary of the trial, and must not be used as one. A run's ``test.xml``
-  duration closes when its scenario stops, but the verdict line is logged after that — measured
-  at ~1 ms late for a failing run and ~0.1 ms *early* for a passing one. Filtering ``in_window =
-  1`` therefore drops the verdict of every failing run. Where the trial ended is
-  :ref:`scenario_timestamps <scenario-verdict>`, and a line's owner is its run's log claim.
-* ``severity`` — from ``common.log_summary.severity_of``, the same definition the status verdict
-  and the MCP log tools use.
+  duration closes when its scenario stops, but the verdict line can be logged just after that,
+  so filtering ``in_window = 1`` can drop the verdict of a failing run. Where the trial ended is
+  :ref:`scenario_timestamps <scenario-verdict>`.
+* ``severity`` — the same definition the status verdict and the MCP log tools use. The table
+  holds every line; filter by severity where it is read (every log surface takes a minimum
+  severity).
 
 Read it from the web :ref:`Run view <run-view>`'s ``log`` panel and the Explorer's **Log** tab, or
 from an agent with ``search_run_logs``. What it makes possible that a log *stream* cannot:
@@ -474,28 +770,20 @@ from an agent with ``search_run_logs``. What it makes possible that a log *strea
    SELECT r.config_name, r.run_id, r.passed, count(*) AS hits, min(l.sim_time) AS first_at
    FROM run_log l JOIN runs r USING (config_name, run_id)
    WHERE l.message LIKE '%CRITICAL FAILURE%'
-   GROUP BY 1, 2 ORDER BY hits DESC;
+   GROUP BY 1, 2, 3 ORDER BY hits DESC;
 
-The raw streams stay files and stay the record of what was printed, and ``get_campaign_log`` /
-``get_job_log`` remain the way to read a campaign that is still running, since it is not in the
-index yet.
-
-Those files now carry a prefix on every line, including the infrastructure ones: ``Running as UID:
-1000`` reads ``[INFO] [1786264427.117714] [entrypoint]: Running as UID: 1000``. That is the cost of
-each line being placeable in time and attributable, and it is the shape most of the file already
-had — 563 of 570 lines in a measured ROS run were stamped by their producer. Anything matching
-``^Running as UID`` needs updating; the live log panel is unaffected mechanically (it pages bytes)
-but shows the prefixes too.
+The raw streams stay files and stay the record of what was printed. ``get_campaign_log`` /
+``get_job_log`` read them directly, including while the job is still writing them.
 
 .. _per-run-resource-usage:
 
-``resource_usage`` — what the run cost
-"""""""""""""""""""""""""""""""""""""""
+``resource_usage`` and ``system_usage`` — what the run cost
+""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
 
-One row per container per process **name** per ~1 s sample, on the run's own playback clock.
-Written by the auto-injected ``resource_usage`` plugin as ``<run>/resource_usage.csv`` from
-the job's ``resource_usage_<container>.csv`` files, and ingested as the ``resource_usage``
-table like any other per-run CSV.
+``resource_usage`` is one row per container per process **name** per ~1 s sample, on the run's
+own playback clock, from the job's ``resource_usage_<container>.csv`` files. Columns:
+``timestamp`` (sim), ``wall_ts``, ``in_window``, ``container``, ``name``, ``cpu_percent``,
+``memory_rss_bytes``, ``num_pids``, ``shm_used_bytes``, ``shm_total_bytes``.
 
 Why it is a table and not just those files: the cluster gives a job a fixed number of cores, so a
 simulator that starves the stack changes what the stack does. That is a competing
@@ -512,72 +800,76 @@ the behaviour.
    JOIN runs r USING (config_name, run_id)
    GROUP BY 1, 3;
 
-Three things differ from ``run_log``, each deliberate:
+Two things are deliberate:
 
-* **The gap between two runs falls the other way.** Both tables partition a packed job's
-  timeline — each tick and each line is claimed by exactly one run, so ``SUM`` over a job's
-  runs is what that job consumed, and no run reads another configuration's trial as its own.
-  What differs is where inside the gap between two runs the boundary sits. A *sample* taken
-  while the simulator is being reset is the cost of the run **starting up**, so the boundary
-  is the earlier run's ``end_epoch``. The gap's *lines*, though, are the earlier run's verdict
-  and teardown followed by the later run's ``Executing scenario``, and only that marker
-  separates them — so for a log the marker **is** the boundary.
-
-  Neither end of the trial window can stand in for it, and both fail in the awkward
-  direction: a failing run's verdict is stamped ~1 ms *after* ``end_epoch``, and the marker
-  ~35 µs *before* the next run's ``start_epoch`` (it is logged, then the start is recorded).
-  Cutting at ``end_epoch`` files a failing run's own verdict under its successor; cutting at
-  ``start_epoch`` files every run's own scenario-start line under its predecessor. When the
-  markers cannot be matched one-to-one with the runs — rosout is only recorded once
-  subscribed, so one can be missing — the ``start_epoch`` boundaries are used instead, which
-  costs those microseconds rather than shifting every run by one.
 * **Rows are keyed by process name, not pid.** Pids churn — a respawned node is a new pid and
   the same program — and no pid is comparable across runs. ``num_pids`` records how many
   shared a name in that tick.
-* **A run of a packed job with no ``test.xml`` claims nothing** and gets an empty table
-  rather than the whole job's samples. It cannot be placed on the wall clock, and a table
-  saying "no data" is honest where one stating another run's numbers is not. A *single*-run
-  job in that state still gets its whole trace — there is no other run to confuse it with,
-  and a run killed mid-flight is the one whose trace matters most.
+* **A run with no** ``test.xml`` **still gets its whole trace**, every tick in-window: a run
+  killed mid-flight is the one whose trace matters most.
 
-``cpu_percent`` and ``memory_rss_bytes`` are sums over the processes sharing a name, and both
-carry a ``_column_notes`` entry that ``describe_campaign_data`` shows: CPU is per-core, and
-summed RSS double-counts pages shared with forks.
+``cpu_percent`` and ``memory_rss_bytes`` are sums over the processes sharing a name: CPU is
+per-core, and summed RSS double-counts pages shared with forks.
 
-.. _postprocess-usage:
+**The run's shared-memory pool** is in ``shm_used_bytes`` / ``shm_total_bytes`` — one pool for
+the whole run, repeated on each tick's rows, so ``MAX`` is the only aggregate over them that
+means anything. A run's peak is ``MAX(shm_used_bytes)`` over its rows, bring-up included; NULL
+means the pool was not sampled, which is unmeasured rather than unused. Sizing it:
+:ref:`configuration` under ``shm_size``.
 
-``postprocess_system_usage.csv`` — what postprocessing itself cost
-""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+``system_usage`` is the sibling for figures belonging to the **container as a whole** rather
+than to a process — one row per ~1 s, no ``pid``, from the job's ``system_usage_<container>.csv``
+files. It is separate because ``resource_usage`` is per-process *by contract*: every reader
+aggregates it that way, so a container-level figure written there would be summed as though it
+were one process among many. Its columns are whatever the node could answer, so a column may be
+absent entirely rather than empty — a runtime that cannot report and a container that never
+stalled are different facts, and a zero would make the first indistinguishable from the second:
 
-One row per postprocessing step -- ``stage``, ``convert``, ``host`` -- written to
-``_execution/postprocess_system_usage.csv``, beside the campaign it
-describes. The columns are the sampler's own (``memory_peak``, ``memory_max``,
-``cpu_usage_usec``, ``nr_periods``, ``nr_throttled``, ``oom_kills``, ...), so a step's figures
-read the same way as a run's :ref:`system_usage <per-run-resource-usage>` rows and can be
-compared with them. The same row is logged as one line per step in the POSTPROCESSING section,
-so the usual question -- did a step come near its limit? -- is answered without downloading
-anything.
+.. list-table::
+   :header-rows: 1
+   :widths: 34 66
 
-**``system_usage``, not ``resource_usage``.** The distinction is the one that table pair
-already makes: ``resource_usage`` is per *process* and every reader aggregates it that way,
-while these figures are the cgroup's accounting for a whole step and have no pid. Filing them
-as processes would mean summing them as processes.
+   * - Columns
+     - What they answer
+   * - ``nr_periods``, ``nr_throttled``, ``throttled_usec``
+     - Did the kernel STOP this container because it hit **its own** CPU limit? Throttling
+       does not fail a run, it just makes it slower, so nothing else records it.
+   * - ``memory_current``, ``memory_peak``, ``memory_max``
+     - Memory as the KERNEL accounts it, which the per-process rows cannot give: RSS counts a
+       shared page once per process, so summing it over a stack of ROS nodes sharing
+       libraries and a DDS shared-memory segment over-reports badly. ``memory_max`` is absent
+       rather than huge when no limit is in force.
+   * - ``memory_anon``, ``memory_file``, ``memory_shmem``, ``memory_slab``
+     - What that memory is MADE OF, which decides how much of it must be reserved:
+       ``anon + shmem + slab`` survives reclaim, ``file`` is page cache the kernel drops
+       under pressure. Sizing a limit from ``memory_current`` reserves the cache too.
+   * - ``cpu_usage_usec``
+     - CPU time the kernel billed the cgroup — exact, where summing ``cpu_percent`` over the
+       processes is a sampled estimate that misses anything short-lived.
+   * - ``cpu_stall_some_usec`` / ``_full_usec``, and the same for ``memory`` and ``io``
+     - PSI: how long tasks were runnable but **not running** — the container crowded out,
+       which the throttle counters cannot show. ``full`` (every task waiting) is the figure
+       that carries a finding; ``some`` is high in normal operation for a container running
+       many processes against few cores.
+   * - ``node_cpu_stall_some_usec``
+     - The whole **machine's** pressure. A node fact repeated on every row of every
+       container, so never sum it across a pod — it is what separates "this pod asked for too
+       little" from "this node is oversubscribed".
+   * - ``memory_events_max``, ``_oom``, ``_oom_kill``
+     - Allocations the kernel refused, and processes it killed for them. Memory is sized on
+       the peak because exceeding it is a kill rather than a slowdown; this is the only place
+       a mid-trial death names its cause.
 
-**Read once from the kernel, not sampled.** These steps are containers rather than runs, and
-each is short, so the daemon's per-second rows are the wrong shape twice over: a poll interval
-longer than the step reports a comfortable figure for one that may have come close to its
-ceiling, and ``memory.peak`` is a high-water mark the kernel already keeps that no sampler can
-beat. ``monitor_resources.py --once`` writes exactly one row of the container-level probes;
-the conversion step -- which runs the campaign's own image and can import nothing of RoboVAST
--- invokes it from the ``/scripts`` mount the pod already has.
-
-This is what makes ``results_processing.resources`` checkable: a campaign that raised it can
-see whether it needed to, and the shipped default can be argued about with a number instead of
-the absence of a failure.
-
-Unlike ``resource_usage`` it stays a file rather than becoming an index table, because it
-describes how a campaign was *processed* rather than what its runs did -- a row under a run
-would be summed as something that run consumed.
+Everything above except the memory gauges is a **monotonic counter**, so read a delta within the
+trial window, never a ``SUM`` and never a bare ``MAX`` (``memory_current`` is a gauge,
+``memory_peak`` a high-water mark, and the ``memory.stat`` breakdown gauges; those are read as
+they come). Prefer ``run_validity_view``, which takes that delta and applies the thresholds for
+you. It derives two flags, and they are **opposite diagnoses with opposite remedies**:
+``quota_bound`` means the container exhausted the quota its own ``limits.cpu`` buys — raise the
+limit; ``contended`` means it was runnable and got no CPU *without* having hit that ceiling —
+other work took cores it had not reserved, so raise its ``resources.cpu`` request, or put fewer
+jobs on the node. A container can be both, and the ceiling is reported first because that remedy
+is a line in the campaign's own ``.vast``.
 
 .. _scenario-verdict:
 
@@ -585,19 +877,15 @@ would be summed as something that run consumed.
 """"""""""""""""""""""""""""""""""""""""""""""""
 
 One row per run: ``config_name``, ``run_id``, ``timestamp`` (sim seconds), ``wall_ts``,
-``status`` (``succeeded`` / ``failed``) and the ``message`` itself. Built while ingesting
-``run_log``, from the first line scenario-execution's own logger wrote announcing a verdict —
-``Scenario '<name>' succeeded.``, or the failure line ``add_result`` logs. The recognition lives
-in one module, :mod:`robovast.common.scenario_markers`, and runs **here and nowhere else**: every
-later reader queries this table instead of matching the log text again, which is what keeps the
-web UI, ``search_run_logs`` and the playback clock from disagreeing about where a run ended.
+``status`` (``succeeded`` / ``failed``) and the ``message`` itself — the first line of the run's
+``run_log`` in which scenario-execution's own logger announced a verdict (``Scenario '<name>'
+succeeded.``, or the failure line ``add_result`` logs). The recognition lives in one module,
+``robovast_decode.scenario_markers``, and runs **here and nowhere else**: every later reader
+queries this table instead of matching the log text again, which is what keeps the web UI,
+``search_run_logs`` and the playback clock from disagreeing about where a run ended.
 
-"The first verdict in the log" is only the right answer because ``run_log`` is **partitioned**
-per run, so a run's rows are its own. When a packed job's lines were instead shared with all of
-its runs, the first verdict in every run's log was the *first scenario's* — so every run of the
-job recorded that verdict, and a run whose own trial passed reported ``failed`` while
-``run_view.status`` said it passed. Sharing the lines is what made the simple rule wrong; the
-rule itself was never the problem.
+"The first verdict in the log" is the right answer because a job runs one run, so the
+``run_log`` rows are that run's own.
 
 **Both clocks, because they answer different questions.** ``timestamp`` is what the playback
 timeline is measured in. ``wall_ts`` is what ``run_log`` is *ordered* by, and it is the one the
@@ -612,36 +900,19 @@ stopped. That is what the run view's :ref:`shutdown toggle <shutdown-toggle>` an
 
 ``status`` is the **scenario's** verdict and can legitimately disagree with the run's
 ``test.xml`` verdict in ``run_view.status``; comparing the two finds a scenario that reported
-success while the harness failed, or the reverse. A NULL row is a run that reached no verdict —
-killed by its deadline, say — and is left untrimmed rather than trimmed to a guess.
+success while the harness failed, or the reverse. A run with no row reached no verdict — killed
+by its deadline, say — and is left untrimmed rather than trimmed to a guess.
 
-``rosbag_attempts`` — the run recorded more than once
-"""""""""""""""""""""""""""""""""""""""""""""""""""""
+A run recorded more than once
+"""""""""""""""""""""""""""""
 
 A recorder that restarts mid-trial writes a second bag beside the first, because
 ``ros2 bag record``'s default name carries a timestamp. **The last attempt is the run**:
-everything else in the directory exists once — one run log, one verdict, one set of videos,
-all of it the last attempt's — so converting an earlier bag would put a different attempt's
-trajectory under this run's outcome, and no table would say so. Only one attempt can be
-converted at all, because every output name is derived from the run directory.
-
-So the last attempt is converted, the earlier ones are not, and this table is the record:
-one row per attempt, with ``role`` ``converted`` or ``superseded``, and the start time each
-was dated by. It exists only for a run that recorded more than once, which is why the
-question is a query rather than a search through a postprocessing log::
-
-   SELECT config_name, run_id, bag FROM rosbag_attempts WHERE role <> 'converted'
-
-The attempts are ordered by the start time in each bag's own sidecar, and by the timestamp
-in its name only when a sidecar is missing — never by a mix of the two, since one is epoch
-and the other the recorder's local clock. An attempt with neither — a bag whose name carries
-no timestamp and whose sidecar was never written — leaves them unordered:
-nothing is converted from that directory, every row says ``unordered``, and the step's log
-names the directory to clear. Picking one anyway would be data that looks right.
-
-One run's ambiguity is never the campaign's: every other run converts, and a bag the last
-attempt never finalized is reported as unreadable in the usual way (see
-:ref:`its rosbag is unreadable <results-unreadable-rosbag>`).
+everything else in the directory exists once — one run log, one verdict, one set of videos —
+so tabulating an earlier bag would put a different attempt's trajectory under this run's
+outcome. The bag tables are built from the last attempt, ordered by the start time in each
+bag's own ``metadata.yaml``, and by name where that is missing; the earlier attempts stay on
+disk and are not tabulated.
 
 ``test.xml`` — JUnit Test Result
 """""""""""""""""""""""""""""""""
@@ -661,7 +932,7 @@ Standard JUnit XML format with scenario execution results:
 Each run's ``test.xml`` is the runner's contract for that run's outcome. The
 controller mirrors it into ``campaign.db``'s ``run`` table at record time (status,
 pass/fail, errors/failures, duration, start time), so per-run outcomes are
-queryable live and the postprocessed ``runs`` view is built from those
+queryable live and the ``runs`` table and ``run_view`` are built from those
 rows rather than by re-parsing every ``test.xml`` — see
 :ref:`the campaign store schema <campaign-store>`.
 
@@ -688,54 +959,39 @@ and ``get_campaign_summary``, its own tally in the web UI's Details panel, and
 operator gave (``manually stopped via webui: stuck in nav recovery``), which is the only
 record of *why* — so it is worth giving one.
 
+``killed`` replaces ``unknown`` and **only** ``unknown``: a run of a killed job that had
+already written a valid ``test.xml`` keeps its real verdict: a run can finish before its stop
+lands, and its result is measurement, never overwritten.
+
 .. _results-unreadable-rosbag:
 
-Its rosbag is unreadable, and that is not a failure
-"""""""""""""""""""""""""""""""""""""""""""""""""""
+Its recording was cut off
+"""""""""""""""""""""""""
 
-Stopping a job kills its process mid-write, so the rosbag it was recording is never
-finalized and can never be opened. The same is true of a job that ends abruptly for reasons
-nobody chose — an evicted pod, an OOM-kill — and the postprocessing verdict does not depend
-on which it was. **A bag that cannot be opened is missing input, not a failed conversion:**
-the recorder never wrote the sidecar naming the bag's storage plugin, so there is nothing to
-convert and no retry will produce one. Postprocessing names such bags, skips them, and
-succeeds — reported as ``N unreadable`` in the summary plus a ``NOTE`` listing the paths.
-Failing the step over them would cost the metrics of every bag that *was* readable, which on
-a large campaign is thousands for the sake of a handful.
+Stopping a job kills its recorder mid-write, so its bag is never finalized: no
+``metadata.yaml`` sidecar, and an mcap file with no summary section. The same is true of a job
+that ends abruptly for reasons nobody chose — an evicted pod, an OOM-kill. **Such a recording is
+read up to its last complete record**: the decoder walks an mcap file record by record and needs
+no summary, so the data the run did record becomes rows like any other run's, and the topics are
+listed from the file's own channel records where the sidecar is missing.
 
-``--tolerate-under`` is narrower than that rule and survives alongside it: postprocessing is
-still told which directories belong to jobs an operator stopped, so the ``NOTE`` can say how
-many of the skipped bags were *expected* rather than merely observed.
-
-A real conversion error still fails postprocessing — a bag that opened and whose handlers
-then refused is the case where the data existed and we did not produce it. And every bag is
-still *attempted*, because a job cut off between bags leaves readable ones whose data is
-worth having.
-
-This is the pipeline's general rule rather than a rosbag special case: **a step that cannot
-read something describes the gap and succeeds** — ``run_log`` and ``resource_usage`` already
-report theirs ("no job artifacts for 1 run(s): …") and a run with no ``test.xml`` simply has
-no trial window, so it is left out of the per-run metrics instead of breaking them. Only a
-genuine conversion error fails a step.
-
-``killed`` replaces ``unknown`` and **only** ``unknown``: a run of a killed job that had
-already written a valid ``test.xml`` keeps its real verdict. That matters when a job packs
-several runs (``runs_per_job`` > 1), where the earlier ones routinely finish before anyone
-stops the job — their results are measurement and are never overwritten.
+What the cut costs is the tail: whatever the recorder had not yet written. A table built from a
+recording whose run has no ``test.xml`` or whose bag has no sidecar is entered as not final, so it
+is looked at again on the next request rather than frozen as it was first seen.
 
 
 A configuration that produced nothing: ``missing``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Every status above belongs to a run. ``missing`` belongs to a *configuration*: the campaign
-was composed with it and its results never reached the tree -- never dispatched, or lost
+was composed with it and its results never reached the tree — never dispatched, or lost
 between the cluster and the results root. It appears in ``run_view`` as one row with
 ``run_id`` NULL, exactly as ``composition_failed`` does for a search draw that could not be
 built, because a join through ``run`` would otherwise drop it.
 
 **This is what makes a shortfall visible at all.** The results tree states what came back;
 only the composition record (``_transient/configurations.yaml``) states what was asked for,
-and without comparing the two a sweep that lost a seventh of its cells is indistinguishable
+and without comparing the two a sweep that lost a share of its cells is indistinguishable
 from a smaller sweep that ran perfectly. ``get_campaign_summary`` therefore counts
 ``num_configs`` over the *declared* set and reports ``num_missing_configs``,
 ``missing_configs`` and a note when they differ; the aggregates beside them are over a
@@ -780,9 +1036,8 @@ pass rates::
    FROM run_view WHERE status NOT IN ('killed','invalid') GROUP BY config_name
 
 A cell that loses *every* run this way scores ``no_sample`` rather than a fabricated 0.0,
-and the search carries on. That is the point of the whole mechanism: before it, one crashed
-sidecar in one job of one batch raised out of the batch wait loop and ended the campaign,
-taking every completed batch with it.
+and the search carries on: one crashed sidecar costs its own runs, never the campaign's
+completed batches.
 
 What killed it: ``container_failure_view``
 """"""""""""""""""""""""""""""""""""""""""
@@ -792,12 +1047,12 @@ because it is about to be deleted — and lands in **two** places, deliberately:
 
 ``_execution/container_failures.json``
    the record: every field of the container's termination state, plus the last 400 lines of
-   the **dead instance's own log** (``kubectl logs --previous``, which nothing read before).
+   the **dead instance's own log** (``kubectl logs --previous``).
 
 ``campaign.db`` → ``container_failure_view``
-   the index into it, so the question is one query. It is in ``campaign.db`` and not the
-   results index on purpose: the index is loaded by postprocessing, and a campaign that dies
-   mid-batch never postprocesses — which is exactly the campaign that needs explaining.
+   the same failures as rows, so the question is one query. It is written by the controller as the
+   campaign runs, so it answers for a campaign that dies mid-batch — exactly the campaign
+   that needs explaining — without anything built after it.
 
 ::
 
@@ -810,29 +1065,25 @@ all, which is itself a finding — such a container is told by the downward API 
 the whole node, and the pod's shared ``/dev/shm`` is sized the same way. Join back onto
 ``run_view`` on ``config_name || '/' || run_id = run_key``.
 
-For a ``SIGBUS`` the sizing half of the answer is in ``runs``: ``shm_peak_bytes`` is what the
-run's shared-memory pool held at its fullest and ``shm_limit_bytes`` is the size that was in
-force, so "it ran out" and "it was never that big" are one query apart. Both are ``NULL`` for a
-campaign recorded before the monitor sampled the pool, which is unmeasured rather than unused.
-Per-tick values are in ``resource_usage`` (``shm_used_bytes`` / ``shm_total_bytes``) for seeing
-*when* it grew — one pool for the whole run, repeated on the tick's rows, so ``MAX`` is the only
-aggregate over them that means anything. Sizing it: :ref:`configuration` under ``shm_size``.
+For a ``SIGBUS`` the sizing half of the answer is in ``resource_usage``: the run's peak
+``shm_used_bytes`` against the ``shm_total_bytes`` in force says whether it ran out or was never
+that big::
 
-An invalidated job's rosbag is unreadable for the same reason a stopped job's is (it is
-deleted at ``grace_period_seconds=0``), and postprocessing tolerates both identically.
+   SELECT config_name, run_id, MAX(shm_used_bytes) AS shm_peak, MAX(shm_total_bytes) AS shm_limit
+   FROM resource_usage GROUP BY config_name, run_id
+
+An invalidated job's recording is cut off for the same reason a stopped job's is (it is
+deleted at ``grace_period_seconds=0``), and is read the same way
+(:ref:`results-unreadable-rosbag`).
 
 The kills themselves are recorded in ``_execution/interventions.json``, which exists only for a
 campaign somebody intervened in. **One ledger holds every kind of intervention**, each entry
-carrying a ``kind`` -- ``killed`` for a job stopped by hand, ``probed`` for a run somebody read
-into while it was going -- because "what was done to this run?" is one question and answering it
+carrying a ``kind`` — ``killed`` for a job stopped by hand, ``probed`` for a run somebody read
+into while it was going — because "what was done to this run?" is one question and answering it
 should not mean knowing to ask twice. What *follows* differs by kind and that is why the readers
-do: a kill becomes a run status, while ``probed`` is a separate ``runs`` column in the index and
+do: a kill becomes a run status, while ``probed`` is a separate column of the ``runs`` table and
 never touches the verdict. Putting an intervention into the measured outcome is the same mistake
 that keeping ``killed`` out of ``num_failed`` avoids.
-
-A probe's granularity follows the job: with ``runs_per_job`` > 1 the whole packed job is marked,
-because which of its runs was in flight cannot be recovered afterwards. That over-excludes rather
-than admitting a perturbed run, which is the safe direction.
 
 .. warning::
 
@@ -845,109 +1096,482 @@ than admitting a perturbed run, which is the safe direction.
 
 .. note::
 
-   ``metadata.yaml`` is **not** how a caller reads a campaign's results. It is written
-   only by postprocessing, so nine MCP tools that parsed it answered "run postprocessing
-   first" for campaigns whose outcomes were already recorded in ``campaign.db``; they were
-   replaced by read-only SQL over ``run_view`` (see :ref:`mcp-analysis`). The file remains
-   as the campaign's self-contained metadata document — what the FAIR/PROV-O export and
-   the publication zip read.
+   ``metadata.yaml`` is **not** how a caller reads a campaign's results: it is written only by
+   postprocessing, while a campaign's outcomes are in ``campaign.db`` from the moment each run
+   ends. Query ``run_view`` instead (see :ref:`mcp-analysis`). The file is the campaign's
+   self-contained metadata document — what the FAIR/PROV-O export and the publication zip read.
 
-.. _job-directory:
 
-Job Directory
-^^^^^^^^^^^^^
+.. _results-decoder-config:
 
-``_jobs/job-N/`` holds the artifacts of one *job* — the unit of dispatch (one
-Kubernetes Job, or one local ``docker compose`` run). With the default
-``runs_per_job: 1`` there is one job per run; with ``runs_per_job > 1``
-several runs share a job (and therefore share these artifacts). Each
-run links to its job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``).
+Configuring the decoder: the ``rosbags_*`` entries
+--------------------------------------------------
 
-.. code-block:: text
+A campaign that says nothing gets every table its recordings can give, with the defaults above.
+The ``rosbags_*`` entries of ``results_processing.postprocessing`` (and ``search.postprocessing``)
+**refine** those defaults for the topics they name; they run nothing. They are written, as the
+decoder's configuration, to ``_execution/tables.yaml`` when the campaign's config is frozen at
+launch and again whenever its postprocessing runs, so a copy of the campaign builds the same
+tables anywhere:
 
-   _jobs/job-N/
-   ├── sysinfo.yaml                          # Hardware info (platform, CPU, memory) — stable
-   ├── resource_usage_main.csv               # Main container CPU/memory over the job
-   ├── resource_usage_<secondary>.csv        # Per secondary container [if multi-container]
-   ├── system_usage_main.csv                 # Main container cgroup counters over the job
-   ├── system_usage_<secondary>.csv          # Per secondary container [if multi-container]
-   └── logs/
-       ├── system.log                        # Main container system log
-       ├── system_<secondary>.log            # Secondary container log [if multi-container]
-       └── rosout_bag/                       # /rosout recording [ROS mode]
+.. code-block:: yaml
 
-``resource_usage_*.csv`` files have columns ``timestamp`` (wall epoch seconds), ``pid``,
-``name``, ``cpu_percent``, ``memory_rss_bytes``, ``shm_used_bytes`` and ``shm_total_bytes``,
-one row per process per ~1 s, one file per container. For a packed job these span the whole
-job; the ``resource_usage`` post-processing step slices them to each run (see
-:ref:`per-run-resource-usage`). Both files span every *instance* of the container as well: a
-container the kubelet restarts runs the sampler again against the same file, which continues
-the record under its one header rather than replacing it, so the samples of the instance that
-died — the high-water mark climbing towards its limit — are kept beside the ones of the
-instance that came after. The seam shows as the cumulative counters going backwards: the
-calibration reader drops that tick as a cgroup replaced, and a run whose container crashed is
-``invalid`` in the intervention ledger (:doc:`architecture`), so its per-run aggregates are never
-compared with a run that kept one instance throughout.
+   # _execution/tables.yaml
+   groups:
+   - bag_dir: rosbag2
+     plugins:
+     - {type: tf_to_csv, frames: all, require: [base_link]}
+     - {type: action_to_csv, action: navigate_to_pose}
+   containers: [robovast, simulation, sut]
 
-``system_usage_*.csv`` is the sibling for figures belonging to the **container as a whole**
-rather than to a process — one row per ~1 s, no ``pid``. It is separate because
-``resource_usage`` is per-process *by contract*: every reader aggregates it that way, so a
-container-level figure written there would be summed as though it were one process among
-many. Its columns are whatever the node could answer, so a column may be absent entirely
-rather than empty — a runtime that cannot report and a container that never stalled are
-different facts, and a zero would make the first indistinguishable from the second:
+``groups`` is the entries grouped by recording (``rosbag2`` for the run's own, ``logs/rosout_bag``
+for the job's); ``containers`` names the containers the campaign runs, which is how a container
+that recorded nothing is reported rather than silently absent from ``run_log`` and
+``resource_usage``. A configured handler replaces the default for its topics, and the rest of the
+recording keeps its defaults.
 
 .. list-table::
    :header-rows: 1
-   :widths: 34 66
+   :widths: 26 16 58
 
-   * - Columns
-     - What they answer
-   * - ``nr_periods``, ``nr_throttled``, ``throttled_usec``
-     - Did the kernel STOP this container because it hit **its own** CPU limit? Throttling
-       does not fail a run, it just makes it slower, so nothing else records it.
-   * - ``memory_current``, ``memory_peak``, ``memory_max``
-     - Memory as the KERNEL accounts it, which the per-process rows cannot give: RSS counts a
-       shared page once per process, so summing it over a stack of ROS nodes sharing
-       libraries and a DDS shared-memory segment over-reports badly. ``memory_max`` is absent
-       rather than huge when no limit is in force.
-   * - ``memory_anon``, ``memory_file``, ``memory_shmem``, ``memory_slab``
-     - What that memory is MADE OF, which decides how much of it must be reserved:
-       ``anon + shmem + slab`` survives reclaim, ``file`` is page cache the kernel drops
-       under pressure. Sizing a limit from ``memory_current`` reserves the cache too.
-   * - ``cpu_usage_usec``
-     - CPU time the kernel billed the cgroup — exact, where summing ``cpu_percent`` over the
-       processes is a sampled estimate that misses anything short-lived.
-   * - ``cpu_stall_some_usec`` / ``_full_usec``, and the same for ``memory`` and ``io``
-     - PSI: how long tasks were runnable but **not running** — the container crowded out,
-       which the throttle counters cannot show. ``full`` (every task waiting) is the figure
-       that carries a finding; ``some`` is high in normal operation for a container running
-       many processes against few cores.
-   * - ``node_cpu_stall_some_usec``
-     - The whole **machine's** pressure. A node fact repeated on every row of every
-       container, so never sum it across a pod — it is what separates "this pod asked for too
-       little" from "this node is oversubscribed".
-   * - ``memory_events_max``, ``_oom``, ``_oom_kill``
-     - Allocations the kernel refused, and processes it killed for them. Memory is sized on
-       the peak because exceeding it is a kill rather than a slowdown; this is the only place
-       a mid-trial death names its cause.
+   * - Entry
+     - Recording
+     - What it configures
+   * - ``rosbags_tf_to_csv``
+     - ``rosbag2``
+     - ``poses``: ``frames`` (a list of child frames, or ``all``; default ``[base_link]``),
+       ``require`` (frames that must yield a map-relative pose, or the table fails for that run
+       naming the transforms present; an explicit ``frames`` list requires itself),
+       ``csv_filename`` (the table's name, default ``poses``).
+   * - ``rosbags_to_csv``
+     - ``rosbag2``
+     - ``rosbag2_<topic>`` for the listed ``topics``; every recorded topic that is not bulk
+       data gets such a table by default, so the entry is for a name a query depends on.
+   * - ``rosbags_action_to_csv``
+     - ``rosbag2``
+     - ``action_<action>_feedback`` / ``_status`` for ``action``; ``filename_prefix`` renames
+       both.
+   * - ``rosbags_nav2bt_to_csv``
+     - ``rosbag2``
+     - ``nav2_behavior_tree`` from ``/behavior_tree_log``. No parameters.
+   * - ``rosbags_costmap_to_csv``
+     - ``rosbag2``
+     - ``costmaps`` for the listed ``topics`` (any ``OccupancyGrid`` topic is tabulated by
+       default; listing them fixes which).
+   * - ``rosbags_to_webm``
+     - ``rosbag2``
+     - ``videos``: a ``CompressedImage`` ``topic`` (default ``/camera/image_raw/compressed``)
+       encoded to WebM in the run directory. The rate is derived from the frames' own stamps as
+       ``(n-1)/duration``; ``fps`` (default 30) is used only when the frames span no time. One
+       entry per camera; all of them are one ``videos`` table.
+   * - ``rosbags_rosout_to_csv``
+     - ``logs/rosout_bag``
+     - ``rosout``: ``min_level`` (``DEBUG`` … ``FATAL``) keeps only lines at or above it.
+   * - ``rosbags_clock_to_csv``
+     - ``logs/rosout_bag``
+     - ``clock_map``: ``tolerance_s`` (default 0.005), how far the decimated map may mispredict.
+   * - ``rosbags_process``
+     - any
+     - the same handlers written by ``type`` per recording: ``groups: [{bag_dir, plugins}]``, or
+       ``plugins`` with an optional ``bag_dir`` for one recording.
 
-Everything above except the three memory figures is a **monotonic counter**, so read a delta
-within the trial window, never a ``SUM`` and never a bare ``MAX`` (``memory_current`` is a
-gauge, ``memory_peak`` a high-water mark, and the ``memory.stat`` breakdown gauges; those
-are read as they come). Prefer ``run_validity_view``, which takes that delta and
-applies the thresholds for you. It derives two flags, and they are **opposite diagnoses with
-opposite remedies**: ``quota_bound`` means the container exhausted the quota its own
-``limits.cpu`` buys — raise the limit; ``contended`` means it was runnable and got no CPU
-*without* having hit that ceiling — other work took cores it had not reserved, so raise its
-``resources.cpu`` request, or put fewer jobs on the node. A container can be both, and the
-ceiling is reported first because that remedy is a line in the campaign's own ``.vast``.
+Every entry also takes ``bag_dir`` to point it at a recording other than its default. The full
+reference, with the parameters each takes, is under ``postprocessing`` in :ref:`configuration`.
 
+**Encoding a video needs** ``ffmpeg`` **where the table is built**; without it the ``videos``
+table fails for that run with that reason rather than coming out empty.
+
+
+.. _results-postprocessing:
+
+Postprocessing
+--------------
+
+Postprocessing is what runs when a campaign's runs end. It runs **in the service process** —
+no Kubernetes Job, no container, no execution image — in four parts:
+
+1. **The campaign's own steps**: the non-``rosbags_*`` entries of
+   ``results_processing.postprocessing``, in order — plugins named by entry point
+   (``robovast.postprocessing_commands``) or by ``./path.py:Class`` beside the config (see
+   :ref:`extending-postprocessing`). A step's output files are tables like any other run file.
+   Built in: ``command`` (run a script); ``robovast-nav`` adds ``nav2_bt_tree``, which reads
+   the ``nav2_behavior_tree`` table and writes each run's ``nav2_behaviors.csv``. List them
+   with ``vast results postprocess-commands``. A tarball of the campaign is not a step: the
+   archive and an export (:ref:`results-export`) are built on request.
+2. **The campaign-end pass** (:ref:`results-campaign-end`).
+3. **The provenance record**, ``_transient/postprocessing.yaml``, written **last** among the
+   derived data: its presence is what makes a campaign read as postprocessed (``postprocessed``
+   in the status, the *(postprocessed)* archive variant). A pass that is cancelled or fails before
+   it never writes it.
+4. **Metadata**: ``metadata.yaml`` and the provenance graph (:ref:`results-metadata`).
+
+It runs automatically when a campaign's runs finish. To run it again — after editing a
+postprocessing step, or on a campaign imported raw — name the campaign:
+
+.. code-block:: bash
+
+   vast campaign postprocess CAMPAIGN
+
+**Options**
+
+.. option:: -f, --force
+
+   Clear the campaign's built tables first, so what it declares is built again — by this
+   decoder, from the records. The steps are passed ``force`` too.
+
+.. option:: --replay
+
+   Clear the campaign's built tables and build **every table its records can give, for every
+   run** — not only the declared ones — before the campaign-end pass. The invariant it rests
+   on: a replay yields the rows a live watcher wrote as the runs went. The tables a run's
+   recordings were decoded into as it recorded, and the derived tables its job's files were
+   derived into whole, are the same decoder over the same records, so the campaign reads the
+   same whether it was followed live or replayed afterwards. ``replay`` on the MCP
+   ``run_postprocessing`` tool and on the service's request body is the same switch.
+
+.. option:: --skip PLUGIN
+
+   Skip a postprocessing step (repeatable), e.g. ``--skip nav2_bt_tree``.
+
+It is **dispatched, not awaited**: the campaign re-enters its ``postprocessing`` phase and the
+command returns. Follow it exactly as after a launch:
+
+.. code-block:: bash
+
+   vast campaign postprocess my-campaign-2026-03-20-153630
+   vast campaign wait my-campaign-2026-03-20-153630
+
+The web UI's **Retrigger postprocessing** and the MCP ``run_postprocessing`` tool are the same
+operation.
+
+.. _results-campaign-end:
+
+The campaign-end pass
+^^^^^^^^^^^^^^^^^^^^^
+
+Most tables are built when first asked for. The campaign-end pass builds the ones the campaign
+**declares**, for every run, so what it says it shows is ready when it finishes:
+
+* the derived tables (``run_log``, ``scenario_timestamps``, ``resource_usage``,
+  ``system_usage``, ``run_clock``), which every run view and every log surface read;
+* the tables its declared plots query (``visualization.results.data_browser.plots``) — a plot
+  over a view builds the tables that view reads;
+* ``videos``, when a ``rosbags_to_webm`` entry asks for one.
+
+Then it writes two campaign-level tables:
+
+``run_health``
+   The campaign's **health checks**, declared under ``results_processing.health_checks``
+   (entry-point names in ``robovast.health_checks``, or ``./path.py:Class``). Each is called
+   ``check(conn, campaign_id)`` with a read-only connection to the campaign's tables — its
+   ``execute(sql, params)`` builds what the statement names and runs it with DuckDB — and returns
+   rows of ``config_name, run_id, check, level`` (``ok`` / ``warn`` / ``error``), ``detail``,
+   ``value``, ``unit`` — the table's ``check_name``, ``level``, ``detail``, ``value``, ``unit``
+   and ``source``. Health grades a run and never decides pass/fail; ``ok`` is a row, and a
+   run with no row for a check was *not checked*. The table is written even when no check had
+   anything to say. See :ref:`configuration` under ``health_checks``.
+``postprocessing_steps``
+   How each table was made: one row per file a step wrote (``plugin``, ``output``,
+   ``table_name``, ``sources_json``, ``params_json``), and one per table the decoder built, with
+   its version.
+
+A table that could not be built for some run **fails postprocessing**, naming the table, the run
+and the reason: "postprocessed" means what the campaign declares is there. The records are
+untouched, so running it again builds again.
+
+**A failure here does not fail the campaign.** Its runs are the deliverable and remain
+downloadable; the campaign stays ``finished`` and the failure is recorded on its own durable
+field, ``postprocessing_error``, surfaced as a warning badge in the UI. Re-running the step
+successfully clears it. This is distinct from a *run* failure, which reports the campaign phase as
+``failed``.
+
+.. _results-retrigger:
+
+Re-running a finished campaign's post-run steps
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The two steps that run *after* a campaign's scenarios finish — **postprocessing** and the
+**upload-to-share** — can each be re-triggered on a finished campaign, and each works **from the
+stored campaign alone**: no live campaign process is required, so a re-trigger is available even
+after the ``robovast-service`` (``vast serve``) has restarted. On the web UI's *Campaigns* page each
+finished campaign's actions menu offers *Retrigger postprocessing* and *Export to share*; the same
+operations are ``vast campaign postprocess`` and ``vast share export -i <campaign-id>`` on the
+command line and the MCP tools ``run_postprocessing`` and ``run_share``.
+
+A third operation shares their shape without being a *re*-run: **importing** a
+campaign this deployment never ran, from an archive
+(``vast campaign import <archive>``) or from the share (``vast share import
+<campaign-id>``). It is dispatched the same way, enters the ``importing`` phase, and
+— when what arrived is a raw archive, carrying no postprocessing record — rolls straight
+on into ``postprocessing``. Its per-stage verdicts land in ``_execution/import.json`` and its
+narrative in ``_execution/import.log``. A *degraded* import is usable-but-incomplete
+rather than a failure. One such stage is ``environment``: it names the variation types,
+postprocessing commands, metadata processors, health checks and plugin packages the
+campaign's ``.vast`` uses that this deployment does not have, so a raw import says what
+its postprocessing will lack before running it.
+
+A genuine failure is **kept, as a failed campaign**, and the refusal names what was
+missing rather than which check noticed. Registering the campaign is what makes it visible
+while it arrives, so the entry outlives the failure, and keeping the directory keeps the
+``import.log`` and ``import.json`` that explain it. Remove it with ``vast campaign delete``, or
+import again with ``--force``.
+
+An import the service **died in the middle of** is kept the same way and reads as failed
+too: the directory is marked as an import under way (``_execution/importing.json``) from
+the moment it is claimed until the import has concluded, and a tree still carrying the
+marker is reported as the interrupted import it is -- not as the campaign whose
+``outcome.json`` the archive brought, which lands before the runs do and would otherwise
+describe a finished campaign over a partial tree.
+
+An archive that would unpack to more than the results volume has room for above its
+free-space reserve is refused with a 507 before anything is extracted. Its size is read from
+the archive's index, not from the compressed file, whose size says nothing about what
+extraction writes: each member counts as at least one block of the results volume, and a
+file as its size rounded up to whole blocks. A share archive is checked once it is
+downloaded, when its size is known.
+
+The mirror of that check runs on the way **out**: an export refuses a campaign with no
+frozen ``_config/`` instead of writing an archive whose only possible future is an ingest
+refusal on somebody else's service, after a full transfer, with the source out of reach.
+
+A re-trigger is **dispatched in the background and returns immediately** — the campaign
+re-enters the ``postprocessing`` (or ``sharing``) phase and you follow its progress and log in
+the campaign view, exactly like the original run; it returns to ``finished`` when done. The web
+*Retrigger postprocessing* dialog therefore closes as soon as you click *Run*. A second
+re-trigger is refused while one is already running.
+
+Because it re-enters that phase as a tracked campaign, a re-trigger can also be **stopped**
+like one: ``stop`` cancels it, the campaign returns to ``finished``, and
+``postprocessing_error`` says it was cancelled rather than that it failed. Nothing already built
+is lost and nothing claims to be built that is not: a table is recorded in the manifest only once
+its files are written, and the provenance record that says a campaign is postprocessed is written
+last, so a cancelled campaign simply reads as not postprocessed (see :doc:`architecture`).
+
+Editing the postprocessing parameters before re-running **overwrites the
+``results_processing.postprocessing`` block of the campaign's own ``_config/<name>.vast``
+in place** — it is config, not captured data, so there are no override files or
+revisions, and the recordings and the as-ran ``configuration``/``execution`` are left
+untouched. Re-running rewrites ``_execution/tables.yaml`` from the edited block, so a changed
+``rosbags_*`` entry shapes the tables built from then on; pass ``--force`` to rebuild the ones
+already built. For the **upload-to-share**, the target provider is taken from the service
+environment (``ROBOVAST_SHARE_TYPE`` and its credentials); adjust it and export again to upload
+the same campaign to a different provider. The archive is named for what it is — a campaign
+exported after postprocessing goes up as ``.postprocessed.tar.gz``, one exported before it as
+``.raw.tar.gz`` — read off postprocessing's own provenance record
+(``_transient/postprocessing.yaml``), so the campaign-end upload and a later export agree by
+construction. Neither carries ``.cache/``.
+
+Custom postprocessing plugins that need third-party Python packages — an
+entry-point postprocessing command, or the dependencies a local
+``./file.py:Class`` plugin imports — declare those packages in the ``.vast``'s
+top-level ``plugins:`` list (see :ref:`configuration`). They are installed into the
+campaign's ``.robovast_plugins/`` and put on ``sys.path`` before postprocessing
+runs, including on a re-run in a fresh process.
+
+
+.. _results-tables-ahead:
+
+Building ahead, and clearing
+----------------------------
+
+**Never needed for an answer**: every table is built the first time something names it. Building
+ahead moves that cost to now, for a finished campaign about to be analyzed at length; clearing
+frees the storage, and the next use builds again.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 41 41
+
+   * - Surface
+     - Build a finished campaign's tables
+     - Clear them
+   * - Web UI
+     - **Build all tables** in the campaign's actions menu
+     - the admin page's **Service cache** panel (``table cache``), for every campaign
+   * - CLI
+     - ``vast campaign tables build <id> [--table NAME ...]``
+     - ``vast campaign tables clear <id>``
+   * - MCP
+     - ``build_campaign_tables(campaign_id, tables=None)``
+     - ``clear_campaign_tables(campaign_id)``
+   * - HTTP
+     - ``POST /campaigns/{id}/tables/build``
+     - ``DELETE /campaigns/{id}/tables``
+
+A build runs in the background, on the service; its progress is the campaign log's ``TABLES``
+section (``_execution/tables.log``). Clearing is refused while the campaign runs or its tables
+are being built. ``describe_campaign_data`` and the Data browser report each table as built for
+M of N runs; describing builds nothing.
+
+Without a service, ``vast results build`` builds a campaign directory's — or a downloaded
+archive's — tables in place, every core but one at once, and compacts them. It arrives with
+``robovast-data``: ``pip install robovast-client[data]``.
+
+.. code-block:: bash
+
+   vast results build <campaign-dir|archive> [--table NAME ...] [--jobs N] [--no-compact]
+
+It writes one progress line and then what it left: the tables, their rows, and the size of
+``.cache`` beside the recordings'. It exits 1 when a table could not be built for some run,
+naming them (``--verbose`` names the runs). In a notebook, ``Campaign(path).build()`` does the
+same (:ref:`results-notebooks`).
+
+``robovast-decode``, the decoder's own command line, builds and compacts one step at a time:
+
+.. code-block:: bash
+
+   robovast-decode tables <campaign-dir>                      # what the records can give, and what is built
+   robovast-decode build <campaign-dir> [--table NAME] [--run CONFIG/RUN] [--force]
+   robovast-decode compact <campaign-dir> [--table NAME] [--jobs N]
+
+
+.. _results-export:
+
+Export
+------
+
+An **export** is one ``tar.gz`` built for one request: the campaign's tables as files, with
+the records that produced them and, if asked, its recordings. It is for an analysis away
+from the service -- a notebook on a laptop, a hand-off -- where the archive is the wrong
+shape: the archive is the campaign as the service holds it, its tables in the decoder's own
+cache, read through ``robovast-data``. An export's tables are built once, on the service, by
+the same decoder a query uses, and written as plain files where pandas or DuckDB opens them
+directly, without RoboVAST.
+
+What it contains is the request's to decide:
+
+* **Tables** -- one file per table, ``tables/<name>.parquet`` (zstd) or ``tables/<name>.csv``,
+  written by DuckDB from the same views a query reads, after each is built for every run.
+  ``runs`` is always written. Naming none writes every table the records can give; a name
+  the campaign's catalog does not have (``describe_campaign_data`` lists it) is refused
+  before anything is built. Parquet is the tables as they are; CSV the same rows as text.
+* **Bags** -- ``none`` (the default), ``mcap`` (each run's ``rosbag2/`` and ``roqsim_bag/``
+  and each job's ``logs/rosout_bag/``, as recorded), or ``sqlite3``: every rosbag2 bag
+  rewritten in rosbag2's sqlite3 storage from the mcap records -- the raw CDR bytes,
+  message for message, each topic's definition taken from the recording, its sidecar or the
+  distro's types -- for a ROS 2 install without the mcap plugin. A channel whose definition
+  none of the three carry fails the export, naming the topic and the type, rather than
+  being left out. roqsim's recording is not a rosbag2 and is copied as it is.
+* **Records** (on by default) -- ``campaign.db``, ``_config/``, ``_execution/``,
+  ``_transient/``, the metadata documents and every run's own files: everything the
+  archive carries except the recordings and ``.cache``. With them, the export's
+  ``<campaign_id>/`` directory is a campaign directory ``robovast-data`` opens.
+
+The tarball holds ``export.json`` -- the request, the decoder version, the data contract
+(:ref:`data-contract`), the row count and file of every table, the campaign id and when it
+was built -- then ``tables/`` and the campaign tree under ``<campaign_id>/``. That layout is
+public: pandas and DuckDB read ``tables/<name>.parquet`` directly, and ``Campaign()`` opens
+the export as it opens the campaign, reading the tables it carries and building nothing
+(:ref:`evaluation-notebooks`). It opens only an export written under its own data contract:
+a table the export carries is never rebuilt, so one laid out under another contract is
+refused by number rather than read as the table its name promises -- export the campaign
+again from a current service, or read the files directly.
+
+**Download or export.** ``vast campaign download`` is the campaign as the service holds it:
+records and recordings, no table, for a copy that builds its tables on first use, re-runs,
+or goes back into a service; ``--extract`` unpacks it as it streams into ``<id>/`` and keeps
+no archive. ``vast campaign export`` is the campaign to read: the tables built once, the
+records, and the recordings only when asked. Images and point clouds are read from the
+recordings alone, so an export made without ``--bags`` has tables and no frames, and says so.
+Only the download imports: an export handed to ``vast campaign import`` is refused as an
+export, naming the download.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 88
+
+   * - Surface
+     - Export
+   * - Web UI
+     - **Export…** in the campaign's actions menu: a checklist of the tables, the format,
+       the bags, the records; the download link appears when the export is done
+   * - CLI
+     - ``vast campaign export <id> [--tables a,b] [--format parquet|csv] [--bags none|mcap|sqlite3] [--no-records] [-o PATH]``
+   * - MCP
+     - ``export_campaign(campaign_id, tables=None, format='parquet', bags='none', records=True)``,
+       then ``get_export_status(campaign_id, export_id)``
+   * - HTTP
+     - ``POST /campaigns/{id}/exports``, ``GET /campaigns/{id}/exports/{export_id}`` (status),
+       ``GET /data/campaigns/{id}/exports/{export_id}`` (the file)
+
+An export builds in the background on the service and returns a handle at once; the CLI
+waits on it, the web UI follows it, an MCP caller polls ``get_export_status``. Several
+exports of one campaign may build at the same time, and while any does the campaign's
+tables are in use, so a clear of the table cache keeps them. A campaign still running is
+refused: its records and tables are changing under the export. The export lands under the
+campaign's ``.cache/exports/<export_id>/`` -- rebuildable and disposable like the tables
+beside it, counted and cleared with the ``table cache`` (:ref:`results-tables-ahead`) --
+and its status is answered from that directory once it is finished, so a status read after
+a service restart still answers; an export that was building when the service stopped reads
+as failed, to be started again. An export is kept for 24 hours after it finished
+(``EXPORT_KEEP_S``): past that its address answers as for an export that never was, and the
+export is made again on request. Its files are removed when the campaign's next export
+starts; a download already reading the tarball finishes.
+
+
+.. _results-querying:
+
+Querying
+--------
+
+SQL over a campaign is answered by an in-process **DuckDB** engine (the ``robovast-data``
+distribution) over views defined per query from the campaign's manifest — no database server, no
+import step. The same engine answers the web UI's Data browser and run-view panels, the MCP
+``query_campaign_data_sql`` tool, the HTTP ``POST /campaigns/{id}/query`` route (and its CSV twin,
+``query.csv``), health checks, and a notebook's ``.sql()``.
+
+**What a query can name:**
+
+* every table (:ref:`results-tables`), unqualified;
+* ``runs`` — one row per run: ``status``, ``passed``, ``duration_s``, ``errors``, ``failures``,
+  ``objective``, ``start_time``, ``end_time``, the host (``instance_type``, ``node_label``,
+  ``cpu_name``, ``available_cpus``, ``available_mem_bytes``), ``probed``, and every varied
+  factor as a typed ``param_*`` column — plus one run-less row per unit that produced no run;
+* the campaign's record as the ``campaign`` schema: ``campaign.campaign``, ``campaign.unit``,
+  ``campaign.run``, ``campaign.job``, ``campaign.batch``, ``campaign.node``,
+  ``campaign.container_failure``;
+* the views: ``run_view`` (one row per run with its unit's ``params_json`` and
+  ``channels_json``, batch and host, plus run-less units), ``config_view`` (the resolved
+  configuration as one row per node, ``fullkey`` ``$.a.b``), ``container_failure_view``,
+  ``run_validity_view`` and ``pose_track_view``.
+
+``describe_campaign_data`` lists all of them with their columns and ``kind`` (table, view or
+record) — a table's columns once it is built for some run.
+
+**DuckDB's dialect.** ``CAST(x AS DOUBLE)``, ``x::JSON`` with ``->`` / ``->>``, ``unnest``,
+``median``, ``quantile_cont``, ``regexp_matches``. Two macros keep SQL written for other
+engines meaning what it meant: ``PERCENTILE(value, p)`` with ``p`` from 0 to 100, and
+``REGEXP(pattern, value)`` as a search. A TEXT column orders lexicographically, so cast before
+comparing it.
+
+.. code-block:: sql
+
+   SELECT r.param_speed, median(m.path_length) AS path_length
+   FROM runs r JOIN nav_metrics m USING (config_name, run_id)
+   WHERE r.status = 'passed'
+   GROUP BY 1 ORDER BY 1;
+
+   SELECT config_name, sysinfo_json::JSON ->> 'cpu_name' AS cpu FROM run_view;
+
+**What a query builds.** The tables it names, and the tables the views it names read, for the
+runs in scope that lack them (:ref:`results-table-cache`). A top-level ``WHERE`` that restricts a
+table with ``config_name`` / ``run_id`` equality or ``IN`` builds only those runs; anything else
+builds every run. What could not be built is reported with the answer, by table and run.
+
+**What a query may do.** One ``SELECT``, checked on DuckDB's own parse. File access is limited to
+the campaign's ``.cache/tables/``, external access is off, the configuration is locked, and a
+query that runs past its time is interrupted. What one query may use in threads and memory is
+the operator's to bound (:ref:`bounding-a-query`). **One campaign per query** by default; the HTTP
+query route takes further campaign ids in ``campaigns``, and then every view is the union of
+theirs, with ``campaign_id`` in every row.
+
+``run_id`` restarts at 0 in every configuration, so join on ``(config_name, run_id)``, never
+``run_id`` alone.
 
 .. _channel-param-columns:
 
 Which channel a factor was written on, and its column
------------------------------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 A campaign varies its factors on three channels (:ref:`the destination reference
 <config-variation-destination>`), and the ``runs`` table gives each one a ``param_*`` column
@@ -972,13 +1596,13 @@ The name differs, because the destinations do:
      - ``nav2.….inflation_layer.inflation_radius``
      - ``param_sut_inflation_radius``
 
-A scenario parameter keeps its own name, which is what an analysis has always read. A ``sim:``
-or ``sut:`` destination is a *path*, and its whole path makes no column anybody can type — the
-``sut:`` example does not fit in an identifier at all, and an XPath destination is not
-identifier-shaped anywhere but its end. So the column is named from the **end** of the
-destination, prefixed by its channel, and grows leftwards only as far as it must to stay
-unambiguous: two ``friction`` keys under different components become ``param_sim_floor_friction``
-and ``param_sim_wall_friction`` rather than quietly sharing one column.
+A scenario parameter keeps its own name. A ``sim:`` or ``sut:`` destination is a *path*, and its
+whole path makes no column anybody can type — the ``sut:`` example does not fit in an identifier
+at all, and an XPath destination is not identifier-shaped anywhere but its end. So the column is
+named from the **end** of the destination, prefixed by its channel, and grows leftwards only as
+far as it must to stay unambiguous: two ``friction`` keys under different components become
+``param_sim_floor_friction`` and ``param_sim_wall_friction`` rather than quietly sharing one
+column.
 
 Uniqueness is decided over the **whole campaign**, not one configuration, because the table is
 one shape for every row in it.
@@ -992,34 +1616,63 @@ one shape for every row in it.
 
 Every destination's value is in ``run_view.channels_json`` regardless, under the channel name
 the ``.vast`` writes it on — including one whose name would collide with a scenario parameter,
-or would not fit an identifier even at full length. Those get no column and are reported at
-warning level during ingest, naming the destination: a column silently missing is the same
-wrong answer as a column silently shared.
+or would not fit an identifier even at full length. Those get no column and are logged at
+warning level when ``runs`` is built, naming the destination: a column silently missing is the
+same wrong answer as a column silently shared.
 
 .. _non-finite-values:
 
 A measurement with no finite value
-----------------------------------
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 A metric can come out infinite or undefined and still be right: a range sensor reports no
 return, a trial produced no trajectory so its path length is infinite, a ratio had no
-denominator. Such a value is stored as a number — ``double precision``'s ``Infinity``,
-``-Infinity`` or ``NaN`` — in a column that stays numeric, whether the CSV wrote it ``inf``,
-``-inf`` or ``nan``. A value nobody measured is ``NULL``, so the two never have to be told
-apart by guesswork::
+denominator. Such a value is stored as a number — a double's ``inf``, ``-inf`` or ``nan`` — in a
+column that stays numeric, however the file spelled it (``inf``, ``-inf``, ``infinity``, ``nan``,
+any case or sign). A value nobody measured is ``NULL``, so the two never have to be told apart
+by guesswork::
 
-    SELECT AVG(path_length) FROM nav_metrics;                 -- Infinity if any trial was censored
-    SELECT * FROM nav_metrics WHERE path_length = 'Infinity'; -- the censored trials
-    SELECT * FROM nav_metrics WHERE path_length = 'NaN';      -- the undefined ones
+    SELECT AVG(path_length) FROM nav_metrics;                 -- inf if any trial was censored
+    SELECT * FROM nav_metrics WHERE isinf(path_length);       -- the censored trials
+    SELECT * FROM nav_metrics WHERE isnan(path_length);       -- the undefined ones
     SELECT * FROM nav_metrics WHERE path_length IS NULL;      -- and the unmeasured ones
 
-In Postgres, ``NaN`` equals itself and sorts above every number, infinity included, so an
+In DuckDB ``NaN`` equals itself and sorts above every number, infinity included, so an
 ``ORDER BY`` or a ``MAX`` over such a column puts it last.
 
 Inside a JSON-encoded value — a container-valued ``param_*`` column, ``channels_json`` —
 the same three appear as the JSON strings ``"inf"``, ``"-inf"`` and ``"nan"``, so
-``param_gaps::jsonb ->> 1`` is ``nan`` rather than a token that would make the cast fail,
-and ``(param_gaps::jsonb ->> 1)::double precision`` is the number.
+``param_gaps::JSON ->> 1`` is ``nan`` rather than a token that would make the cast fail,
+and ``CAST(param_gaps::JSON ->> 1 AS DOUBLE)`` is the number.
+
+
+.. _results-notebooks:
+
+Notebooks and your own machine: ``robovast-data``
+-------------------------------------------------
+
+``robovast-data`` is the same engine as a library. It reads a campaign directory — or a
+downloaded ``.tar.gz``, extracted beside it on first use — builds each table on first use into
+that campaign's own ``.cache/`` with the decoder the service uses, and returns pandas frames. No
+service, no ROS and no container image are needed:
+
+.. code-block:: python
+
+   from robovast_data import Campaign, Corpus, open_data, read_table, read_runs
+
+   c = Campaign("~/Downloads/<campaign>")          # or the .tar.gz
+   c.runs                                          # the runs table
+   c.tables                                        # what can be built, and for how many runs
+   poses = c.table("poses", with_params=True)      # built on first use, then read
+   one = c.table("poses", config="<config>", run=0)
+   c.sql("SELECT config_name, avg(duration_s) FROM runs GROUP BY 1")
+
+   Corpus("~/Downloads/nav-*").table("action_navigate_through_poses_status")
+
+``open_data(path)`` answers for whatever the path selects — the campaign, one configuration's
+directory, or one run's — which is how a notebook cell reads the same on a laptop and in the web
+UI's Results Explorer. Writing those notebooks: :doc:`analysis_notebooks`.
+
 
 .. _reading-result-files:
 
@@ -1052,17 +1705,13 @@ and per run, so a recursive listing of the root is thousands of entries; it
 reports ``total`` when it truncates. ``cat`` pages text and refuses binary;
 ``get`` writes raw bytes, which is how you fetch one artifact without downloading
 the whole campaign archive (that is ``vast campaign download <campaign-id>``, which
-writes one ``.tar.gz`` and does nothing else with it).
+writes one ``.tar.gz`` of the campaign's records, without ``.cache/``).
 
 The same addresses work over HTTP (``curl <service>/results/<campaign>/<path>``)
 and from an LLM through the ``read_file`` / ``list_files`` MCP tools — see
 :ref:`mcp-files`. Reading a campaign on this machine needs no running service; against a
 cluster service the read serves that one file off the service's results volume, not the
 campaign.
-
-If the service runs on your own machine, ``get_service_info`` also reports a
-``results_root`` you can open directly with your own tools; it is absent whenever
-that would be a path you cannot actually read.
 
 
 .. _results-metadata:
@@ -1256,160 +1905,29 @@ which fail independently and are all reported together:
 ``host``
    this robovast still speaks the recorded image's container protocol.
 ``images``
-   a new run can start from the images the campaign recorded. A container whose image the campaign
-   *built* cannot be replaced, since the build context is not archived; one it merely declared is
-   resolved again at launch.
+   ``launch.yaml`` fixes a digest for everything the campaign runs — every container, the
+   sidecar and every aux helper image. A re-run runs exactly those digests, whatever
+   ``ROBOVAST_PROJECT``, ``ROBOVAST_PROJECT_TAG``, the family's floating tags or the composition
+   cache say now: nothing is built, and composition resolves ``family:`` refs to the recorded
+   digests. A record lacking any of them — a campaign launched before the record held every
+   image, or cut short before it did — cannot be re-run; the refusal names every missing one and
+   points at ``vast campaign rerun <id> --to-workspace <name>`` (MCP:
+   ``create_workspace(from_campaign=...)``), which rebuilds the project for a fresh launch.
 ``plugins``
    third-party ``plugins:`` resolved to something re-installable.
 ``providers``
    which asset-provider distributions supplied the campaign.
 
-Only ``blocked`` refuses. ``unknown`` does not: a campaign recorded before a given field existed is
-exactly what a re-run of an old campaign is, and refusing it for a record nobody wrote would defeat
-the purpose. Every blocking verdict names the artifact and how to obtain it.
+Only ``blocked`` refuses. ``unknown`` does not: a campaign whose records lack a given field is
+exactly what a re-run of an old campaign is, and refusing it for a record nobody wrote would
+defeat the purpose. Every blocking verdict names the artifact and how to obtain it.
 
 Read the report without launching anything — it stages nothing and starts no container — with
 ``vast campaign rerun --check <id>``, ``get_campaign_summary``'s ``retrigger`` key, or
 ``GET /campaigns/<id>/retrigger/check``. Override it, for an axis you have decided you understand,
 with ``vast campaign rerun <id> --force``, ``start_campaign(from_campaign=<id>, force=True)``,
-**Re-run anyway** in the web UI's dialog, or ``force`` on the POST body.
-
-
-.. _results-postprocessing:
-
-Postprocessing
---------------
-
-Postprocessing transforms raw run output (e.g. ROS bags, custom binary files) into
-analysis-friendly formats (e.g. CSV).  Commands are defined in the
-``results_processing.postprocessing`` section of the ``.vast`` file and executed by plugins
-(see :ref:`extending-postprocessing` for how to write your own).
-
-It runs automatically when a campaign's runs finish. To run it again — after editing a
-postprocessing script, or on a campaign imported raw — name the campaign:
-
-.. code-block:: bash
-
-   vast campaign postprocess CAMPAIGN
-
-**Options**
-
-.. option:: -f, --force
-
-   Bypass the per-rosbag caches and reprocess all bags, for example after updating a
-   postprocessing script.
-
-.. option:: --skip PLUGIN
-
-   Skip a postprocessing plugin (repeatable), e.g. ``--skip rosbags_to_webm``.
-
-The campaign is the address, so the rosbag→CSV step runs in-cluster, where that campaign's
-runs ran, and the campaign's derived data is rebuilt. It is **dispatched, not awaited**: postprocessing can take minutes to hours,
-so the campaign re-enters its ``postprocessing`` phase and the command returns. Follow it
-exactly as after a launch:
-
-.. code-block:: bash
-
-   vast campaign postprocess my-campaign-2026-03-20-153630
-   vast campaign wait my-campaign-2026-03-20-153630
-
-Postprocessing is **cached** by a hash of the results directory; when nothing changed the
-step is skipped automatically, which is what ``--force`` bypasses.
-
-Its last step loads the derived files into the central index. The index holds nothing that
-is not rebuilt from the campaign's files, so the load commits without waiting for each write
-to reach the database's disk, and it ends by refreshing the query planner's statistics on
-the tables it wrote. A crash of the index's database server during or just after a load can
-therefore lose the last rows written; postprocessing the campaign again loads them again.
-
-.. note::
-
-   This was ``vast results reprocess``, beside a ``vast results postprocess`` that did the
-   same work in-process against a local results directory. The second could only ever see
-   a local campaign, so there is now one postprocessing path, reached one way.
-
-
-.. _results-retrigger:
-
-Re-running a finished campaign's post-run steps
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-The two steps that run *after* a campaign's scenarios finish — analysis
-**postprocessing** and the **upload-to-share** — can each be re-triggered on a
-finished campaign, and each works **from the stored campaign alone**: no live
-campaign process is required, so a re-trigger is available even after the
-``robovast-service`` (``vast serve``) was restarted. Under the web UI's *Monitor*
-each finished campaign's actions menu offers *Retrigger postprocessing* and *Export
-to share*; the same operations are ``vast share export -i <campaign-id>`` on the
-command line and the MCP tools ``run_postprocessing`` and ``run_share``.
-
-A third operation shares their shape without being a *re*-run: **importing** a
-campaign this deployment never ran, from an archive
-(``vast campaign import <archive>``) or from the share (``vast share import
-<campaign-id>``). It is dispatched the same way, enters the ``importing`` phase, and
-— when what arrived is a raw archive, carrying no postprocessing record — rolls straight
-on into ``postprocessing``, because a campaign without its metric tables is not one
-anybody can query. Its per-stage verdicts land in ``_execution/import.json`` and its
-narrative in ``_execution/import.log``. A *degraded* import is usable-but-incomplete
-rather than a failure.
-
-A genuine failure is **kept, as a failed campaign**, and the refusal names what was
-missing rather than which check noticed. Deleting the half-imported tree was tried and
-was strictly worse: registering the campaign is what makes it visible while it arrives,
-so the entry outlives the failure either way and removing the directory only took away
-the ``import.log`` and ``import.json`` that explained it. Remove it with
-``vast campaign delete``, or import again with ``--force``.
-
-The mirror of that check runs on the way **out**: an export refuses a campaign with no
-frozen ``_config/`` instead of writing an archive whose only possible future is an ingest
-refusal on somebody else's service, after a full transfer, with the source out of reach.
-
-A re-trigger through the service is **dispatched in the background and returns
-immediately** — postprocessing can take minutes to hours, so the campaign simply
-re-enters the ``postprocessing`` (or ``sharing``) phase and you follow its progress and
-log in the campaign view, exactly like the original run; it returns to ``finished`` when
-done. The web *Retrigger postprocessing* dialog therefore closes as soon as you click
-*Run*. A second re-trigger is refused while one is already running. ``vast campaign
-postprocess`` is the same dispatch from the CLI, so all three surfaces behave alike --
-there is no longer a local, synchronous path that behaves differently from the rest.
-
-Because it re-enters that phase as a tracked campaign, a re-trigger can also be **stopped**
-like one: ``stop`` cancels it — deleting its Job — the campaign returns
-to ``finished``, and ``postprocessing_error`` says it was cancelled rather than that it
-failed. Nothing that was already derived is lost, and nothing claims to be derived that is
-not: an interrupted bag is redone next time, a partial index load is replaced rather than
-doubled, and the provenance record that says a campaign carries derived data is written
-last, so a cancelled campaign simply reads as not postprocessed (see :doc:`architecture`).
-Ask for it again whenever the derived data is wanted.
-
-Because a post-run step is separate from the runs themselves, a **failure of one of
-these steps does not fail the campaign**. The campaign stays ``finished`` (its runs
-are the deliverable and remain downloadable) and the failure is recorded on its own
-field — ``postprocessing_error`` or ``share_error`` — which is durable (it survives a
-service restart) and is surfaced as a warning badge in the UI. Re-running the step
-successfully clears it. This is distinct from a *run* failure, which reports the
-campaign phase as ``failed``.
-
-Editing the postprocessing parameters before re-running **overwrites the
-``results_processing.postprocessing`` block of the campaign's own ``_config/<name>.vast``
-in place** — it is config, not captured data, so there are no override files or
-revisions, and the raw rosbags and the as-ran ``configuration``/``execution`` are left
-untouched. The edited config applies on both the local and the cluster backend. For the
-**upload-to-share**, the target provider is taken from the service environment
-(``ROBOVAST_SHARE_TYPE`` and its credentials); adjust it and export again to upload the
-same campaign to a different provider. The archive is named for what it now is —
-a campaign exported after postprocessing goes up as ``.postprocessed.tar.gz``, one
-exported before it as ``.raw.tar.gz`` — and nobody passes that in: it is read off
-postprocessing's own provenance record (``_transient/postprocessing.yaml``), so the
-campaign-end upload and a later export agree by
-construction.
-
-Custom postprocessing plugins that need third-party Python packages — an
-entry-point postprocessing command, or the dependencies a local
-``./file.py:Class`` plugin imports — declare those packages in the ``.vast``'s
-top-level ``plugins:`` list (see :ref:`configuration`). They are installed into the
-campaign's ``.robovast_plugins/`` and put on ``sys.path`` before postprocessing
-runs, including on a re-run in a fresh process.
+**Re-run anyway** in the web UI's dialog, or ``force`` on the POST body. A missing digest is not
+overridden: a re-run with nothing to replay has no images to run.
 
 
 .. _results-publish:
@@ -1419,13 +1937,13 @@ Publishing Results
 
 Publication packages or distributes the results directory using plugins defined
 in the ``results_processing.publication`` section of the ``.vast`` file.  Unlike
-postprocessing (which operates per campaign run folder), publication plugins
+postprocessing (which operates on one campaign), publication plugins
 receive the full results directory as input and are intended for tasks like
 creating zip archives for upload or hand-off.
 
 .. code-block:: bash
 
-   vast results publish [OPTIONS]
+   vast results publish --results-dir PATH [OPTIONS]
 
 **Options**
 
@@ -1433,6 +1951,10 @@ creating zip archives for upload or hand-off.
 
    Directory containing the run results (parent of campaign directories).
    Required: there is no project file to take it from.
+
+.. option:: -i, --campaign CAMPAIGN
+
+   Publish only this campaign directory; without it, every campaign is published.
 
 .. option:: -o, --override VAST_FILE
 
@@ -1446,18 +1968,32 @@ creating zip archives for upload or hand-off.
    Without this flag, plugins that find an existing output file will ask the
    user interactively (default answer: yes / overwrite).
 
+.. option:: --skip-postprocessing
+
+   Run only the publication plugins, not postprocessing first.
+
+.. option:: --skip-upload
+
+   Run only packaging plugins (e.g. ``zip``); skip upload plugins (e.g. ``zenodo``).
+
+.. option:: --allow-opaque
+
+   Publish even when an input cannot be identified. The exemption is recorded in the dataset,
+   so it is visible to whoever reads it.
+
 **Example:**
 
 .. code-block:: bash
 
-   # Publish using the project-configured results directory
-   vast results publish
+   # Publish every campaign under a results directory
+   vast results publish --results-dir /path/to/results
 
    # Publish and overwrite any existing archives without prompting
-   vast results publish --force
+   vast results publish --results-dir /path/to/results --force
 
-   # Publish a specific results directory with an override config
-   vast results publish --results-dir /path/to/results --override my_project.vast
+   # Publish one campaign with an override config
+   vast results publish --results-dir /path/to/results -i my-campaign-2026-03-20-153630 \
+       --override my_project.vast
 
 
 .. _results-publication-plugins:
@@ -1485,6 +2021,11 @@ Merging Results
 
 Merges campaign-directories with identical configs into one ``merged_campaign_dir``.
 Groups ``campaign-directory/config-directory`` by ``config_identifier`` from ``config.yaml``.
+The identifier hashes the configuration's ``.vast`` block, the content of the files it names
+and of the files its variations read beyond those (the image a map YAML points at), the run
+files, the scenario file, the ``sut:`` sources, and the variations' names as written. A
+packaged variation counts by name, not by its installed source, so a configuration has the
+same identifier on every host and robovast release.
 Run folders (0, 1, 2, …) from all campaigns are renumbered and copied.
 Original campaign-directories are not modified.
 
@@ -1497,8 +2038,8 @@ Original campaign-directories are not modified.
 
 .. option:: -r, --results-dir PATH
 
-   Source directory containing campaign directories.  When omitted the value
-   required: there is no project file to take it from.
+   Directory holding the campaign directories to merge. Required: there is no default
+   results directory.
 
 
 .. _results-postprocess-commands:
@@ -1510,9 +2051,11 @@ Listing Postprocessing Plugins
 
    vast results postprocess-commands
 
-Lists all available postprocessing command plugins, their descriptions, and
-parameters.  Useful for discovering which commands can be used in the
-``results_processing.postprocessing`` section of the ``.vast`` file.
+Lists all available postprocessing step plugins, their descriptions, and
+parameters.  Useful for discovering which steps can be used in the
+``results_processing.postprocessing`` section of the ``.vast`` file. The ``rosbags_*``
+entries are not steps and are not listed; they are described under
+:ref:`results-decoder-config`.
 
 
 .. _results-override:
@@ -1531,16 +2074,16 @@ for example your current working copy:
 .. code-block:: bash
 
    # Use a local/updated .vast file
-   vast results publish --override my_project.vast
+   vast results publish --results-dir /path/to/results --override my_project.vast
 
 **When to use ``--override``**
 
-- You want to apply updated postprocessing scripts to existing results without
+- You want to publish existing results with updated publication settings without
   triggering a new execution campaign.
 - The results were produced in a different directory and the campaign snapshot
   points to stale paths.
 - You want to bypass the snapshot and always use the latest ``.vast`` during
-  iterative postprocessing development.
+  iterative development of a publication.
 
 .. note::
 

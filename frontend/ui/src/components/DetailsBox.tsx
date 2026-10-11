@@ -34,17 +34,16 @@ import {
 } from '@/lib/campaignDetails'
 
 // "Did this run well, and what did it cost?" for one finished campaign -- the question the
-// Results Explorer does not answer. Small charts side by side, because the Monitor page exists to
+// Results Explorer does not answer. Small charts side by side, because the Campaigns page exists to
 // show campaigns and their status: this panel widens, it does not grow.
 //
 // **It does not query until it is opened.** Every campaign on the page would otherwise run four
 // SQL statements on mount, and the CPU one scans every 1 Hz sample of every run. Behind a closed
 // box that cost is zero, which is what lets the panel exist on a list view at all.
 //
-// The charts are imported directly, not lazily. They were Vega specs, and `lazyView` was here to
-// keep that library out of Monitor's entry chunk (Monitor is the default route and is not
-// code-split). They are DOM now -- see `DetailsCharts.tsx` for why -- so there is nothing left to
-// defer, and the charts arrive with the frame instead of a moment after it.
+// The charts are imported directly, not lazily. They are DOM -- see `DetailsCharts.tsx` for why --
+// so there is no heavy library to defer, and the charts arrive with the frame instead of a moment
+// after it.
 
 /** Height of one column's chart, and the reason every column looks the same height.
  *
@@ -93,8 +92,8 @@ function useDetails(campaignId: string, enabled: boolean, postprocessed: boolean
         DETAILS_RUNS_SQL,
         DETAILS_MAX_ROWS,
       )
-      // The CPU pair is allowed to fail: `resource_usage` lives in the results index, which a campaign
-      // that was never postprocessed does not have. That is a missing column, not a broken
+      // The CPU pair is allowed to fail: `resource_usage` exists once a run's monitor recorded
+      // something, which not every campaign's runs did. That is a missing column, not a broken
       // panel, so it resolves to [] and `summariseCpu` returns null from there.
       //
       // The actions query is allowed to fail for the same reason and one more: `behaviors` is
@@ -103,9 +102,8 @@ function useDetails(campaignId: string, enabled: boolean, postprocessed: boolean
       // one missing table costs one column rather than the panel.
       //
       // Each carries its own failure rather than flattening to []: "no rows" and "the query
-      // failed" are different facts, and the CPU column states a CAUSE. It once said "not
-      // postprocessed" about a campaign with 43k rows of `resource_usage`, because a swallowed
-      // error and an absent table were indistinguishable by the time it rendered.
+      // failed" are different facts, and the CPU column states a CAUSE: a swallowed error and an
+      // absent table are indistinguishable by the time it renders.
       const optional = <T,>(sql: string) =>
         robovast
           .queryCampaignDataSql(campaignId, sql, DETAILS_MAX_ROWS)
@@ -411,12 +409,12 @@ export function DetailsBox({
   return (
       <Box sx={{ p: 1 }}>
         {!postprocessed && !data ? (
-          // A campaign is FINISHED as soon as its runs are done, minutes before its metric tables
-          // exist -- and one whose postprocessing failed never gets them at all. Say which it is
-          // and what fixes it, rather than showing an empty grid that reads as "this cost nothing".
+          // The resource tables are postprocessing's, written minutes after the runs are done --
+          // and never for a campaign whose postprocessing failed. Say which it is and what fixes
+          // it, rather than showing an empty grid that reads as "this cost nothing".
           <Typography variant="caption" color="text.secondary">
-            not postprocessed — there is nothing to measure yet. If this campaign has finished,
-            retrigger postprocessing from the actions menu.
+            not postprocessed — the resource usage is measured by postprocessing. If this campaign
+            has finished, retrigger postprocessing from the actions menu.
           </Typography>
         ) : isLoading ? (
           <Typography variant="caption" color="text.secondary">
@@ -487,7 +485,7 @@ export function DetailsBox({
                           : '') +
                         '. This is the number a smaller CPU reservation moves — halve the pod ' +
                         'and twice as many fit the quota. Counted in runs, which is what the ' +
-                        'data records; a packed job carries several of them.'
+                        'data records.'
                       }
                     />
                   ) : null}
