@@ -165,6 +165,8 @@ def test_a_stall_ends_the_wait_with_its_own_code(statuses):
     assert "no progress for" in result.output
     # "the waiter returned" must not read as "the run ended".
     assert "STILL RUNNING" in result.output
+    # The way out is a verb this CLI has, not the MCP tool of the same purpose.
+    assert "vast campaign stop c1" in result.output
 
 
 def test_a_stall_that_was_already_true_is_not_news(statuses):

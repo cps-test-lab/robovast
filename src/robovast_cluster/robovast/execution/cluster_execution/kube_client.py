@@ -544,10 +544,10 @@ def _handshake_failure(reason: str) -> str:
     """A websocket upgrade answered with an ordinary HTTP *success*, stated as that.
 
     Only a 2xx earns this verdict. The API server answers an exec upgrade with ``101``, and
-    a 4xx or 5xx is its answer about the one call that asked -- ``404`` for a pod that is
-    gone, ``500`` for a container that is. Reported as "nothing can exec here" those send a
-    caller to their cluster administrator over a target they could simply ask about again,
-    which is why the status is read rather than the mere presence of a handshake failure.
+    a 4xx or 5xx is its answer about the one call that asked (see
+    :func:`_handshake_target_gone`). Reported as "nothing can exec here" those send a caller
+    to their cluster administrator over a call they could simply make again, which is why
+    the status is read rather than the mere presence of a handshake failure.
     """
     found = _HANDSHAKE_STATUS.search(reason or "")
     if not found or not found.group(1).startswith("2"):
@@ -557,22 +557,32 @@ def _handshake_failure(reason: str) -> str:
             "nothing serving this call upgraded it")
 
 
-def _handshake_target_gone(reason: str) -> str:
-    """A websocket upgrade answered about ONE TARGET, stated as that.
+#: What the kubelet answers an exec into a container its pod is not running: a plain-text
+#: body, served as ``500`` and passed through by the API server's proxy unchanged.
+_CONTAINER_NOT_FOUND = re.compile(r'container not found \("')
 
-    The other half of the read :func:`_handshake_failure` makes. A 2xx says nothing
-    upgraded the request and so every exec here is refused; a 4xx or 5xx is the API server
-    answering about the pod and container that were asked for -- ``404`` for a pod that is
-    gone, ``500`` for a container that is. That target can be made again, which is why it
-    is worth telling a caller which of the two it met rather than handing over a bare
-    status line to interpret.
+
+def _handshake_target_gone(reason: str) -> str:
+    """A websocket upgrade answered with "this pod or container is not there", stated as that.
+
+    The other half of the read :func:`_handshake_failure` makes. Two answers say it: ``404``,
+    which the API server gives for a pod that does not exist and the kubelet for one it does
+    not run, and ``500`` whose body is the kubelet's ``container not found ("<name>")``.
+    ``500`` alone is any failure inside the API server or the kubelet, so it counts only with
+    that body. Every other status -- ``401`` and ``403`` refusing the caller, ``429`` and
+    ``502``-``504`` from a busy or restarting API server -- says nothing about the target,
+    and is left to be reported as the failure it is.
     """
     found = _HANDSHAKE_STATUS.search(reason or "")
-    if not found or found.group(1).startswith("2"):
+    if not found:
         return ""
-    return ("the container was not there to exec into -- the request for the stream was "
-            f"answered with HTTP {found.group(1)}, which is the API server answering "
-            "about this pod and container rather than refusing every exec")
+    code = found.group(1)
+    body = (reason or "").split(" -+-+- ", 2)[2:]
+    if code == "404" or (code == "500" and body and _CONTAINER_NOT_FOUND.search(body[0])):
+        return ("the container was not there to exec into -- the request for the stream "
+                f"was answered with HTTP {code}, which is the API server answering that "
+                "this pod or container does not exist or is not running")
+    return ""
 
 
 def _first_segment(reason: str) -> str:
@@ -625,11 +635,13 @@ def raise_api_error(exc, context: str) -> NoReturn:
     verdict with the consequence stated, because the cause alone leaves each caller to
     conclude on its own what it can still do -- and they concluded differently.
 
-    An upgrade answered with a 4xx or 5xx is the opposite verdict and gets its own type
-    too: the API server is answering about the pod and container that were asked for, so
-    the caller holding that name is the one that can do something -- make the target again
-    and repeat what it was doing. Left as a bare ``RuntimeError`` that recovery is not
-    available without matching on a message.
+    An upgrade answered that the pod or container is not there (:func:`_handshake_target_gone`)
+    is the opposite verdict and gets its own type too: the caller holding that name is the
+    one that can do something -- make the target again and repeat what it was doing. Left as
+    a bare ``RuntimeError`` that recovery is not available without matching on a message.
+    Any other 4xx or 5xx -- the caller refused, the API server busy or failing -- is not that
+    and is not reported as it, because a caller acting on "gone" would recreate, or read as
+    idle, a target that is still there.
 
     Anything else belongs to the call *context* names. Naming it here is what keeps a
     failure from being reported by whichever wrapper happened to enclose the call, which
