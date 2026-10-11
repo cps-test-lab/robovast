@@ -18,8 +18,8 @@
 
 **A margin, not a verdict.** ``failure_rate`` is a proportion over N runs, so with 3 runs
 it has 4 reachable values -- and against a sharp physical threshold nearly every cell lands
-on 0 or 1. Measured on the quadrotor campaign that motivated all of this: 93.8% of
-configurations scored exactly 0.0 or 1.0, which is a cliff, and no search climbs a cliff.
+on 0 or 1. A score that is exactly 0.0 or 1.0 for almost every configuration is a cliff,
+and no search climbs a cliff.
 
 A run can fail three ways here and no single quantity covers them: ``min_clearance`` is
 *large* for a run that timed out on the far side of the room without ever approaching the
@@ -216,9 +216,9 @@ class NavExtract(Extractor):
             # the score: contact latched, so the true minimum clearance was <= 0 even
             # where the sampled series missed the instant it happened. Correcting the
             # input keeps the margin arithmetic continuous. Forcing the score to -1
-            # instead put a verdict inside a margin -- the very thing this objective
-            # exists to avoid -- and flattened 26 colliding cells onto one value whose
-            # underlying clearances still ranged over 16%.
+            # instead would put a verdict inside a margin -- the very thing this objective
+            # exists to avoid -- and flatten every colliding cell onto one value whatever
+            # its underlying clearance.
             if collided and clearance is not None:
                 clearance = min(clearance, 0.0)
 

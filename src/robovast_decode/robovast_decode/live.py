@@ -62,8 +62,8 @@ import pyarrow.parquet as pq
 
 from .authored import with_yaw
 from .build import (BAG_METADATA, Run, derived_sources, find_runs, plugin_groups,
-                    recorded_topics, recording_closed, roqsim_recording, scenario_recording,
-                    source_size)
+                    recorded_topics, recording_closed, recordings_closed, roqsim_recording,
+                    scenario_recording, source_size)
 from .decode import SIDECAR_NAME, channel_type, segments, undecodable_tables
 from .definitions import TypeCatalog
 from .derived import DERIVED, INPUTS, RUN_LOG, JobRun, derive_job
@@ -850,7 +850,7 @@ class Watcher:
                 # recording that never started are not coming either.
                 self._pending.pop(key, None)
                 self._pending_frames.pop(key, None)
-            elif not live.following and self._recordings_closed(live.run):
+            elif not live.following and recordings_closed(live.run):
                 # Every recording the run has is closed and none gives what is pending:
                 # not coming either.
                 self._pending.pop(key, None)
@@ -861,7 +861,7 @@ class Watcher:
             # pass; the last one, once the run's recordings are closed and their sessions
             # finalised, reads their finished files.
             final = (verdict and not live.following and not self._pending.get(key)
-                     and (abandoned or self._recordings_closed(live.run)))
+                     and (abandoned or recordings_closed(live.run)))
             if final or (deriving.dirty and now - deriving.last_run >= self.part_s):
                 self._derive(live, final)
             elif now - deriving.last_run >= self.part_s:
@@ -872,15 +872,6 @@ class Watcher:
                 and (live.derived is None or live.derived.finalised)):
             self._runs.pop(key, None)
             self._finished(key)
-
-    def _recordings_closed(self, run: Run) -> bool:
-        """Whether every recording *run* has is closed (:func:`recording_closed`)."""
-        recordings = [(SCENARIO_BAG, scenario_recording(run)), (ROQSIM_BAG, roqsim_recording(run))]
-        if run.job_dir:
-            infra = os.path.join(run.job_dir, INFRA_BAG)
-            recordings.append((INFRA_BAG, infra if os.path.isdir(infra) else None))
-        return all(bag_dir is None or recording_closed(role, bag_dir)
-                   for role, bag_dir in recordings)
 
     # -- the derived tables ------------------------------------------------------------
 

@@ -52,4 +52,5 @@ def test_create_upload_omits_url_when_no_origin_is_declared(monkeypatch):
     fake = _FakeClient(web_base="")
     monkeypatch.setattr(service_access, "service_client", lambda: fake)
     out = authoring.create_upload("/sources/ws-1/worlds/box_mu1.yaml")
-    assert not out.get("url")
+    assert "url" not in out
+    assert out["token"] == "tok-123"
