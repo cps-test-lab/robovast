@@ -456,9 +456,10 @@ rather than recorded again, and the next row of it carries the count (shown as `
 before it``), so a panel polling something that cannot answer it does not push the rest of the
 record out.
 
-Newest first here, though the route (``GET /admin/events``) serves oldest-first from a cursor:
-a caller *resuming* a position wants what came after its ``seq``, and a person opening a panel
-wants what just happened.
+The panel shows the newest events, newest first, though the route (``GET /admin/events``)
+serves oldest-first from a cursor: a caller *resuming* a position wants what came after its
+``seq``, and a person opening a panel wants what just happened, so the panel asks the route for
+the end of the record (``newest=true``) rather than its beginning.
 
 .. _web-ui-freshness:
 
