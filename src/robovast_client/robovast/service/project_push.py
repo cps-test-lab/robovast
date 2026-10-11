@@ -43,55 +43,7 @@ from robovast.client.workspaces import is_skipped as _should_skip
 
 logger = logging.getLogger(__name__)
 
-#: Absolute root the content-based results check resolves against, set for the duration
-#: of one push. Module-level because ``_is_generated`` is called through a predicate
-#: signature that takes only a relative path, and threading a root through every caller
-#: would change three public functions to fix one of them.
-_content_root: Path | None = None
-
 _INLINE_EXTS = (".vast", ".osc")
-
-# Generated/cache artefacts that must not be pushed as project inputs. ``results`` is
-# here for the same reason ``vast workspace init`` excludes it: it is a campaign's
-# *output*, and pushing it uploads every past campaign on disk as project input on every
-# launch.
-#
-# THE NAME IS NO LONGER THE ONLY DEFENCE, and it never could be: a project whose
-# ``.vast_project`` names a different results dir, or one holding a campaign downloaded
-# under its own id, is not on this list and cannot be -- the name is not knowable from
-# the ``.vast``. ``_is_generated`` therefore also asks whether a directory *contains* a
-# campaign's markers (``is_campaign_results_dir``), which is knowable from the directory
-# itself and stays true when a naming convention changes.
-_SKIP_DIRS = {".cache", ".preprocessed", "resolved", "_execution", "_transient",
-              "_config", "_control", "_jobs", "__pycache__", ".git", "results"}
-
-
-def _is_generated(rel: Path) -> bool:
-    """True if *rel* is a generated/cache/hidden artefact rather than authored input.
-
-    The same predicate on both sides of a push: locally these are build leftovers not
-    worth uploading, and **inside a workspace they belong to the service** — a campaign
-    writes ``.cache/`` (config generation), ``.robovast_plugins/`` and ``resolved/``
-    into the project dir it runs from. So a mirroring push must neither send them nor
-    delete them; pruning the service's own cache forces a full regeneration on every
-    relaunch, and does it while a campaign may still be reading it.
-    """
-    if any(p in _SKIP_DIRS or p.startswith(".") for p in rel.parts):
-        return True
-    # And the same question by content, for a results tree this list cannot name. Asked
-    # of each ANCESTOR directory rather than of the file: the markers sit at the results
-    # root, so `<campaign-id>/goal-1/0/poses.csv` is only recognisable from
-    # `<campaign-id>/`. Relative to the caller's root via `_content_root`, which is set
-    # for the duration of one push -- the predicate needs an absolute path to stat.
-    root = _content_root
-    if root is None:
-        return False
-    parent = rel.parent
-    while parent != Path("."):
-        if is_campaign_results_dir(root / parent):
-            return True
-        parent = parent.parent
-    return False
 
 
 def push_file(client, address: str, path: Path) -> str:
