@@ -300,21 +300,22 @@ def test_prune_keeps_files_still_present_locally(client, project):
 
 
 def test_a_directory_that_is_not_there_is_refused(client, project, tmp_path):
-    """``rglob`` yields nothing for a missing path rather than raising, so the sync
-    reported a contented ``{"written": 0, "uploaded": 0}`` for a push that pushed
-    nothing at all."""
+    """A walk yields nothing for a missing path rather than raising, so without the check
+    a push that pushed nothing would report success.
+
+    The directory is read where the push runs -- the caller's machine -- so the refusal
+    names that path and does not send the reader to look on the service host."""
     wid = _wid(client)
-    with pytest.raises(FileNotFoundError, match="no such directory"):
+    with pytest.raises(FileNotFoundError, match="no such directory to push") as raised:
         sync_directory_to_workspace(client, wid, tmp_path / "typo")
+    assert "service host" not in str(raised.value)
 
 
 def test_prune_against_a_missing_directory_deletes_nothing(client, project, tmp_path):
     """The reason the check above is worth having.
 
-    "No local files" and "the path is wrong" were the same state, so prune concluded
-    the workspace should be empty and deleted every file in it. A mistyped path was
-    enough -- and against a remote service the directory is read on the service host,
-    where a path from the caller's machine is *expected* to be absent.
+    Without it "no local files" and "the path is wrong" are the same state, and prune
+    would conclude the workspace should be empty and delete every file in it.
     """
     wid = _wid(client)
     sync_directory_to_workspace(client, wid, project, skip_dirs={"results"})
