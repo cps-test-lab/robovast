@@ -38,12 +38,14 @@ The pure helpers (hash, Dockerfile, error classification) are shared with the lo
 path in ``robovast.service.image_build``.
 """
 
+import copy
 import logging
 from pathlib import Path
 
 from robovast.common.execution import GIT_TOKEN_SECRET_ID, resolve_sidecar_image
 
 from . import pod_access
+from .node_placement import BUILD_CLIENT_RESOURCES, transient_pod_affinity
 
 logger = logging.getLogger(__name__)
 
@@ -452,7 +454,10 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                         # relaxed: a client needs no privilege the daemon has.
                         'securityContext': {'runAsUser': 1000, 'runAsGroup': 1000},
                         'volumeMounts': build_mounts,
+                        # A client: the build's own work is the daemon's.
+                        'resources': copy.deepcopy(BUILD_CLIENT_RESOURCES),
                     }],
+                    'affinity': transient_pod_affinity(),
                 },
             },
         },

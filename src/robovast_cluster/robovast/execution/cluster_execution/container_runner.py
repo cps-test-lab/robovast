@@ -76,6 +76,7 @@ Kubernetes garbage-collects it if the service is replaced), carries an
 ``activeDeadlineSeconds`` backstop, and is deleted when the span that created it ends.
 """
 
+import copy
 import contextlib
 import logging
 import os
@@ -301,6 +302,7 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
 
     from .cluster_execution import _label_safe_campaign
     from .kubernetes_backend import pull_policy_for
+    from .node_placement import TRANSIENT_POD_RESOURCES, transient_pod_affinity
 
     name = pod_name or aux_pod_name(campaign_id)
     workspace_root = str(aux_workspace_root(stage_dir, name))
@@ -334,6 +336,8 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
             "imagePullPolicy": pull_policy_for(image),
             "command": list(spec.keep_alive_command),
             "volumeMounts": list(shared_mounts),
+            # What its queries run in; see TRANSIENT_POD_RESOURCES.
+            "resources": copy.deepcopy(TRANSIENT_POD_RESOURCES),
         }
         if spec.env:
             container["env"] = [{"name": k, "value": str(v)} for k, v in spec.env.items()]
@@ -381,6 +385,7 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
         "activeDeadlineSeconds": int(deadline_seconds),
         "containers": containers,
         "volumes": [{"name": mount["name"], "emptyDir": {}} for mount in shared_mounts],
+        "affinity": transient_pod_affinity(),
     }
     if pull_secret:
         spec["imagePullSecrets"] = [{"name": pull_secret}]

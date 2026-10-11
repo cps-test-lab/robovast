@@ -971,6 +971,19 @@ class AdmissionController:
             f"{_held(biggest, sizing)}. Reduce execution.containers.*.resources, or run "
             "where a node can hold it.")
 
+    def capacity_of(self, node_id) -> "Optional[Capacity]":
+        """What *node_id* could hold if it were empty, or ``None`` when that is unknowable.
+
+        The same reading :meth:`preflight` judges against, reserve already off. ``None`` for a
+        provider that carries no node ids or a node it does not list: absence is not a size.
+        """
+        if node_id is None:
+            return None
+        for capacity in self._provider.capacities() or ():
+            if getattr(capacity, "node_id", None) == node_id:
+                return capacity
+        return None
+
     def _could_ever_hold_locked(self, node_id, sizing: JobSizing) -> bool:
         """Could *node_id* run *sizing* if it were empty? ``True`` when unknowable.
 
