@@ -87,8 +87,7 @@ Refocusing the MCP interface for a cluster-first service
 
 What is left of a running program of work. The shared theme in every item below is a
 **report that does not match reality** — a listing that omits campaigns that exist, a client
-timeout for work that succeeded. Each was found by using the interface rather than reading
-it.
+timeout for work that succeeded.
 
 Finished items are not kept here: they are described where they are implemented — the file
 address space in :ref:`file-address-space`, the SQL results surface in :ref:`mcp-analysis`
@@ -96,35 +95,15 @@ and :ref:`database-or-address-space`, the HTTP route table in :ref:`http-api`, t
 wedged run from a slow one in :ref:`mcp-liveness`, a run's log and tables read live as it
 records in :ref:`merged-run-log` and :ref:`run-view-live`, and campaign discovery plus the
 non-blocking image build in :ref:`campaign-discovery` and :ref:`campaign-building-phase`.
-The numbering below is historical and deliberately not compacted, so a note elsewhere
-referring to "item 9" still means item 9.
 
-**2b. Two deviations worth remembering, from the items that landed as**
-:ref:`campaign-discovery` **and** :ref:`campaign-building-phase`. Both were recorded here
-as settled designs and both were implemented differently on purpose; the reasoning is
-easier to lose than the code.
-
-* *Discovery needs no side record at all.* The design called for each campaign to publish
-  an entry a listing could enumerate, so that postprocessing-failed / share-failed /
-  stopped / crashed campaigns stay discoverable. A campaign is a directory under the
-  service's results root, so the listing's own ``iterdir`` sees every one of
-  them from the moment the driver creates it, with no entry to publish and no question of
-  when to publish it.
-* *The status does not carry a* ``build_id``. That clause existed to keep the build *log*
-  reachable, and the log is a ``BUILD`` section of the campaign's own log — reachable
-  with the id the caller already has, and durable past the build Job's TTL, which
-  ``/image-builds/{id}/log`` is not. A second handle on the status would have been a
-  second way to ask the same question.
-
-
-**9. A search's per-batch record is not checked against the run counters.**
+**A search's per-batch record is not checked against the run counters.**
 Whether a search's per-batch record (``campaign.db``'s ``batch`` and ``unit`` tables,
 read by ``read_batch_objectives``) and the campaign row's aggregate agree with the run
 counters ``ExecutionBackend.count_run_artifacts`` produces over a multi-batch run is
 unverified. That aggregate is where a sweep's flakiness rate would be read from, so it
 wants one deliberate check before it is trusted.
 
-**10. The cloud instance-type commands are untested.**
+**The cloud instance-type commands are untested.**
 ``get_instance_type_command`` runs in the generated entrypoint, so a run records the
 node's instance type in its ``sysinfo.yaml`` (and thence ``runs.instance_type``).
 Only the bare-metal implementations have actually run: ``rke2`` and ``minikube`` return
@@ -246,7 +225,7 @@ whose lifetime is the campaign's rather than the batch's. An owner-scoped regist
 queue would hold it together with the probe bookkeeping, and would make ``cancel(owner)`` mean
 one thing.
 
-**Three constants are a nav2 trial's dimensions, and should be derived.**
+**Two places assume a nav2 trial's dimensions, and should be derived.**
 
 * ``CONTENDED_GRACE_SECONDS = 900`` (``cluster_execution.py``) is documented as "fifteen
   minutes outlasts a typical trial", which is true of a 150 s trial. A campaign whose trials
@@ -274,7 +253,7 @@ autoscaler adds can be pinned to and probed.
 run somebody read into) and a *calibration probe* (an extra run that measures a node) share a
 word and nothing else. The artifacts already differ -- ``_calibration/`` versus a ``runs``
 column -- so today this is a documentation problem, handled with a cross-reference in
-:ref:`stopping-one-job`. A rename would touch thirteen identifiers across five
+:ref:`stopping-one-job`. A rename would touch identifiers across several
 modules, and ``runs.probed`` is a published data column, so it is not worth doing on its own.
 
 .. _future-gpu-usage:
@@ -289,20 +268,20 @@ process per container and consolidated into the ``resource_usage`` table (see
 job* use? That is what decides whether ``--gpu-replicas`` can be raised, and it is the one
 figure a GPU campaign cannot currently produce.
 
-**The requirement is job-wise, not node-wide.** This is the reason the obvious
-implementation was rejected rather than shipped.
+**The requirement is job-wise, not node-wide**, which is why device-wide sampling does not
+answer it.
 
 **What is cheaply available, and why it does not answer the question.**
-``nvidia-smi --query-gpu=memory.used,utilization.gpu`` is one 26 ms call and would slot into
+``nvidia-smi --query-gpu=memory.used,utilization.gpu`` is one call and would slot into
 the existing sampler without difficulty. But both figures are whole-*device*: under
 time-slicing a single card carries up to ``--gpu-replicas`` tenants plus whatever else the
-node runs (a desktop session accounted for 337 MiB on ``node-02``). A row would be
+node runs, a desktop session included. A row would be
 attributed per job — the sampler runs in the job's container, so ``config_name``, ``run_id``
 and ``container`` all come out right — while its *value* described the whole card. That
 answers "was the GPU saturated while my run went", not "what my run cost", and a row read in
 isolation a year later gives no hint which of the two it is.
 
-**Why per-job attribution is hard, established by measurement rather than assumption:**
+**Why per-job attribution is hard:**
 
 * ``nvidia-smi --query-compute-apps`` returns **nothing** for an offscreen GL renderer — it is
   compute-only, and MuJoCo's EGL path is a graphics client. Per-process memory in MiB appears
@@ -315,10 +294,10 @@ isolation a year later gives no hint which of the two it is.
   blocker, and it is not specific to us.
 
 **The tension worth stating plainly:** per-job GPU attribution and time-slicing pull against
-each other. Exclusive allocation (``--gpu-replicas 1``, or MIG on hardware that has it — an
-RTX A2000 does not) makes a device figure exactly the job's figure and gives up the
-concurrency the replica count exists for. Time-slicing buys the concurrency and makes device
-*utilization* meaningless per job, since the card interleaves contexts. Memory is the more
+each other. Exclusive allocation (``--gpu-replicas 1``, or MIG on the cards that offer it)
+makes a device figure exactly the job's figure and gives up the concurrency the replica count
+exists for. Time-slicing buys the concurrency and makes device *utilization* meaningless per
+job, since the card interleaves contexts. Memory is the more
 tractable half: an allocation does belong to one context, so per-job GPU *memory* is
 attributable in principle and blocked only by the PID mapping above.
 
@@ -332,9 +311,8 @@ to ``(config_name, run_id)`` has to be designed too.
 
 Until then, the honest substitute is a **calibration campaign at** ``--gpu-replicas 1``: with
 one tenant the device figure *is* the per-job figure, measured once and reused, while real
-sweeps run time-sliced. Per-context memory has already been measured this way
-(:ref:`cluster-gpu`): 93 MiB for one 640×480 offscreen context, ~77 MiB marginal by the
-sixteenth.
+sweeps run time-sliced. That is how the per-context memory in :ref:`cluster-gpu` is
+established.
 
 **Design work already done, worth keeping when this is finalised.**
 
@@ -356,8 +334,9 @@ sixteenth.
   test is ``/dev/nvidiactl`` plus ``nvidia-smi`` on ``PATH`` — which is exactly the right gate
   without configuration, because the container toolkit injects both per container: a
   CPU-only sidecar has neither and simply does not sample.
-* **Sample the device at 5 s, not 1 Hz.** 26 ms per call is 2.6% of a core per container at
-  1 Hz, ~42% across sixteen concurrent GPU jobs — overhead charged to the very node whose
+* **Sample the device at 5 s, not 1 Hz.** A call takes tens of milliseconds, so at 1 Hz it
+  costs a few percent of a core per container, multiplied by every concurrent GPU job on the
+  node — overhead charged to the very node whose
   throughput the GPU work exists to improve. GPU memory of a running renderer is near
   constant, so 5 s loses little. The existing loop already sleeps in 0.1 s increments to keep
   SIGTERM prompt, so the slower cadence has to be a tick counter rather than a longer sleep.
@@ -367,4 +346,4 @@ sixteenth.
   ``[Not Supported]`` for unsupported fields on some cards.
 * **If a device figure is ever recorded anyway**, record the concurrent GPU process count with
   it. Counting the device's processes needs no PID matching, and it is what turns an
-  uninterpretable "1574 MiB" into "1574 MiB shared by sixteen renderers".
+  uninterpretable device total into a total shared by a known number of renderers.

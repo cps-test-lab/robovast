@@ -543,49 +543,21 @@ the plugin, or in the driver gives each pod a share of VRAM — all ``N`` render
 from the same card, first come first served — so ``N`` is an assertion that ``N``
 simultaneous trials fit in it. Exceed that and a trial's simulator fails mid-run.
 
-Measured on an RTX A2000 12GB, one 640×480 offscreen context per pod, against a 337 MiB
-baseline (the node's desktop session):
+One offscreen context of a small frame costs tens of MiB of device memory, and the cost per
+context is **sub-linear**: the driver shares part of its allocation across the contexts on one
+GPU. For a trivial scene at a modest frame size, VRAM is therefore rarely what binds first; it
+is CPU quota that limits campaign width.
 
-.. list-table::
-   :header-rows: 1
-   :widths: 20 25 25 30
+That floor is not a budget for your own worlds. The framebuffer scales with the requested frame
+size, each camera builds its own renderer, and meshes and textures are extra. Measure with
+``nvidia-smi`` on the node while a real campaign runs before raising the default for a heavier
+world: a run records its CPU and memory, not its share of the device
+(:ref:`future-gpu-usage`).
 
-   * - Concurrent contexts
-     - GPU memory used
-     - Above baseline
-     - Marginal per context
-   * - 1
-     - 430 MiB
-     - 93 MiB
-     - 93 MiB
-   * - 4
-     - 711 MiB
-     - 374 MiB
-     - 93 MiB
-   * - 8
-     - 824 MiB
-     - 487 MiB
-     - 60 MiB
-   * - 16
-     - 1574 MiB
-     - 1237 MiB
-     - 77 MiB
-
-So the cost is **sub-linear** — the driver shares part of its allocation across contexts on
-one GPU — and 16 concurrent renderers used 13% of the card, with GPU utilization at 45% while
-each rendered at 10 Hz. On this hardware VRAM is nowhere near the binding constraint: it is
-CPU quota that limits campaign width, which is why the default sits above that ceiling.
-
-Do not read those figures as a budget for your own worlds. A 640×480 framebuffer of a trivial
-scene is the floor: the framebuffer scales with the requested frame size, each camera builds
-its own renderer, and meshes and textures are extra. Re-measure with ``nvidia-smi`` on the
-node during a real campaign, or from the per-run ``resource_usage`` table, before raising the
-default for a heavier world.
-
-The default of 16 is chosen to sit *above* the CPU ceiling, so GPU quota is not what limits a
-campaign: a three-container scenario job asks for roughly ten cores, so a 96-core node admits
-about nine concurrent jobs either way. Raising ``N`` therefore changes nothing until per-job
-CPU drops — which GPU rendering itself makes possible, by freeing the cores software
+The default of 16 is chosen to sit *above* the CPU ceiling of a typical node, so GPU quota is
+not what limits a campaign: a node admits as many jobs as its cores cover, and a scenario job
+with several containers asks for several cores. Raising ``N`` therefore changes nothing until
+per-job CPU drops — which GPU rendering itself makes possible, by freeing the cores software
 rendering was using.
 
 The value is not stored anywhere. The node's advertised capacity is the record, because
@@ -1547,10 +1519,9 @@ it, and it sits ``Unschedulable`` with ``Insufficient cpu``. That is the failure
 campaign rarely reaches and several concurrent ones reach reliably, which is what makes it
 look like a concurrency bug rather than an arithmetic one.
 
-**It is measured every cycle, not snapshotted at setup.** This replaced a fixed quota
-sized once when the cluster was set up, which had to be re-sized by hand after anything
-long-lived was added to or removed from the nodes, and was silently wrong until someone
-did. Nothing needs re-running now.
+**It is measured every cycle, not snapshotted at setup.** A quota sized once at setup would
+be silently wrong after anything long-lived is added to or removed from the nodes, until
+someone re-sized it by hand; a reading taken each cycle needs nothing re-run.
 
 **Headroom** protects the shared tenants no campaign owns: ``ROBOVAST_NODE_HEADROOM_CPU``
 (default ``1``) and ``ROBOVAST_NODE_HEADROOM_MEMORY`` (default ``2Gi``), read from the
@@ -1690,17 +1661,17 @@ It is per **container**, so a three-container pod reserves the sum until its nod
 which makes the bootstrap the floor on what calibration costs, and a reason not to set it
 generously on a small or busy cluster.
 
-Why per node at all: the same trial costs about **1.6x more CPU on the slowest machine of a
-mixed cluster than on the fastest**, and wall time does not show it — a realtime-paced
+Why per node at all: in a mixed cluster the same trial can cost **tens of percent more CPU on
+the slowest machine than on the fastest**, and wall time does not show it — a realtime-paced
 simulator holds one simulated second per wall second, so every machine finishes at roughly the
 same time and the difference lands entirely in CPU consumed. One declared number is therefore
 wrong on every node but the one it was measured on.
 
-It is a **validity** matter as much as a throughput one. At a uniform 3.0 cores for the system
-under test, one node was quota-bound in 100 % of its runs at 2.5 and below while three others
-were never quota-bound at any allocation down to 2.0. Equal *cores* are not equal *compute*,
-so an equal declaration produces unequal conditions — the thing a uniform number was meant to
-prevent.
+It is a **validity** matter as much as a throughput one. At one uniform allocation for the
+system under test, a slow node can be quota-bound in every run while faster ones never are —
+``run_validity_view`` shows ``quota_bound`` per run and node. Equal *cores* are not equal
+*compute*, so an equal declaration produces unequal conditions — the thing a uniform number
+was meant to prevent.
 
 How the figure is found:
 
@@ -1709,7 +1680,7 @@ How the figure is found:
   the first place. Every container of the probe writes there: the scenario's results, the
   job artifacts, and what a sidecar writes per run (a simulator's recording and pose
   record), each of which is named by its own variable and every one of which the probe
-  points at its own directory. A campaign of 50 runs still delivers 50.
+  points at its own directory. A campaign delivers every run it asked for.
 * **What it measured and what it allocated are part of the campaign's record.** Every run on a
   node was sized from that node's figures, so they are a condition of the run: ``campaign.db``
   keeps them on the machine's own row, ``node.calibration_json`` -- per container, what the
@@ -1732,8 +1703,8 @@ How the figure is found:
   under test is read at its maximum, as request *and* limit, so it never throttles: a run
   clipped mid-plan fails in a way that looks like the stack's fault rather than the
   allocation's. The simulator is read at the 95th percentile and keeps its ceiling — its
-  peak-to-mean ratio is about 18, so reserving the maximum would cost more than not
-  calibrating, and the realtime factor reports if the squeeze cost anything. The scenario
+  peak-to-mean ratio can be an order of magnitude, so reserving the maximum would cost more
+  than not calibrating, and the realtime factor reports if the squeeze cost anything. The scenario
   runner is read the same way, but nothing grades how well *it* ran, so its ceiling is what
   must not be tight; on a probe its own tick rate fills that gap (see below).
 
@@ -1755,13 +1726,13 @@ How the figure is found:
   instrumentation on the trial's hot path, and only the probe's file is ever read.
 * **A calibrated figure never exceeds what the ``.vast`` declared.** Calibration sizes a
   node's jobs down to what they need; it does not raise a ceiling the author set.
-* **Frozen once set, and dropped when the campaign ends.** Continuing to adapt would mean run
-  5 and run 40 on the same node ran in different environments. The figures are deliberately
+* **Frozen once set, and dropped when the campaign ends.** Continuing to adapt would mean an
+  early and a late run on the same node ran in different environments. The figures are deliberately
   not reused by the next campaign — they were measured under this one's contention, for this
   one's containers.
 * **Pilots calibrate nothing.** With no more jobs than the cluster has nodes, no node runs a
   second one, so the probe would cost as much as the work it was meant to improve. The
-  mechanism is skipped and the campaign behaves as it did before any of this existed.
+  mechanism is skipped and every run uses the declared sizing.
 
 **Whether it is worth turning on is a question about your cluster, not about RoboVAST.**
 The gain is the spread between your fastest and slowest node; on a homogeneous cluster there
@@ -1780,25 +1751,13 @@ is what says whether a tighter allocation cost the simulator its pacing, and a c
 factor drops is no longer comparable with one sized any other way — worse results rather than
 merely slower ones.
 
-**A peak measured on an idle probe is an unvalidated basis for a hard limit on a loaded
-machine.** That is why this is switchable, and why the probe is one run rather than a
-guarantee. A workload with heavier planning spikes than the one a cluster was measured on has
-not been tested against its own calibration.
-
-**The evidence behind the design**, kept here because it is what rules out the cheaper
-alternatives. Two campaigns of one configuration times twenty runs, so the machine was the only
-variable; forty trials, all passed. Per-container CPU comes from ``resource_usage``, summed per
+**How a node's cost is compared.** Per-container CPU comes from ``resource_usage``, summed per
 tick before averaging (a row is one process name, not a container), then divided by the run's
 realtime factor -- ``cpu_percent`` is per *wall* second, so a node that meets fewer step
-deadlines otherwise reads as cheaper than it is:
-
-Measured on one four-node cluster, the same pod cost **1.6x more CPU per simulated second on
-the slowest node than on the fastest** — and the ordering did not follow clock speed. Your own
-figures come from ``get_campaign_summary``; the point is that the spread exists and is not
-guessable from the hardware.
-
-The ranking tracks **microarchitecture rather than clock**: the two Skylake-derived parts sit
-together at ~2.2 despite a 1.5x clock difference, Zen 3 at 1.71, Raptor Lake at 1.37.
+deadlines otherwise reads as cheaper than it is. Compared that way, the cost of one pod differs
+between the nodes of a mixed cluster, and the ordering follows the processor generation rather
+than the clock speed, so it cannot be guessed from the hardware. Your own figures come from
+``get_campaign_summary``.
 
 **A cached per-node factor is refuted, and that is why this is measured per campaign.** Every
 design that stores a number and reuses it -- a scalar per node, a ``robovast.io/cpu-factor``
@@ -1808,14 +1767,14 @@ rankings **invert between nodes**: one machine was the cheapest for the system u
 among the dearest for the simulator, while another was the reverse, so no single per-node scalar
 can be both greater and less than one at once -- the shape is wrong, not the calibration. Even
 per ``(node, container)`` it does not transfer: between two campaigns one node's simulation cost
-moved +42 % while another's moved +1 %, flipping their order.
+can move a long way while another's barely moves, flipping their order.
 
 **Why a hard limit is sized on the peak and not on p95.** Sizing a limit at ``p95 x 1.25`` looks
 safe and is not: a container clipped at its limit does not lose the clipped work, it queues it,
 so it stays pegged working the backlog off and the next spike arrives into a full budget. A
-configuration whose static clip rate was **0.5 %** produced **44 % saturation and lost 22 % of
-the runs**. That is why the system under test takes the peak as request *and* limit, while
-everything else splits the two.
+configuration whose static clip rate is **a fraction of a percent** can stay saturated for much
+of a run and **lose runs outright**. That is why the system under test takes the peak as
+request *and* limit, while everything else splits the two.
 
 **What remains true, and is why a campaign chooses.** A peak measured on an idle probe is
 still an unvalidated basis for a hard limit on a loaded machine; a workload with heavier
