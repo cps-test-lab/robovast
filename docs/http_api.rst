@@ -294,6 +294,8 @@ cursor-keyed route, requested by whatever is displaying it and resumed from ``ne
 than a field on a payload every open tab re-fetches once a second. ``newest=true`` answers the
 newest ``limit`` events instead of those after ``since``, in the same order and with the same
 ``next_seq``, for a reader opening the record rather than resuming it; the two are exclusive.
+A log that cannot be opened or read answers ``503`` with the reason, never an empty page: an
+empty page means nothing has been recorded.
 
 It is also the one durable thing this service keeps about itself. ``/admin/log`` is this
 process's recent stderr and dies with it, and the usage samples say the same about themselves —

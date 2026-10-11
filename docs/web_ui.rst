@@ -459,7 +459,8 @@ record out.
 The panel shows the newest events, newest first, though the route (``GET /admin/events``)
 serves oldest-first from a cursor: a caller *resuming* a position wants what came after its
 ``seq``, and a person opening a panel wants what just happened, so the panel asks the route for
-the end of the record (``newest=true``) rather than its beginning.
+the end of the record (``newest=true``) rather than its beginning. A log the service cannot
+read is shown as that error, so "Nothing recorded yet" always means an empty record.
 
 .. _web-ui-freshness:
 
