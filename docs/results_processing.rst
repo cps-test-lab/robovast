@@ -685,7 +685,7 @@ knowing the simulator:
    * - ``{table: poses, frame_suffix: _gt}`` -- the default, for a backend that names none or a
        campaign with no backend (Gazebo started by the scenario)
      - the ``poses`` frames whose name ends in ``_gt``; the frame must be extracted
-       (``rosbags_tf_to_csv`` ``frames``) and is worth ``require``-ing
+       (``rosbags_tf_to_csv`` ``frames``) and is worth listing under ``require``
 
 The columns are the pose contract's, plus ``source_table`` naming the table the rows came from.
 ``timestamp`` is the time the pose was true, in sim seconds -- the simulator's own sample time,

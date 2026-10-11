@@ -734,10 +734,12 @@ trial: one trial's outcome never stops the others.
      - neither a pass nor a failure
    * - The entrypoint fails before it starts the runner — a required tool or a pre- or
        post-command missing, a recorder refusing its arguments
-     - No done marker is written, so the uploader waits for it and the Job fails at its
-       deadline (``DeadlineExceeded``, logged ``HARD-KILLED by activeDeadlineSeconds``).
-     - ``unknown``
-     - neither a pass nor a failure
+     - No done marker is written. The runner sees the scenario container ended in a pod
+       that still runs and asks the pod's uploader (or file agent) whether the marker
+       exists; when it does not, the runner captures the container's log and exit code
+       and **deletes** the Job.
+     - ``invalid``
+     - outside pass rates (``num_invalid``)
    * - The scenario container is OOM-killed
      - The kill takes the post-run with it, so no done marker comes. The runner reads the
        kill off the running pod, captures the container's log and **deletes** the Job at
@@ -752,8 +754,8 @@ trial: one trial's outcome never stops the others.
 ``invalid`` is an infrastructure fault, not evidence about the system under test, and it
 overrides any verdict the trial wrote (:ref:`results-invalid`); what the container died of
 is in ``container_failure_view``. A **calibration probe** whose scenario container is
-OOM-killed or whose sidecar crashes stops the campaign at once, naming the container
-(:ref:`cluster-node-calibration`).
+OOM-killed or ends without its done marker, or whose sidecar crashes, stops the campaign at
+once, naming the container (:ref:`cluster-node-calibration`).
 
 
 Push notifications (ntfy)
@@ -1863,8 +1865,8 @@ says so.
 
 **A probe that loses a workload container stops the campaign, naming that container.** The
 sidecars are native sidecars, so one that dies is *restarted* rather than ending the job; the
-scenario container is not restarted, and an OOM kill of it leaves the pod running too, its
-uploader waiting for a done marker the killed container never writes.
+scenario container is not restarted, and one that is OOM-killed or ends before its post-run
+leaves the pod running too, its uploader waiting for a done marker that never comes.
 The instance that comes back starts nothing — a workload brought back mid-trial would run a
 fresh world under a stack still on the old one, so the sidecar entrypoint refuses a second
 start in the same pod — and the probe would go on sampling a stack with a hole in it, hold

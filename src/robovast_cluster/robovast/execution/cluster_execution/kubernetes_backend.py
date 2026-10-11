@@ -90,7 +90,8 @@ from .campaign_job import apply_campaign_pod_policy, campaign_job_manifest, pin_
 from .cluster_execution import (BLOCKED_GRACE_SECONDS, CONTENDED_GRACE_SECONDS,
                                 _label_safe_campaign,
                                 previous_container_log, resolve_pull_secret,
-                                oom_killed_job_forensics, restarted_job_forensics)
+                                oom_killed_job_forensics, restarted_job_forensics,
+                                scenario_done_marker_written, scenario_ended_job_forensics)
 from .kubernetes_gpu import GPU_RESOURCE
 from .manifests import (CALIBRATION_JOB_KIND, JOB_KIND_LABEL, MAIN_CONTAINER_NAME,
                         POD_TEMPLATE, SCENARIO_JOB_TTL_SECONDS)
@@ -658,6 +659,16 @@ class BatchJobRunner:
     #: given above -- a mutable class attribute would be shared by every runner in the
     #: process -- and :meth:`_fail_on_crashed_probes` replaces it on first use.
     _probe_failures = None
+    #: Pods whose scenario container was seen ended while the pod ran on, ``{pod name:
+    #: monotonic time first seen}``, and the pods already found to hold its done marker.
+    #: ``None`` and an empty frozenset for the reason given for ``_invalidated``; see
+    #: :meth:`_scenarios_ended_without_marker`.
+    _scenario_ended_seen = None
+    _done_marker_found = frozenset()
+    #: How long after a scenario container is seen ended its pod is asked for the done
+    #: marker. The marker is written before the container ends, so this only spares a pod
+    #: on its way out -- uploader done, pod not yet ``Succeeded`` -- an exec.
+    _MARKER_CHECK_GRACE_SECONDS = 5.0
     #: How often a batch that is blocked repeats why, so a long wait for
     #: capacity stays visible in the log instead of scrolling past.
     _BLOCKED_LOG_INTERVAL_SECONDS = 60.0
@@ -1390,6 +1401,23 @@ class BatchJobRunner:
             jobs[0], total_jobs, also_reads=[probe_tag(node_id) for node_id in node_ids])
         started = campaign_start_key(self.campaign)
         for index, node_id in enumerate(node_ids):
+            # **A node its probe can never fit is left out now, and says so.** The check above
+            # asks whether ANY node can hold the probe; a mixed cluster answers yes while its
+            # smallest node cannot. Queued anyway, that probe never places, and a node being
+            # measured takes no work -- so the node sat idle for the whole batch, reported only
+            # as "being measured". Skipping it costs the capacity it never gave, and nothing
+            # else: its runs are runs that do not happen, which keeps the campaign comparable.
+            capacity = admission.capacity_of(node_id)
+            if capacity is not None and not capacity.holds(sizing):
+                reason = (f"its calibration probe needs {sizing.cpu:g} cpu / "
+                          f"{sizing.memory // (1024 ** 2)}Mi and the node holds at most "
+                          f"{capacity.cpu:g} cpu / {capacity.memory // (1024 ** 2)}Mi once "
+                          f"the service's reserve is off where it is held")
+                calibration.skip(node_id, reason)
+                logger.warning("Batch %s: leaving node %s out of this campaign: %s. Lower "
+                               "execution.containers.*.resources to use it.",
+                               self._batch_tag, node_id, reason)
+                continue
             key = _short_job_name(self.campaign, probe_tag(node_id), index)
             if not calibration.claim_probe(node_id, key):
                 continue
@@ -1637,6 +1665,8 @@ class BatchJobRunner:
             logger.warning("Batch %s: could not check for restarted probes: %s",
                            self._batch_tag, exc)
             return
+        crashed = {**self._scenarios_ended_without_marker(job_label, list(self._probes)),
+                   **crashed}
         failed = []
         for key, entry in sorted(crashed.items()):
             node_id = self._probes.pop(key, None)
@@ -2884,7 +2914,8 @@ class BatchJobRunner:
 
     def _invalidate_restarted_jobs(self, job_label, job_names, jobs_by_name,
                                    campaign_root) -> None:
-        """Drop every job of this batch whose container crashed and was restarted.
+        """Drop every job of this batch whose container crashed and was restarted, or whose
+        scenario container ended without writing its done marker.
 
         The response to a restart, and the whole of it. Each job is recorded in the
         intervention ledger, its evidence captured while the pod still exists, and then
@@ -2903,10 +2934,54 @@ class BatchJobRunner:
             logger.warning("Batch %s: could not check for restarted containers: %s",
                            self._batch_tag, exc)
             return
+        restarted = {**self._scenarios_ended_without_marker(job_label, job_names),
+                     **restarted}
         for job_name, entry in sorted(restarted.items()):
             self._record_a_kill_at_a_measured_figure(job_name, entry, campaign_root)
             self._drop_job(job_name, entry["detail"], jobs_by_name=jobs_by_name,
                            campaign_root=campaign_root, forensics=entry)
+
+    def _scenarios_ended_without_marker(self, job_label, job_names) -> dict:
+        """The jobs whose scenario container ended without writing ``done.main``, as
+        :func:`~.cluster_execution.restarted_job_forensics` would report them.
+
+        The entrypoint sets the trap that writes the marker only once it reaches the
+        post-run block, so a step before it that fails -- a tool missing from the image, a
+        pre- or post-command that does not exist, a recorder that refuses its arguments --
+        ends the container with no marker. The uploader and the file agent are regular
+        containers waiting for it, so the pod would run on to its deadline.
+
+        A pod whose scenario container has ended is asked, once it has been seen ended for
+        :attr:`_MARKER_CHECK_GRACE_SECONDS`, whether the marker exists; the pod object
+        cannot say, and a complete run's upload can outlast any fixed wait. A pod found to
+        hold it is not asked again. A question that could not be answered is asked again
+        on the next pass rather than read as an absent marker.
+        """
+        try:
+            ended = scenario_ended_job_forensics(self.k8s_client, self.namespace,
+                                                 job_label, job_names=job_names)
+        except Exception as exc:  # noqa: BLE001 - probe failed this iteration
+            logger.warning("Batch %s: could not check for ended scenario containers: %s",
+                           self._batch_tag, exc)
+            return {}
+        if self._scenario_ended_seen is None:
+            self._scenario_ended_seen = {}
+        now = time.monotonic()
+        out = {}
+        for job_name, entry in sorted(ended.items()):
+            pod_name = entry["pod_name"]
+            if pod_name in self._done_marker_found:
+                continue
+            first_seen = self._scenario_ended_seen.setdefault(pod_name, now)
+            if now - first_seen < self._MARKER_CHECK_GRACE_SECONDS:
+                continue
+            written = scenario_done_marker_written(self.namespace, pod_name,
+                                                   entry["witness"])
+            if written:
+                self._done_marker_found = self._done_marker_found | {pod_name}
+            elif written is False:
+                out[job_name] = entry
+        return out
 
     def _record_a_kill_at_a_measured_figure(self, job_name, entry, campaign_root) -> None:
         """Record a run lost to memory this campaign MEASURED, so the campaign can report it.
@@ -3415,7 +3490,8 @@ class BatchJobRunner:
             # verdict. A single-job batch is exempt: one flake is 100% of one job.
             raise CampaignConfigError(
                 f"every job in batch {self._batch_tag} ({len(job_names)}) was dropped -- a "
-                f"container restarted, or a pod that never started. That is a fault they "
+                f"container restarted, a scenario container ended without its done marker, "
+                f"or a pod that never started. That is a fault they "
                 f"share, not a flake. Evidence: _execution/interventions.json for what was "
                 f"dropped and why; _execution/container_failures.json and the "
                 f"container_failure table for the crashes among them.")
