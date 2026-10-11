@@ -1414,7 +1414,7 @@ class BatchJobRunner:
                 reason = (f"its calibration probe needs {sizing.cpu:g} cpu / "
                           f"{sizing.memory // (1024 ** 2)}Mi and the node holds at most "
                           f"{capacity.cpu:g} cpu / {capacity.memory // (1024 ** 2)}Mi once "
-                          f"the service's per-node reserve is off")
+                          f"the service's reserve is off where it is held")
                 calibration.skip(node_id, reason)
                 logger.warning("Batch %s: leaving node %s out of this campaign: %s. Lower "
                                "execution.containers.*.resources to use it.",

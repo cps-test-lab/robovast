@@ -262,7 +262,7 @@ BUILD_CLIENT_RESOURCES = {"requests": {"cpu": "100m", "memory": "128Mi"}}
 
 
 def transient_pod_affinity() -> dict:
-    """A preference for the build node, where the service keeps its per-node reserve.
+    """A preference for the build node, where the service keeps its node reserve.
 
     Preferred, never required: a cluster whose build node is full or gone still runs the pod
     wherever it fits. See :func:`~.cluster_capacity.reserved_node_names`.
