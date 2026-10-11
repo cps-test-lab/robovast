@@ -65,9 +65,10 @@ NVIDIA_PLUGIN_VERSION = "0.17.1"
 #: Time-slicing replicas advertised per physical GPU when the operator did not say.
 #:
 #: Chosen to sit *above* the cpu ceiling so GPU gating never becomes the binding
-#: constraint: a three-container scenario job asks for several cores, so even a large node
-#: admits fewer concurrent jobs than this, and CPU stays what limits concurrency. A smaller
-#: default would let the GPU cap campaigns that the node's cores could run wider.
+#: constraint: a node admits only as many jobs as its cores cover, and a scenario job of
+#: several containers asks for several cores, so on a node of ordinary size that count stays
+#: below this one and CPU is what limits concurrency. A smaller default would let the GPU cap
+#: campaigns that the node's cores could run wider.
 #:
 #: It is a concurrency cap and **not** a VRAM budget -- nothing in Kubernetes, in the
 #: plugin, or in the driver partitions device memory for time-sliced sharing, so all N
@@ -99,9 +100,9 @@ DEFAULT_GPU_REPLICAS = 16
 #: It has to be a *permissive* term and not ``{}``: the chart wraps the value in a Helm
 #: ``with``, which treats an empty map as absent and falls back to the very default being
 #: overridden: ``affinity: {}`` is accepted into the release's values and changes nothing.
-#: Matching ``kubernetes.io/os=linux`` is non-empty,
-#: so it takes effect, and selects every node that could run the plugin at all. Running it on
-#: a GPU-less node is harmless: it finds no devices and advertises nothing.
+#: Matching ``kubernetes.io/os=linux`` is non-empty, so it takes effect, and selects every
+#: node that could run the plugin at all. Running it on a GPU-less node is harmless: it finds
+#: no devices and advertises nothing.
 NVIDIA_PLUGIN_VALUES = """
 runtimeClassName: nvidia
 affinity:

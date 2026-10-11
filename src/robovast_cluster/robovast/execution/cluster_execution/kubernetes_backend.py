@@ -120,10 +120,10 @@ def pull_policy_for(image_ref: str) -> str:
     ordinary case, so under that default every container of every scenario pod would
     re-contact the registry on every start even though the node already has the image.
 
-    A batch of pods times their containers is then that many registry round trips
-    delivered in one instant, against a kubelet whose image-pull limiter defaults to five
-    per second (``registryPullQPS``, burst ten). Any batch larger than the burst gets
-    ``ErrImagePull: pull QPS exceeded`` for the pods past it -- not a blip but arithmetic.
+    Every container of every pod in a batch is then one registry round trip, all delivered
+    in one instant, against a kubelet whose image-pull limiter defaults to five per second
+    (``registryPullQPS``, burst ten). The pulls past the burst come back
+    ``ErrImagePull: pull QPS exceeded`` -- not a blip but arithmetic, on every batch.
 
     The policy follows the ref rather than being chosen: a digest names the bytes, so
     "if not present" cannot serve anything stale, while a tag can be re-pushed under us
@@ -3306,8 +3306,8 @@ class BatchJobRunner:
                     # the configuration — it is the cluster this batch happened to land in.
                     # Failing the campaign for it would end a long search mid-flight over
                     # a few jobs of one batch, discarding every batch already finished.
-                    # So those jobs are dropped, exactly as a restarted one is,
-                    # and the batch runs on with what is left.
+                    # So those jobs are dropped, exactly as a restarted one is, and the batch
+                    # runs on with what is left.
                     if len(blocked) == len(job_names):
                         raise CampaignConfigError(
                             f"none of this batch's {len(job_names)} scenario job(s) could "

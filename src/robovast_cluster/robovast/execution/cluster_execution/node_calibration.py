@@ -77,16 +77,14 @@ MIN_MEMORY = 512 * 1000 ** 2
 
 #: Fewest ticks a percentile may be read from. **A statistical floor, and only that.**
 #:
-#: It was 30 -- half a minute at the monitor's ~1 Hz -- and carried a second job it should
-#: never have had: catching a probe that died partway through. That made it a duration
-#: assertion, so a campaign whose trials run under 30 s could never calibrate; every probe
-#: was rejected as thin and every node silently kept what it started on. Once a refused probe
-#: FAILS the campaign, that stops being a quiet mis-sizing and becomes a campaign that always
-#: fails.
+#: It does not catch a probe that died partway through. That would make it a duration
+#: assertion at the monitor's ~1 Hz, so a campaign whose trials are shorter than the floor
+#: could never calibrate: every probe would be rejected as thin, and since a refused probe
+#: FAILS the campaign, that campaign would always fail.
 #:
-#: **The other job now has an exact answer of its own**: :func:`probe_completed` reads the
-#: scenario's ``test.xml``, which exists only once a run reaches a verdict. "Did the probe
-#: run to the end" is therefore not this constant's question, and scaling it with the trial
+#: **Whether the probe ran to the end has an exact answer of its own**:
+#: :func:`probe_completed` reads the scenario's ``test.xml``, which exists only once a run
+#: reaches a verdict. That is therefore not this constant's question, and scaling it with the trial
 #: would answer a question already answered -- with the trial's *timeout*, which is an outer
 #: backstop rather than an expected duration, and is routinely fifty times the real one.
 #:
