@@ -547,7 +547,9 @@ def _record_absent(campaign_dir: str, run: Run, wanted_tables, report: BuildRepo
     missing = [t for t in wanted_tables if t not in have]
     if not missing:
         return
-    complete = os.path.isfile(os.path.join(run.path, "test.xml"))
+    # A recording still open can yet give a table it has no row for now.
+    complete = (os.path.isfile(os.path.join(run.path, "test.xml"))
+                and recordings_closed(run))
     with catalog.update() as manifest:
         for table in missing:
             reason = report.failed.get(table, {}).get(run.key)
