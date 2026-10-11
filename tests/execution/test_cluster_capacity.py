@@ -573,3 +573,70 @@ def test_every_node_gets_an_identity_and_only_labelled_ones_are_pinnable(monkeyp
     assert [n.node_id for n in nodes] == ["node-n1", node_label("n2"), node_label("n3")], (
         "an unlabelled node's identity is the value a later setup would stamp on it, so a "
         "reservation held across that setup keeps its key")
+
+
+# -- free disk is what the kubelet measures, not only what pods requested ------------------
+
+def _kubelet(core, summaries, configs=None):
+    """Answer ``stats/summary`` and ``configz`` over ``nodes/proxy`` as a kubelet would."""
+    import json
+
+    def proxy(name, path, **kw):
+        if path == "stats/summary" and name in summaries:
+            used, available = summaries[name]
+            body = {"node": {"fs": {"usedBytes": used, "availableBytes": available}}}
+        elif path == "configz" and name in (configs or {}):
+            body = {"kubeletconfig": {"evictionHard": {"nodefs.available": configs[name]}}}
+        else:
+            raise RuntimeError(f"no {path} for {name}")
+        return types.SimpleNamespace(data=json.dumps(body).encode(), release_conn=lambda: None)
+
+    core.connect_get_node_proxy_with_path = proxy
+
+
+def _disk_node(name, disk="249Gi"):
+    node = _node(name)
+    node.status.allocatable["ephemeral-storage"] = disk
+    return node
+
+
+GIB = 1024 ** 3
+
+
+def test_free_disk_is_what_the_kubelet_measures_less_its_eviction_threshold(monkeypatch):
+    """A node's disk also holds its images and its logs, which no pod requested. Admitting by
+    requests alone placed a job asking for 138Gi on a node with 80GB actually left, and the
+    kubelet evicted it -- and the node's other pods -- at its threshold."""
+    p, core = _provider([_disk_node("small")], [], monkeypatch)
+    _kubelet(core, {"small": (170 * GIB, 80 * GIB)}, {"small": "5%"})
+    free = p.budget().nodes[0].free_ephemeral
+    assert free == 80 * GIB - int(250 * GIB * 0.05)
+    assert free < 138 * GIB, "the job that was evicted there would no longer fit"
+
+
+def test_the_request_figure_still_bounds_a_node_whose_disk_is_mostly_free(monkeypatch):
+    p, core = _provider([_disk_node("big", disk="100Gi")],
+                        [_pod("big", _c(cpu="1", disk="60Gi"))], monkeypatch)
+    _kubelet(core, {"big": (10 * GIB, 1000 * GIB)}, {"big": "10%"})
+    assert p.budget().nodes[0].free_ephemeral == 40 * GIB
+
+
+def test_an_unstated_eviction_threshold_is_the_kubelet_default(monkeypatch):
+    p, core = _provider([_disk_node("n")], [], monkeypatch)
+    _kubelet(core, {"n": (100 * GIB, 100 * GIB)})
+    assert p.budget().nodes[0].free_ephemeral == 100 * GIB - 20 * GIB
+
+
+def test_a_node_whose_disk_cannot_be_read_keeps_the_request_figure(monkeypatch):
+    """Unknown is not full: refusing every job over an unreadable meter would stop the
+    cluster, so the request arithmetic stands alone."""
+    p, core = _provider([_disk_node("n", disk="249Gi")], [], monkeypatch)
+    _kubelet(core, {})
+    assert p.budget().nodes[0].free_ephemeral == 249 * GIB
+
+
+def test_an_eviction_threshold_is_a_percentage_or_a_quantity():
+    assert cluster_capacity.eviction_threshold_bytes("5%", 200 * GIB) == 10 * GIB
+    assert cluster_capacity.eviction_threshold_bytes("10Gi", 200 * GIB) == 10 * GIB
+    with pytest.raises(ValueError):
+        cluster_capacity.eviction_threshold_bytes("lots", 200 * GIB)
