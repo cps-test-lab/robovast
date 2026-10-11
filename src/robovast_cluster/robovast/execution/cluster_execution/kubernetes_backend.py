@@ -1494,12 +1494,23 @@ class BatchJobRunner:
         """
         if calibration is None:
             return None
+        # One rendering per node and set of figures. The queue asks this for every queued
+        # item on every node on every drain, under its lock, and rendering a manifest per ask
+        # made a pass over a queue of thousands take minutes -- during which no finished run
+        # was replaced and every status read waited. Every job of a batch is the same shape,
+        # so the answer changes only when the node's figures do; a node's figures are
+        # replaced, never mutated, so identity is the test.
+        rendered: dict = {}
 
         def _sizing(node_id):
             figures = self._node_figures(node_id)
             if not figures:
                 return None
-            return self._job_sizing(job, total_jobs, node_figures=figures)
+            cached = rendered.get(node_id)
+            if cached is None or cached[0] is not figures:
+                cached = (figures, self._job_sizing(job, total_jobs, node_figures=figures))
+                rendered[node_id] = cached
+            return cached[1]
 
         return _sizing
 
