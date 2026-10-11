@@ -2359,7 +2359,6 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     here, so there is no deployment without authentication.
     """
     from kubernetes import client  # pylint: disable=import-outside-toplevel
-    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
 
     from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
 
@@ -2409,13 +2408,15 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     # by this run: setup only writes it when ROBOVAST_REGISTRY_* are in the environment,
     # so on a re-run -- the normal case -- it is simply already there. Looking it up is
     # therefore the difference between a service that starts and one that sits in
-    # ImagePullBackOff while setup prints "completed successfully". Same lookup the
-    # campaign pods do (see KubernetesBackend.build_job_manifest).
-    try:
-        core.read_namespaced_secret(REGISTRY_PUSH_SECRET_NAME, namespace)
-        pull_secret = REGISTRY_PUSH_SECRET_NAME
-    except ApiException:
-        pull_secret = ""
+    # ImagePullBackOff while setup prints "completed successfully". The campaign pods'
+    # resolution, so a configured pull Secret applies here too.
+    from .cluster_execution import resolve_pull_secret  # noqa: PLC0415
+    from .cluster_setup import get_cluster_config  # noqa: PLC0415
+    cluster_config = get_cluster_config(config_name)
+    if cluster_config is None:
+        raise ValueError("deploy_service needs the cluster config name: the service's own "
+                         "pull Secret is resolved from that config's registry settings")
+    pull_secret = resolve_pull_secret(cluster_config, core, namespace)
 
     # Reuse the deployed token unless asked for a new one; mint one the first time.
     from robovast.service.auth import generate_token  # pylint: disable=import-outside-toplevel

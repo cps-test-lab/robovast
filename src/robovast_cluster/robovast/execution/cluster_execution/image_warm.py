@@ -388,7 +388,7 @@ def delete_warm_daemonset(namespace: str, kube_context=None) -> bool:
     return True
 
 
-def warm_family_images(namespace: str, kube_context=None) -> list:
+def warm_family_images(namespace: str, kube_context=None, *, cluster_config) -> list:
     """Hold the family images on every node. Returns the refs covered.
 
     Called from ``setup``/``upgrade`` because that is the moment every node is cold for the
@@ -404,13 +404,17 @@ def warm_family_images(namespace: str, kube_context=None) -> list:
     One object rather than a Job per member, so unlike the Job path there is no partial
     outcome to report: the whole family is declared or none of it is. That is the trade for
     covering every node, and the cost is bounded by this never being able to fail its caller.
+
+    The pull credential is *cluster_config*'s, resolved by
+    :func:`~.cluster_execution.resolve_pull_secret` exactly as for every campaign pod, so a
+    registry that takes the configured Secret warms with it.
     """
     from datetime import datetime, timezone
 
     from kubernetes import client
 
+    from .cluster_execution import resolve_pull_secret
     from .kube_client import load_kube_config
-    from .service_deploy import REGISTRY_PUSH_SECRET_NAME
 
     try:
         load_kube_config(kube_context)
@@ -421,18 +425,10 @@ def warm_family_images(namespace: str, kube_context=None) -> list:
         logger.warning("could not prewarm the family images: %s", e)
         return []
 
-    # Looked for rather than assumed, the same way the service resolves it: naming a Secret
-    # that does not exist keeps the pod from starting, so a deployment on a public registry
-    # must warm *without* a credential rather than not at all.
-    try:
-        core.read_namespaced_secret(REGISTRY_PUSH_SECRET_NAME, namespace)
-        pull_secret = REGISTRY_PUSH_SECRET_NAME
-    except Exception:  # noqa: BLE001 - absent, or unreadable; either way, no credential
-        pull_secret = ""
-
     try:
         apply_warm_daemonset(apps, namespace, warm_daemonset_manifest(
-            image_refs=refs, namespace=namespace, pull_secret_name=pull_secret,
+            image_refs=refs, namespace=namespace,
+            pull_secret_name=resolve_pull_secret(cluster_config, core, namespace),
             stamp=datetime.now(timezone.utc).isoformat()))
     except Exception as e:  # noqa: BLE001 - as above: a slow first pod, not a failed deploy
         logger.warning("could not prewarm the family images: %s", e)
