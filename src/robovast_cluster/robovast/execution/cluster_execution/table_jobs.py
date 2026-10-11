@@ -55,8 +55,8 @@ import shlex
 import uuid
 from typing import Callable, Iterable, List, Optional
 
-from robovast.results_processing.table_parts import (Part, clear_parts, merge_parts, plan_units,
-                                                     write_part)
+from robovast.results_processing.table_parts import (Part, clear_parts, merge_parts, pack_units,
+                                                     plan_units, write_part)
 
 from .campaign_job import campaign_job_manifest, pin_campaign_job
 from .cluster_execution import _label_safe_campaign
@@ -121,22 +121,6 @@ def _staged_bytes(campaign_dir: str, part: Part) -> int:
                 except OSError:
                     pass
     return total
-
-
-def _pack(units: List[Part], budget: int) -> List[tuple]:
-    """*units* in parts of at most *budget* runs, in order; ``[(part, its units)]``. A unit
-    larger than the budget is a part alone."""
-    parts, current, members = [], Part(name=""), []
-    for unit in units:
-        if current.runs and len(current.runs) + len(unit.runs) > budget:
-            parts.append((current, members))
-            current, members = Part(name=""), []
-        current.runs += unit.runs
-        current.jobs += unit.jobs
-        members.append(unit)
-    if current.runs:
-        parts.append((current, members))
-    return parts
 
 
 class TablePods:
@@ -224,8 +208,8 @@ class TablePods:
     def _items(self, tables):
         def make_items(units: List[Part], level: int) -> List[Item]:
             items = []
-            for index, (part, members) in enumerate(_pack(list(units),
-                                                          max(1, self.budget >> level))):
+            for index, (part, members) in enumerate(
+                    pack_units(list(units), max(1, self.budget >> level))):
                 part.name = f"g{level}-p{index}"
                 write_part(self.campaign_dir, part)
                 name = job_name(self.campaign_id, self.build, level, index)

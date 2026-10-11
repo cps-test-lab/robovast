@@ -8,8 +8,7 @@ import shutil
 import pytest
 
 from robovast.results_processing.table_parts import (build_part, merge_parts, part_skip,
-                                                     plan_parts, read_part, split_part,
-                                                     write_part)
+                                                     plan_parts, read_part, write_part)
 from robovast_data import Campaign
 from robovast_decode.tables import read_manifest, compacted_runs
 from tests.robovast_data.conftest import nav_campaign
@@ -79,10 +78,10 @@ def test_parts_hold_whole_units_within_the_budget(campaign):
     assert [p.runs for p in parts] == [["cfg-a/0", "cfg-a/1"], ["cfg-a/2", "cfg-b/0"],
                                        ["cfg-b/1"]]
     assert all(len(p.jobs) == len(p.runs) for p in parts)
-    halves = split_part(str(campaign), parts[0])
-    assert [h.runs for h in halves] == [["cfg-a/0"], ["cfg-a/1"]]
+    assert [p.runs for p in plan_parts(str(campaign), runs_per_part=1)] == [
+        [f"{c}/{r}"] for c, r in RUNS]
     with pytest.raises(ValueError):
-        split_part(str(campaign), halves[0])
+        plan_parts(str(campaign), runs_per_part=0)
 
 
 def test_a_part_stages_its_runs_and_nothing_of_another(campaign, tmp_path):
