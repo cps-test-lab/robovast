@@ -936,6 +936,10 @@ queryable live and the ``runs`` table and ``run_view`` are built from those
 rows rather than by re-parsing every ``test.xml`` — see
 :ref:`the campaign store schema <campaign-store>`.
 
+A run's status is never read from its Job. On a cluster a failed trial fails its Job too,
+and a Job can fail without a trial having failed; how each way a trial ends maps onto its
+Job and its status is in :ref:`cluster-trial-outcomes`.
+
 .. _stopping-one-job:
 
 A run somebody stopped: ``killed``
@@ -1005,6 +1009,8 @@ A campaign whose archive has no ``_transient`` cannot be checked this way, and s
 the log rather than reporting a complete design it cannot vouch for.
 
 
+.. _results-invalid:
+
 A trial the runner threw away: ``invalid``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -1013,6 +1019,10 @@ The simulator (or the system under test) took the run's state with it; the conta
 kubelet starts in its place runs no workload, and the runner ends the job as soon as it reads
 the restart off the pod. Whatever verdict the scenario reached in between describes a trial
 that had already lost its process.
+
+The scenario container itself is not restarted, but an OOM kill of it is read the same way:
+the kill takes its post-run with it, so the pod's uploader waits for a marker that never
+comes, and the runner ends the job rather than letting it run on to its deadline.
 
 **It is the one status that overrides a written verdict**, and that inverts the rule stated
 for ``killed`` just above. The inversion is the whole reason it is a separate kind rather

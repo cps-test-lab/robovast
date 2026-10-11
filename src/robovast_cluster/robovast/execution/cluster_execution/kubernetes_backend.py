@@ -2941,9 +2941,9 @@ class BatchJobRunner:
                                               campaign_root) -> None:
         """Record the jobs whose pod ended on a container OOM-killed at a measured figure.
 
-        The restart path sees only a container the pod restarts. The scenario container is
-        not restarted, so its kill ends the pod instead, and is read here. Asked only once
-        some node has figures: before that there is no measured figure to be killed at.
+        The restart path sees a container the pod restarts, and a scenario container killed
+        while its pod runs on. A kill that ended the pod is read here. Asked only once some
+        node has figures: before that there is no measured figure to be killed at.
         """
         calibration = getattr(self, "_calibration", None)
         if calibration is None or not calibration.outcome().get("calibrated"):
@@ -3054,7 +3054,8 @@ class BatchJobRunner:
             log_text, log_status = ("", "unavailable")
             if pod_name:
                 log_text, log_status = previous_container_log(
-                    self.k8s_client, self.namespace, pod_name, record["container"])
+                    self.k8s_client, self.namespace, pod_name, record["container"],
+                    previous=record.get("log") != "current")
             record.update({
                 "job_name": job_name,
                 "job_dir": job_dir,
