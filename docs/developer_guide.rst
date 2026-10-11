@@ -2424,10 +2424,8 @@ a hook. Switching while the app runs needs those panels to read from ``useTheme(
 every token a panel uses to live on the theme — that is the entire delta, and nothing in the
 current shape blocks it.
 
-Import a token instead of writing a hex. Before this module the surfaces were spread across the
-theme and two components, the panel-canvas colour was copied into six files, the series scale
-existed twice — with a comment on one copy asking the other to please stay in sync — and the
-scenario tree and the log view each had their own private green and red.
+Import a token instead of writing a hex: a colour written out in a component is a second copy
+of a token, and the two drift apart.
 
 **Extending.** Add an operation by giving ``robovastClient.ts`` a method mirroring the
 new interface op, then a page/tab that queries it.
@@ -2523,9 +2521,9 @@ touching any panel:
   Module-Federation remotes (see below) and never touch the static registry. The ``.vast``'s
   ``visualization.results.run_view.panels`` specs are normalized by ``parsePanels.ts`` (single-key
   shorthand → ``{type, ...fields}``; the same shorthand is accepted by the Pydantic schema,
-  see ``PanelConfig._flatten_shorthand``). Valid ``type`` values are the core built-ins
+  see ``PanelConfigBase._flatten_shorthand``). Valid ``type`` values are the core built-ins
   (``BUILTIN_PANEL_TYPES``) ∪ installed ``robovast.panel_types`` entry-point names ∪
-  ``custom`` — validated in ``PanelConfig._known_type`` in :mod:`robovast.common.config`
+  ``custom`` — validated in ``PanelConfigBase._known_type`` in :mod:`robovast.common.config`
   (so a package panel is valid only when its plugin is installed). Adding a core built-in
   is still one file + one ``BUILTIN_PANEL_TYPES`` entry.
 
@@ -2643,11 +2641,10 @@ the host's modules. A derived panel inherits every later improvement to the buil
 ordering, node-kind glyphs, feedback, source lines, scrolling — instead of needing them
 implemented twice.
 
-The package did once ship a full port of the built-in panel in plain React; it was deleted for
-exactly that reason. Deleting the *type* along with it was a mistake worth recording: a type name
-is not a duplicate. Configs name it (frozen ``_config`` copies of past campaigns included), and
-``PanelConfig._known_type`` validates against installed entry points, so removing the entry point
-turned every one of those configs into a validation error and an "Unknown panel type" box.
+A derived panel replaces a renderer; it never removes the *type*. A type name is not a
+duplicate: configs name it (frozen ``_config`` copies of past campaigns included), and
+``PanelConfigBase._known_type`` validates against installed entry points, so removing the entry point
+turns every one of those configs into a validation error and an "Unknown panel type" box.
 
 The rule, then: **a package needs a renderer only when the host cannot draw its data at all.**
 ``costmap`` qualifies — binary grids need their own service endpoint. A package whose data is a
