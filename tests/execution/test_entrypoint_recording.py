@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """RoboVAST records the run: the entrypoint starts the scenario's bag recorder itself.
 
-What a run records is a property of the campaign (its ``recording:`` block, arriving in the
-container as the ``RECORD_*`` variables) and not of the scenario text. The entrypoint builds
+What a run records is a property of the campaign (its ``execution.recording`` block, arriving in
+the container as the ``RECORD_*`` variables) and not of the scenario text. The entrypoint builds
 the recorder line from those variables, starts it before the runner in a campaign job, which
 names the run's directory, and the cleanup scripts close it -- INT, a bounded wait, KILL --
 before the definitions are dumped. Both recorders write through and split, from one storage

@@ -31,8 +31,6 @@ A ``.vast`` configuration file has the following top-level structure:
      ...
    results_processing:
      ...
-   recording:
-     ...
    visualization:
      ...
 
@@ -1025,14 +1023,14 @@ reads this table. See the scenario-execution documentation for the file format.
 **The entrypoint's infrastructure recorder is fixed at** ``/rosout`` and ``/clock``, which is
 exactly what the merged :ref:`run_log <merged-run-log>` needs: ``/rosout`` for the lines,
 ``/clock`` for the sim↔wall mapping (each message's receive time is wall and its content is sim
-— see :ref:`clock-map`). What a run records *beyond* that is the top-level
-:ref:`recording: <recording-config>` block's to say.
+— see :ref:`clock-map`). What a run records *beyond* that is
+:ref:`execution.recording <recording-config>`'s to say.
 
 This is the *infrastructure* recording, deliberately separate from the run's own bag: it starts
 with the container, so it sees the stack coming up before any scenario does, and it runs on
 the wall clock for the whole job. The run's bag is stamped with the simulator's clock when the
-campaign says so (``recording.ros2.use_sim_time``), so both of its axes are sim and it cannot
-carry that relation at any price. ROS images only; ignored where ``ros2`` is not on PATH.
+campaign says so (``execution.recording.ros2.use_sim_time``), so both of its axes are sim and it
+cannot carry that relation at any price. ROS images only; ignored where ``ros2`` is not on PATH.
 
 .. note::
 
@@ -1218,13 +1216,62 @@ waiting on a simulator, whatever this says.
    Refused as well: which runner starts is only decided inside the container. The ROS runner
    runs the durations on wall time, the non-ROS one as in the stepped shape.
 
-This is independent of ``recording.ros2.use_sim_time``, which stamps the run's bag.
+This is independent of :ref:`recording.ros2.use_sim_time <recording-config>`, which stamps the
+run's bag.
 
 .. code-block:: yaml
 
    execution:
      mode: ros2
      use_sim_time: false   # the scenario launches the simulator itself
+
+.. _recording-config:
+
+recording
+^^^^^^^^^
+
+**Required:** No
+
+What every run records, per recorder. RoboVAST records the run's ROS bag itself: the entrypoint
+starts ``ros2 bag record`` into ``<run>/rosbag2`` before the scenario and stops it after, so the
+bag spans the whole trial and the scenario has nothing to start. An absent block records
+everything; the block narrows it, and says which clock stamps the messages.
+
+.. code-block:: yaml
+
+   execution:
+     recording:
+       ros2:
+         topics: all                          # or names and regexes: [/odom, /tf, '^/camera/']
+         exclude: ['^/camera/.*/image_raw$']  # regexes over the topic name; an exclude wins
+         exclude_types: [sensor_msgs/msg/Image]
+         use_sim_time: true                   # stamp with the simulator's clock
+       roqsim:                                # only with backend: roqsim
+         rate_hz: 25                          # the simulator's capture rate
+         tracks: all                          # or patterns over <entity>/<body-or-joint>
+         exclude: []                          # patterns; an exclude wins
+
+``ros2`` maps one-to-one onto ``ros2 bag record``: ``topics: all`` is ``-a``; a listed name goes
+to ``--topics`` and an entry starting with ``^`` is a regex for ``-e``; ``exclude`` is
+``--exclude-regex``, ``exclude_types`` is ``--exclude-topic-types`` and ``use_sim_time`` is
+``--use-sim-time``. ``use_sim_time: true`` is what every campaign that reads its tables in sim
+seconds wants (see :ref:`one clock per run <run-clock>`); the default is rosbag2's own,
+``false``. It stamps the bag only; the clock a scenario's own durations run on is
+:ref:`execution.use_sim_time <scenario-clock>`. Hidden topics are always admitted
+(``--include-hidden-topics``): an action's ``/<name>/_action/feedback`` and ``status`` are
+hidden, rosbag2 drops a hidden topic even when ``topics`` names it, and the
+``action_<name>_feedback``/``_status`` tables are read from exactly those.
+
+``roqsim`` is the simulator's own recording (``<run>/roqsim_bag``): the capture rate, and which
+tracks it holds as patterns over ``<entity>/<body-or-joint>`` — ``robot/**`` is all of an entity,
+``robot/*`` its direct children. Only the keys set are passed on, so the simulator's defaults
+stay the simulator's. The world's entity roster is not checked here; roqsim refuses a pattern
+naming nothing at run start.
+
+Validation refuses what would otherwise fail after the compute is spent: ``roqsim`` knobs on a
+campaign whose simulator is not roqsim, a topic a ``rosbags_*`` entry or a camera panel names that
+``topics`` does not capture, and a scenario that calls ``bag_record(...)`` — RoboVAST records
+``<run>/rosbag2`` and a second recorder would write the same directory.
 
 run_as_user
 ^^^^^^^^^^^
@@ -1780,53 +1827,6 @@ An archived campaign carrying either key still reads, retriggers and seeds a wor
 keys never affected its run, so they are dropped from the copy with a log line.
 
 
-.. _recording-config:
-
-Recording Section
------------------
-
-**Required:** No
-
-What every run records, per recorder. RoboVAST records the run's ROS bag itself: the entrypoint
-starts ``ros2 bag record`` into ``<run>/rosbag2`` before the scenario and stops it after, so the
-bag spans the whole trial and the scenario has nothing to start. An absent block records
-everything; the block narrows it, and says which clock stamps the messages.
-
-.. code-block:: yaml
-
-   recording:
-     ros2:
-       topics: all                          # or names and regexes: [/odom, /tf, '^/camera/']
-       exclude: ['^/camera/.*/image_raw$']  # regexes over the topic name; an exclude wins
-       exclude_types: [sensor_msgs/msg/Image]
-       use_sim_time: true                   # stamp with the simulator's clock
-     roqsim:                                # only with backend: roqsim
-       rate_hz: 25                          # the simulator's capture rate
-       tracks: all                          # or patterns over <entity>/<body-or-joint>
-       exclude: []                          # patterns; an exclude wins
-
-``ros2`` maps one-to-one onto ``ros2 bag record``: ``topics: all`` is ``-a``; a listed name goes
-to ``--topics`` and an entry starting with ``^`` is a regex for ``-e``; ``exclude`` is
-``--exclude-regex``, ``exclude_types`` is ``--exclude-topic-types`` and ``use_sim_time`` is
-``--use-sim-time``. ``use_sim_time: true`` is what every campaign that reads its tables in sim
-seconds wants (see :ref:`one clock per run <run-clock>`); the default is rosbag2's own,
-``false``. It stamps the bag only; the clock a scenario's own durations run on is
-:ref:`execution.use_sim_time <scenario-clock>`. Hidden topics are always admitted
-(``--include-hidden-topics``): an action's ``/<name>/_action/feedback`` and ``status`` are
-hidden, rosbag2 drops a hidden topic even when ``topics`` names it, and the
-``action_<name>_feedback``/``_status`` tables are read from exactly those.
-
-``roqsim`` is the simulator's own recording (``<run>/roqsim_bag``): the capture rate, and which
-tracks it holds as patterns over ``<entity>/<body-or-joint>`` — ``robot/**`` is all of an entity,
-``robot/*`` its direct children. Only the keys set are passed on, so the simulator's defaults
-stay the simulator's. The world's entity roster is not checked here; roqsim refuses a pattern
-naming nothing at run start.
-
-Validation refuses what would otherwise fail after the compute is spent: ``roqsim`` knobs on a
-campaign whose simulator is not roqsim, a topic a ``rosbags_*`` entry or a camera panel names that
-``topics`` does not capture, and a scenario that calls ``bag_record(...)`` — RoboVAST records
-``<run>/rosbag2`` and a second recorder would write the same directory.
-
 Results Processing Section
 --------------------------
 
@@ -1898,8 +1898,8 @@ the run's own, ``logs/rosout_bag`` for the job's infrastructure recording):
   events from a wall clock even under ``use_sim_time``, so that stamp is kept as
   ``event_timestamp``. The log has no tree topology; the ``nav2_bt_tree`` step (below)
   reconstructs the tree. No parameters. Requires ``/behavior_tree_log`` in the run's bag, which
-  it is unless :ref:`recording: <recording-config>` leaves it out; a recording that carries it
-  gets this table without the entry.
+  it is unless :ref:`execution.recording <recording-config>` leaves it out; a recording that
+  carries it gets this table without the entry.
 - ``rosbags_to_csv``: a ``rosbag2_<topic>`` table for each of the listed ``topics`` (``/cmd_vel``
   → ``rosbag2_cmd_vel``), one row per message with one column per scalar field, flattened, and
   ``timestamp`` the receive time in nanoseconds. Every recorded topic that is not bulk data
@@ -1996,7 +1996,7 @@ campaign — so here they are together. A reader who finds only one of them gets
 
 .. code-block:: yaml
 
-   # 1. the run's bag holds the image topic: it does unless a `recording:` block
+   # 1. the run's bag holds the image topic: it does unless `execution.recording`
    #    narrows `topics` -- then the topic has to be in it (validation checks)
 
    # 2. the decoder encodes the recorded frames into a video, and registers it

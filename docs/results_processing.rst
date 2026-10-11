@@ -285,7 +285,7 @@ the decoder encodes into the run directory because a browser plays it from there
 
 ``rosbag2/`` is the run's bag, and RoboVAST records it: the job's entrypoint starts
 ``ros2 bag record`` before the scenario and stops it after, holding what the ``.vast``'s
-:ref:`recording: <recording-config>` block says (everything, by default). It is a standard
+:ref:`execution.recording <recording-config>` block says (everything, by default). It is a standard
 ROS 2 bag in MCAP storage, written **through** rather than cached and split into a new segment
 every 10 s, so a running run's bag is readable as it grows: a closed segment is read whole, the
 open one up to its last complete record. The storage plugin flushes in 4 KiB steps, so the newest messages
@@ -550,8 +550,8 @@ One clock per run
 ^^^^^^^^^^^^^^^^^
 
 **Every table built from a recording timestamps its rows with the bag's receive time.** Under
-``recording.ros2.use_sim_time: true`` that is the *simulator's* clock, and it is the right one to key
-on: it is what the simulator actually stepped, so it is identical across simulators and independent
+``execution.recording.ros2.use_sim_time: true`` that is the *simulator's* clock, and it is the right
+one to key on: it is what the simulator actually stepped, so it is identical across simulators and independent
 of how fast the machine ran — the same trial can take very different wall times on two backends
 and still span the same sim seconds.
 
@@ -565,8 +565,8 @@ and carries nav2's stamp as ``event_timestamp``.
 Seconds everywhere, except in a topic's own ``rosbag2_<topic>`` table, whose ``timestamp`` is in
 nanoseconds.
 
-Keeping ``/clock`` in the run's bag -- it is there unless ``recording.ros2`` leaves it out -- is
-worth the negligible space: it makes the sim↔wall mapping recoverable, so a foreign-clock topic can
+Keeping ``/clock`` in the run's bag -- it is there unless ``execution.recording.ros2`` leaves it
+out -- is worth the negligible space: it makes the sim↔wall mapping recoverable, so a foreign-clock topic can
 be *related* to sim time afterwards instead of guessed at.
 
 .. _pose-contract:

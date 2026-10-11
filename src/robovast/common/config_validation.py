@@ -784,25 +784,26 @@ def _topic_is_recorded(topic, topics, exclude):
 
 
 def _recording_problems(raw, scenario_file):
-    """The ``recording:`` block against the rest of the campaign.
+    """The ``execution.recording`` block against the rest of the campaign.
 
     Each of these is a campaign that runs and passes, and then has not recorded what its
     results side reads -- found after the compute is spent, in a table that is empty or a
     panel with nothing to play. So each is refused here, before any of that:
 
-    * ``recording.roqsim`` on a campaign whose simulator is not roqsim: the knobs would be
-      set for a process that never reads them;
-    * a topic a decoder entry or a camera panel names that ``recording.ros2.topics`` does not
-      capture, by name, by regex, or because an exclude removes it;
+    * ``execution.recording.roqsim`` on a campaign whose simulator is not roqsim: the knobs
+      would be set for a process that never reads them;
+    * a topic a decoder entry or a camera panel names that ``execution.recording.ros2.topics``
+      does not capture, by name, by regex, or because an exclude removes it;
     * a scenario that starts a bag recorder of its own: RoboVAST records the run's bag at
       ``<run>/rosbag2``, and a second recorder would write the same directory.
 
-    The world's entity roster is deliberately not checked against ``recording.roqsim.tracks``:
+    The world's entity roster is deliberately not checked against
+    ``execution.recording.roqsim.tracks``:
     only the simulator knows it, and roqsim refuses a pattern naming nothing at run start.
     """
     problems = []
     execution = raw.get("execution") if isinstance(raw.get("execution"), dict) else {}
-    recording = raw.get("recording")
+    recording = execution.get("recording")
     if isinstance(recording, dict):
         if recording.get("roqsim") is not None:
             from robovast.common.simulators import \
@@ -812,10 +813,10 @@ def _recording_problems(raw, scenario_file):
                 have = f"'{backend}'" if backend else "no simulator backend"
                 problems.append(_problem(
                     "recording",
-                    f"recording.roqsim configures the roqsim simulator's recording, but this "
+                    f"execution.recording.roqsim configures the roqsim simulator's recording, but this "
                     f"campaign declares {have} (execution.containers.simulation.backend). "
                     "Remove the block, or declare backend: roqsim.",
-                    field="recording.roqsim"))
+                    field="execution.recording.roqsim"))
         ros2 = recording.get("ros2") if isinstance(recording.get("ros2"), dict) else {}
         topics = ros2.get("topics", "all")
         exclude = [e for e in (ros2.get("exclude") or []) if isinstance(e, str)]
@@ -825,10 +826,10 @@ def _recording_problems(raw, scenario_file):
                 if not _topic_is_recorded(topic, topics, exclude):
                     problems.append(_problem(
                         "recording",
-                        f"{field} names topic '{topic}', which recording.ros2 does not "
-                        "record: it is neither listed in topics, matched by a regex there, "
+                        f"{field} names topic '{topic}', which execution.recording.ros2 "
+                        "does not record: it is neither listed in topics, matched by a regex there, "
                         "nor spared by exclude. The table or video built from it would be "
-                        "empty. Add the topic to recording.ros2.topics, or drop the entry.",
+                        "empty. Add the topic to execution.recording.ros2.topics, or drop the entry.",
                         field=field))
 
     if scenario_file:
@@ -843,7 +844,7 @@ def _recording_problems(raw, scenario_file):
                 f"{os.path.basename(scenario_file)} calls bag_record(...), but RoboVAST "
                 "records the run's bag itself at <run>/rosbag2, from before the scenario "
                 "starts until it ends. Both would write the same directory. Remove the "
-                "action; what the bag holds is the .vast's recording: block to say "
+                "action; what the bag holds is the .vast's execution.recording block to say "
                 "(use_sim_time included).",
                 field="execution.scenario_file"))
     return problems

@@ -442,7 +442,7 @@ def _raw(recording=None, *, backend=None, postprocessing=None, panels=None):
         execution["containers"]["simulation"] = {"backend": backend, "config": "pkg:w"}
     raw = {"version": 7, "execution": execution}
     if recording is not None:
-        raw["recording"] = recording
+        execution["recording"] = recording
     if postprocessing is not None:
         raw["results_processing"] = {"postprocessing": postprocessing}
     if panels is not None:
@@ -459,7 +459,7 @@ def test_roqsim_knobs_need_the_roqsim_backend():
     assert _recording_problems(_raw(block, backend="roqsim"), None) == []
     for backend in ("gazebo", None):
         problems = _recording_problems(_raw(block, backend=backend), None)
-        assert _fields(problems) == [("recording.roqsim", "error")]
+        assert _fields(problems) == [("execution.recording.roqsim", "error")]
         assert "roqsim" in problems[0]["message"]
 
 
@@ -496,7 +496,8 @@ def test_a_scenario_that_records_its_own_bag_is_refused(tmp_path):
     osc.write_text("scenario t:\n    do serial:\n        bag_record(['/odom'])\n")
     problems = _recording_problems(_raw(), str(osc))
     assert _fields(problems) == [("execution.scenario_file", "error")]
-    assert "bag_record" in problems[0]["message"] and "recording:" in problems[0]["message"]
+    assert ("bag_record" in problems[0]["message"]
+            and "execution.recording" in problems[0]["message"])
     osc.write_text("scenario t:\n    do serial:\n        wait(1s)\n")
     assert _recording_problems(_raw(), str(osc)) == []
 
@@ -506,8 +507,8 @@ def test_the_recorder_check_runs_through_validate_project_file(tmp_path):
     vast = tmp_path / "rec.vast"
     vast.write_text(
         "version: 7\n"
-        "recording: {ros2: {use_sim_time: true}}\n"
         "execution:\n"
+        "  recording: {ros2: {use_sim_time: true}}\n"
         "  containers: {scenario: {image: 'family:robovast'}}\n"
         "  runs: 1\n"
         "  timeout: 300\n"

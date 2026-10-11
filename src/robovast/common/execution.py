@@ -1091,11 +1091,11 @@ def scenario_env(campaign_data):
     # when the campaign says so and spans the scenario. Exactly what the ``run_log`` table
     # needs and no more: ``/rosout`` for the lines, ``/clock`` to put a wall-stamped line
     # on the playback clock. Stated for the same reason BT_LOG is, and not configurable:
-    # what a run records beyond this is the ``recording:`` block's to say.
+    # what a run records beyond this is ``execution.recording``'s to say.
     env['LOG_TOPICS'] = '/rosout /clock'
 
     # The run's own bag (``<run>/rosbag2``), which the entrypoint records for a single-run
-    # job from before the scenario starts. Derived from the ``.vast``'s ``recording.ros2``
+    # job from before the scenario starts. Derived from the ``.vast``'s ``execution.recording.ros2``
     # block and always stated, defaults included, so the compose file / pod spec says
     # outright what the run recorded: an absent block records every topic.
     #
@@ -1103,7 +1103,7 @@ def scenario_env(campaign_data):
     # topic name carries no whitespace (the model refuses one that does) and the shell
     # splits them back for free; the excludes are joined into one regex because that is the
     # one argument ``--exclude-regex`` takes.
-    recording = recording_config(campaign_data.get("recording"))
+    recording = recording_config(execution.get("recording"))
     ros2 = (recording.ros2 if recording is not None else None) or Ros2RecordingConfig()
     env['RECORD_TOPICS'] = 'all' if ros2.topics == 'all' else ' '.join(ros2.topics)
     env['RECORD_EXCLUDE'] = '|'.join(ros2.exclude)
@@ -1141,7 +1141,7 @@ def sidecar_backend_env(execution: dict, container_name: str) -> dict:
     ``scene3d`` panel with nothing to replay. The stepped shape hid it, because there the
     two containers are one.
 
-    The ``recording:`` block's knobs arrive by the same route: :func:`apply_backend` hands
+    The ``execution.recording`` knobs arrive by the same route: :func:`apply_backend` hands
     the block to the backend's ``env`` hook, so what is stored on ``execution`` already
     says what the simulator was asked to record.
 
