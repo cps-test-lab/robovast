@@ -26,15 +26,13 @@ the implementation was one enumeration behind three signatures.
 """
 
 import fnmatch
-import logging
 import textwrap
 from importlib.metadata import entry_points
 
 from fastmcp import FastMCP
 
+from robovast.client.lazy_group import plugin_load_failure
 from robovast.common.plugin_schema import schema_from_object
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -147,19 +145,11 @@ _PLUGIN_GROUPS: dict[str, dict] = {
 _PANEL_TYPES_GROUP = "robovast.panel_types"
 
 
-def _panel_surface(ep) -> str | None:
-    """The ``SURFACE`` a panel plugin declares, or the default when it declares none.
-
-    Best-effort like every other reflection here: a plugin that fails to import gets ``None``
-    rather than a guess, because "run" would be a wrong answer rather than a missing one.
-    """
-    try:
-        from robovast.common.config import \
-            DEFAULT_PANEL_SURFACE  # pylint: disable=import-outside-toplevel
-        return getattr(ep.load(), "SURFACE", DEFAULT_PANEL_SURFACE)
-    except Exception:  # noqa: BLE001 - a broken plugin must not break the listing
-        logger.debug("could not read SURFACE from panel plugin %r", ep.name)
-        return None
+def _panel_surface(obj) -> str:
+    """The ``SURFACE`` the loaded panel plugin *obj* declares, or the default."""
+    from robovast.common.config import \
+        DEFAULT_PANEL_SURFACE  # pylint: disable=import-outside-toplevel
+    return getattr(obj, "SURFACE", DEFAULT_PANEL_SURFACE)
 
 
 def _doc_from_obj(obj, max_lines: int = 1) -> str | None:
@@ -174,15 +164,6 @@ def _doc_from_obj(obj, max_lines: int = 1) -> str | None:
         return None
     selected = lines if max_lines == 0 else lines[:max_lines]
     return " ".join(selected) or None
-
-
-def _load_doc(ep, max_lines: int = 1) -> str | None:  # type: ignore[type-arg]
-    """Load *ep* and return up to *max_lines* lines of its docstring, or ``None``."""
-    try:
-        return _doc_from_obj(ep.load(), max_lines)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("Could not load %r for doc extraction: %s", ep.value, exc)
-        return None
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +206,9 @@ def list_plugins(group: str = "", query: str = "") -> dict:
         ``{group, description, loader_module, plugins}`` (a count). Otherwise
         ``{plugins, total}``, each ``{group, name, class, doc, distribution, version}``
         — ``doc`` being the docstring's first line, and ``distribution``/``version`` the
-        package that registered it. Use ``get_plugin_details`` for a plugin's parameters.
+        package that registered it. A plugin that is registered but cannot be loaded
+        carries ``load_error`` in place of ``doc``. Use ``get_plugin_details`` for a
+        plugin's parameters.
     """
     if not group and not query:
         return {
@@ -244,10 +227,18 @@ def list_plugins(group: str = "", query: str = "") -> dict:
         for ep in entry_points(group=grp):
             if query and not _matches(ep.name, query):
                 continue
-            record = {"group": grp, "name": ep.name, "class": ep.value,
-                      "doc": _load_doc(ep), **_provider(ep)}
+            record = {"group": grp, "name": ep.name, "class": ep.value, **_provider(ep)}
+            try:
+                obj = ep.load()
+            except Exception as exc:  # noqa: BLE001 - one broken plugin is a row, not the listing
+                # Registered means installed, so this is a broken install -- said, not
+                # listed as a plugin without a docstring.
+                record["load_error"] = plugin_load_failure(ep, exc)
+                records.append(record)
+                continue
+            record["doc"] = _doc_from_obj(obj)
             if grp == _PANEL_TYPES_GROUP:
-                record["surface"] = _panel_surface(ep)
+                record["surface"] = _panel_surface(obj)
             records.append(record)
     records.sort(key=lambda r: (r["group"], r["name"]))
     return {"plugins": records, "total": len(records)}
@@ -285,19 +276,20 @@ def get_plugin_details(group: str, name: str, limit: int = 0) -> dict:
     ep = matches[0]
     try:
         obj = ep.load()
-    except Exception as exc:  # noqa: BLE001 - a broken plugin must not raise here
-        logger.debug("Could not load %r for details: %s", ep.value, exc)
-        obj = None
+    except Exception as exc:  # noqa: BLE001 - answered as the error document
+        # Not an answer without ``parameters``, which reads as "this plugin takes none".
+        return {"error": f"plugin {name!r} in {group!r} is registered but could not be "
+                         f"loaded ({plugin_load_failure(ep, exc)})"}
 
     details = {
         "group": group,
         "name": ep.name,
         "class": ep.value,
-        "doc": _doc_from_obj(obj, limit) if obj is not None else None,
+        "doc": _doc_from_obj(obj, limit),
     }
     if group == _PANEL_TYPES_GROUP:
-        details["surface"] = _panel_surface(ep)
-    parameters = schema_from_object(obj) if obj is not None else None
+        details["surface"] = _panel_surface(obj)
+    parameters = schema_from_object(obj)
     if parameters is not None:
         details["parameters"] = parameters
     return details

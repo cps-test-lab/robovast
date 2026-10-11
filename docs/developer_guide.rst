@@ -206,7 +206,10 @@ removing one does nothing until the owning distribution is reinstalled, and an e
 checkout looks entirely normal in the meantime. The failure mode depends on which group:
 
 * ``robovast.cli_plugins`` degrades **loudly** — ``load_plugins()`` prints
-  ``Warning: Failed to load plugin '<name>'`` and carries on.
+  ``Warning: Failed to load plugin '<name>'`` and carries on, so ``vast`` still starts.
+  The MCP ``get_cli_help`` answers from the same tree, so it refuses instead, naming the
+  plugin, rather than describing a ``vast`` without that group; the same holds for a
+  ``vast cluster`` or ``vast service`` verb that is listed but fails to load.
 * ``robovast.cli_startup`` **refuses** rather than running on, naming the reinstall.
   Degrading silently there costs real damage: with the core installed but its ``.env``
   hook unregistered, no ``./.env`` is read, and ``vast service upgrade`` — which
