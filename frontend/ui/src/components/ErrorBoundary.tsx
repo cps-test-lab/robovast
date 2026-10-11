@@ -9,8 +9,8 @@ import Typography from '@mui/material/Typography'
 import { RobovastError } from '@/lib/robovastClient'
 import { markReloading, reloadAllowed, servedBuildDiffers } from '@/lib/servedBuild'
 
-// React unmounts the whole tree when a render throws and nothing catches it, so before this
-// existed one bad value blanked the entire app: the panels render campaign-supplied data
+// React unmounts the whole tree when a render throws and nothing catches it, so without a
+// boundary one bad value blanks the entire app: the panels render campaign-supplied data
 // (a scene with an unloadable mesh, a plot spec with a bad encoding, a Vega layout the user
 // authored), and `KeepAlive` keeps every visited view mounted, so a broken one stayed
 // mounted and kept throwing. Contain the failure at the view and at the panel, and give the
