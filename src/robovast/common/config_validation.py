@@ -1387,8 +1387,8 @@ def _plugins_problems(raw, vast_dir):
     the network:
 
     * a **workspace path** entry that is not in the project --- the same check
-      a container's ``python_packages`` gets, which top-level ``plugins:`` never had, so a
-      wheel named with a typo surfaced only when a campaign tried to install it;
+      a container's ``python_packages`` gets, so a wheel named with a typo is reported
+      before a campaign tries to install it;
     * a plugin **already installed** in this workspace whose metadata declares a
       dependency on robovast itself. Harmless while the install resolves against the host,
       but it is what would otherwise put a second robovast in the workspace, and only the
