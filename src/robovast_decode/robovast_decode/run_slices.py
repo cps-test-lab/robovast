@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 from . import clock_map
-from .junit import read_test_result
+from .junit import read_test_result, trial_window
 from .layout import MAIN_CONTAINER
 
 #: ``system.log`` / ``resource_usage_main.csv`` / ``system_usage_main.csv`` — the main
@@ -149,10 +149,7 @@ def _read_window(run_dir: Path) -> Tuple[Optional[float], Optional[float]]:
         result = read_test_result(run_dir)
     except (FileNotFoundError, ValueError, OSError):
         return None, None
-    start = result.get("start_epoch")
-    if start is None:
-        return None, None
-    return start, start + (result.get("duration_sec") or 0.0)
+    return trial_window(result)
 
 
 def run_slice(job_dir: str, config_name: str, run_dir, clock: clock_map.ClockMap,
