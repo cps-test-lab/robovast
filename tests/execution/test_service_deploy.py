@@ -317,14 +317,14 @@ def test_deploy_context_stamped_into_service_env():
     # Per-cluster resource lists are keyed by kubeconfig context name; in-cluster
     # there is no kubeconfig, so deploy records the context for the in-pod driver.
     ms = sd.service_manifests(namespace="default", image="x", config_name="rke2",
-                              kube_context="gcp-c4")
+                              kube_context="cloud.example")
     dep = next(m for m in ms if m["kind"] == "Deployment")
     env = {e["name"]: e["value"] for e in
            dep["spec"]["template"]["spec"]["containers"][0]["env"]}
-    assert env["ROBOVAST_KUBE_CONTEXT"] == "gcp-c4"
+    assert env["ROBOVAST_KUBE_CONTEXT"] == "cloud.example"
 
 
-def test_no_context_stamped_when_deploy_uses_active_context():
+def test_no_context_stamped_when_none_is_known():
     ms = sd.service_manifests(namespace="default", image="x", config_name="rke2")
     dep = next(m for m in ms if m["kind"] == "Deployment")
     names = {e["name"] for e in
@@ -346,7 +346,7 @@ def test_service_rbac_can_manage_jobs_pods_and_exec():
     resources = {r for rule in role["rules"] for r in rule["resources"]}
     # The service drives campaigns in-process (no controller pod), so it needs
     # everything such a pod's ServiceAccount would hold: it creates/monitors the
-    # scenario + postprocessing Jobs, their pods/logs, and the per-campaign aux pods
+    # scenario Jobs, their pods/logs, and the per-campaign aux pods
     # it execs into.
     assert {"jobs", "jobs/status"} <= resources
     assert {"pods", "pods/log", "pods/exec"} <= resources
@@ -399,20 +399,13 @@ def test_creating_the_registry_secret_also_wires_it_into_the_deployment(monkeypa
     assert _pod_spec(ms)["imagePullSecrets"] == [{"name": sd.REGISTRY_PUSH_SECRET_NAME}]
 
 
-def test_service_rbac_can_write_the_postprocessing_configmap():
-    """Postprocessing ships its scripts into the Job as a ConfigMap it creates.
-
-    Naming secrets and configmaps in one read-only rule reads as deliberate ("read-only,
-    by name") and is right for the Secret only. Every cluster campaign would then RUN and
-    fail postprocessing with a 403 -- after the compute is spent, which is the expensive
-    place to discover a missing verb.
-    """
+def test_service_rbac_only_reads_configmaps():
+    """The service reads the private-CA ConfigMap by name and writes none."""
     ms = sd.service_manifests(namespace="default", image="x")
     role = next(m for m in ms if m["kind"] == "Role")
     verbs = {v for rule in role["rules"] if "configmaps" in rule["resources"]
              for v in rule["verbs"]}
-    # create + replace + delete are the three postprocess_job.py actually calls.
-    assert {"create", "get", "update", "delete"} <= verbs
+    assert verbs == {"get"}
 
     secret_verbs = {v for rule in role["rules"] if "secrets" in rule["resources"]
                     for v in rule["verbs"]}
@@ -603,8 +596,6 @@ def test_results_volume_follows_the_workspaces_backing():
     # was emitted nowhere, so a storage class produced a Deployment mounting a PVC nothing
     # created and a pod that sat Pending without saying why.
     claims = {m["metadata"]["name"]: m for m in ms if m["kind"] == "PersistentVolumeClaim"}
-    # The index's volume is not among them any more: it moved to the store pod, where it is
-    # a hostPath rather than a claim (see `index_deploy.index_volume`).
     assert set(claims) == {sd.WORKSPACES_VOLUME_NAME, sd.RESULTS_VOLUME_NAME}
     assert all(c["spec"]["storageClassName"] == "fast-rwo" for c in claims.values())
 
@@ -647,3 +638,27 @@ def test_startup_probe_gives_a_resume_room_before_liveness_kills_it():
     # service take minutes to be noticed.
     assert liveness["periodSeconds"] == 20
     assert container["readinessProbe"]["periodSeconds"] == 10
+
+
+def test_query_limits_are_carried_even_when_unset(monkeypatch):
+    monkeypatch.delenv("ROBOVAST_QUERY_MEMORY", raising=False)
+    monkeypatch.delenv("ROBOVAST_QUERY_THREADS", raising=False)
+    env = {e["name"]: e["value"] for e in
+           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
+    assert env["ROBOVAST_QUERY_MEMORY"] == ""
+    assert env["ROBOVAST_QUERY_THREADS"] == ""
+
+
+def test_query_limits_carry_what_the_environment_says(monkeypatch):
+    monkeypatch.setenv("ROBOVAST_QUERY_MEMORY", "4GB")
+    monkeypatch.setenv("ROBOVAST_QUERY_THREADS", "2")
+    env = {e["name"]: e["value"] for e in
+           _pod_spec(sd.service_manifests(namespace="default", image="x"))["containers"][0]["env"]}
+    assert env["ROBOVAST_QUERY_MEMORY"] == "4GB"
+    assert env["ROBOVAST_QUERY_THREADS"] == "2"
+
+
+def test_a_malformed_query_limit_fails_on_the_operators_machine(monkeypatch):
+    monkeypatch.setenv("ROBOVAST_QUERY_THREADS", "two")
+    with pytest.raises(ValueError, match="ROBOVAST_QUERY_THREADS"):
+        sd.service_manifests(namespace="default", image="x")

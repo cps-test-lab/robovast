@@ -25,6 +25,7 @@ no service to reach without one.
 ``robovast.service.client`` re-exports both so existing imports keep working.
 """
 
+import json
 import logging
 from typing import Optional
 
@@ -32,24 +33,29 @@ from robovast.client import file_address
 from robovast.client.app_version import running_version
 from robovast.client.status import Status
 from robovast.service.auth import USER_HEADER
-from robovast.service.interface import (ActionResult, BuildImageRequest, CampaignRef,
+from robovast.service.interface import (ActionResult, BINARY_FILE, BinaryFile,
+                                        BuildImageRequest,
+                                        CampaignLogChunk, CampaignLogRow, CampaignRef,
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, DeleteCampaignsRequest,
                                         DeleteCampaignsResponse, EditFileRequest,
-                                        ERROR_CODE_HEADER, FileListing,
+                                        ERROR_CODE_HEADER, NEXT_STEP_HEADER, FileListing,
                                         FileMeta, FileText, ImageBuildRef, ImageBuildStatus,
                                         ImportCampaignRequest,
                                         ListCampaignsRequest, ListCampaignsResponse,
-                                        JobState, ListJobsResponse, ListWorkspacesResponse,
+                                        JobLogChunk, JobState, ListJobsResponse,
+                                        ListWorkspacesResponse,
                                         LogChunk, McpCalls, McpToolStats,
                                         PreviewResponse, ResourceUsage, RetriggerReport,
                                         RobovastInterface, Routes, SearchHistory,
-                                        ServiceCache, ServiceError, UnsupportedOperation,
+                                        ServiceCache, ServiceError, ServiceUnreachable, TAP_MAX_S,
+                                        UnsupportedOperation,
                                         UploadGrant,
                                         UpgradeInfo,
                                         ValidationReport, WorkOrder,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
-                                        WorldDescription, WriteFileRequest)
+                                        WorldDescription, WriteFileRequest,
+                                        campaign_archive_query)
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +65,55 @@ _CACHE_TIMEOUT_S = 600.0
 
 #: How long a multi-campaign delete may take -- the same walk, over several campaigns.
 _DELETE_CAMPAIGNS_TIMEOUT_S = 600.0
+
+
+def _session(base_url: str):
+    """A ``requests.Session`` that reports a service that does not answer as one sentence.
+
+    Every request the transport makes goes through the session's adapter, the streamed
+    reads included, so this is the one place a connection failure can be caught for all of
+    them. ``requests`` raises it as a ``ConnectionError`` wrapping urllib3's retry
+    bookkeeping; what leaves here is :class:`ServiceUnreachable`, naming the address and
+    the socket-level reason, which is what a caller prints or acts on.
+
+    A refused or timed-out *connection* only: a service that answered slowly is a
+    ``ReadTimeout`` and passes through as it is, since it says something else.
+    """
+    import requests
+    from requests.adapters import HTTPAdapter
+
+    class _Adapter(HTTPAdapter):
+        def send(self, request, **kwargs):
+            try:
+                return super().send(request, **kwargs)
+            except requests.exceptions.ConnectionError as e:
+                raise ServiceUnreachable(base_url, _innermost_reason(e)) from e
+
+    session = requests.Session()
+    adapter = _Adapter()
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+def _innermost_reason(exc: BaseException) -> str:
+    """The socket-level sentence inside a ``requests`` connection error.
+
+    ``requests`` wraps urllib3's ``MaxRetryError``, which carries the real error as its
+    ``reason``; that one's text starts with the connection object's repr. The innermost
+    text, without the repr, is what says "Connection refused" or "certificate verify
+    failed" -- the words a reader, and ``vast login``'s remedy, look for.
+    """
+    import re
+    inner = exc
+    while True:
+        nxt = getattr(inner, "reason", None)
+        if nxt is None and inner.args and isinstance(inner.args[0], BaseException):
+            nxt = inner.args[0]
+        if not isinstance(nxt, BaseException) or nxt is inner:
+            break
+        inner = nxt
+    return re.sub(r"^<[^>]*>: ", "", str(inner)) or inner.__class__.__name__
 
 
 class HTTPTransport(RobovastInterface):
@@ -83,10 +138,9 @@ class HTTPTransport(RobovastInterface):
 
     def __init__(self, base_url: str, timeout: float = 30.0,
                  token: str = "", user: str = ""):
-        import requests
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
-        self.session = requests.Session()
+        self.session = _session(self.base_url)
         if token:
             self.session.headers["Authorization"] = f"Bearer {token}"
         if user:
@@ -124,7 +178,8 @@ class HTTPTransport(RobovastInterface):
                            # exception type itself cannot cross this boundary, and a client
                            # that has to act on which failure this was would otherwise have
                            # to match on the sentence.
-                           code=(resp.headers.get(ERROR_CODE_HEADER) or "").strip())
+                           code=(resp.headers.get(ERROR_CODE_HEADER) or "").strip(),
+                           next_step=(resp.headers.get(NEXT_STEP_HEADER) or "").strip())
 
     # First arg is the URL *route*; **params are query params — named `route` (not
     # `path`) so an endpoint whose query param is itself `path` (workspace file
@@ -261,8 +316,13 @@ class HTTPTransport(RobovastInterface):
             offset=offset, limit=limit))
 
     def read_file(self, address: str, lines: int = 200, offset: int = 0) -> FileText:
-        return FileText.model_validate(self._get(
-            Routes.file(address), **{"as": "text", "lines": lines, "offset": offset}))
+        try:
+            return FileText.model_validate(self._get(
+                Routes.file(address), **{"as": "text", "lines": lines, "offset": offset}))
+        except ServiceError as e:
+            if e.code == BINARY_FILE:
+                raise BinaryFile(address, e.detail) from e
+            raise
 
     def read_file_bytes(self, address: str) -> bytes:
         resp = self.session.get(f"{self.base_url}{Routes.file(address)}",
@@ -303,17 +363,47 @@ class HTTPTransport(RobovastInterface):
         return SearchHistory.model_validate(
             self._get(Routes.campaign_search_history(campaign_id)))
 
-    def get_campaign_logs(self, campaign_id: str, offset: int = 0):
-        return LogChunk.model_validate(
-            self._get(Routes.campaign_logs(campaign_id), offset=offset))
+    def get_campaign_logs(self, campaign_id: str, cursor: str = "", *,
+                          phase: Optional[str] = None, min_level: Optional[str] = None,
+                          grep: Optional[str] = None) -> CampaignLogChunk:
+        return CampaignLogChunk.model_validate(
+            self._get(Routes.campaign_logs(campaign_id), cursor=cursor, phase=phase,
+                      min_level=min_level, grep=grep))
+
+    def iter_campaign_log(self, campaign_id: str, cursor: str = "", *,
+                          phase: Optional[str] = None, min_level: Optional[str] = None,
+                          grep: Optional[str] = None):
+        """Follow the campaign log's SSE stream, as :class:`CampaignLogChunk` per frame.
+
+        The same read as :meth:`get_campaign_logs`, pushed as the phase files change: each
+        ``message`` frame is a chunk of rows whose ``cursor`` is the frame's id where it
+        carries one (the last frame of a read) and the last one seen otherwise; the
+        ``eof`` event is the final, empty chunk. A ``streamerror`` is raised as a
+        :class:`ServiceError` carrying the service's sentence. *cursor* resumes through
+        ``Last-Event-ID``. A streamed chunk's ``phases`` is empty: the stream carries rows.
+        """
+        params = {k: v for k, v in (("phase", phase), ("min_level", min_level),
+                                    ("grep", grep)) if v}
+        route = Routes.campaign_logs_stream(campaign_id)
+        for event, data, event_id in self._sse(route, last_event_id=cursor, **params):
+            if event == "message":
+                cursor = event_id or cursor
+                yield CampaignLogChunk(
+                    rows=[CampaignLogRow.model_validate(r) for r in json.loads(data)],
+                    cursor=cursor)
+            elif event == "eof":
+                yield CampaignLogChunk(cursor=cursor, eof=True)
+                return
+            elif event == "streamerror":
+                raise ServiceError(400, str(json.loads(data)), f"{self.base_url}{route}")
 
     def list_jobs(self, campaign_id: str) -> ListJobsResponse:
         return ListJobsResponse.model_validate(
             self._get(Routes.campaign_jobs(campaign_id)))
 
-    def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
-        return LogChunk.model_validate(
-            self._get(Routes.job_log(campaign_id), job_name=job_name, offset=offset))
+    def get_job_log(self, campaign_id: str, job_name: str, cursor: str = "") -> JobLogChunk:
+        return JobLogChunk.model_validate(
+            self._get(Routes.job_log(campaign_id), job_name=job_name, cursor=cursor))
 
     def get_job_state(self, campaign_id: str, job_name: str) -> JobState:
         return JobState.model_validate(
@@ -327,6 +417,69 @@ class HTTPTransport(RobovastInterface):
         return ExecResult.model_validate(
             self._post(Routes.job_exec(campaign_id), job_name=job_name, command=command,
                        container=container, source=source))
+
+    def tap_job(self, campaign_id: str, job_name: str, selection=None, *,
+                max_seconds: int = TAP_MAX_S, source: str = "api"):
+        """The tap's SSE stream, read as the interface's iterator: one :class:`TapRow` per
+        ``line`` event, the ``eof`` event's :class:`TapEnd` last, and a ``streamerror`` raised
+        as a :class:`ServiceError` carrying the service's sentence. Closing the generator
+        closes the response, which is how the service learns the reader has gone.
+        """
+        del source  # the service records the surface from the route; nothing to pass
+        from robovast.service.interface import TapEnd, TapRow
+        params = {"job_name": job_name, "max_seconds": int(max_seconds),
+                  "selection": ",".join(str(name) for name in (selection or []))}
+        for event, data, _id in self._sse(Routes.job_tap(campaign_id), **params):
+            if event == "line":
+                yield TapRow.model_validate_json(data)
+            elif event == "eof":
+                yield TapEnd.model_validate_json(data or "{}")
+                return
+            elif event == "streamerror":
+                # A refusal on an open stream carries no status of its own; the sentence is
+                # what a caller acts on, and 409 is the pull form's answer to a live job that
+                # cannot be entered as asked.
+                raise ServiceError(409, str(json.loads(data)),
+                                   f"{self.base_url}{Routes.job_tap(campaign_id)}")
+
+    def _sse(self, route: str, *, last_event_id: str = "", **params):
+        """``(event, data, id)`` per server-sent event on *route*, ``"message"`` for an
+        unnamed one and ``""`` for a frame that carries no id.
+
+        One reader for every SSE route a client follows, so the framing -- ``event:``,
+        ``data:`` and ``id:`` lines, a blank line ending the event, comments ignored -- is
+        parsed in one place. Heartbeats are events like any other and reach the caller, which
+        is what lets it tell a quiet stream from a dead one; the read timeout is the data
+        plane's, since a stream may legitimately carry nothing for a while. *last_event_id*
+        is sent as ``Last-Event-ID``, which is how a resumable stream continues.
+        """
+        headers = {"Accept": "text/event-stream"}
+        if last_event_id:
+            headers["Last-Event-ID"] = last_event_id
+        resp = self.session.get(f"{self.base_url}{route}", params=params or None,
+                                timeout=self.DATA_TIMEOUT, stream=True, headers=headers)
+        self.raise_for_status(resp)
+        event, data, event_id = "message", [], ""
+        try:
+            for raw in resp.iter_lines(decode_unicode=True):
+                line = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+                if not line:
+                    if data:
+                        yield event, "\n".join(data), event_id
+                    event, data, event_id = "message", [], ""
+                    continue
+                if line.startswith(":"):
+                    continue
+                field, _, value = line.partition(":")
+                value = value[1:] if value.startswith(" ") else value
+                if field == "event":
+                    event = value
+                elif field == "data":
+                    data.append(value)
+                elif field == "id":
+                    event_id = value
+        finally:
+            resp.close()
 
     def stop(self, campaign_id: str) -> ActionResult:
         return ActionResult.model_validate(self._post(Routes.campaign_stop(campaign_id)))
@@ -445,6 +598,30 @@ class HTTPTransport(RobovastInterface):
             Routes.campaign_postprocessing_run(request.campaign_id),
             json=request.model_dump()))
 
+    def build_campaign_tables(self, request) -> ActionResult:
+        return ActionResult.model_validate(self._post(
+            Routes.campaign_tables_build(request.campaign_id),
+            json=request.model_dump()))
+
+    def clear_campaign_tables(self, campaign_id: str):
+        from robovast.service.interface import CampaignTablesCleared
+        return CampaignTablesCleared.model_validate(
+            self._delete(Routes.campaign_tables(campaign_id)))
+
+    def create_export(self, campaign_id: str, request):
+        from robovast.service.interface import ExportRef
+        return ExportRef.model_validate(self._post(
+            Routes.campaign_exports(campaign_id), json=request.model_dump()))
+
+    def get_export_status(self, campaign_id: str, export_id: str):
+        from robovast.service.interface import ExportStatus
+        return ExportStatus.model_validate(
+            self._get(Routes.campaign_export(campaign_id, export_id)))
+
+    def export_tar_stream(self, campaign_id: str, export_id: str):
+        """Stream a finished export through, chunk by chunk, like the archive."""
+        return self._stream(Routes.campaign_export_download(campaign_id, export_id))
+
     def run_share(self, request) -> ActionResult:
         return ActionResult.model_validate(self._post(
             Routes.campaign_share_run(request.campaign_id),
@@ -477,11 +654,11 @@ class HTTPTransport(RobovastInterface):
                        timeout=COMMAND_LIMIT_S))
 
     def preview_configurations(
-        self, workspace_id: str, max_configs: int = 0, path: str = ""
+        self, workspace_id: str, max_configs: int = 0, path: str = "", wait: bool = True
     ) -> PreviewResponse:
         return PreviewResponse.model_validate(self._post(
             Routes.workspace_preview(workspace_id),
-            json={"max_configs": max_configs, "path": path}))
+            json={"max_configs": max_configs, "path": path, "wait": wait}))
 
     def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
                        entities: bool = False) -> WorldDescription:
@@ -500,9 +677,9 @@ class HTTPTransport(RobovastInterface):
     def list_variation_types(self) -> VariationTypesResponse:
         return VariationTypesResponse.model_validate(self._get(Routes.VARIATION_TYPES))
 
-    #: A data call can spend minutes inside the request — a query is answered by the index
-    #: now rather than by a fetch, but a wide aggregate over a large campaign still runs
-    #: there — and the default 30 s would abort the client mid-answer, leaving the caller
+    #: A data call can spend minutes inside the request — a query builds the tables it names
+    #: on first use, and a wide aggregate over a large campaign runs there too — and the
+    #: default 30 s would abort the client mid-answer, leaving the caller
     #: with a ReadTimeout indistinguishable from a broken service. The web UI never hit
     #: this because ``fetch`` sets no timeout at all.
     DATA_TIMEOUT = 900.0
@@ -550,7 +727,7 @@ class HTTPTransport(RobovastInterface):
         self.raise_for_status(resp)
         return OutputsIngested.model_validate(resp.json())
 
-    def campaign_tar_stream(self, campaign_id: str, selection=None):
+    def campaign_tar_stream(self, campaign_id: str, raw: bool = False):
         """Stream the campaign archive through, chunk by chunk.
 
         Not ``_get``: the body is a gzip stream that can run to ~1TB, so neither end
@@ -558,10 +735,8 @@ class HTTPTransport(RobovastInterface):
         :func:`~robovast.service.project_push.download_campaign_archive` is that, with
         a progress bar and an atomic rename.
         """
-        params = {}
-        if selection is not None:
-            params = {k: v for k, v in selection.model_dump().items() if v}
-        return self._stream(Routes.campaign_archive(campaign_id), **params)
+        return self._stream(Routes.campaign_archive(campaign_id),
+                            **campaign_archive_query(raw))
 
     def workspace_tar_stream(self, workspace_id: str):
         """Stream the workspace archive through, chunk by chunk.
@@ -590,6 +765,18 @@ class HTTPTransport(RobovastInterface):
 
     def ingest_staged(self, slot: str, stream):
         return self._upload(Routes.staged(slot), stream)
+
+    def campaign_frame(self, campaign_id: str, run: str, topic: str,
+                       t: "float | None" = None) -> "tuple[float, bytes]":
+        params = {"run": run, "topic": topic}
+        if t is not None:
+            params["t"] = repr(float(t))
+        resp = self.session.get(f"{self.base_url}{Routes.campaign_frame(campaign_id)}",
+                                params=params, timeout=self.timeout)
+        if resp.status_code == 404:
+            raise KeyError(resp.json().get("detail", "no such frame"))
+        self.raise_for_status(resp)
+        return float(resp.headers["X-Frame-Time"]), resp.content
 
     def campaign_scene_status(self, campaign_id: str, config_name: str,
                               run_id: str) -> "SceneStatus":

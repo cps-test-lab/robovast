@@ -18,6 +18,8 @@ exclude = ["web"]
 [tool.poetry.dependencies]
 python = ">=3.12,<3.14"
 robovast = "^2.0.0"
+# The campaign tables the postprocessing step and the video overlay read.
+robovast-data = "^2.0.0"
 scipy = "^1.11"
 # Imported by the map visualizer (the map2d panel's plot, the notebooks). Declared here
 # because they are this package's imports, rather than left to robovast to carry.

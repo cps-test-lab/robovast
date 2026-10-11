@@ -124,17 +124,6 @@ export function McpToolsPanel({ active }: { active: boolean }) {
   if (stats.isPending) return <CircularProgress size={20} />
   if (stats.isError) return <Alert severity="error">{(stats.error as Error).message}</Alert>
 
-  // The two ways this can be empty are not the same answer, and the panel must not draw the
-  // second as the first: an unreachable index means the record is unknown, not that no tool
-  // has been called. See `mcp_server/tool_stats.py` — the log lives in the central index.
-  if (stats.data.status !== 'ok') {
-    return (
-      <Alert severity="warning">
-        The call record is unavailable: {stats.data.detail || stats.data.status}
-      </Alert>
-    )
-  }
-
   const ranked = rankTools(stats.data.tools)
   const most = maxCalls(ranked)
   const rows = calls.data?.calls ?? []
@@ -180,7 +169,7 @@ export function McpToolsPanel({ active }: { active: boolean }) {
           and the same sentence governs the export button above, which is this record and
           not all history. */}
       <Typography variant="caption" color="text.secondary">
-        Kept in the central index: {retentionNote(stats.data.max_age_s, stats.data.max_rows)}.
+        Kept on the service's workspaces volume: {retentionNote(stats.data.max_age_s, stats.data.max_rows)}.
         Arguments and answers are truncated to a few lines where they are recorded.
         {calls.data ? ` Showing ${rows.length} of ${calls.data.total} matching calls.` : ''}
       </Typography>

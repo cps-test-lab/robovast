@@ -2,7 +2,7 @@
 // file inside it, so what is shared stays visible in one place.
 
 export type { ClockSnapshot, ClockSource } from './clock'
-export { PlaybackClock, useClock } from './clock'
+export { DEFAULT_FOLLOW_BUFFER_S, PlaybackClock, useClock } from './clock'
 
 export type { DataProvider, DataRow, SeriesOptions, SeriesPage } from './dataProvider'
 

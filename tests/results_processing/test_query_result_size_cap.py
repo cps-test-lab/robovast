@@ -3,7 +3,7 @@
 """A query's reply is bounded by its *size*, not only by its row count.
 
 ``max_rows`` and ``_MAX_CELL_BYTES`` bound two axes separately and neither bounds their
-product. Against a real campaign, the **default** ``SELECT * FROM poses`` -- 500 rows,
+product. Against a real campaign, the **default** ``SELECT * FROM wide`` -- 500 rows,
 well inside every documented cap -- serialized to ~270 KB, about 67,000 tokens; the
 5000-row clamp to roughly ten times that. Both were reported as successful replies.
 
@@ -14,11 +14,9 @@ were supposed to prevent it all reported themselves satisfied.
 A caller who wants the data rather than the answer has ``stream_query_csv``, which has no
 row cap at all. This path is for answers.
 
-The rows now come from the central index rather than a per-campaign ``data.db``, which
-changes nothing about the ceiling: it is client-side, applied to the reply after the
-fetch. So the arithmetic is pinned directly on :func:`_cap_result_size` and runs with no
-database at all, and the end-to-end tests -- the ones that also pin what the caller is
-*told* -- run against an ingested campaign when ``ROBOVAST_TEST_PG_DSN`` is set.
+The ceiling is applied to the reply after the fetch. So the arithmetic is pinned directly
+on :func:`_cap_result_size`, and the end-to-end tests -- the ones that also pin what the
+caller is *told* -- run against a campaign directory with one wide table.
 """
 
 # pylint: disable=redefined-outer-name,protected-access  # pytest fixtures; the size
@@ -31,7 +29,7 @@ import pytest
 from robovast.results_processing import data_query
 from robovast.results_processing.data_query import _cap_result_size, query_data_db
 
-from .conftest import DSN, drop_schema, ingest, reset_schema
+from .conftest import write_campaign_db
 
 #: 1 KB per row: nowhere near the 2048-byte cell cap, so nothing is trimmed per-cell.
 WIDE_ROWS = 5000
@@ -96,9 +94,7 @@ def test_the_default_budget_is_the_small_one():
             == _cap_result_size(_rows(WIDE_ROWS), data_query._MAX_RESULT_BYTES))
 
 
-# -- what the caller is told, which needs the index -------------------------
-
-pg = pytest.mark.skipif(not DSN, reason="ROBOVAST_TEST_PG_DSN is not set")
+# -- what the caller is told ----------------------------------------------------
 
 WIDE = "camp-wide-2026-08-10-07150921"
 
@@ -107,57 +103,37 @@ WIDE = "camp-wide-2026-08-10-07150921"
 def wide_campaign(tmp_path_factory):
     """A campaign whose rows are individually legal and collectively enormous.
 
-    Module-scoped: ingesting 5 MB of poses once is the whole cost of this file.
+    Module-scoped: building 5 MB of rows once is the whole cost of this file.
     """
-    if not DSN:
-        pytest.skip("ROBOVAST_TEST_PG_DSN is not set")
-    psycopg = pytest.importorskip("psycopg")
-    import os
-
-    from robovast.common import index_db
-
-    previous = os.environ.get(index_db.DSN_ENV)
-    reset_schema(psycopg)
-    from .conftest import SCHEMA
-    os.environ[index_db.DSN_ENV] = f"{DSN} options=-csearch_path={SCHEMA}"
-
     root = tmp_path_factory.mktemp("wide") / WIDE
-    run = root / "cfg-a" / "0"
-    run.mkdir(parents=True)
-    (root / "_execution").mkdir(parents=True)
-    with (run / "poses.csv").open("w") as handle:
-        handle.write("pose_id,t,blob\n")
-        for i in range(WIDE_ROWS):
-            handle.write(f"run-{i},{i * 0.1},{WIDE_CELL}\n")
-    ingest(root, WIDE)
-
-    yield root
-
-    drop_schema(psycopg)
-    if previous is None:
-        os.environ.pop(index_db.DSN_ENV, None)
-    else:
-        os.environ[index_db.DSN_ENV] = previous
+    write_campaign_db(root, WIDE)
+    (root / "_execution").mkdir(parents=True, exist_ok=True)
+    for config, run in (("cfg-a", 0), ("cfg-a", 1), ("cfg-b", 0), ("cfg-b", 1)):
+        path = root / config / str(run) / "wide.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w") as handle:
+            handle.write("pose_id,t,blob\n")
+            for i in range(WIDE_ROWS // 4):
+                handle.write(f"run-{i},{i * 0.1},{WIDE_CELL}\n")
+    return root
 
 
-@pg
 def test_a_wide_select_is_bounded_by_size(wide_campaign):
     """End to end: the reply, not just the trimming helper, stays inside the ceiling."""
-    result = query_data_db(wide_campaign, "SELECT * FROM poses", max_rows=WIDE_ROWS)
+    result = query_data_db(wide_campaign, "SELECT * FROM wide", max_rows=WIDE_ROWS)
 
     assert len(json.dumps(result).encode()) <= data_query._MAX_RESULT_BYTES * 1.1
     assert result["row_count"] < WIDE_ROWS, "the size cap did not engage"
     assert result["truncated"] is True
 
 
-@pg
 def test_it_says_why_and_what_to_do_instead(wide_campaign):
     """Truncation the caller cannot see is how a partial answer becomes a wrong one.
 
     The note has to distinguish this from the row cap, because the caller's fix differs:
     asking for fewer rows does not help a query whose *rows* are the problem.
     """
-    result = query_data_db(wide_campaign, "SELECT * FROM poses", max_rows=WIDE_ROWS)
+    result = query_data_db(wide_campaign, "SELECT * FROM wide", max_rows=WIDE_ROWS)
 
     note = result.get("note", "")
     assert "ceiling" in note or "KB" in note, note
@@ -165,10 +141,9 @@ def test_it_says_why_and_what_to_do_instead(wide_campaign):
     assert "csv" in note.lower(), "must name the way out for bulk data"
 
 
-@pg
 def test_a_small_result_is_reported_as_untouched(wide_campaign):
     """The cap must be invisible to every query that was already reasonable."""
-    result = query_data_db(wide_campaign, "SELECT COUNT(*) AS n FROM poses")
+    result = query_data_db(wide_campaign, "SELECT COUNT(*) AS n FROM wide")
 
     assert result["row_count"] == 1
     assert result["truncated"] is False
@@ -176,25 +151,23 @@ def test_a_small_result_is_reported_as_untouched(wide_campaign):
     assert _tokens(result) < 100
 
 
-@pg
 def test_the_row_cap_still_applies_on_its_own(wide_campaign):
     """Two independent bounds. A narrow query hits rows, not bytes."""
-    result = query_data_db(wide_campaign, "SELECT pose_id FROM poses", max_rows=10)
+    result = query_data_db(wide_campaign, "SELECT pose_id FROM wide", max_rows=10)
 
     assert result["row_count"] == 10
     assert result["truncated"] is True
     assert "ceiling" not in result.get("note", ""), "this is the row cap, not the size cap"
 
 
-@pg
 def test_a_rendering_caller_can_raise_the_ceiling(wide_campaign):
     """The ceiling is a *token* budget, so it belongs to callers who spend tokens.
 
     The web UI draws the rows rather than reading them, and at the default a run-view chart
-    over ``poses`` stopped at ~120 rows while still reporting the 5000-row cap -- which reads
+    over a wide table stopped at ~120 rows while still reporting the 5000-row cap -- which reads
     as "the run ended here", not "the reply did". A caller who can hold the rows says so.
     """
-    result = query_data_db(wide_campaign, "SELECT * FROM poses", max_rows=WIDE_ROWS,
+    result = query_data_db(wide_campaign, "SELECT * FROM wide", max_rows=WIDE_ROWS,
                            max_bytes=16 * 1024 * 1024)
 
     assert result["row_count"] == WIDE_ROWS, "the raised ceiling was not honoured"
@@ -202,10 +175,9 @@ def test_a_rendering_caller_can_raise_the_ceiling(wide_campaign):
     assert "note" not in result
 
 
-@pg
 def test_the_raised_ceiling_is_still_a_ceiling(wide_campaign):
     """Raised, not removed: a caller asking for more than it named still gets bounded."""
-    result = query_data_db(wide_campaign, "SELECT * FROM poses", max_rows=WIDE_ROWS,
+    result = query_data_db(wide_campaign, "SELECT * FROM wide", max_rows=WIDE_ROWS,
                            max_bytes=256 * 1024)
 
     assert result["row_count"] < WIDE_ROWS
@@ -213,12 +185,11 @@ def test_the_raised_ceiling_is_still_a_ceiling(wide_campaign):
     assert "256 KB" in result["note"], result["note"]
 
 
-@pg
 def test_omitting_the_budget_fails_safe(wide_campaign):
     """The default has to be the *small* one: an agent that forgets the parameter loses a
     query, while a chart that forgets it loses only resolution."""
-    default = query_data_db(wide_campaign, "SELECT * FROM poses", max_rows=WIDE_ROWS)
-    explicit = query_data_db(wide_campaign, "SELECT * FROM poses", max_rows=WIDE_ROWS,
+    default = query_data_db(wide_campaign, "SELECT * FROM wide", max_rows=WIDE_ROWS)
+    explicit = query_data_db(wide_campaign, "SELECT * FROM wide", max_rows=WIDE_ROWS,
                              max_bytes=data_query._MAX_RESULT_BYTES)
 
     assert default["row_count"] == explicit["row_count"]

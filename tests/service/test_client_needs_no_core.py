@@ -23,7 +23,6 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-from unittest.mock import patch
 from click.testing import CliRunner
 
 #: Everything a client install does not ship. `robovast.client`, `robovast.service`'s
@@ -117,6 +116,7 @@ def test_every_client_module_imports_without_the_core(without_core, module):
 @pytest.mark.parametrize("argv", [
     ["--help"], ["login", "--help"], ["logout", "--help"], ["doctor", "--help"],
     ["workspace", "--help"], ["files", "--help"], ["campaign", "wait", "--help"],
+    ["workspace", "list", "--help"], ["image", "status", "--help"],
     ["--version"],
     # The launch path: `workspace run` is the verb this whole distribution exists to
     # make reachable, and it is the client's own -- no entry point in between.
@@ -270,7 +270,7 @@ def test_a_verb_that_talks_to_a_service_gets_that_far(without_core, monkeypatch)
 
     monkeypatch.setattr(service_target, "detected_service_url",
                         lambda: "https://svc.example")
-    with service_target.service_client("", None) as (client, label):
+    with service_target.service_client() as (client, label):
         assert client is not None
         assert "svc.example" in label
 
@@ -296,17 +296,65 @@ def test_waiting_builds_its_own_client(without_core, monkeypatch):
     assert status.phase == "finished"
 
 
-def test_doctor_can_ask_about_a_deployment_without_the_core(without_core):
-    """`check_deployment` imports the cluster package inside the function, because a client
-    install does not have it."""
-    from robovast.client.doctor import check_deployment  # pylint: disable=import-outside-toplevel
+#: Driven in a fresh interpreter, because this one has long since imported the core and the
+#: cluster package, and an import of a module already in ``sys.modules`` reaches no finder.
+#: Every attempt to import a ``robovast`` module the client does not ship, or ``kubernetes``
+#: or ``docker``, is recorded -- including ones a ``try`` would have swallowed.
+_DOCTOR_PROBE = r"""
+import importlib, json, sys
 
-    # The cluster package is made absent here, scoped to this test, rather than in
-    # `CORE_ONLY`: evicting it from sys.modules for the session breaks other suites that hold
-    # references into it. `None` in sys.modules is what makes the deferred import raise;
-    # without it the code would call the cluster and return [] because nothing answered.
-    with patch.dict(sys.modules, {"robovast.execution.cluster_execution": None}):
-        assert check_deployment(namespace="default") == []
+allowed = set(json.loads(sys.argv[1]))
+attempts = []
+
+class Recorder:
+    def find_spec(self, name, path=None, target=None):
+        root = name.partition(".")[0]
+        if root in ("kubernetes", "docker") or (root == "robovast" and name not in allowed):
+            attempts.append(name)
+        return None
+
+sys.meta_path.insert(0, Recorder())
+for module in sorted(allowed):
+    importlib.import_module(module)
+
+from robovast.client import app_version, doctor, login, service_target
+from robovast.service import http_client
+from robovast.service.interface import VersionInfo
+
+doctor.entry_points = lambda group: []    # no plugin installed
+doctor._installed = lambda name: False    # nor any distribution but this one
+login.credentials = lambda: ("https://svc.example", "tok", "me")
+service_target.detected_service_url = lambda: "https://svc.example"
+http_client.RobovastClient.version = lambda self: VersionInfo(
+    robovast_version="2.0.0", code_revision="abc1234", can_build_images=True)
+# The version module's own optional reach for the core's revision is `vast --version`'s,
+# not the doctor's.
+app_version.running_revision = lambda: "abc1234"
+
+checks = doctor.run_checks(flavor="gcp", context="ctx", namespace="ns")
+print(json.dumps({"attempts": sorted(set(attempts)), "checks": [c.name for c in checks]}))
+"""
+
+
+def test_doctor_imports_nothing_beyond_the_client():
+    """At import and when `vast doctor` runs with no plugin installed, the client reaches
+    for no module outside its own distribution -- not the core, not the cluster package,
+    not the Kubernetes or Docker clients. Its other checks come from plugins."""
+    import json  # pylint: disable=import-outside-toplevel
+    import os  # pylint: disable=import-outside-toplevel
+    import subprocess  # pylint: disable=import-outside-toplevel
+
+    allowed = sorted({*_client_modules(), "robovast", "robovast.service", "robovast.execution"})
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in sys.path if p)}
+    out = subprocess.run([sys.executable, "-c", _DOCTOR_PROBE, json.dumps(allowed)],
+                         capture_output=True, text=True, env=env, timeout=120, check=False)
+    assert out.returncode == 0, out.stderr
+    probe = json.loads(out.stdout.strip().splitlines()[-1])
+
+    assert probe["checks"][:2] == ["login", "service"], "the doctor did not run its checks"
+    assert "cluster support" in probe["checks"]
+    assert probe["attempts"] == [], (
+        f"the client reached outside its distribution: {probe['attempts']}")
 
 
 def test_no_service_url_and_no_core_is_a_clear_refusal(without_core):

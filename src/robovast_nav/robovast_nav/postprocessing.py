@@ -16,11 +16,12 @@
 
 """``nav2_bt_tree`` postprocessing plugin: turn nav2's behavior-tree log into a tree.
 
-nav2's ``/behavior_tree_log`` (captured to the ``nav2_behavior_tree`` table by the core
-``rosbags_nav2bt_to_csv`` handler) is a flat stream of status transitions keyed by
-``node_name`` -- it carries no parent/child topology. This plugin reconstructs the
+nav2's ``/behavior_tree_log`` (the ``nav2_behavior_tree`` table, built from the recording
+where the ``rosbags_nav2bt_to_csv`` entry asks for it) is a flat stream of status transitions
+keyed by ``node_name`` -- it carries no parent/child topology. This plugin reconstructs the
 structure from the BT **XML** nav2 loaded (``bt_xml``), joins it with the transition log,
-and emits ``nav2_behaviors.csv`` in the **same schema as scenario_execution's**
+and writes each run's ``nav2_behaviors.csv`` -- the ``nav2_behaviors`` table -- in the
+**same schema as scenario_execution's**
 ``behaviors`` table (``timestamp, behavior_name, behavior_id, parent_id, status,
 status_name, class_name``).
 
@@ -34,20 +35,24 @@ and simply renders less.
 
 Config (``results_processing.postprocessing``)::
 
-    - rosbags_nav2bt_to_csv                       # core: writes nav2_behavior_tree.csv
+    - rosbags_nav2bt_to_csv                       # the nav2_behavior_tree table
     - nav2_bt_tree: { bt_xml: files/nav2_bt.xml } # this plugin: writes nav2_behaviors.csv
 
-List it AFTER ``rosbags_nav2bt_to_csv`` -- postprocessing commands run in order and this
-step reads that handler's per-run CSV output. ``bt_xml`` must be the same file nav2 runs
-(``bt_navigator``'s ``default_nav_to_pose_bt_xml``), or the tree won't match the log.
+``bt_xml`` must be the same file nav2 runs (``bt_navigator``'s
+``default_nav_to_pose_bt_xml``), or the tree won't match the log.
 """
 
 import csv
+import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 from robovast.results_processing.postprocessing_plugins import BasePostprocessingPlugin
+from robovast_data import Campaign, QueryError
+
+#: The raw transition log this step reads.
+RAW_TABLE = "nav2_behavior_tree"
 
 # BT.CPP status string -> (py_trees-style numeric code, panel status_name). The panel only
 # colors RUNNING/SUCCESS/FAILURE; IDLE and SKIPPED map to INVALID (grey = "not ticked").
@@ -119,22 +124,17 @@ def _parse_bt_xml(xml_path: Path) -> "list[_Node]":
     return nodes
 
 
-def _behaviors_rows(nodes: "list[_Node]", raw_csv: Path) -> "Optional[list[dict]]":
-    """Join the XML topology with the transition log into behaviors-schema rows."""
-    transitions: List[dict] = []
-    min_ts: Optional[float] = None
-    with open(raw_csv, newline="") as f:
-        for row in csv.DictReader(f):
-            try:
-                ts = float(row["timestamp"])
-            except (KeyError, ValueError):
-                continue
-            transitions.append({"t": ts, "node_name": row.get("node_name", ""),
-                                 "status": (row.get("current_status") or "").upper()})
-            min_ts = ts if min_ts is None else min(min_ts, ts)
+def _behaviors_rows(nodes: "list[_Node]", transitions) -> "list[dict]":
+    """Join the XML topology with one run's transition log into behaviors-schema rows.
 
+    *transitions* are the run's ``nav2_behavior_tree`` rows, in recorded order.
+    """
+    events = [{"t": float(tr.timestamp), "node_name": tr.node_name or "",
+               "status": str(tr.current_status or "").upper()}
+              for tr in transitions
+              if tr.timestamp is not None and not math.isnan(float(tr.timestamp))]
     by_name = {n.name: n for n in nodes}
-    base_ts = min_ts if min_ts is not None else 0.0
+    base_ts = min((e["t"] for e in events), default=0.0)
     rows: List[dict] = []
 
     # Baseline row per node so nodes that never transition still render (as INVALID/grey).
@@ -143,7 +143,7 @@ def _behaviors_rows(nodes: "list[_Node]", raw_csv: Path) -> "Optional[list[dict]
                      "parent_id": n.parent_id, "status": 1, "status_name": "INVALID",
                      "class_name": n.class_name})
     # One row per transition, attached to its XML node by name.
-    for tr in transitions:
+    for tr in events:
         node = by_name.get(tr["node_name"])
         if node is None:
             continue  # log/XML name drift -- reported by the caller's count
@@ -157,16 +157,17 @@ def _behaviors_rows(nodes: "list[_Node]", raw_csv: Path) -> "Optional[list[dict]
 class Nav2BtTree(BasePostprocessingPlugin):
     """Reconstruct nav2's behavior tree from its BT XML + ``/behavior_tree_log``.
 
-    Reads each run's ``nav2_behavior_tree.csv`` (raw transitions) and the ``bt_xml`` tree
-    definition, writes ``nav2_behaviors.csv`` in the shared ``behaviors`` schema.
+    Reads the campaign's ``nav2_behavior_tree`` table (raw transitions) and the ``bt_xml``
+    tree definition, and writes each run's ``nav2_behaviors.csv`` in the shared
+    ``behaviors`` schema. A run whose file is newer than ``bt_xml`` is left as it is unless
+    *force*: a run's recording does not change once the run has ended.
     """
 
     scope = "run"
 
     def __call__(self, results_dir: str, config_dir: str,
                  bt_xml: Optional[str] = None, file: str = "nav2_behaviors.csv",
-                 raw: str = "nav2_behavior_tree.csv", force: bool = False,
-                 **kwargs) -> Tuple[bool, str]:
+                 force: bool = False, **kwargs) -> Tuple[bool, str]:
         if not bt_xml:
             return False, "nav2_bt_tree requires a 'bt_xml' parameter (path to the BT XML)"
         xml_path = Path(config_dir) / bt_xml
@@ -181,20 +182,27 @@ class Nav2BtTree(BasePostprocessingPlugin):
             return False, f"nav2_bt_tree: no BehaviorTree nodes in {xml_path}"
         node_names = {n.name for n in nodes}
 
+        try:
+            log = Campaign(results_dir).table(
+                RAW_TABLE, columns=["config_name", "run_id", "timestamp", "node_name",
+                                    "current_status"])
+        except QueryError as e:
+            return False, (f"nav2_bt_tree: no {RAW_TABLE} table to read ({e}); record "
+                           "/behavior_tree_log and declare rosbags_nav2bt_to_csv")
+
         written = skipped = drift = 0
-        for raw_csv in sorted(Path(results_dir).rglob(raw)):
-            out = raw_csv.parent / file
-            if not force and out.exists() and out.stat().st_mtime >= raw_csv.stat().st_mtime:
+        xml_mtime = xml_path.stat().st_mtime
+        for (config_name, run_id), transitions in log.groupby(["config_name", "run_id"],
+                                                                sort=True):
+            out = Path(results_dir) / str(config_name) / str(int(run_id)) / file
+            if not force and out.exists() and out.stat().st_mtime >= xml_mtime:
                 skipped += 1
                 continue
-            rows = _behaviors_rows(nodes, raw_csv)
-            if rows is None:
-                continue
-            # Count transitions whose node_name isn't in the XML (log/XML drift).
-            with open(raw_csv, newline="") as f:
-                drift += sum(1 for r in csv.DictReader(f)
-                             if r.get("node_name") and r["node_name"] not in node_names)
-            with open(out, "w", newline="") as f:
+            rows = _behaviors_rows(nodes, transitions.itertuples(index=False))
+            drift += int((transitions["node_name"].notna()
+                          & (transitions["node_name"] != "")
+                          & ~transitions["node_name"].isin(node_names)).sum())
+            with open(out, "w", newline="", encoding="utf-8") as f:
                 w = csv.DictWriter(f, fieldnames=_BEHAVIORS_FIELDS)
                 w.writeheader()
                 w.writerows(rows)

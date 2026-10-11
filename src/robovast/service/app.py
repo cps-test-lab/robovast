@@ -41,26 +41,32 @@ from pathlib import Path
 from typing import List, Literal, Optional
 
 from robovast.client import file_address
-from robovast.common.errors import (STORAGE_FULL_DETAIL, InsufficientStorageError,
-                                    is_storage_full)
+from robovast.common.errors import (STORAGE_FULL_DETAIL, ActionableError,
+                                    InsufficientStorageError, is_storage_full)
 from robovast.service import auth, event_log, service_log, settings_report
 from robovast.service.workspaces import default_workspaces_root
-from robovast.service.interface import (ActionResult, BuildImageRequest,
+from robovast.service.interface import (ActionResult, ArrowQueryRequest,
+                                        BuildCampaignTablesRequest,
+                                        BuildImageRequest, CampaignTablesCleared,
                                         CampaignPanelsResponse, CampaignPlotsResponse, CampaignRef,
                                         CampaignVisualizationsResponse,
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, DataDescribe, DataQueryResult,
                                         DeleteCampaignsRequest, DeleteCampaignsResponse,
                                         EditFileRequest, ERROR_CODE_HEADER,
-                                        EXEC_PATH_UNAVAILABLE, UNSUPPORTED_OPERATION,
+                                        EXEC_PATH_UNAVAILABLE, NEXT_STEP_HEADER,
+                                        UNSUPPORTED_OPERATION, BINARY_FILE, BinaryFile,
                                         UnsupportedOperation,
                                         ExecRequest, ExecResult, ExecStopResult,
+                                        ExportRef, ExportRequest, ExportStatus,
                                         FileMeta, ImageBuildRef, ImageBuildStatus, ImageResolution,
                                         ImportCampaignRequest, ShareListing,
                                         CampaignSortKey, SortOrder,
                                         ShareWorkspaceArchive,
                                         JobState, ListCampaignsResponse, ListJobsResponse,
+                                        CampaignLogChunk, JobLogChunk,
                                         ListWorkspacesResponse, LogChunk,
+                                        TapEnd, TAP_MAX_S,
                                         McpCall, McpCalls, McpToolStat, McpToolStats,
                                         PanelsSource, ServiceCache,
                                         UpgradeInfo, UsageHistory, UsageSample,
@@ -95,6 +101,15 @@ REFUSAL_MAX_TRACKED = 512
 # pylint: disable-next=wrong-import-position
 from robovast.service.interface import (  # noqa: F401
     DEFAULT_PORT)  # re-exported: callers import it from here
+
+
+def _next_step_headers(e: ActionableError) -> "dict[str, str] | None":
+    """The header naming *e*'s next command, or ``None`` when it has none.
+
+    The exception cannot cross HTTP, so its ``next_step`` travels beside the detail and the
+    transport puts it back on the :class:`ServiceError` a caller receives.
+    """
+    return {NEXT_STEP_HEADER: e.next_step} if e.next_step else None
 
 
 def _sse_pull_limiter():
@@ -324,39 +339,17 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     _usage_max_points = 360
 
     @asynccontextmanager
-    def _secure_index() -> None:
-        """Bring the index's row-level security up to date, once, at startup.
+    def _open_tool_log() -> None:
+        """Open the MCP tool-call log beside the event log, once, at startup.
 
-        Campaigns ingested before the scoping existed carry no policy, and a scoped
-        query refuses to run against an unsecured relation rather than answering with
-        every campaign's rows. Without this, upgrading a deployment that already holds
-        campaigns leaves ALL of them unqueryable until somebody happens to re-run
-        postprocessing -- which is a repair nobody would think to look for, since the
-        campaigns are intact and only the reading of them fails.
-
-        The ingest repairs the index too, so this is the same operation arriving by the
-        other route: whichever happens first, the index ends up secured.
-
-        A failure here is logged and not raised. The service must still start when the
-        index is unreachable -- campaign control, logs and file access do not touch it,
-        and refusing to boot would turn "results are unreadable" into "nothing works".
-        The scoped query path fails loudly on its own, naming this repair, so nothing
-        becomes silently unscoped by skipping it.
+        A failure is logged and not raised: the log describes the service's work and is not
+        part of it, so a service that cannot write it still serves.
         """
-        from robovast.common import index_db
-        from robovast.common.errors import IndexUnreachableError
-        from robovast.results_processing import index_scope
+        from robovast.mcp_server import tool_stats
         try:
-            with index_db.connect() as conn:
-                secured = index_scope.apply_to_index(conn)
-        except IndexUnreachableError as exc:
-            logger.warning("index not reachable at startup, scoping not applied: %s", exc)
-        except Exception:  # noqa: BLE001 - a repair must not stop the service booting
-            logger.exception("could not apply campaign scoping to the index")
-        else:
-            if secured:
-                logger.info("index: campaign scoping applied to %d relation(s)",
-                            len(secured))
+            tool_stats.LOG.open(Path(_events_root) / tool_stats.FILENAME)
+        except Exception:  # noqa: BLE001 - the accounting must not stop the service booting
+            logger.exception("could not open the MCP tool call log")
 
     async def _lifespan(_app):
         """Run ``impl.shutdown()`` on service teardown (Ctrl+C on ``vast serve``).
@@ -374,7 +367,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         async with AsyncExitStack() as stack:
             if mcp_app is not None:
                 await stack.enter_async_context(mcp_app.lifespan(_app))
-            await anyio.to_thread.run_sync(_secure_index)
+            await anyio.to_thread.run_sync(_open_tool_log)
             # The usage recorder runs for as long as the app serves. The cancel is
             # registered as a stack callback rather than called after the yield: the
             # ``impl.shutdown()`` below sits lexically inside the task group's cancel
@@ -483,7 +476,17 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         except InsufficientStorageError as e:
             # The same status as a write that already failed for lack of space, with the
             # meter and the amounts: new work is declined before the disk is full.
-            raise HTTPException(status_code=507, detail=str(e)) from e
+            raise HTTPException(status_code=507, detail=str(e),
+                                headers=_next_step_headers(e)) from e
+        except ActionableError as e:
+            # The request is fine and the state it needs is not there yet -- an image not
+            # built, a helper container nothing provides here -- and the error names the
+            # command that changes that.
+            raise HTTPException(status_code=409, detail=str(e),
+                                headers=_next_step_headers(e)) from e
+        except BinaryFile as e:
+            raise HTTPException(status_code=e.status, detail=str(e),
+                                headers={ERROR_CODE_HEADER: BINARY_FILE}) from e
         except ValueError as e:            # bad input / not-initialized
             raise HTTPException(status_code=400, detail=str(e)) from e
         except KeyError as e:              # unknown id
@@ -663,10 +666,11 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         return PlainTextResponse("Internal Server Error", status_code=500)
 
     # -- SSE log streaming --------------------------------------------------
-    # The browser streams logs over Server-Sent Events; MCP/CLI keep the pull
-    # endpoints (``.../logs``, ``.../job-log``). Both share the one assembly seam:
-    # an SSE stream is just a server-side loop over the same ``LogChunk`` pull, so
-    # there is no second implementation of assembly/offset to drift.
+    # The browser and a following CLI stream logs over Server-Sent Events; MCP keeps the
+    # pull endpoints (``.../logs``, ``.../job-log``). Each stream is a server-side loop
+    # over the same pull its endpoint serves -- a byte-offset ``LogChunk`` for the
+    # service log, rows after a cursor for a campaign's and a job's -- so there is no
+    # second implementation of a read to drift.
     import json as _json  # pylint: disable=import-outside-toplevel
 
     from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
@@ -701,17 +705,17 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     #: let the client reconnect when we stop.
     _sse_heartbeat = "event: heartbeat\ndata: {}\n\n"
 
-    #: Most characters one stream frame carries. A log panel is a *tail*: a fixed-height
-    #: pane whose reader wants the end. A campaign's assembled infrastructure log reaches
-    #: tens of megabytes, and sending all of it costs the transfer, a JSON parse and a DOM
-    #: node per line before the first character is visible — for output nobody scrolls back
-    #: to. So an over-long frame is served from its end, with a note in place of the head.
+    #: Most characters one byte-offset stream frame carries. A log panel is a *tail*: a
+    #: fixed-height pane whose reader wants the end, and sending a whole ring costs the
+    #: transfer, a JSON parse and a DOM node per line before the first character is
+    #: visible — for output nobody scrolls back to. So an over-long frame is served from
+    #: its end, with a note in place of the head.
     #:
     #: Dropping the head is free of the offset protocol: ``next_offset`` is where the *log*
     #: continues, not how much was sent, so the tail that follows is still exact and a
     #: resumed connection still resumes at the right byte. It also bounds a catch-up delta,
     #: not just the first frame — a tab left in the background for hours faces the same
-    #: megabytes at once.
+    #: bytes at once.
     _sse_log_frame_cap = 256 * 1024
 
     def _log_frame(text: str) -> str:
@@ -723,7 +727,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         # line rather than mid-word.
         tail = text[-_sse_log_frame_cap:].split("\n", 1)[-1]
         return (f"[… {skipped / 1e6:.1f} MB of earlier output not shown — "
-                f"read the whole log with `vast campaign log` …]\n{tail}")
+                f"read the whole log with `vast service log` …]\n{tail}")
 
     async def _pull_or_exit(pull):
         """Run the blocking ``pull()`` off the event loop, abandoning it on shutdown.
@@ -849,6 +853,112 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
                 yield "event: eof\ndata: {}\n\n"
                 return
             await anyio.sleep(_sse_poll_s)
+
+    #: Most rows one row-stream frame carries; a larger read is sent as several frames.
+    _sse_rows_frame_rows = 2000
+
+    #: Longest a row stream waits for its files to change before it reads again and sends
+    #: a heartbeat: just past the settle time, so a record held back because its file was
+    #: still being written goes out without waiting for another write.
+    _sse_rows_wait_s = 2.5
+
+    async def _sse_rows_stream(request: Request, fetch, make_watch, cursor: str):
+        """SSE generator over a log read as rows after a cursor: a campaign's
+        (:meth:`ServiceBase.get_campaign_logs`) and a job's (:meth:`ServiceBase.get_job_log`).
+
+        ``fetch(cursor)`` is the pull, returning rows, the cursor to continue from and
+        ``eof``; ``make_watch()`` returns something with ``wait(timeout)`` and ``close()``
+        over the files the pull reads. Each read's rows go out as ``message`` events
+        carrying a JSON array of rows, the last of them with ``id`` set to the cursor to
+        resume from -- a browser echoes it as ``Last-Event-ID`` on an automatic reconnect,
+        and the CLI sends it the same way. Between reads the stream waits on the watch, so
+        rows go out as they are written, and a wait that saw nothing sends a heartbeat.
+        ``eof`` ends a finished log's stream; an error (no such campaign or job, a cursor
+        this service did not issue, a filter it does not know) is a ``streamerror`` event
+        followed by ``eof``.
+        """
+        yield ": open\n\n"
+        watch = await _pull_or_exit(make_watch)
+        if watch is None:
+            return
+        if isinstance(watch, Exception):
+            yield f"event: streamerror\ndata: {_json.dumps(str(watch))}\n\n"
+            yield "event: eof\ndata: {}\n\n"
+            return
+        try:
+            while not app.state.should_exit():
+                if await request.is_disconnected():
+                    return
+                chunk = await _pull_or_exit(lambda: fetch(cursor))
+                if chunk is None:
+                    return
+                if isinstance(chunk, Exception):
+                    yield f"event: streamerror\ndata: {_json.dumps(str(chunk))}\n\n"
+                    yield "event: eof\ndata: {}\n\n"
+                    return
+                rows = [row.model_dump() for row in chunk.rows]
+                for start in range(0, len(rows), _sse_rows_frame_rows):
+                    frame = rows[start:start + _sse_rows_frame_rows]
+                    last = start + _sse_rows_frame_rows >= len(rows)
+                    head = f"id: {chunk.cursor}\n" if last else ""
+                    yield f"{head}data: {_json.dumps(frame)}\n\n"
+                cursor = chunk.cursor
+                if chunk.eof:
+                    yield "event: eof\ndata: {}\n\n"
+                    return
+                if not rows:
+                    yield _sse_heartbeat
+                    await _pull_or_exit(lambda: watch.wait(_sse_rows_wait_s))
+                else:
+                    # Held-back rows settle without a write of their own; look again soon.
+                    await anyio.sleep(_sse_poll_s)
+        finally:
+            watch.close()
+
+    #: Longest one tap tick waits for a line before it sends a heartbeat instead.
+    _sse_tap_wait_s = 1.0
+
+    async def _sse_tap_stream(request: Request, campaign_id: str, job_name: str,
+                              selection: list, max_seconds: int):
+        """SSE generator over a tap on a live job (:meth:`ServiceBase.tap_job`).
+
+        Each relayed line is a ``line`` event carrying a :class:`TapRow`; the tap's end is an
+        ``eof`` event carrying a :class:`TapEnd` (the command's exit code, and whether the
+        bound cut it); a refusal -- the job is not running, the backend has no tap, a tap is
+        already open on the job -- is a ``streamerror`` followed by ``eof``. A tick with no
+        line sends a heartbeat. The reader going away closes the tap, which is what ends the
+        relay: nothing here waits for the bound on a stream nobody is reading. Not resumable,
+        and no ``id``: a tap is a relay of the moment, not a record.
+        """
+        yield ": open\n\n"
+        tap = await _pull_or_exit(lambda: impl.tap_job(campaign_id, job_name, selection,
+                                                       max_seconds=max_seconds, source="api"))
+        if tap is None:
+            return
+        if isinstance(tap, Exception):
+            yield f"event: streamerror\ndata: {_json.dumps(str(tap))}\n\n"
+            yield "event: eof\ndata: {}\n\n"
+            return
+        try:
+            while not app.state.should_exit():
+                if await request.is_disconnected():
+                    return
+                item = await _pull_or_exit(lambda: tap.poll(_sse_tap_wait_s))
+                if item is None and tap.ended:
+                    return
+                if item is None:
+                    yield _sse_heartbeat
+                    continue
+                if isinstance(item, Exception):
+                    yield f"event: streamerror\ndata: {_json.dumps(str(item))}\n\n"
+                    yield "event: eof\ndata: {}\n\n"
+                    return
+                if isinstance(item, TapEnd):
+                    yield f"event: eof\ndata: {_json.dumps(item.model_dump())}\n\n"
+                    return
+                yield f"event: line\ndata: {_json.dumps(item.model_dump())}\n\n"
+        finally:
+            tap.close()
 
     #: Poll cadence of the campaign-list stream's server-side loop.
     _sse_list_poll_s = 1.0
@@ -1064,16 +1174,12 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         nobody chooses costs an agent's context in every session, and an aggregate computed
         only over calls that happened is exactly the view that cannot show it.
         """
-        from robovast.common.errors import IndexUnreachableError  # pylint: disable=import-outside-toplevel
         from robovast.mcp_server import registry, tool_stats  # pylint: disable=import-outside-toplevel
 
         registered = sorted({name for names in registry.get_plugin_tools().values()
                              for name in names})
         window = {"max_age_s": float(tool_stats.MAX_AGE_S), "max_rows": tool_stats.MAX_ROWS}
-        try:
-            stats = tool_stats.LOG.read_stats()
-        except IndexUnreachableError as exc:
-            return McpToolStats(status="index-unreachable", detail=str(exc), **window)
+        stats = tool_stats.LOG.read_stats()
         seen = {s.tool for s in stats}
         rows = [McpToolStat(tool=s.tool, calls=s.calls, errors=s.errors, mean_ms=s.mean_ms,
                             max_ms=s.max_ms, last_at=s.last_at) for s in stats]
@@ -1089,13 +1195,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         ``robovast.mcp_server.tool_stats``. The page says how many rows matched and whether
         more remain, because a page that reported neither read as the whole record.
         """
-        from robovast.common.errors import IndexUnreachableError  # pylint: disable=import-outside-toplevel
-
         applied = _page_limit(limit, _MCP_CALLS_PAGE_MAX)
-        try:
-            calls, total = _read_mcp_calls(applied, tool, failed_only, offset)
-        except IndexUnreachableError as exc:
-            return McpCalls(status="index-unreachable", detail=str(exc))
+        calls, total = _read_mcp_calls(applied, tool, failed_only, offset)
         return McpCalls(calls=calls, total=total, limit=applied, offset=max(0, offset),
                         truncated=max(0, offset) + len(calls) < total)
 
@@ -1118,17 +1219,10 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
         from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
 
-        from robovast.common.errors import IndexUnreachableError  # pylint: disable=import-outside-toplevel
         from robovast.mcp_server import tool_stats  # pylint: disable=import-outside-toplevel
 
         applied = _page_limit(limit, tool_stats.MAX_ROWS)
-        try:
-            calls, total = _read_mcp_calls(applied, tool, failed_only, offset)
-        except IndexUnreachableError as exc:
-            # A download cannot carry a status field the way the JSON routes do, so the
-            # unreachable index has to be the response rather than an empty file that
-            # reads as "no calls".
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        calls, total = _read_mcp_calls(applied, tool, failed_only, offset)
 
         def rows():
             buffer = io.StringIO()
@@ -1350,9 +1444,9 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
               tags=["workspaces"])
     def preview_configurations(
         workspace_id: str, max_configs: int = Body(0, embed=True),
-        path: str = Body("", embed=True),
+        path: str = Body("", embed=True), wait: bool = Body(True, embed=True),
     ) -> PreviewResponse:
-        return _guard(lambda: impl.preview_configurations(workspace_id, max_configs, path))
+        return _guard(lambda: impl.preview_configurations(workspace_id, max_configs, path, wait))
 
     @app.post(Routes.workspace_world("{workspace_id}"), response_model=WorldDescription,
               tags=["workspaces"])
@@ -1635,28 +1729,39 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def get_search_history(campaign_id: str) -> SearchHistory:
         return _guard(lambda: impl.get_search_history(campaign_id))
 
-    @app.get(Routes.campaign_logs("{campaign_id}"), response_model=LogChunk, tags=["campaigns"])
-    def get_campaign_logs(campaign_id: str, offset: int = 0) -> LogChunk:
-        return _guard(lambda: impl.get_campaign_logs(campaign_id, offset))
+    @app.get(Routes.campaign_logs("{campaign_id}"), response_model=CampaignLogChunk,
+             tags=["campaigns"])
+    def get_campaign_logs(campaign_id: str, cursor: str = "", phase: str = "",
+                          min_level: str = "", grep: str = "") -> CampaignLogChunk:
+        """A campaign's infrastructure log rows after *cursor*, running or finished."""
+        return _guard(lambda: impl.get_campaign_logs(
+            campaign_id, cursor, phase=phase or None, min_level=min_level or None,
+            grep=grep or None))
 
     @app.get(Routes.campaign_jobs("{campaign_id}"), response_model=ListJobsResponse,
              tags=["campaigns"])
     def list_jobs(campaign_id: str) -> ListJobsResponse:
         return _guard(lambda: impl.list_jobs(campaign_id))
 
-    @app.get(Routes.job_log("{campaign_id}"), response_model=LogChunk, tags=["campaigns"])
-    def get_job_log(campaign_id: str, job_name: str, offset: int = 0) -> LogChunk:
-        return _guard(lambda: impl.get_job_log(campaign_id, job_name, offset))
+    @app.get(Routes.job_log("{campaign_id}"), response_model=JobLogChunk, tags=["campaigns"])
+    def get_job_log(campaign_id: str, job_name: str, cursor: str = "") -> JobLogChunk:
+        """A job's log rows after *cursor*, running or finished."""
+        return _guard(lambda: impl.get_job_log(campaign_id, job_name, cursor))
 
     @app.get(Routes.campaign_logs_stream("{campaign_id}"), tags=["campaigns"])
-    async def stream_campaign_logs(campaign_id: str, request: Request):
-        """Server-sent events: a campaign's controller log, tailed live. Resumable —
-        send ``Last-Event-ID`` to continue from the last line received."""
+    async def stream_campaign_logs(campaign_id: str, request: Request, cursor: str = "",
+                                   phase: str = "", min_level: str = "", grep: str = ""):
+        """Server-sent events: a campaign's infrastructure log rows as they are written
+        (``Last-Event-ID`` resumes; the same filters as the pull). A finished campaign is
+        served too; see ``_sse_rows_stream``."""
         return StreamingResponse(
-            _sse_log_stream(
+            _sse_rows_stream(
                 request,
-                lambda off: impl.get_campaign_logs(campaign_id, off),
-                _last_event_offset(request)),
+                lambda cur: impl.get_campaign_logs(
+                    campaign_id, cur, phase=phase or None, min_level=min_level or None,
+                    grep=grep or None),
+                lambda: impl.campaign_log_watch(campaign_id),
+                request.headers.get("last-event-id") or cursor),
             media_type="text/event-stream", headers=_sse_headers)
 
     @app.get(Routes.job_state("{campaign_id}"), response_model=JobState, tags=["campaigns"])
@@ -1670,15 +1775,27 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
     @app.get(Routes.job_log_stream("{campaign_id}"), tags=["campaigns"])
     async def stream_job_log(campaign_id: str, request: Request, job_name: str):
-        """Server-sent events: one job's log, tailed live (``Last-Event-ID`` resumes).
-
-        A **finished** job is served too, not only a running one. What the events mean,
-        and which residual case is still an error, is ``_sse_log_stream``'s to say."""
+        """Server-sent events: one job's log rows as they are written (``Last-Event-ID``
+        resumes). A finished job is served too; see ``_sse_rows_stream``."""
         return StreamingResponse(
-            _sse_log_stream(
+            _sse_rows_stream(
                 request,
-                lambda off: impl.get_job_log(campaign_id, job_name, off),
-                _last_event_offset(request)),
+                lambda cur: impl.get_job_log(campaign_id, job_name, cur),
+                lambda: impl.job_log_watch(campaign_id, job_name),
+                request.headers.get("last-event-id") or ""),
+            media_type="text/event-stream", headers=_sse_headers)
+
+    @app.get(Routes.job_tap("{campaign_id}"), tags=["campaigns"])
+    async def tap_job(campaign_id: str, request: Request, job_name: str,
+                      selection: str = "", max_seconds: int = TAP_MAX_S):
+        """Server-sent events: a tap on a **running** job, relaying what its simulator
+        publishes now for at most ``max_seconds`` (capped at the service's bound). ``line``
+        events carry the lines, ``eof`` the exit code; ``selection`` is comma-separated and
+        means topics in the ROS shape, empty for the topic list. Recorded as a probe of the
+        run; see ``_sse_tap_stream``."""
+        names = [name for name in selection.split(",") if name.strip()]
+        return StreamingResponse(
+            _sse_tap_stream(request, campaign_id, job_name, names, max_seconds),
             media_type="text/event-stream", headers=_sse_headers)
 
     @app.post(Routes.campaign_stop("{campaign_id}"), response_model=ActionResult, tags=["campaigns"])
@@ -1720,10 +1837,12 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
     @app.post(Routes.campaign_retrigger("{campaign_id}"), response_model=CampaignRef,
               tags=["campaigns"],
-              description="Launch a new campaign from an existing one's frozen config and "
-                          "pinned image. The source campaign is not modified. Refused (400) "
-                          "when the pre-flight blocks on an axis, naming each one; force "
-                          "launches anyway.")
+              description="Launch a new campaign from an existing one's frozen config, "
+                          "running exactly the image digests its launch record holds and "
+                          "resolving none again. The source campaign is not modified. Refused "
+                          "(400) when the pre-flight blocks on an axis, naming each one; force "
+                          "launches anyway, except past a record lacking a digest for "
+                          "something the campaign runs.")
     def retrigger_campaign(campaign_id: str,
                            force: bool = Body(False, embed=True)) -> CampaignRef:
         return _guard(lambda: impl.retrigger_campaign(campaign_id, force))
@@ -1806,6 +1925,31 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     def run_postprocessing(campaign_id: str, request: RunPostprocessingRequest) -> ActionResult:
         return _guard(lambda: impl.run_postprocessing(request))
 
+    @app.post(Routes.campaign_tables_build("{campaign_id}"), response_model=ActionResult,
+              tags=["results"])
+    def build_campaign_tables(campaign_id: str,
+                              request: BuildCampaignTablesRequest) -> ActionResult:
+        """Build a finished campaign's tables now; never needed, since each is built on use."""
+        return _guard(lambda: impl.build_campaign_tables(request))
+
+    @app.delete(Routes.campaign_tables("{campaign_id}"), response_model=CampaignTablesCleared,
+                tags=["results"])
+    def clear_campaign_tables(campaign_id: str) -> CampaignTablesCleared:
+        """Remove one campaign's built tables to free storage; each is built again on use."""
+        return _guard(lambda: impl.clear_campaign_tables(campaign_id))
+
+    @app.post(Routes.campaign_exports("{campaign_id}"), response_model=ExportRef,
+              tags=["results"])
+    def create_export(campaign_id: str, request: ExportRequest) -> ExportRef:
+        """Start an export of the campaign: its tables as files, its records, its bags."""
+        return _guard(lambda: impl.create_export(campaign_id, request))
+
+    @app.get(Routes.campaign_export("{campaign_id}", "{export_id}"), response_model=ExportStatus,
+             tags=["results"])
+    def get_export_status(campaign_id: str, export_id: str) -> ExportStatus:
+        """Where an export has got to; its file is on the data plane once it is done."""
+        return _guard(lambda: impl.get_export_status(campaign_id, export_id))
+
     @app.post(Routes.campaign_share_run("{campaign_id}"), response_model=ActionResult, tags=["results"])
     def run_share(campaign_id: str, request: RunShareRequest) -> ActionResult:
         return _guard(lambda: impl.run_share(request))
@@ -1830,9 +1974,9 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         agent cannot spend its window on one ``SELECT *`` by forgetting a parameter.
 
         ``campaigns`` widens the scope to the ids it names -- the A/B comparison, the
-        whole search arm. It is a parameter rather than the default because the index
-        holds every campaign: a query that spans them by *omission* returns rows of the
-        right shape from the wrong experiment, and nothing about the reply says so.
+        whole search arm. It is a parameter rather than the default because a query that
+        spans campaigns by *omission* returns rows of the right shape from the wrong
+        experiment, and nothing about the reply says so.
         """
         return _guard(lambda: impl.query_campaign_data_sql(
             campaign_id, sql, max_rows, max_bytes, campaigns))
@@ -1853,6 +1997,29 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             rows, media_type="text/csv",
             headers={"Content-Disposition":
                      f'attachment; filename="{campaign_id}-query.csv"'})
+
+    @app.post(Routes.campaign_query_arrow("{campaign_id}"), tags=["results"])
+    def query_campaign_data_arrow(campaign_id: str, body: ArrowQueryRequest):
+        """Stream the same read-only ``SELECT`` as an Arrow IPC stream: typed, no row cap.
+
+        The CSV twin spells every value as text and a list column as ``[...]``; this keeps
+        the types, which is what ``robovast-data`` reads a service's tables through. The
+        request's ``tables`` are the caller's own relations -- each an Arrow IPC stream in
+        base64 -- registered under their names for this query alone, so a DataFrame a
+        notebook made joins the campaign's tables on the service.
+        """
+        import base64  # pylint: disable=import-outside-toplevel
+
+        import pyarrow as pa  # pylint: disable=import-outside-toplevel
+        from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
+        try:
+            tables = {name: pa.ipc.open_stream(base64.b64decode(data)).read_all()
+                      for name, data in (body.tables or {}).items()}
+        except (ValueError, pa.ArrowInvalid) as exc:
+            raise HTTPException(status_code=400,
+                                detail=f"tables: not an Arrow IPC stream: {exc}") from exc
+        batches = _guard(lambda: impl.stream_campaign_query_arrow(campaign_id, body.sql, tables))
+        return StreamingResponse(batches, media_type="application/vnd.apache.arrow.stream")
 
     @app.get(Routes.campaign_plots("{campaign_id}"), response_model=CampaignPlotsResponse,
              tags=["results"])
@@ -2171,9 +2338,10 @@ def _from_loopback(request) -> bool:
     """Did this request come from the same machine?
 
     Conservative on purpose: anything unparseable, absent (a Unix socket has no peer
-    address) or forwarded counts as *not* loopback, because the field this gates is only
-    useful to a caller that can open the service host's filesystem, and being wrong in
-    that direction merely costs a caller two fields it could not have used.
+    address) or forwarded counts as *not* loopback, because what this gates -- the
+    ``host_path`` settings -- is only useful to a caller that can open the service host's
+    filesystem, and being wrong in that direction merely withholds paths it could not have
+    used.
     """
     import ipaddress  # pylint: disable=import-outside-toplevel
     client = getattr(request, "client", None)
@@ -2219,7 +2387,8 @@ def serve(impl: RobovastInterface, host: str = "127.0.0.1", port: int = DEFAULT_
     Every request needs the shared token; when none is configured one is minted and
     printed as a clickable login URL, so there is no unauthenticated mode to start by
     accident. Binds ``127.0.0.1`` by default all the same — publishing the service is a
-    deliberate act (``vast cluster setup --ingress-host``, which insists on TLS).
+    deliberate act (``vast cluster setup --ingress-host``, which needs TLS unless given
+    ``--insecure-http``).
 
     ``mount_mcp`` (default on) puts the MCP server on this same port, so one URL reaches
     the web UI, the REST API and the tools together.

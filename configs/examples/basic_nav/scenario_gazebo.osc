@@ -3,7 +3,7 @@ import osc.ros
 import osc.nav2
 
 # Gazebo half: one local ros_launch brings up gz + the TB4 + nav2, then the trial is measured.
-# The measurement half (init_nav2, bag_record, nav_to_pose) is identical to scenario_roqsim.osc.
+# The measurement half (init_nav2, nav_to_pose) is identical to scenario_roqsim.osc.
 
 scenario test_scenario:
     robot: differential_drive_robot
@@ -45,22 +45,7 @@ scenario test_scenario:
                          service_type: 'nav2_msgs.srv.ManageLifecycleNodes',
                          data: '{\"command\": 0}')
             robot.init_nav2(pose_3d())
-            # use_sim_time stamps every derived table with the simulator's clock, so both halves
-            # are comparable in sim seconds; /clock is recorded so wall-stamped topics
-            # (/behavior_tree_log) can be mapped back to it.
-            bag_record([
-                    '/clock',
-                    '/tf',
-                    '/tf_static',
-                    '/amcl_pose',
-                    '/behavior_tree_log',
-                    '/map',
-                    '/global_costmap/costmap',
-                    '/local_costmap/costmap',
-                    '/scan',
-                    '/odom'
-                ],
-                use_sim_time: true,
-                timestamp_suffix: false)
+            # The run's bag is RoboVAST's: it records from before this scenario starts,
+            # and what it holds is the .vast's `recording:` block to say.
             robot.nav_to_pose(goal_pose)
             emit end

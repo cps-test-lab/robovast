@@ -7,10 +7,11 @@ Usage in ``.rst`` files::
 
     .. wait-exit-codes:: robovast.execution.wait_exit.CampaignWaitExit
 
-Renders a waiting command's exit codes as a table, read from the enum the command raises
-(:mod:`robovast.execution.wait_exit`). The codes are defined there once; this only renders
-them, so the documented table cannot drift from what the command exits with. Modelled on
-:mod:`http_routes`, which does the same for the HTTP route table.
+Renders exit codes as a table -- the ones every verb shares (``CommonExit``), or a waiting
+command's -- read from the enum the command raises (:mod:`robovast.execution.wait_exit`).
+The codes are defined there once; this only renders them, so the documented table cannot
+drift from what the command exits with. Modelled on :mod:`http_routes`, which does the same
+for the HTTP route table.
 """
 
 import importlib

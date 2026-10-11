@@ -30,14 +30,13 @@ list keyed by the real Kubernetes context name instead of a scalar:
         - minikube: 20Gi
 
 Scalars always work and are the recommended default when a single cluster is
-used.  Pass the matching context name via ``--context/-x`` when running
-commands against a specific cluster.
+used.  The service resolves a per-cluster list with the context it was deployed
+against, which ``vast cluster setup`` and ``vast service upgrade`` record: the one
+named with ``--context/-x``, else the kubeconfig's current context.
 """
 
 import logging
 from typing import Any, Optional
-
-import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -79,96 +78,6 @@ def list_all_contexts() -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Config-file context name scanning
-# ---------------------------------------------------------------------------
-
-def get_config_context_names(config_path: str) -> set[str]:
-    """Extract all context names used in per-cluster resource lists.
-
-    Scans a ``.vast`` YAML config for any field that uses the per-cluster list
-    syntax (``[{context-name: value}, …]``) and returns the union of all keys.
-
-    Args:
-        config_path: Absolute path to a ``.vast`` YAML config file.
-
-    Returns:
-        Set of context name strings.  Empty when no per-cluster lists are found.
-    """
-    try:
-        with open(config_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-    except Exception as exc:
-        logger.debug(f"Could not read config file {config_path!r}: {exc}")
-        return set()
-
-    names: set[str] = set()
-
-    # Only the resource fields that support per-cluster lists
-    _resource_fields = frozenset({"cpu", "memory"})
-
-    def _scan(node: Any) -> None:
-        if isinstance(node, dict):
-            for key, v in node.items():
-                if key in _resource_fields and isinstance(v, list):
-                    # Per-cluster resource list: every item must be a single-key dict
-                    if v and all(isinstance(item, dict) and len(item) == 1 for item in v):
-                        for item in v:
-                            names.update(item.keys())
-                else:
-                    _scan(v)
-        elif isinstance(node, list):
-            for item in node:
-                _scan(item)
-
-    _scan(data)
-    return names
-
-
-def require_context_for_multi_cluster(kube_context: Optional[str],
-                                      config_path: Optional[str] = None) -> None:
-    """Raise :exc:`ValueError` when a multi-cluster config is used without ``--context``.
-
-    Scans *config_path* for per-cluster resource lists and raises an informative error
-    when more than one context name is present and no *kube_context* was specified.
-
-    Which config to scan is the **caller's** decision, never discovered here: this used
-    to find a ``.robovast_project`` by walking up to the filesystem root, so a project
-    far above the CWD could demand ``--context`` from a command that was never told
-    about it. There is no ambient project at all now -- callers pass the config the
-    operator named with ``--vast``, or ``None``.
-
-    This is a no-op when:
-
-    * *kube_context* is already set (the user supplied ``--context``).
-    * *config_path* is ``None`` — nothing named a config, so there is nothing to scan.
-    * The config uses only a single context name (or only plain scalars).
-
-    Args:
-        kube_context: The Kubernetes context name (``None`` when the user did
-                      not pass ``--context``).
-        config_path: The ``.vast`` to scan, or ``None`` when none was named.
-
-    Raises:
-        ValueError: When multiple context names are found and *kube_context*
-                    is ``None``.
-    """
-    if kube_context is not None:
-        return
-
-    if not config_path:
-        return
-
-    names = get_config_context_names(config_path)
-    if len(names) <= 1:
-        return
-
-    raise ValueError(
-        f"The .vast config uses per-cluster resource lists for multiple contexts {sorted(names)}. "
-        f"Please specify --context/-x to select the target cluster."
-    )
-
-
-# ---------------------------------------------------------------------------
 # Resource value resolution
 # ---------------------------------------------------------------------------
 
@@ -186,11 +95,12 @@ def resolve_resource_value(
 
     Raises:
         ValueError: When the value is a per-cluster list but *context* is
-                    ``None``, or when the context has no entry in the list.
+                    ``None`` -- the service has no context recorded -- or when the
+                    context has no entry in the list.
 
     Args:
         value: Raw resource value (scalar or per-cluster list).
-        context: Active Kubernetes context name, or ``None``.
+        context: The context the service was deployed against, or ``None``.
 
     Returns:
         Resolved scalar value, or ``None`` when *value* is ``None``.
@@ -205,9 +115,12 @@ def resolve_resource_value(
         if context is None:
             available = [list(e.keys())[0] for e in value if isinstance(e, dict) and e]
             raise ValueError(
-                f"Per-cluster resource list {available} found but no Kubernetes context was "
-                "specified. Use --context/-x to select a target cluster, "
-                "or replace the per-cluster list with a plain scalar value."
+                f"Per-cluster resource list {available} found but this service has no "
+                "Kubernetes context recorded to pick an entry with. The service records "
+                "the context it is deployed against -- the one named with --context/-x, "
+                "else the kubeconfig's current one: run 'vast service upgrade' against "
+                "this cluster to record it, or replace the per-cluster list with a plain "
+                "scalar value."
             )
         for entry in value:
             if isinstance(entry, dict) and context in entry:

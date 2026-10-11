@@ -80,7 +80,9 @@ export function AdminPage() {
   const { confirm } = useDialogs()
   const { notify } = useToasts()
   const [rolling, setRolling] = useState(false)
-  const [rollNote, setRollNote] = useState<string | null>(null)
+  // What the last roll came to: the service's own sentence, and whether it is a failure --
+  // a refused or failed upgrade is not a remark.
+  const [rollNote, setRollNote] = useState<{ text: string; failed: boolean } | null>(null)
   // Its own flag rather than `isFetching`, which is also true for the background poll below
   // and would spin the icon every minute on its own. This one means *the user asked*.
   const [refreshing, setRefreshing] = useState(false)
@@ -257,7 +259,7 @@ export function AdminPage() {
     } catch (e) {
       setRolling(false)
       if (!(e instanceof RobovastError) || e.status !== 409) {
-        setRollNote(String(e))
+        setRollNote({ text: e instanceof Error ? e.message : String(e), failed: true })
         return
       }
       // The one refusal that has an override. Its message names each campaign that would be
@@ -281,7 +283,7 @@ export function AdminPage() {
         await robovast.upgradeService(true)
       } catch (forced) {
         setRolling(false)
-        setRollNote(String(forced))
+        setRollNote({ text: forced instanceof Error ? forced.message : String(forced), failed: true })
         return
       }
     }
@@ -315,10 +317,12 @@ export function AdminPage() {
     // Deliberately not phrased as a failure: the upgrade may simply be slow. The three
     // causes are kept because each has a different fix, but named in a clause rather than
     // a paragraph.
-    setRollNote(
-      'The new version has not taken over yet. Run `vast service upgrade` to see why —'
-      + ' usually a download that failed, no room to start, or a crash on startup.',
-    )
+    setRollNote({
+      text:
+        'The new version has not taken over yet. Run `vast service upgrade` to see why —'
+        + ' usually a download that failed, no room to start, or a crash on startup.',
+      failed: false,
+    })
   }
 
   const info = upgrade.data
@@ -465,8 +469,12 @@ export function AdminPage() {
             </Alert>
           ) : null}
           {rollNote ? (
-            <Alert severity="info" sx={{ mt: 1 }} onClose={() => setRollNote(null)}>
-              {rollNote}
+            <Alert
+              severity={rollNote.failed ? 'error' : 'info'}
+              sx={{ mt: 1 }}
+              onClose={() => setRollNote(null)}
+            >
+              {rollNote.text}
             </Alert>
           ) : null}
         </Stack>
@@ -548,8 +556,7 @@ export function AdminPage() {
             title={
               'Every MCP tool call this deployment served \u2014 the ranking, and the calls '
               + 'behind it with what each was given and what it answered, truncated to a few '
-              + 'lines. Kept in the central index, so it outlives this process but not the '
-              + 'results volume.'
+              + 'lines. Kept on the service\'s workspaces volume, so it outlives this process.'
             }
           >
             <span>MCP tools</span>

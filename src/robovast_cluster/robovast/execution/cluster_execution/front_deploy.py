@@ -43,7 +43,7 @@ FRONT_CONTAINER_NAME = "robovast-front"
 DATA_CONTAINER_NAME = "robovast-data"
 
 #: Upstream nginx. Pinned to a stable tag rather than a digest by the same rule as the
-#: registry and the index: it is infrastructure a campaign never runs *in*, so no result
+#: registry: it is infrastructure a campaign never runs *in*, so no result
 #: depends on which patch release proxied it. The minor is pinned because a new one can
 #: change defaults this configuration relies on.
 FRONT_IMAGE = "nginx:1.28-alpine"

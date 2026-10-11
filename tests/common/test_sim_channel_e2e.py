@@ -4,7 +4,7 @@
 """A world-varying campaign, from ``.vast`` to what each job actually starts.
 
 The unit tests pin the pieces; this pins the seam between them -- that a configuration's
-resolved world survives composition, staging, packing and manifest rendering, and arrives
+resolved world survives composition, staging, job building and manifest rendering, and arrives
 in the container it belongs to.
 """
 
@@ -55,6 +55,9 @@ class _InputsRunner:
         self._sink.append(list(command))
         emit(json.dumps({"packaged": False, "inputs": [command[-1]]}))
 
+    def image_digest(self):
+        return "sha256:" + "0" * 64
+
     def close(self):
         pass
 
@@ -78,7 +81,7 @@ def _project(tmp_path, configuration):
         (worlds / name).write_text(_WORLD)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent(f"""\
-        version: 4
+        version: 7
         metadata: {{name: sim-channel}}
         configuration:
         {configuration}

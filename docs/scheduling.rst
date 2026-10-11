@@ -45,10 +45,15 @@ The interface
 
 **What a job needs, and what a node has.** Both frozen, both plain numbers::
 
-    JobSizing(cpu: float, memory: int, gpu: int = 0)      # summed over a pod's containers
-    Capacity(cpu, memory, gpu)                            # what one node holds when empty
-    NodeBudget(node_id, free_cpu, free_memory, free_gpu)  # what one node has free NOW
+    JobSizing(cpu: float, memory: int, gpu: int = 0, ephemeral: int = 0)  # summed over a pod's containers
+    Capacity(cpu, memory, gpu, node_id, ephemeral)                        # what one node holds when empty
+    NodeBudget(node_id, free_cpu, free_memory, free_gpu, free_ephemeral, pinnable)  # what one node has free NOW
     Budget(nodes: tuple[NodeBudget], counted_jobs: frozenset, growable: bool)
+
+``ephemeral`` is ``ephemeral-storage`` in bytes, placed like cpu and memory so a pin cannot
+send a pod to a node without the disk; ``pinnable`` is false for a node a ``nodeSelector``
+cannot name, which still holds work — the job is created unpinned and kube-scheduler settles
+it.
 
 ``counted_jobs`` is the double-counting fix: the provider reports which Jobs its reading
 already saw, so a reservation stops being subtracted the instant the real pod starts being
@@ -61,7 +66,7 @@ without touching the loop::
         def budget(self) -> Budget: ...        # free NOW  — excludes unusable nodes
         def capacities(self) -> list[Capacity]: ...  # could EVER — includes them
 
-The asymmetry is deliberate and was a bug when it was absent. "Free now" must exclude a node
+The asymmetry is deliberate. "Free now" must exclude a node
 that is cordoned, ``NotReady`` or carrying an untolerated taint, because counting it promises
 room that cannot be spent. "Could ever" must include it, because
 :meth:`~robovast.execution.cluster_execution.node_admission.AdmissionController.preflight`
@@ -76,12 +81,15 @@ headroom off: a reserve that is never spendable is not part of either answer.
 
    * - Call
      - Meaning
-   * - ``submit(owner, items, *, started_at, priority=0, campaign="", sizing_for_node=None, accepts_node=None, pin=None)``
+   * - ``submit(owner, items, *, started_at, priority=0, campaign="", sizing_for_node=None, accepts_node=None, pin=None, reserves=True)``
      - Enqueue a whole plan. ``items`` are ``(key, JobSizing, create_fn)``; ``create_fn``
        takes the chosen ``node_id`` (or ``None`` when unpinned). ``started_at`` is the
        **campaign's** start, not the batch's. ``campaign`` is whose rank the items take and
        defaults to ``owner``; a sub-scope owner (``<campaign>#probes``) must name it, or its
-       work ranks as a stranger to the campaign it belongs to.
+       work ranks as a stranger to the campaign it belongs to. ``reserves`` is whether a
+       pinned item that does not fit holds its node open against lower-ranked work;
+       ``False`` for a campaign confined to one node, which would otherwise hold it for
+       its whole life.
    * - ``drain(*, limit=None) -> int``
      - Create as many globally-highest-ranked items as currently fit. Returns how many. A
        **paused** campaign's items are not candidates at all.
@@ -106,10 +114,16 @@ headroom off: a reserve that is never spendable is not part of either answer.
    * - ``forget_scheduling(campaign)``
      - Drop both, once the campaign is over. Runs per **campaign**, beside
        ``forget_calibration`` and never merged with it.
-   * - ``preflight(sizing)``
-     - Raise ``AdmissionRefused`` when no node could *ever* hold it.
+   * - ``preflight(sizing, node_id=None)``
+     - Raise ``AdmissionRefused`` when no node could *ever* hold it — or, with ``node_id``,
+       when that one node could not, for a campaign confined to it.
    * - ``states(owner) -> dict``
      - ``key -> PLANNED | CREATED``, for progress reporting.
+   * - ``given_up(owner) -> dict``
+     - ``key -> cause`` for items dropped after ``CREATE_ATTEMPT_LIMIT`` failed creates; they
+       leave ``states``, so this is the only place they show. Kept until ``cancel``.
+   * - ``space_shortfall() -> str | None``
+     - Why the last drain admitted nothing for want of disk space, or ``None``.
    * - ``refusal(owner) -> str``
      - One line saying what this owner is waiting for — **its own** item count and the sizing
        the fit test actually used, not the queue's total and not the declared figure.
@@ -130,25 +144,30 @@ Workflows
 
     submit(campaign, plan, started_at=..., priority=0)
     while True:
-        reap     -> finished(key) for each vanished CREATED job
-        exit     -> if every plan entry is FINISHED: break
+        measure  -> read finished probes; each frees its node for work
         drain()  -> may create OTHER campaigns' jobs; that is the point
+        reap     -> finished(key) for each CREATED job no longer running
+        give up  -> anything in given_up(campaign): fail the batch
         probes   -> nothing PLANNED of its own left: drop_planned(campaign#probes)
+        space    -> publish space_shortfall() on the campaign's stage
+        exit     -> nothing PLANNED and no created job still running: break
         publish  -> waiting_for_capacity from states(), not from pods
+        explain  -> log refusal(campaign) and refusal(campaign#probes)
         sleep 2
     finally:
         cancel(campaign)                # and cancel(campaign#probes)
         delete every probe Job still outstanding
 
-Step 4 is what makes ordering global without a controller thread: whichever campaign happens
-to be awake advances everybody, in ``(priority, campaign rank, campaign start)`` order.
+The ``drain()`` step is what makes ordering global without a controller thread: whichever
+campaign happens to be awake advances everybody, in ``(priority, campaign rank, campaign
+start)`` order.
 
 **A campaign's rank and its hold.** ``priority`` above is the order *within* a campaign --
 a probe before the work it gates, postprocessing before both -- and it stays the leading key.
 What an operator sets is the campaign's own rank, and it orders the **runs**: that is where a
 campaign spends all but a moment of its time, and all of what another campaign is waiting for.
-Every campaign is at ``0`` unless somebody says otherwise, and there the order is exactly what
-it was before ranks existed.
+Every campaign is at ``0`` unless somebody says otherwise, and there the order falls through to
+the campaign's start.
 
 **The rank deliberately does not reach a campaign's own preconditions.** A probe measures the
 node its campaign's work will be sized from, and postprocessing turns finished runs into
@@ -226,8 +245,8 @@ whether it ever ran:
 served from anywhere later; a pinned one has a single candidate, so "later" only arrives if that
 node is left room. A probe is also the largest pod a calibrated campaign asks for — the declared
 sizing, while the calibrated jobs behind it run at a measured fraction of it — so skipping it
-handed its node to the smaller work it outranked, every pass. Priority ordered the queue and
-reserved nothing.
+would hand its node to the smaller work it outranks, every pass. Priority orders the queue and
+reserves nothing.
 
 So a pinned item that does not fit claims its node for the rest of the pass: nothing further is
 placed there, the node drains as its work finishes, and the item goes on the pass where it fits.
@@ -236,15 +255,15 @@ the node, and it is per node — work that can go elsewhere still does.
 
 It is taken **only where the wait can end**: if the node could not hold the item even empty, the
 node keeps working. Holding it would drain the machine and keep it drained, which is worse than
-not reserving at all. That question needs the node's identity, which is why ``Capacity`` now
-carries an optional ``node_id`` — ``preflight`` asks only whether *some* node is large enough,
-and a probe pinned to the smallest machine of a mixed cluster was being judged against the
-biggest. An unknowable answer reserves, because a wrong reserve costs one batch and a wrong skip
-cost the whole campaign.
+not reserving at all. That question needs the node's identity, which is what ``Capacity``'s
+optional ``node_id`` is for — without it, ``preflight`` asks only whether *some* node is large
+enough, and a probe pinned to the smallest machine of a mixed cluster would be judged against
+the biggest. An unknowable answer reserves, because a wrong reserve costs one batch and a wrong
+skip costs the whole campaign.
 
 The count exists for what is left. At the end of one batch the two are indistinguishable,
-and failing on first sight made a busy minute at campaign start terminal — discarding a batch of
-finished, correct runs to do it. The probe is the largest pod a calibrated campaign asks for (the
+and failing on first sight would make a busy minute at campaign start terminal — discarding a
+batch of finished, correct runs to do it. The probe is the largest pod a calibrated campaign asks for (the
 declared sizing summed over its containers) and, being pinned, it cannot spread, so ``n``
 calibrated campaigns starting together need ``nodes × n`` of them placed at once. On a cluster of
 unlike machines that lands on the **smallest** node first, where one probe can be half the machine
@@ -256,17 +275,16 @@ Both cases leave the node on the declared sizing meanwhile, which is what a clus
 calibration switched off does anyway — a worse allocation, never a wrong result.
 
 Because probes queue under their own owner, **the batch loop reads the refusal for both keys**.
-Reading only the campaign's own key left a pinned probe's wait with no line anywhere: the
-queue computed why it could not be placed on every drain and printed none of it, and the campaign then
-ended on a node it could not measure while naming a cause nobody had checked.
+Reading only the campaign's own key would leave a pinned probe's wait with no line anywhere, and
+the campaign would end on a node it could not measure while naming a cause nobody had checked.
 
 **Sizing is per role**, and this is a validity rule rather than a tuning one:
 
 * the **system under test** takes the measured peak as request *and* limit, so its budget is
   one it never throttles against;
 * everything else takes the sustained figure as its request and keeps its declared ceiling,
-  because a simulator's peak-to-mean ratio is ~18 and reserving its peak would cost more than
-  no calibration at all;
+  because a simulator's peak can be an order of magnitude above its mean and reserving that
+  peak would cost more than no calibration at all;
 * memory is re-sized too, from the same probe, and for every role alike at the **maximum**
   rather than at a percentile — exceeding a memory limit is an OOM kill rather than a
   slowdown, so there is no tail to discard. Request and limit are set equal for the same
@@ -287,28 +305,29 @@ Failure modes worth knowing
      - Cause
    * - Campaign creates nothing, forever
      - A sizing that fits ``allocatable`` but not ``allocatable - headroom``. ``preflight``
-       now takes the reserve off, so this raises instead of hanging.
+       takes the reserve off, so this raises instead of hanging.
    * - Runs discarded in a loop
-     - A dead node read as fully free once its pods were evicted. ``budget()`` now excludes
+     - A dead node reads as fully free once its pods are evicted. ``budget()`` excludes
        unschedulable nodes.
    * - The whole batch created at once
      - Every item "fits" a growable cluster. Bounded by ``GROWTH_UNPINNED_LIMIT``; a handful
        of unplaceable pods signals an autoscaler as loudly as a thousand.
    * - Per-node sizing silently off
-     - ``growable`` compared an autoscaler maximum for the whole cluster against a
-       pool-filtered reading, so configuring a node pool made it permanently true.
+     - ``growable`` must compare like with like: an autoscaler maximum for the whole cluster
+       against a pool-filtered reading would make it permanently true once a node pool is
+       configured.
    * - A create retried forever
      - An RBAC change, a webhook or a quota looks identical to an API blip from here.
        Bounded, then dropped with its cause.
    * - A finished batch discarded over one unmeasured node
-     - A pinned probe that lost a race for free capacity read as a configuration fault.
-       Counted now, and terminal only if it repeats — ``UNMEASURED_BATCH_LIMIT``.
+     - A pinned probe that lost a race for free capacity reads like a configuration fault.
+       It is counted, and terminal only if it repeats — ``UNMEASURED_BATCH_LIMIT``.
    * - A probe waits with nothing said
-     - Refusals key on the item's owner, and probes have their own; only the campaign's key
-       was read. Both are read now.
+     - Refusals key on the item's owner, and probes have their own. The batch loop reads
+       both keys.
    * - A pinned probe never placed at all
-     - Priority gave it first pick but no reservation, so the smaller work it outranked took
-       its node every pass. A pinned item now holds its node open until it drains.
+     - Priority gives it first pick but no reservation, so the smaller work it outranks takes
+       its node every pass. A pinned item holds its node open until it drains.
 
 
 Where the numbers come from
@@ -335,6 +354,6 @@ are planned, with the probe's size and the node's in the campaign log, rather th
 never inherited by the next
 one — figures taken under one campaign's contention describe a load the next never meets.
 
-That is also why there is no cached per-node factor anywhere: measured across two campaigns on
-the same cluster, a container's cost per simulated second moved up to 40% and the ranking
-between nodes inverted, so a factor that transfers does not exist.
+That is also why there is no cached per-node factor anywhere: a container's cost per simulated
+second depends on the contention it runs under, so it can differ widely between two campaigns on
+the same cluster, down to the ranking between nodes — a factor that transfers does not exist.

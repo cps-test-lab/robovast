@@ -26,29 +26,12 @@ import yaml
 from robovast.client.errors import handle_cli_exception
 from robovast.common import fmt_size as _fmt_size
 from robovast.common.execution import is_campaign_dir
-from robovast.results_processing import run_postprocessing
 from robovast.results_processing.merge_results import merge_results
 from robovast.results_processing.metadata import generate_campaign_metadata
-from robovast.results_processing.postprocessing import load_postprocessing_plugins
 from robovast.results_processing.publication import load_publication_plugins, run_publication
 
 
-@click.group()
-def results():
-    """Work on a results directory on THIS machine.
-
-    Every verb here names a path and none of them needs a login: this is the local half
-    of the tool, for someone holding a results tree -- publishing it, generating its
-    metadata and provenance, merging campaigns. It ships with the full ``robovast``
-    distribution, so a client-only install does not have this group at all, which is the
-    honest signal that none of it is a service operation.
-
-    What acts on a *campaign* is ``vast campaign`` -- including postprocessing, which
-    lives there because the service owns the cluster the runs executed on.
-    """
-
-
-@results.command(name='publish')
+@click.command(name='publish')
 @click.option('--results-dir', '-r', required=True, type=click.Path(),
               help='Directory containing run results.')
 @click.option('--force', '-f', is_flag=True,
@@ -112,6 +95,8 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign, 
     # Run postprocessing first (unless skipped)
     if not skip_postprocessing:
         click.echo("Running postprocessing...")
+        from robovast.results_processing.postprocessing import \
+            run_postprocessing  # pylint: disable=import-outside-toplevel
         pp_success, pp_message = run_postprocessing(
             results_dir=results_dir,
             campaign=campaign,
@@ -143,7 +128,7 @@ def publish_cmd(results_dir, force, skip_postprocessing, skip_upload, campaign, 
     click.echo(f"\u2713 {message}")
 
 
-@results.command(name='backfill-provenance')
+@click.command(name='backfill-provenance')
 @click.argument('results_dir', type=click.Path(exists=True))
 @click.option('--write', is_flag=True,
               help='Actually write. Without this, report what would change and touch nothing.')
@@ -211,10 +196,10 @@ def backfill_provenance_cmd(results_dir, write, force):
                    f"Nothing written -- add --write.")
 
 
-@results.command(name='merge-campaigns')
+@click.command(name='merge-campaigns')
 @click.argument('merged_campaign_dir', type=click.Path())
-@click.option('--results-dir', '-r', default=None,
-              help='Source directory containing run-\\* directories (uses project results directory if not specified)')
+@click.option('--results-dir', '-r', required=True, type=click.Path(exists=True, file_okay=False),
+              help='Directory holding the campaign directories to merge.')
 def merge_results_cmd(merged_campaign_dir, results_dir):
     """Merge campaign directories with identical configs into one merged_campaign_dir.
 
@@ -237,7 +222,7 @@ def merge_results_cmd(merged_campaign_dir, results_dir):
         handle_cli_exception(e)
 
 
-@results.command(name='generate-metadata')
+@click.command(name='generate-metadata')
 @click.option('--results-dir', '-r', required=True, type=click.Path(),
               help='Directory containing run results.')
 @click.option('--dot-pdf', is_flag=True, default=False,
@@ -323,13 +308,15 @@ def generate_metadata_cmd(results_dir, dot_pdf):
     click.echo(f"✓ Metadata generated for {len(campaign_dirs)} campaign(s)")
 
 
-@results.command(name='postprocess-commands')
+@click.command(name='postprocess-commands')
 def list_postprocessing_commands():
     """List all available postprocessing command plugins.
 
     Shows plugin names that can be used in the ``results_processing.postprocessing`` section
     of the configuration file, along with their descriptions and parameters.
     """
+    from robovast.results_processing.postprocessing import \
+        load_postprocessing_plugins  # pylint: disable=import-outside-toplevel
     plugins = load_postprocessing_plugins()
 
     if not plugins:
@@ -369,7 +356,7 @@ def list_postprocessing_commands():
     click.echo("Commands with parameters use plugin name as key with parameters as dict.")
 
 
-@results.command(name='publish-commands')
+@click.command(name='publish-commands')
 def list_publication_plugins():
     """List all available publication plugins.
 

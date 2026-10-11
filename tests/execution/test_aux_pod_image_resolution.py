@@ -105,3 +105,108 @@ def test_a_digest_pinned_aux_image_is_not(project):
     manifest = _manifest(ContainerSpec(image=ref))
 
     assert _policies(manifest)[ContainerSpec(image=ref).container_name()] == "IfNotPresent"
+
+
+# -- a campaign's aux pod runs the digests its launch fixed ----------------------------
+
+_AUX_DIGEST = "registry.example.com/robovast/robovast-roqsim@sha256:" + "a" * 64
+_SIDECAR_DIGEST = "registry.example.com/robovast/robovast-sidecar@sha256:" + "b" * 64
+
+
+def test_a_campaign_family_ref_resolves_from_its_own_project(project):
+    """``--image-project`` reaches the aux helper of the campaign that asked for it."""
+    assert _aux_image(FAMILY, project="registry.example.com/dev", tag="feature-x") == \
+        "registry.example.com/dev/robovast-roqsim:feature-x"
+
+
+def test_the_manifest_runs_the_images_it_is_handed(project):
+    """The campaign's pins, not the environment: both the aux container and the transfer."""
+    spec = ContainerSpec(image=FAMILY)
+    manifest = _manifest(spec, images={spec.container_name(): _AUX_DIGEST},
+                         sidecar_image=_SIDECAR_DIGEST)
+
+    images = {c["name"]: c["image"] for c in manifest["spec"]["containers"]}
+    assert images == {spec.container_name(): _AUX_DIGEST, TRANSFER_CONTAINER: _SIDECAR_DIGEST}
+    assert set(_policies(manifest).values()) == {"IfNotPresent"}
+
+
+def _options(**fields):
+    from robovast.execution.backends import RunOptions
+    return RunOptions(**fields)
+
+
+def _launched(tmp_path):
+    """A campaign directory whose launch record a launch has just written."""
+    from robovast.common.campaign_data import write_launch_record
+    from robovast.service.interface import CreateCampaignRequest
+    write_launch_record(tmp_path, CreateCampaignRequest(workspace_id="ws"))
+    return tmp_path
+
+
+def test_pins_fix_and_record_each_image_once(project, tmp_path):
+    """Fixed on the first ask, recorded in the launch record before the pod exists, and the
+    same digest on every later ask -- so a replaced pod runs the bytes its predecessor did."""
+    from robovast.common.campaign_data import read_launch_record
+    from robovast.execution.cluster_execution.container_runner import CampaignImagePins
+
+    asked = []
+
+    def read(ref):
+        asked.append(ref)
+        return ref.rsplit(":", 1)[0] + "@sha256:" + "c" * 64, ""
+
+    options = _options(image_project="registry.example.com/dev", image_project_tag="feature-x")
+    pins = CampaignImagePins(_launched(tmp_path), options, read)
+    spec = ContainerSpec(image=FAMILY)
+
+    aux, sidecar = pins.aux(spec), pins.sidecar()
+    assert (pins.aux(spec), pins.sidecar()) == (aux, sidecar)
+    assert asked == ["registry.example.com/dev/robovast-roqsim:feature-x",
+                     "registry.example.com/dev/robovast-sidecar:feature-x"]
+
+    record = read_launch_record(tmp_path)
+    assert record["aux_images"] == {spec.container_name(): aux}
+    assert record["sidecar_image"] == sidecar
+    assert options.aux_images == {spec.container_name(): aux}
+    assert options.sidecar_image == sidecar
+
+
+def test_an_unreadable_aux_digest_refuses_the_launch(project, tmp_path):
+    from robovast.common.errors import CampaignConfigError
+    from robovast.execution.cluster_execution.container_runner import CampaignImagePins
+
+    pins = CampaignImagePins(_launched(tmp_path), _options(),
+                             lambda ref: ("", "the registry does not have it"))
+    with pytest.raises(CampaignConfigError) as e:
+        pins.aux(ContainerSpec(image=FAMILY))
+    assert "registry.example.com/robovast/robovast-roqsim:2026-08-28" in str(e.value)
+    assert "does not have it" in str(e.value)
+
+
+def test_a_replay_runs_the_recorded_digests_and_asks_nobody(project, tmp_path, monkeypatch):
+    """The environment moved; the replay does not. And a helper its source never asked for is
+    refused rather than resolved."""
+    from robovast.common.errors import CampaignConfigError
+    from robovast.execution.cluster_execution.container_runner import CampaignImagePins
+
+    monkeypatch.setenv("ROBOVAST_PROJECT", "registry.example.com/elsewhere")
+    spec = ContainerSpec(image=FAMILY)
+    options = _options(images_fixed=True, sidecar_image=_SIDECAR_DIGEST,
+                       aux_images={spec.container_name(): _AUX_DIGEST})
+    pins = CampaignImagePins(_launched(tmp_path), options,
+                             lambda ref: pytest.fail(f"a replay asked the registry for {ref}"))
+
+    assert pins.aux(spec) == _AUX_DIGEST
+    assert pins.sidecar() == _SIDECAR_DIGEST
+    with pytest.raises(CampaignConfigError, match="aux-tool"):
+        pins.aux(ContainerSpec(image="registry.example.org/team/tool:1"))
+
+
+def test_a_replay_without_a_recorded_sidecar_is_refused(project, tmp_path):
+    from robovast.common.errors import CampaignConfigError
+    from robovast.execution.cluster_execution.container_runner import CampaignImagePins
+
+    pins = CampaignImagePins(_launched(tmp_path), _options(images_fixed=True),
+                             lambda ref: pytest.fail("a replay asked the registry"))
+    with pytest.raises(CampaignConfigError, match="sidecar"):
+        pins.sidecar()

@@ -18,8 +18,8 @@
 
 Every directory this deployment keeps is a ``hostPath`` on the data node unless a class is
 passed, which is why the defaults here are node directories. Campaigns live on the
-service's results volume beside the workspaces; the ``robovast`` pod holds the registry and
-the campaign index and is pinned to the same node.
+service's results volume beside the workspaces; the ``robovast`` pod holds the registry and is
+pinned to the same node.
 """
 import logging
 
@@ -40,16 +40,15 @@ one node -- the data node -- and needs no storage class and no preparation on th
 
 Finished campaigns live on the service's **results volume**, a directory beside the
 workspaces on the data node (`--data-root` places both; `--workspaces-path` places the
-workspaces and the results follow). Downloads, re-postprocessing and the campaign index
-all read from there. It survives the service pod being restarted or upgraded, and
+workspaces and the results follow). Downloads, postprocessing and every query read
+from there: the tables a query names are built from the campaign's records on first use, in
+the campaign's own `.cache/`. It survives the service pod being restarted or upgraded, and
 `vast cluster cleanup` leaves it alone -- `vast cluster cleanup --delete-data` is what
 empties it. It is not a backup: one directory on one node is one disk, so archive anything
 that must outlive the machine with `vast share`.
 
-The `robovast` pod in this manifest holds the container registry and the campaign index.
-Both are re-derivable -- images are rebuilt on demand and the index is re-ingested from
-the campaigns -- and both are directories on the data node too (`--registry-path`,
-and the index beside the results).
+The `robovast` pod in this manifest holds the container registry. It is re-derivable --
+images are rebuilt on demand -- and a directory on the data node too (`--registry-path`).
 
 The directories draw from the node filesystem and declare no bound, so watch the web UI's
 **Disk** meter: a hostPath carries no per-volume stats of its own, and the disk it shares
@@ -69,8 +68,7 @@ kubectl apply -f robovast-manifest.yaml
 kubectl wait --for=condition=ready pod/robovast -n default --timeout=60s
 ```
 
-The registry answers on `/v2` of the service's published host; the index on port 5432 of
-the `robovast` Service, from inside the cluster only.
+The registry answers on `/v2` of the service's published host.
 """
         with open(f"{output_dir}/README_rke2.md", "w") as f:
             f.write(readme_content)

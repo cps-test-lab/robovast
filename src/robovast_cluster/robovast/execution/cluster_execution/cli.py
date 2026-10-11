@@ -30,7 +30,6 @@ import click
 from robovast.client.errors import handle_cli_exception
 from robovast.execution.cluster_execution import data_paths
 from robovast.client.service_target import detected_service_url
-from robovast.client.service_target import target_options
 from robovast.client.status import (Phase, Status, budget_positions, stall_report,
                                     stopping_soon_report)
 
@@ -282,85 +281,49 @@ def _monitor_via_service(namespace, kube_context, interval, once):
               help='Kubernetes context to use (default: active context in kubeconfig)')
 @click.option('--namespace', '-n', default='default', show_default=True,
               help='Kubernetes namespace the scenario Jobs run in.')
-@click.option('--vast', 'vast', default=None, metavar='FILE',
-              type=click.Path(exists=True, dir_okay=False),
-              help='Watch every context this .vast names, instead of only the active '
-                   'one. Ignored when --context is given, which names one directly.')
-def monitor(interval, once, kube_context, namespace, vast):
+def monitor(interval, once, kube_context, namespace):
     """Monitor scenario execution jobs on the cluster.
 
     Displays progress per run: how many jobs have finished (completed or failed),
     how many are running, and how many are pending for each run.
 
-    By default, monitors only the contexts referenced in the .vast config file.
-    Falls back to the active kubeconfig context when no per-cluster config is
-    defined. Use --context to restrict monitoring to a single cluster.
-    Only contexts with active or past jobs are shown.
-
-    This is intended for monitoring jobs created by
-    a campaign launch.
+    Watches one cluster: the ``--context`` one, else the kubeconfig's active context.
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
-    # level they made `vast login` and `vast campaign wait` pay for the cluster stack.
-    from .cluster_context import (  # pylint: disable=import-outside-toplevel
-        get_active_kube_context, get_config_context_names)
+    # level they would make `vast login` and `vast campaign wait` pay for the cluster stack.
+    from .cluster_context import \
+        get_active_kube_context  # pylint: disable=import-outside-toplevel
     try:
         cursor_up = "\033[A"
         clear_line = "\033[2K"
         bar_width = 20
         pct_width = 7
 
-        # Build list of (label, kube_context_name) to monitor
-        if not kube_context:
-            # Only a .vast the caller named: monitoring a cluster works without one, and
-            # then watches the active context. There is deliberately no ambient project
-            # to fall back on -- a file in some parent directory of the CWD deciding
-            # which clusters to watch is a surprise, not a convenience.
-            config_names = get_config_context_names(vast) if vast else set()
-            if config_names:
-                contexts_to_monitor = sorted((n, n) for n in config_names)
-            else:
-                # No per-cluster config — fall back to active context
-                active = get_active_kube_context()
-                contexts_to_monitor = [(active or "(active)", active)]
-        else:
-            contexts_to_monitor = [(kube_context, kube_context)]
+        ctx = kube_context or get_active_kube_context()
 
-        multi = len(contexts_to_monitor) > 1
+        # Prefer the robovast-service: it drives the campaigns, so its status reports
+        # loop phase/batch/run progress and is authoritative for "done" — the monitor
+        # never exits in the gap between search generations. Falls through to the
+        # Kubernetes-only view below when no service is configured.
+        if _monitor_via_service(namespace, ctx, interval, once):
+            return
 
-        # Prefer the robovast-service (single-context campaigns): it drives the
-        # campaigns, so its status reports loop phase/batch/run progress and is
-        # authoritative for "done" — the monitor never exits in the gap between
-        # search generations. Falls through to the Kubernetes-only view below when
-        # no service is configured (multi-cluster, or partial setups).
-        if not multi:
-            if _monitor_via_service(namespace, contexts_to_monitor[0][1], interval, once):
-                return
-
-        # Per-context state (keyed by kube_context_name)
-        initial_total: dict[str, dict] = {}        # ctx -> {campaign: total}
-        max_ok: dict[str, dict] = {}               # ctx -> {campaign: max_ok}
-        max_fail: dict[str, dict] = {}             # ctx -> {campaign: max_fail}
-        last_per_run: dict[str, dict] = {}         # ctx -> last known per_run
-        run_first_finished: dict[str, dict] = {}   # ctx -> {campaign: (timestamp, finished_count)}
-        all_jobs_seen: dict[str, dict] = {}        # ctx -> {campaign: bool} — True once all jobs visible
+        ctx_initial: dict[str, int] = {}                  # campaign -> total
+        ctx_ok: dict[str, int] = {}                       # campaign -> max ok
+        ctx_fail: dict[str, int] = {}                     # campaign -> max fail
+        ctx_first: dict[str, tuple] = {}                  # campaign -> (timestamp, finished)
+        ctx_all_seen: dict[str, bool] = {}                # campaign -> all jobs seen once
+        last_per_run: dict = {}                           # last known per_run
         prev_line_count = [0]
 
-        def _build_run_lines(label, ctx, per_run):
-            """Return (lines, all_done) for a single context."""
+        def _build_run_lines(per_run):
+            """Return (lines, all_done)."""
             from .cluster_execution import \
                 JOB_PHASE_COUNTERS  # pylint: disable=import-outside-toplevel
-            ctx_initial = initial_total.setdefault(ctx, {})
-            ctx_ok = max_ok.setdefault(ctx, {})
-            ctx_fail = max_fail.setdefault(ctx, {})
-            ctx_first = run_first_finished.setdefault(ctx, {})
-            ctx_all_seen = all_jobs_seen.setdefault(ctx, {})
-
             all_campaigns = sorted(set(ctx_initial.keys()) | set(per_run.keys()))
             lines = []
             all_done = True
-            indent = "  " if multi else ""
             now = time.time()
 
             for campaign in all_campaigns:
@@ -435,56 +398,46 @@ def monitor(interval, once, kube_context, namespace, vast):
                 if c.get("blocked"):
                     extra += f"  Blocked: {c['blocked']}"
                 lines.append(
-                    f"{indent}{campaign}  [{progress_bar}]  {pct_str}  "
+                    f"{campaign}  [{progress_bar}]  {pct_str}  "
                     f"{finished}/{total}  ({ok} ok, {fail} fail)  "
                     f"Running: {c['running']}  Pending: {c['pending']}{extra}"
                     f"{rate_str}{eta_str}"
                 )
             if not lines:
-                lines.append(f"{indent}No scenario run jobs found.")
+                lines.append("No scenario run jobs found.")
             return lines, all_done
 
         def _print_status_lines():
             from .cluster_execution import \
                 get_cluster_job_counts_per_campaign  # pylint: disable=import-outside-toplevel
             all_lines = []
+            unreachable = False
+            try:
+                # Suppress urllib3 retry warnings for an unreachable cluster — this
+                # display reports reachability itself, one line below.
+                from .kube_client import quiet_urllib3_retries
+                with quiet_urllib3_retries():
+                    per_run = get_cluster_job_counts_per_campaign(namespace, context=ctx)
+            except Exception as exc:
+                per_run = {}
+                unreachable = True
+                logging.debug(f"Could not query context {ctx!r}: {exc}")
+            # Use last known data when unreachable so bars stay meaningful
+            if unreachable:
+                per_run = dict(last_per_run)
+            else:
+                last_per_run.clear()
+                last_per_run.update(per_run)
             everything_done = True
-            for label, ctx in contexts_to_monitor:
-                unreachable = False
-                try:
-                    # Suppress urllib3 retry warnings for unreachable contexts — this
-                    # display reports reachability itself, one line below.
-                    from .kube_client import quiet_urllib3_retries
-                    with quiet_urllib3_retries():
-                        per_run = get_cluster_job_counts_per_campaign(namespace, context=ctx)
-                except Exception as exc:
-                    # Keep displaying even if one context is unreachable
-                    per_run = {}
-                    unreachable = True
-                    logging.debug(f"Could not query context {ctx!r}: {exc}")
-                # Use last known data when unreachable so bars stay meaningful
-                if unreachable and ctx in last_per_run:
-                    per_run = last_per_run[ctx]
-                elif not unreachable:
-                    last_per_run[ctx] = per_run
-                # Skip contexts that have no jobs at all (and never had any)
-                if not per_run and ctx not in initial_total:
-                    if unreachable:
-                        indent = "  " if multi else ""
-                        if multi:
-                            all_lines.append(f"[{label}]")
-                        all_lines.append(f"{indent}(unreachable)")
-                        everything_done = False
-                    continue
-                if multi:
-                    ctx_label_str = f"[{label}]" + (" (unreachable)" if unreachable else "")
-                    all_lines.append(ctx_label_str)
-                elif unreachable:
-                    all_lines.append("(unreachable - showing last known state)")
-                run_lines, done = _build_run_lines(label, ctx, per_run)
-                all_lines.extend(run_lines)
-                if not done:
+            if not per_run and not ctx_initial:
+                if unreachable:
+                    all_lines.append("(unreachable)")
                     everything_done = False
+            else:
+                if unreachable:
+                    all_lines.append("(unreachable - showing last known state)")
+                run_lines, everything_done = _build_run_lines(per_run)
+                all_lines.extend(run_lines)
 
             # Erase previous output and redraw
             for _ in range(prev_line_count[0]):
@@ -501,8 +454,8 @@ def monitor(interval, once, kube_context, namespace, vast):
             _print_status_lines()
             return
 
-        ctx_label = "configured contexts" if multi else f"context '{contexts_to_monitor[0][0]}'"
-        click.echo(f"Monitoring scenario run jobs on {ctx_label} (press Ctrl+C to stop)...")
+        click.echo(f"Monitoring scenario run jobs on context '{ctx or '(active)'}' "
+                   "(press Ctrl+C to stop)...")
         sys.stdout.write("\n")
         sys.stdout.flush()
 
@@ -533,7 +486,7 @@ def _echo_placement(placement):
     if not data:
         click.echo("  node-local data: nothing pinned (a StorageClass backs it)")
         return
-    click.echo(f"  workspaces, results, index and registry on {data} "
+    click.echo(f"  workspaces, results and registry on {data} "
                f"({reason.get(placement.get('data_source'), 'decided')})")
     if build and build != data:
         click.echo(f"  build cache on {build}")
@@ -612,7 +565,7 @@ def _echo_job_node_aliases(changes, *, whole=False):
 @click.option('--list', 'list_configs', is_flag=True,
               help='List available cluster configuration plugins')
 @click.option('--namespace', '-n', default='default', show_default=True,
-              help='Kubernetes namespace for execution (used by cluster run)')
+              help='Kubernetes namespace the service is deployed into.')
 @click.option('--option', '-o', 'options', multiple=True,
               help='Cluster-specific option in key=value format (can be used multiple times)')
 @click.option('--force', '-f', is_flag=True,
@@ -630,8 +583,8 @@ def _echo_job_node_aliases(changes, *, whole=False):
               help='Kubernetes context to use (default: active context in kubeconfig)')
 @click.option('--ingress-host', default='', metavar='HOST',
               help='Publish the service at this hostname, so users reach it in a '
-                   'browser without kubectl. Needs TLS (see --issuer/--tls-secret) '
-                   'and an access token; both are refused otherwise.')
+                   'browser without kubectl. Needs an access token, and TLS (see '
+                   '--issuer/--tls-secret) unless --insecure-http is given.')
 @click.option('--ingress-class', default='', metavar='NAME',
               help='IngressClass to use (e.g. nginx). Default: the cluster default.')
 @click.option('--issuer', default='', metavar='NAME',
@@ -658,14 +611,13 @@ def _echo_job_node_aliases(changes, *, whole=False):
               envvar='ROBOVAST_WORKSPACES_PATH',
               help='Host directory holding the service\'s workspaces '
                    f'(default: {data_paths.DEFAULT_WORKSPACES_HOST_PATH}). The campaign '
-                   'results root -- where finished campaigns live -- is placed beside it, '
-                   'and the campaign index beside that; neither needs a flag of its own.')
+                   'results root -- where finished campaigns live -- is placed beside it '
+                   'and needs no flag of its own.')
 @click.option('--workspaces-class', default='', metavar='NAME',
               envvar='ROBOVAST_WORKSPACES_CLASS',
               help='Back the workspaces and the campaign results with PVCs from this '
                    'StorageClass instead of hostPaths, which also unpins the service pod. '
-                   'The campaign index follows unless --index-class says otherwise. Stock '
-                   'RKE2 provisions nothing, which is why hostPath is the default.')
+                   'Stock RKE2 provisions nothing, which is why hostPath is the default.')
 @click.option('--results-size', 'results_storage_size', default='', metavar='SIZE',
               envvar='ROBOVAST_RESULTS_SIZE',
               help='Size of the campaign results PVC (default: 500Gi) -- the volume every '
@@ -673,19 +625,6 @@ def _echo_job_node_aliases(changes, *, whole=False):
                    'without one the results are a directory on the data node, bounded by '
                    'that disk, and there is no volume to size. The same flag on '
                    "'vast service upgrade' raises an existing claim.")
-@click.option('--index-class', 'index_storage_class', default='', metavar='NAME',
-              envvar='ROBOVAST_INDEX_CLASS',
-              help='Back the campaign index with a PVC from this StorageClass. Without it '
-                   'the index takes the results\' backing: a PVC of the workspaces\' class '
-                   'where one is given, else a directory beside the results on the data '
-                   'node. Its own flag because Postgres is a different workload from the '
-                   'bulk of the results, and on a managed node pool the index is what a '
-                   'replaced node would otherwise take with it.')
-@click.option('--index-size', 'index_storage_size', default='', metavar='SIZE',
-              envvar='ROBOVAST_INDEX_SIZE',
-              help='Size of the campaign index PVC (default: 20Gi). Needs a class, its own '
-                   'or the workspaces\': without one the index is a directory on the node '
-                   'and there is no volume to size.')
 @click.option('--registry-class', 'registry_storage_class', default='', metavar='NAME',
               envvar='ROBOVAST_REGISTRY_CLASS',
               help='Back the built-in container registry with a PVC from this '
@@ -698,7 +637,7 @@ def _echo_job_node_aliases(changes, *, whole=False):
                    f'(default: {data_paths.DEFAULT_REGISTRY_HOST_PATH}).')
 @click.option('--data-node', default='', metavar='NODE',
               help='Hold this deployment\'s node-local data on this node: the workspaces, '
-                   'the results, the index, the registry and, unless --buildkit-node says '
+                   'the results, the registry and, unless --buildkit-node says '
                    'otherwise, the build cache. Rarely needed -- setup picks the node with '
                    'the most free space the first time and records the choice as a node '
                    'label, so later runs stay put without any flag. Naming a node moves the '
@@ -755,7 +694,7 @@ def _echo_job_node_aliases(changes, *, whole=False):
 @click.argument('cluster_config', required=False)
 def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_context,
           ingress_host, ingress_class, issuer, tls_secret, insecure_http, rotate_token,
-          data_root, index_storage_class, index_storage_size,
+          data_root,
           workspaces_path, workspaces_class, results_storage_size,
           registry_storage_class, registry_storage_path, data_node,
           buildkit_storage_class, buildkit_storage_path, buildkit_storage_size,
@@ -764,7 +703,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
           cluster_config):
     """Set up the Kubernetes cluster for execution.
 
-    Deploys the ``robovast`` pod (the container registry and the campaign index), the
+    Deploys the ``robovast`` pod (the container registry), the
     ``robovast-service`` Deployment that drives campaigns and keeps their results on its
     results volume, the shared build daemon, and the cluster-wide pieces they need (RBAC,
     the GPU device plugin, the placement labels).
@@ -801,7 +740,7 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
-    # level they made `vast login` and `vast wait` pay for the cluster stack.
+    # level they would make `vast login` and `vast campaign wait` pay for the cluster stack.
     from .cluster_setup import setup_server  # pylint: disable=import-outside-toplevel
     if list_configs:
         try:
@@ -826,20 +765,16 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         cluster_kwargs[key] = value
 
     # Resolved here, once, so every tenant is placed by the same rule and a --data-root
-    # cannot reach three of them and miss the fourth. Refused before anything is applied:
+    # cannot reach some of them and miss another. Refused before anything is applied:
     # an argument error must not leave a half-set-up cluster behind it.
     stated = {
         'workspaces_path': workspaces_path, 'workspaces_class': workspaces_class,
-        # No index path: it is placed beside the results it was ingested from, derived
-        # rather than stated. Only its class is a separate question.
-        'index_class': index_storage_class,
         'registry_path': registry_storage_path, 'registry_class': registry_storage_class,
         'buildkit_path': buildkit_storage_path, 'buildkit_class': buildkit_storage_class,
     }
     try:
         data_paths.refuse_conflicts(stated, data_root=data_root,
                                     sizes={'buildkit': buildkit_storage_size,
-                                           'index': index_storage_size,
                                            'results': results_storage_size})
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
@@ -868,11 +803,6 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
         # Sized rather than placed: results follows the workspaces' class and directory
         # (`data_paths.TENANTS`), and only how much it may grow to is its own question.
         'results_storage_size': results_storage_size,
-        # Popped by setup_server and handed to the provider: the index is in the
-        # `robovast` pod, not in the service Deployment.
-        'index_storage_class': placements['index'].storage_class,
-        'index_storage_path': placements['index'].path,
-        'index_storage_size': index_storage_size,
     }
     # Its own channel, not `service_kwargs`: the build daemon is a workload beside the service
     # rather than part of it, and `deploy_service` cannot carry it anyway -- it dispatches one
@@ -927,14 +857,11 @@ def setup(list_configs, namespace, options, force, gpu_replicas, no_gpu, kube_co
 @click.command('jobs-cleanup')
 @click.option('--campaign', '-i', default=None,
               help='Clean only jobs for this campaign (e.g. campaign-2025-02-27-123456). Without this, cleans all scenario-runs jobs.')
-@target_options
-@click.option('--vast', 'vast', default=None, metavar='FILE',
-              type=click.Path(exists=True, dir_okay=False),
-              help='A .vast to pre-flight against this cluster. Its only use here is to '
-                   'refuse when it declares per-cluster resource lists for several '
-                   'contexts and --context was not given -- which would otherwise pick '
-                   'a cluster by accident. Optional, and read only for that check.')
-def run_cleanup(campaign, namespace, context, vast):
+@click.option('--namespace', '-n', default='default', show_default=True,
+              help='Namespace the robovast-service runs in.')
+@click.option('--context', '-x', default=None, metavar='NAME',
+              help='Kubernetes context to use (default: active context in kubeconfig).')
+def run_cleanup(campaign, namespace, context):
     """Clean up jobs and pods from a cluster run.
 
     Removes scenario execution Jobs and their pods directly (using your kubeconfig
@@ -950,7 +877,7 @@ def run_cleanup(campaign, namespace, context, vast):
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
-    # level they made `vast login` and `vast wait` pay for the cluster stack.
+    # level they would make `vast login` and `vast campaign wait` pay for the cluster stack.
     from .cluster_execution import _label_safe_campaign  # pylint: disable=import-outside-toplevel
     from .cluster_execution import cleanup_cluster_campaign, get_cluster_job_counts_per_campaign
     from .kubernetes import check_kubernetes_access  # pylint: disable=import-outside-toplevel
@@ -1006,8 +933,8 @@ def run_cleanup(campaign, namespace, context, vast):
                    'binds its port; a pod that is genuinely broken (ImagePullBackOff, a crash '
                    'loop) still fails fast on its own, without spending this.')
 @click.option('--no-restart', is_flag=True, default=False,
-              help='Reconcile only what does not need the pod rolled -- RBAC, the '
-                   'queues, the registry ingress route -- then stop. For granting a '
+              help='Reconcile only what does not need the pod rolled -- RBAC, node '
+                   'labels, the registry ingress route -- then stop. For granting a '
                    'permission the RUNNING version is missing without a version change or '
                    'an API blip, e.g. while a campaign is in flight.')
 @click.option('--results-size', 'results_storage_size', default='', metavar='SIZE',
@@ -1030,27 +957,28 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
     It fails, non-zero, if that pod does not take over: an image it cannot pull, a node it
     cannot be scheduled on, or a container that crash-loops. The reason Kubernetes gave is
     printed as soon as it appears, so a stuck upgrade names its cause in seconds instead of
-    looking like a hang -- and "✓ upgraded and ready" now means it. Use ``--timeout`` for a
+    looking like a hang -- and "✓ upgraded and ready" means it. Use ``--timeout`` for a
     registry slow enough to need longer.
 
-    Always restarts the pod, even when nothing appears to have changed. That is the
-    point: an image ref that is a floating tag, or a change confined to the Secrets,
+    Without ``--no-restart`` it always restarts the pod, even when nothing appears to
+    have changed. That is the point: an image ref that is a floating tag, or a change confined to the Secrets,
     leaves the Deployment spec byte-identical, and Kubernetes then rolls nothing while
     this command reports success. It also makes the restart the *only* way the env
     Secrets are re-read -- the pod loads them through ``envFrom`` at container start and
     never again. The cost is a few seconds during which the API is unavailable.
 
     RBAC reconciliation is not decoration: a version needing a permission the last one
-    did not — as ``/usage`` once needed a cluster-scoped ClusterRole — would otherwise
+    did not — a route that reads a cluster-scoped resource, say — would otherwise
     deploy and then fail at runtime with a 403, which reads as a bug rather than as a
     missed migration.
 
-    ``--no-restart`` reconciles just that part — RBAC, the registry
-    ingress route, the optional tailnet node — and stops before the Deployment is touched. All three are picked up by
-    the *running* pod (the API server evaluates RBAC per request, and
-    workload, a route is the gateway's own state), so a permission the running version is
-    missing can be granted without a version change and without the API blip. That is the
-    difference between fixing a missed migration and rolling a service: it is the only way
+    ``--no-restart`` reconciles just what the *running* pod picks up — RBAC, the node
+    identity labels, the registry ingress route, the optional tailnet node and the job
+    node aliases — and stops before the Deployment is touched. The API server evaluates
+    RBAC per request, a node label is the node's own state, a route is the gateway's own
+    state and the tailnet node is a Deployment of its own, so a permission the running
+    version is missing can be granted without a version change and without the API blip.
+    That is the difference between fixing a missed migration and rolling a service: it is the only way
     to do the former while a campaign is in flight, because the campaign controller lives in
     the pod a roll would replace. It does *not* move the image and does *not* re-read the env
     Secrets — for either of those, run the command without the flag.
@@ -1059,9 +987,8 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
     ``ROBOVAST_JOB_NODE_LABELS`` and ``ROBOVAST_JOB_NODE_ALIASES`` in the environment -- so an
     upgrade from a shell without them clears the pool and removes the aliases, and says so --
     after checking every alias against that pool, before anything changes. With
-    ``--no-restart`` the pool is not applied, since it lives in the pod's environment.
-    ``--no-restart`` reconciles them too: they are node labels a campaign reads when it
-    starts, not the pod's environment.
+    ``--no-restart`` the pool is not applied, since it lives in the pod's environment; the
+    aliases are, since they are node labels a campaign reads when it starts.
 
     Before the roll it asks the service which campaigns are live and names them, for the
     reason ``--no-restart`` exists: the pod being replaced is where their controller runs.
@@ -1092,7 +1019,7 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
                      the environment (git, share, ntfy, registry). Recovers this
                      cluster's config and ingress host from the cluster itself, so it
                      cannot lose them. The access token is preserved.
-      setup --force  re-provisions: the registry/index pod, the storage placement. It
+      setup --force  re-provisions: the registry pod, the storage placement. It
                      takes its options as *arguments*, so a re-run without the original
                      flags re-provisions with different ones. Also re-mints the access
                      token when asked (--rotate-token), logging everyone out.
@@ -1140,7 +1067,7 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
         ingress_host = public_origin.split("://", 1)[-1] if public_origin else ""
 
         # Before anything is changed. The service pod this upgrade renders reaches the
-        # registry and the index in the `robovast` pod, so a cluster whose pod lacks them --
+        # registry in the `robovast` pod, so a cluster whose pod lacks it --
         # or carries an object store nothing reads -- needs cleanup + setup, and must
         # hear so before the roll.
         verify_store_pod_infrastructure(namespace, kube_context)
@@ -1275,7 +1202,7 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
         #
         # Its storage settings are recovered from the live Deployment rather than defaulted:
         # they arrived as `setup` flags, nothing records them, and re-rendering from defaults
-        # would silently move a PVC-backed cache back to a hostPath. `deploy_service` now
+        # would silently move a PVC-backed cache back to a hostPath. `deploy_service`
         # recovers its own the same way (see `service_storage_from_cluster`), and both take
         # their node pin from the constant label rather than from an argument this call site
         # would have to remember to pass.
@@ -1356,10 +1283,9 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
 def cluster_token(namespace, kube_context, quiet):
     """Show the access token, and what to hand users along with it.
 
-    Setup deliberately prints the token only once, so reading it back meant a
-    ``kubectl get secret ... | base64 -d`` incantation -- which every operator then
-    keeps in their shell history, and which needs kubectl syntax to answer a RoboVAST
-    question.
+    Setup deliberately prints the token only once; the alternative way to read it back is
+    a ``kubectl get secret ... | base64 -d`` incantation, which lands in shell history and
+    needs kubectl syntax to answer a RoboVAST question.
 
     The token is **per cluster**: an instance mints its own, and one instance's token is
     simply wrong at another. That is the failure this command is most likely to prevent,
@@ -1433,7 +1359,7 @@ def cluster_token(namespace, kube_context, quiet):
               help='Kubernetes context to use (default: active context in kubeconfig)')
 @click.option('--delete-data', is_flag=True,
               help="Also empty this deployment's data directories on the node: the "
-                   'workspaces, the results, the campaign index and the registry. Cleanup '
+                   'workspaces, the results and the registry. Cleanup '
                    'keeps them by default, because the results hold every finished '
                    'campaign and a teardown is a very expensive way to discover that. '
                    'Irreversible, and no archive is taken first -- use vast share or vast '
@@ -1443,17 +1369,11 @@ def cluster_token(namespace, kube_context, quiet):
                    'data. Without this the labels stay, so a later setup lands on the same '
                    'node with no flags -- which is the point of them. The on-disk data is '
                    'not removed either way.')
-@click.option('--vast', 'vast', default=None, metavar='FILE',
-              type=click.Path(exists=True, dir_okay=False),
-              help='A .vast to pre-flight against this cluster. Its only use here is to '
-                   'refuse when it declares per-cluster resource lists for several '
-                   'contexts and --context was not given -- which would otherwise pick '
-                   'a cluster by accident. Optional, and read only for that check.')
 def cleanup(config_name, namespace, options, kube_context, forget_placement,
-            delete_data, vast):
+            delete_data):
     """Clean up the Kubernetes cluster setup.
 
-    Removes the ``robovast`` pod (registry and index), the ``robovast-service``
+    Removes the ``robovast`` pod (the registry), the ``robovast-service``
     Deployment, the build daemon and the cluster-wide pieces setup installed. The data
     directories on the node are kept unless ``--delete-data`` asks otherwise.
 
@@ -1469,7 +1389,7 @@ def cleanup(config_name, namespace, options, kube_context, forget_placement,
     """
     # Deferred: these reach the Kubernetes client, and this module is a CLI
     # plugin `load_plugins()` imports on every `vast` invocation -- at module
-    # level they made `vast login` and `vast wait` pay for the cluster stack.
+    # level they would make `vast login` and `vast campaign wait` pay for the cluster stack.
     from .cluster_setup import delete_server  # pylint: disable=import-outside-toplevel
     try:
         cluster_kwargs = {}

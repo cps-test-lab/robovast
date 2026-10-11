@@ -310,6 +310,63 @@ def test_the_service_hands_a_campaigns_stop_flag_to_its_session(monkeypatch):
     assert built["should_stop"] is stop
 
 
+def test_a_campaign_span_fixes_its_sidecar_before_anything_composes(monkeypatch, tmp_path):
+    """Given the campaign's options, the span fixes the sidecar on entry -- one digest for
+    every pod the campaign starts, recorded before the first -- and hands its pins to the
+    session, so the aux pods it creates run digests too."""
+    from robovast.common.campaign_data import read_launch_record, write_launch_record
+    from robovast.execution.backends import RunOptions
+    from robovast.service.interface import CreateCampaignRequest
+
+    built = {}
+
+    @contextlib.contextmanager
+    def _session(*_args, **kwargs):
+        built.update(kwargs)
+        yield SimpleNamespace(runner_factory=lambda: (lambda _spec: None))
+
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.container_runner.AuxPodSession", _session)
+    campaign = "c-2026-09-08-120000"
+    write_launch_record(tmp_path / campaign, CreateCampaignRequest(workspace_id="ws"))
+    digest = "registry.example.com/dev/robovast-sidecar@sha256:" + "d" * 64
+    service = _service()
+    service.campaign_dir = lambda cid: tmp_path / cid
+    service._read_image_digest = lambda ref: (digest, "")
+    options = RunOptions(image_project="registry.example.com/dev")
+
+    from robovast.common import config_generation
+
+    with service._aux_runner_context(campaign, SimpleNamespace(), options=options):
+        assert options.sidecar_image == digest
+        assert read_launch_record(tmp_path / campaign)["sidecar_image"] == digest
+        # A composition served from the cache starts no helper; its images reach the same
+        # pins through the fixer, so they are recorded all the same.
+        assert config_generation._aux_image_fixer.get() == built["image_pins"].aux
+
+    assert built["image_pins"] is not None
+    assert built["image_pins"].sidecar() == digest
+    assert config_generation._aux_image_fixer.get() is None
+
+
+def test_a_campaign_whose_sidecar_digest_cannot_be_read_composes_nothing(monkeypatch,
+                                                                          tmp_path):
+    from robovast.common.errors import CampaignConfigError
+    from robovast.execution.backends import RunOptions
+
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.container_runner.AuxPodSession",
+        lambda *a, **k: pytest.fail("a session was opened for a refused launch"))
+    service = _service()
+    service.campaign_dir = lambda cid: tmp_path / cid
+    service._read_image_digest = lambda ref: ("", "the registry did not answer for it")
+
+    with pytest.raises(CampaignConfigError, match="did not answer"):
+        with service._aux_runner_context("c-2026-09-08-120000", SimpleNamespace(),
+                                         options=RunOptions()):
+            pytest.fail("composition ran for a launch whose sidecar could not be fixed")
+
+
 def test_the_ready_wait_is_given_the_campaigns_stop_flag(kube, monkeypatch, tmp_path):
     """The pull happens inside this wait, so this is where a stop has to be seen.
 

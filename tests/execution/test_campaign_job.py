@@ -2,19 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 """What every admitted campaign Job shares, decided in one place.
 
-A scenario run and a postprocessing Job are both one-shot pods the admission queue places
-on a campaign node. Their labels, retry policy, toleration, pull secret and pin come from
-:mod:`~robovast.execution.cluster_execution.campaign_job`, so the two cannot drift apart.
+A campaign Job is a one-shot pod the admission queue places on a campaign node. Its labels,
+retry policy, toleration, pull secret and pin come from
+:mod:`~robovast.execution.cluster_execution.campaign_job`.
 """
 
-from robovast.execution.cluster_execution import postprocess_job as pj
 from robovast.execution.cluster_execution.campaign_job import (apply_campaign_pod_policy,
                                                                campaign_job_manifest,
                                                                pin_campaign_job)
 from robovast.execution.cluster_execution.node_placement import (CAMPAIGN_NODE_TOLERATIONS,
                                                                  JOB_NODE_POOL_ENV)
-
-from .image_steps_helper import steps
 
 
 def _job(**kw):
@@ -62,15 +59,3 @@ def test_the_pin_narrows_the_pool_and_nothing_is_touched_without_either(monkeypa
     selector = pinned["spec"]["template"]["spec"]["nodeSelector"]
     assert selector["pool"] == "a"
     assert "node-1" in selector.values()
-
-
-def test_both_job_kinds_share_the_skeleton(monkeypatch):
-    """The postprocessing Job is built through the same function as a scenario run."""
-    from robovast.common.index_db import DSN_ENV
-    monkeypatch.setenv(DSN_ENV, "host=index.example.com dbname=robovast")
-    job = pj.build_manifest("Camp_1", "img", steps("Camp_1"), "ns", pull_secret_name="rc")
-    skeleton = _job(jobgroup=pj.POSTPROCESS_JOBGROUP, pull_secret="rc")
-    assert job["metadata"]["labels"] == skeleton["metadata"]["labels"]
-    assert job["spec"]["backoffLimit"] == skeleton["spec"]["backoffLimit"]
-    for key in ("restartPolicy", "tolerations", "imagePullSecrets"):
-        assert job["spec"]["template"]["spec"][key] == skeleton["spec"]["template"]["spec"][key]

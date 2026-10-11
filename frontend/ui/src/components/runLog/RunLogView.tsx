@@ -9,6 +9,9 @@
 // Rendering is windowed and every row is one line high, which is not an optimisation but the
 // mechanism: knowing where a row *is* (`index * ROW_H`) is what makes both the greying and
 // scroll-to-cursor possible without measuring anything, and what lets a 50k-line log scroll.
+//
+// A host streaming a live log passes `tail` instead of a cursor: the view then follows the newest
+// row as rows arrive, pauses while the reader is scrolled up, and resumes at the bottom.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Alert from '@mui/material/Alert'
@@ -22,7 +25,7 @@ import ArrowUpwardRoundedIcon from '@mui/icons-material/ArrowUpwardRounded'
 import { lastAtOrBefore } from '@robovast/panel-kit'
 import { containerColorer } from '../containerColor'
 import { parseAnsi, stripAnsi } from './ansi'
-import { LogFilterBar } from './LogFilterBar'
+import { LogFilterBar, type FacetTitles } from './LogFilterBar'
 import {
   compileFilter,
   EMPTY_FILTER,
@@ -31,6 +34,7 @@ import {
   type LogFilter,
 } from './logFilter'
 import type { LogRow, RunLogData } from './useRunLog'
+import { tailFollows } from './follow'
 
 /** One row's height in px. Fixed, so a row's position is arithmetic rather than a measurement. */
 const ROW_H = 18
@@ -176,6 +180,11 @@ export interface RunLogViewProps {
   hideShutdown?: boolean
   /** Extra note in the footer, e.g. the Explorer's scope. */
   note?: string
+  /** The rows are a live log that grows at the end: follow the newest row while the reader is at
+   *  the bottom. Ignored when a `cursor` is passed, which the view follows instead. */
+  tail?: boolean
+  /** What the facet columns hold, where it is not a container and a ROS node. */
+  facetTitles?: FacetTitles
 }
 
 export function RunLogView({
@@ -190,6 +199,8 @@ export function RunLogView({
   onFilterChange,
   hideShutdown: hideShutdownProp,
   note,
+  tail,
+  facetTitles,
 }: RunLogViewProps) {
   const [ownFilter, setOwnFilter] = useState<LogFilter>(EMPTY_FILTER)
   const filter = filterProp ?? ownFilter
@@ -211,6 +222,10 @@ export function RunLogView({
   // Set while the component scrolls itself, so its own scroll event is not mistaken for the
   // user scrolling away -- which would make the view stop following the moment it followed.
   const selfScroll = useRef(false)
+  // Tail mode: a live log with no playback cursor follows its newest row. Its own flag, since the
+  // cursor's `following` is judged against the cursor row and a tail against the bottom.
+  const tailing = !!tail && cursor == null
+  const [tailFollowing, setTailFollowing] = useState(true)
 
   const rows = data?.rows ?? []
   const facets = useMemo(() => facetsOf(rows), [rows])
@@ -335,10 +350,42 @@ export function RunLogView({
     if (following) scrollToCursor()
   }, [following, scrollToCursor, viewportH])
 
+  const scrollToEnd = useCallback(() => {
+    const el = scrollRef.current
+    // Never out from under a selection: copying a line out of a live log has to be possible.
+    if (!el || hasSelection()) return
+    el.scrollTop = el.scrollHeight
+  }, [hasSelection])
+
+  // Tail: every change to the drawn rows (an append, a trim at the head, a filter) lands the view
+  // on the newest row while following. `shown` rather than its length: a log at its row bound
+  // keeps its length while its rows move on.
+  useEffect(() => {
+    if (tailing && tailFollowing) scrollToEnd()
+  }, [tailing, tailFollowing, scrollToEnd, shown, viewportH, wrap])
+
+  // A log that starts over (a new job, a reconnect that re-reads from the first row) is read from
+  // its end again.
+  const emptyLog = rows.length === 0
+  useEffect(() => {
+    if (emptyLog) setTailFollowing(true)
+  }, [emptyLog])
+
+  const resumeTail = useCallback(() => {
+    setTailFollowing(true)
+    scrollToEnd()
+  }, [scrollToEnd])
+
   const onScroll = () => {
     const el = scrollRef.current
     if (!el) return
     setScrollTop(el.scrollTop)
+    if (tailing) {
+      // Judged from where the view is, whoever scrolled it: the view's own jump lands at the
+      // bottom and so keeps following; the reader scrolling up pauses it, and back down resumes.
+      setTailFollowing(tailFollows(el))
+      return
+    }
     if (selfScroll.current) {
       selfScroll.current = false
       return
@@ -401,18 +448,10 @@ export function RunLogView({
         </Typography>
       </Box>
     )
-  if (data?.notIngested)
-    return (
-      <Alert severity="info" variant="outlined" sx={{ m: 1, py: 0 }}>
-        This campaign has no rows in the results index, so there is no log to read yet.
-        Postprocessing builds them — run it from the Data tab.
-      </Alert>
-    )
   if (data?.missingTable)
     return (
       <Alert severity="info" variant="outlined" sx={{ m: 1, py: 0 }}>
-        No <code>run_log</code> table: this campaign was postprocessed before the merged log
-        existed. Re-run postprocessing to build it.
+        No <code>run_log</code> table: no run in this scope has recorded a log line yet.
       </Alert>
     )
 
@@ -477,6 +516,7 @@ export function RunLogView({
             : ''
         }
         notes={notes}
+        facetTitles={facetTitles}
       />
 
       {/* minWidth/minHeight 0 are load-bearing: without them a flex child refuses to shrink
@@ -655,6 +695,20 @@ export function RunLogView({
             </Box>
           )}
         </Box>
+
+        {tailing && !tailFollowing && shown.length ? (
+          <Tooltip title="Follow the newest lines">
+            <Fab
+              size="small"
+              color="primary"
+              aria-label="follow the newest lines"
+              onClick={resumeTail}
+              sx={{ position: 'absolute', right: 12, bottom: 10, zIndex: 4 }}
+            >
+              <ArrowDownwardRoundedIcon fontSize="small" />
+            </Fab>
+          </Tooltip>
+        ) : null}
 
         {/* Appears only once following has stopped, and points the way back. */}
         {!following && cursorIndex >= 0 ? (

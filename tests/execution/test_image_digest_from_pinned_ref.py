@@ -158,9 +158,12 @@ def test_an_unreachable_cluster_still_records_the_planned_digests():
     assert runner._resolved_image_digests == {"scenario": PINNED}
 
 
-def test_what_the_kubelet_pulled_wins_over_the_plan():
-    """The pod read is the stronger claim where both speak: it is what actually ran."""
-    actually_ran = "harbor.example.com/robovast/robovast@sha256:" + "e" * 64
+def test_the_plan_keeps_its_digest_and_the_pods_fill_the_rest():
+    """A planned container was pulled by the digest the launch record holds, so the record
+    keeps that spelling of it -- ``image_revisions`` and ``launch.yaml`` must not name one image
+    two ways. The pod read adds what the plan does not name."""
+    reported = "harbor.example.com/robovast/robovast@sha256:" + "e" * 64
+    sidecar = "harbor.example.com/robovast/robovast-sidecar@sha256:" + "f" * 64
     runner = _runner(PINNED)
     runner.plan = _planned(sut=PINNED)
 
@@ -168,8 +171,8 @@ def test_what_the_kubelet_pulled_wins_over_the_plan():
         return type("CS", (), {"name": name, "image_id": image_id})()
 
     pod = type("P", (), {"status": type("S", (), {
-        "container_statuses": [_status("sut", f"docker-pullable://{actually_ran}")],
-        "init_container_statuses": [],
+        "container_statuses": [_status("sut", f"docker-pullable://{reported}")],
+        "init_container_statuses": [_status("uploader", f"docker-pullable://{sidecar}")],
     })()})()
 
     class _Pods:
@@ -178,7 +181,8 @@ def test_what_the_kubelet_pulled_wins_over_the_plan():
 
     runner.k8s_client = _Pods()
     runner._capture_image_digest("job-name=x")
-    assert runner._resolved_image_digests["sut"] == actually_ran
+    assert runner._resolved_image_digests["sut"] == PINNED
+    assert runner._resolved_image_digests["uploader"] == sidecar
 
 
 def test_a_later_batch_fills_a_per_role_digest_the_first_one_missed():

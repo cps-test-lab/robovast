@@ -62,7 +62,8 @@ panel has nothing to show. The map needs nothing but the two checked-in files.
 
 ## What differs between the halves
 
-Only the bring-up. The measurement half — `init_nav2`, `bag_record`, `nav_to_pose` — is identical in
+Only the bring-up. The measurement half — `init_nav2`, `nav_to_pose`, and the bag RoboVAST records
+from the `.vast`'s `recording:` block — is identical in
 both scenarios on purpose: if it drifts, a difference in results stops being attributable to the
 simulator.
 

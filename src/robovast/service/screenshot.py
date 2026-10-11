@@ -54,6 +54,8 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from robovast.client.safe_path import UnsafePathError, check_segment
+
 logger = logging.getLogger(__name__)
 
 #: Written by the backend's command into the entry's output directory.
@@ -68,9 +70,6 @@ KEEP_MAX = 200
 #: What a kept render is named: a fresh random hex id. A name is matched in full before it
 #: reaches the filesystem, so a request cannot address anything outside the store.
 _KEPT_NAME = re.compile(r"[0-9a-f]{32}\.png")
-
-#: A campaign id as a directory of the store: one path segment, never ``.`` or ``..``.
-_KEPT_CAMPAIGN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
 
 _prune_lock = threading.Lock()
 
@@ -159,8 +158,9 @@ def render(identity: dict, *, state_path: Path, at: Optional[float], view: dict,
     if not state_path.is_file():
         raise ScreenshotUnavailable(
             f"this run recorded no state at {state_path.name}, so there is no moment to render. "
-            "A recording is the simulator backend's to write and is written only on a clean "
-            "stop — a run killed by its deadline leaves none.")
+            "A recording is the simulator backend's to write, from the run's first sample on: "
+            "a run still going is rendered from what it has recorded so far, and only a run "
+            "that never reached its first sample leaves none.")
 
     execution = identity.get("execution") or {}
     name = identity.get("backend")
@@ -228,9 +228,11 @@ def keep(campaign_id: str, frame: Path, *, now: Optional[float] = None) -> Path:
     Its request directory is removed on the way, and the store is pruned, so keeping a render
     never grows the store past its bounds. The kept file's name is its name on the route.
     """
-    if not _KEPT_CAMPAIGN.fullmatch(campaign_id):
+    try:
+        check_segment(campaign_id)
+    except UnsafePathError as err:
         raise ScreenshotUnavailable(
-            f"campaign id {campaign_id!r} cannot name a directory of the screenshot store")
+            f"campaign id {campaign_id!r} cannot name a directory of the screenshot store") from err
     target = kept_root() / campaign_id / f"{uuid.uuid4().hex}.png"
     try:
         # Under the prune lock: a prune running between creating the campaign's directory and
@@ -246,7 +248,11 @@ def keep(campaign_id: str, frame: Path, *, now: Optional[float] = None) -> Path:
 
 def kept(campaign_id: str, name: str, *, now: Optional[float] = None) -> Path:
     """The kept render *name* of *campaign_id*, or ``KeyError`` saying it is not kept."""
-    if not (_KEPT_CAMPAIGN.fullmatch(campaign_id) and _KEPT_NAME.fullmatch(name)):
+    try:
+        check_segment(campaign_id)
+    except UnsafePathError as err:
+        raise KeyError(f"no screenshot {name!r} of campaign {campaign_id!r}") from err
+    if not _KEPT_NAME.fullmatch(name):
         raise KeyError(f"no screenshot {name!r} of campaign {campaign_id!r}")
     path = kept_root() / campaign_id / name
     now = time.time() if now is None else now

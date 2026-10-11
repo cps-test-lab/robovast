@@ -5,8 +5,8 @@
 # compose, postprocess, evaluate and drive the search loop from inside the
 # cluster — reading per-batch results from the service's own results volume
 # instead of round-tripping them to the laptop. Beyond Python it carries `curl`
-# (the service's own probes and the data-plane checks), `pigz` (the streamed
-# campaign archive, robovast/execution/campaign_archive.py) and `git` (resolving
+# (the service's own probes and the data-plane checks), `pigz` (every tar.gz the
+# service writes, robovast/execution/campaign_archive.py) and `git` (resolving
 # a campaign's VCS-pinned plugins); `tar` ships in the base image.
 #
 # It does NOT contain the ROS runtime: scenario execution and rosbag postprocessing
@@ -89,18 +89,13 @@ FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa70
 # passes when the thing producing it failed. Stated for the stage rather than per RUN.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# No X/GL shared objects here, deliberately. Eight of them (libglib2.0-0, libegl1,
-# libfontconfig1, libx11-6, libxkbcommon0, libgl1, libfreetype6, libdbus-1-3) would
-# be needed for no display at all: they are the minimal set
-# PySide6's bundled Qt6 libs must dynamically link against just to be
-# *imported*, because robovast-nav's variation plugins pulled a Qt map editor in
-# at module level. Without them `import PySide6.QtWidgets` failed with
-# "libGL.so.1: cannot open shared object file", which surfaced as nav variation
-# types silently failing to register ("Unknown variation class"). The desktop
-# tools are gone and nothing imports Qt any more, so the libs went with them.
+# No X/GL shared objects here, deliberately: nothing in the controller imports Qt, and a
+# plugin that did at module level would fail to register rather than draw anything.
+# ffmpeg encodes the video table a campaign declares with `rosbags_to_webm`; the service
+# builds it from the recording like any other table.
 # hadolint ignore=DL3008
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates pigz git \
+ && apt-get install -y --no-install-recommends curl ca-certificates pigz git ffmpeg \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/robovast
@@ -128,8 +123,8 @@ WORKDIR /opt/robovast
 # Layer 1 (heavy, rarely invalidated): install only the third-party dependencies.
 # Its cache key is just pyproject.toml + poetry.lock, so source edits below don't
 # touch it. --no-root skips the robovast project and --no-directory skips every
-# path dependency (src/robovast_client, src/robovast_nav, src/robovast_sim_roqsim);
-# all four are installed in layer 2.
+# path dependency (src/robovast_client, src/robovast_decode, src/robovast_data,
+# src/robovast_nav, src/robovast_sim_roqsim); all six are installed in layer 2.
 COPY pyproject.toml poetry.lock ./
 RUN pip install --no-cache-dir poetry==1.8.2 \
  && poetry config virtualenvs.create false \
@@ -137,10 +132,10 @@ RUN pip install --no-cache-dir poetry==1.8.2 \
         --no-root --no-directory --no-cache
 
 # Layer 2 (cheap, invalidated by any source edit): copy the source and install
-# the four local packages (robovast root + the robovast-client, robovast-nav and
-# robovast-sim-roqsim path deps) on top of the already-present dependencies.
-# Poetry sees the heavy deps as satisfied, so this only builds/installs the four
-# — fast.
+# the six local packages (robovast root + the robovast-client, robovast-decode,
+# robovast-data, robovast-nav and robovast-sim-roqsim path deps) on top of the
+# already-present dependencies. Poetry sees the heavy deps as satisfied, so this only
+# builds/installs the six — fast.
 COPY README.md ./
 COPY src ./src
 # The panel bundle, into the package that declares it as data -- so the wheel poetry builds
@@ -191,8 +186,8 @@ ENV ROBOVAST_EXAMPLES_DIR=/opt/robovast/configs/examples
 # The revision this image's `COPY src` came from, captured here because this is the ONLY
 # point at which it is knowable. `get_app_version` asks git, from the directory the module
 # lives in -- which in this image is site-packages, with no `.git` anywhere above it, so the
-# lookup cannot succeed however present the git binary is. Without this the service reported
-# the package semver instead, which stays `2.0.0` across every edit and so could not answer
+# lookup cannot succeed however present the git binary is. Without this the service could
+# report only the package semver, which stays the same across every edit and so cannot answer
 # the one question it is asked: is the change I just made loaded?
 #
 # Last, and deliberately: an ARG that changes on every commit invalidates every layer after
@@ -200,9 +195,8 @@ ENV ROBOVAST_EXAMPLES_DIR=/opt/robovast/configs/examples
 # reports "" rather than a value that looks like a revision and is not.
 #
 # container/controller/build.sh (and therefore `make release-images`) passes this automatically
-# from the checkout it lives in -- see container/image_stamp.sh. It did not, once, and the
-# result was a locally released family whose deployed service could not say which code it ran.
-# A `docker build` invoked by hand is the remaining case that has to pass it itself:
+# from the checkout it lives in -- see container/image_stamp.sh. A `docker build` invoked by
+# hand has to pass it itself:
 #   docker build -f container/controller/Dockerfile \
 #     --build-arg ROBOVAST_GIT_REVISION="$(git rev-parse --short HEAD)$(git status --porcelain \
 #       | grep -q . && echo +dirty)" .
@@ -216,8 +210,8 @@ ENV ROBOVAST_GIT_REVISION=${ROBOVAST_GIT_REVISION}
 # why the revision is baked this way too.
 #
 # The difference: a revision changes per commit, this changes per *build*, so it invalidates
-# everything after it on every build. That is why it sits last -- what follows is an ENV and two
-# LABELs, no install work. Empty is honest; `build_date()` then reports "" rather than a
+# everything after it on every build. That is why it sits after every install step -- what
+# follows is ENV, LABEL, ARG and CMD instructions, no install work. Empty is honest; `build_date()` then reports "" rather than a
 # timestamp that describes nothing.
 ARG ROBOVAST_BUILD_DATE=""
 ENV ROBOVAST_BUILD_DATE=${ROBOVAST_BUILD_DATE}
@@ -233,16 +227,14 @@ LABEL org.opencontainers.image.source="https://github.com/cps-test-lab/robovast"
 LABEL org.opencontainers.image.revision="${ROBOVAST_GIT_REVISION}"
 LABEL org.opencontainers.image.created="${ROBOVAST_BUILD_DATE}"
 
-# Compatibility marker, kept in sync with COMPAT_VERSION in src/robovast/common/execution.py
-# (same contract as the ROS image) and guarded by the same CI gate.
-#
-# This is the one place the move from a file to a label SUBTRACTS a fact rather than relocating
-# it: this image carried only the file, so without this line it would report no protocol at all.
+# Compatibility marker, the same contract as the ROS image: the build derives the value from
+# COMPAT_VERSION in src/robovast/common/execution.py (container/image_stamp.sh). Without this
+# label the image reports no protocol at all.
 ARG ROBOVAST_COMPAT_VERSION
 LABEL org.robovast.compat-version="${ROBOVAST_COMPAT_VERSION}"
 
 # This image is the robovast-service image (and the source of the robovast the
 # postprocessing Job's initContainer copies in). The campaign controller is a
-# library now, not an entrypoint — it runs inside the service process — so the
+# library, not an entrypoint — it runs inside the service process — so the
 # default command is just a sane smoke check.
 CMD ["vast", "--help"]

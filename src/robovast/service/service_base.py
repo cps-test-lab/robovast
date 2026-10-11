@@ -46,36 +46,38 @@ import shlex
 import shutil
 import threading
 import time
-from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, List, Optional, Tuple
 
 from robovast.client import file_address
-from robovast.client.safe_path import safe_join
+from robovast.client.safe_path import UnsafePathError, check_segment, safe_join
 from robovast.common import file_view
 from robovast.common.config import (EXPLORER_SCOPES, SCENARIO_CONTAINER,
                                     SIMULATION_CONTAINER)
-from robovast.common.campaign_data import (campaign_has_runs, read_campaign_finished_at,
+from robovast.common.campaign_data import (LaunchImages, campaign_has_runs,
+                                           read_campaign_finished_at,
                                            read_campaign_results_bytes)
 from robovast.common.errors import InsufficientStorageError
 from robovast.common.store import read_campaign_created_at, read_campaign_description
 from robovast.execution.control_server import (STOP_RUNS,
                                                ControllerState, Phase, Status, failure_detail,
                                                is_terminal, stop_checker)
-from robovast.service.interface import (ActionResult, ArchiveSelection, CampaignOrigin, CampaignRef,
-                                        CampaignDeletion, DeleteCampaignsRequest,
+from robovast.service.interface import (ActionResult, BinaryFile, CampaignOrigin, CampaignRef,
+                                        CampaignDeletion, CampaignTablesCleared,
+                                        DeleteCampaignsRequest, ExportRef, ExportStatus,
                                         DeleteCampaignsResponse, OutputsIngested,
                                         CampaignSummary, OriginKind, ShareListing,
                                         CreateCampaignRequest, CreateUploadRequest,
                                         CreateWorkspaceRequest, EditFileRequest, FileEntry,
                                         FileListing, FileMeta, FileText,
-                                        ImportCampaignRequest, JobKind,
+                                        IMAGE_BUILT_PHASES, ImportCampaignRequest, JobKind,
                                         ListCampaignsRequest, ListCampaignsResponse,
-                                        ListWorkspacesResponse, LogChunk,
+                                        CampaignLogChunk, JobLogChunk,
+                                        ListWorkspacesResponse, TAP_MAX_S,
                                         PreviewConfiguration, PreviewResponse, ResourceUsage,
                                         CacheSize, KeptCacheEntry, ServiceCache,
                                         MigrationMarker, RetriggerAxis, RetriggerReport,
@@ -84,13 +86,18 @@ from robovast.service.interface import (ActionResult, ArchiveSelection, Campaign
                                         ValidationReport, VariationTypeInfo, VariationTypeParam,
                                         VariationTypesResponse, VersionInfo, WorkspaceInfo,
                                         WorldDescription, WriteFileRequest)
-from robovast.common.disk_reserve import reserve_disabled
+from robovast.common.disk_reserve import refuse_unless_room, reserve_disabled
+from robovast.common.query_limits import query_limits
 from robovast.service.storage_reserve import storage_refusal
 
 logger = logging.getLogger(__name__)
 
 #: What the scene cache is called where a reader sees it.
 SCENE_CACHE = "scene cache"
+
+#: The built tables under every campaign's ``.cache/`` (:mod:`robovast_data`): rebuilt from
+#: the campaign's records the next time something names them.
+TABLE_CACHE = "table cache"
 
 #: Below this, a refusal for disk space does not suggest clearing the cache: a clear that frees
 #: a few hundred megabytes would send the caller to the wrong lever.
@@ -376,10 +383,10 @@ def _no_timeout_note(raw_config: dict) -> str:
     Advisory, not a validation error: a campaign with no declared per-run budget is a
     legitimate thing to run.
     """
-    from robovast.common.config import declared_per_run_seconds
+    from robovast.common.config import declared_job_seconds
 
     execution = (raw_config or {}).get("execution") or {}
-    if not isinstance(execution, dict) or declared_per_run_seconds(execution):
+    if not isinstance(execution, dict) or declared_job_seconds(execution):
         return ""
     return ("this project declares no execution.timeout, so no stall verdict is possible "
             "for it — `vast campaign wait` cannot end on one, and get_campaign_status reports "
@@ -467,11 +474,13 @@ class WorkspaceTarget:
     #: materialized tree that nothing deletes is a disk leak per launch; the launch path knows
     #: when the tree stops being needed, and the target knows what deleting it means.
     discard: Optional[Callable[[], None]] = None
-    #: ``{container name: image ref}`` to run verbatim, skipping the image build entirely.
-    #: Data rather than a callback: it is resolved in the request handler, so a campaign whose
-    #: image cannot be named fails the *request* with the reason instead of becoming a failed
-    #: campaign someone has to go and inspect.
-    pinned_images: Optional[dict] = None
+    #: The launch record's digests (``campaign_data.LaunchImages``) to replay: every image the
+    #: campaign runs -- its containers, the sidecar and the aux helpers -- comes from here,
+    #: nothing is built and nothing is resolved again. ``None`` for a launch that fixes its
+    #: own. Data rather than a callback: it is read in the request handler, so a campaign
+    #: whose record lacks a digest fails the *request* with the reason instead of becoming a
+    #: failed campaign someone has to go and inspect.
+    pinned_images: Optional[LaunchImages] = None
     #: Adopt this campaign id rather than minting a fresh one. Set only when re-entering a
     #: campaign that already exists and is still owed work -- one whose driver a service
     #: restart took away (see ``cluster_execution.campaign_resume``).
@@ -500,6 +509,10 @@ _HEALTH_TTL_S = 10.0
 #: command that needs longer wants ``exec_in_container``, where nothing is waiting on it.
 _PROBE_LIMIT_S = 60
 
+#: Seconds the tap's in-container bound is given past the relay's own, before ``timeout``
+#: escalates its ``INT`` to a ``KILL``: a ``ros2`` process shuts down cleanly on the first.
+_TAP_KILL_GRACE_S = 5
+
 #: How long an uploaded-but-never-imported archive is kept before it is swept. Long enough that
 #: it cannot collide with an upload still in flight or a user deciding whether to force a
 #: replace, short enough that abandoned multi-gigabyte archives do not accumulate.
@@ -516,15 +529,10 @@ def _archive_has_metrics(archive_path) -> bool:
     """Whether the archive carries derived data, from the tar index alone.
 
     Read from postprocessing's provenance record, which is what says a campaign has been
-    postprocessed now that the rows go to the central index. Answerable from the member
-    list, without extracting anything, before the import even starts.
-
-    It used to look for ``_execution/data.db``. That file is not written any more, so the
-    answer became permanently "no" and every archive was announced as raw -- the same
-    inversion that made the import re-postprocess archives which arrived complete. Matched
-    on the member list only: whether the record has ENTRIES needs its bytes, and the
-    difference (a campaign that ran postprocessing and derived nothing) is not worth
-    reading the archive twice for. The chain that follows re-asks properly with
+    postprocessed. Answerable from the member list, without extracting anything, before the
+    import even starts. Matched on the member list only: whether the record has ENTRIES needs
+    its bytes, and the difference (a campaign that ran postprocessing and derived nothing) is
+    not worth reading the archive twice for. The chain that follows re-asks properly with
     ``campaign_has_derived_data``.
     """
     import tarfile  # pylint: disable=import-outside-toplevel
@@ -591,9 +599,6 @@ class ServiceBase(RobovastInterface):
     #: sampling per window, not N.
     _USAGE_CACHE_TTL = 10.0
 
-    #: Cap on cached job-log tails; oldest (LRU) are dropped past this.
-    _JOB_LOG_CACHE_MAX = 128
-
     def __init__(self, store=None, results_dir=None):
         #: Where local campaigns land, when the caller pinned one (``vast serve
         #: --results-dir``). ``None`` leaves it to the service-owned default; see
@@ -606,12 +611,6 @@ class ServiceBase(RobovastInterface):
         #: it is indistinguishable from an operator's Stop, and the analysis a stop leaves
         #: owed must not be started against storage this process is about to lose.
         self._shutting_down = False
-        # Incremental job-log tails, so a log panel polling twice a second folds in only
-        # each container's delta instead of re-reading whole files. LRU-bounded so a
-        # long-lived service does not accumulate buffers. Shared with ClusterService,
-        # which caches a PodLogTail in the same map (see _new_job_log_tail).
-        self._job_log_tails: "OrderedDict[tuple, object]" = OrderedDict()
-        self._job_log_guard = threading.Lock()
         # Container exec gets its own lock: creating its manager reaps a stray container
         # first, and on the cluster that waits for a pod to finish terminating. Doing
         # that under the campaign lock would stall every status read and campaign start
@@ -626,6 +625,10 @@ class ServiceBase(RobovastInterface):
         # so a wedged container cannot hold a status read even for the exec's own timeout.
         self._health: dict[str, dict] = {}
         self._health_guard = threading.Lock()
+        # The jobs with a tap open right now, one relay per job: a second reader shares the
+        # first's stream or waits, since two following commands in one container is two probes.
+        self._taps: set = set()
+        self._taps_guard = threading.Lock()
         # campaign_id -> recorded start time (see _started_at_for). Only known values
         # are held, and a recorded one never changes while the campaign exists, so the only
         # invalidation is delete_campaign's, which drops every per-campaign cache here.
@@ -657,6 +660,10 @@ class ServiceBase(RobovastInterface):
         # design; see the "taking a campaign in" section.
         self._archive_grants: dict[str, tuple[float, Path]] = {}
         self._archive_grants_lock = threading.Lock()
+        # (workspace_id, .vast path, max_configs) -> (the .vast's mtime it was composed from,
+        # the preview). See preview_configurations(wait=False); one entry per .vast asked about.
+        self._previews: dict[tuple, tuple[int, PreviewResponse]] = {}
+        self._previews_lock = threading.Lock()
         if store is None:
             from robovast.service.workspaces import WorkspaceStore
             store = WorkspaceStore()
@@ -664,6 +671,13 @@ class ServiceBase(RobovastInterface):
         #: This service's durable event log, opened lazily. See :meth:`_event_log`.
         self._events = None
         self._events_guard = threading.Lock()
+        #: Campaigns whose tables a build-all is building now: their tables are in use, so a
+        #: clear keeps them and a second build is refused.
+        self._table_builds: set = set()
+        self._table_builds_lock = threading.Lock()
+        #: The exports building in this process; see :mod:`robovast.service.exports`.
+        from robovast.service.exports import ExportStore  # pylint: disable=import-outside-toplevel
+        self._exports = ExportStore()
         self._sweep_staged_projects()
 
     # -- the durable record -------------------------------------------------
@@ -898,11 +912,11 @@ class ServiceBase(RobovastInterface):
         different id. Anything else is refused rather than flattened: an archive with two
         top-level entries is not one of ours, and guessing which to take would seed a
         project from half of something.
+
+        An archive that would unpack past the workspaces volume's room above the reserve is
+        refused before anything is written.
         """
         import tarfile  # pylint: disable=import-outside-toplevel
-
-        from robovast.client.safe_path import \
-            UnsafePathError  # pylint: disable=import-outside-toplevel
 
         provider = self._share_provider()
         project_dir = self.store.registry.project_dir(workspace_id)
@@ -913,6 +927,8 @@ class ServiceBase(RobovastInterface):
             provider.download_archive(object_name, str(staged))
             with tarfile.open(staged, "r:gz") as tar:
                 members = tar.getmembers()
+                refuse_unless_room(object_name, members, project_dir, "the workspaces volume",
+                                   "free space there, then create the workspace again")
                 # `./` is not a top-level entry: `tar` writes it for the archive root, so an
                 # archive rolled by hand carries one and reading it as the project's
                 # directory would nest the whole tree one level down -- silently, which is
@@ -1069,8 +1085,10 @@ class ServiceBase(RobovastInterface):
     def read_file(self, address: str, lines: int = 200, offset: int = 0) -> FileText:
         namespace, owner, rel, target = self._address_target(address)
         self._require_file(address, target)
-        return FileText(address=file_address.format_address(namespace, owner, rel),
-                        **file_view.read_text_page(target, lines, offset))
+        address = file_address.format_address(namespace, owner, rel)
+        if file_view.is_binary(target):
+            raise BinaryFile(address)
+        return FileText(address=address, **file_view.read_text_page(target, lines, offset))
 
     def read_file_bytes(self, address: str) -> bytes:
         _, _, _, target = self._address_target(address)
@@ -1183,7 +1201,7 @@ class ServiceBase(RobovastInterface):
         return {"phase": str(snap.phase),
                 "runs_completed": snap.runs.completed, "runs_total": snap.runs.total}
 
-    def campaign_archive_name(self, campaign_id: str) -> str:
+    def campaign_archive_name(self, campaign_id: str, raw: bool = False) -> str:
         """The file name this campaign's archive is offered under.
 
         A campaign still running is named ``<id>.incomplete.tar.gz``, and that is the whole
@@ -1192,11 +1210,11 @@ class ServiceBase(RobovastInterface):
         real ones its name is all that distinguishes it. The browser, the CLI and anyone who
         forwards the file get the same warning without opening it.
         """
-        from robovast.execution.share_providers.naming import \
-            INCOMPLETE, archive_name  # pylint: disable=import-outside-toplevel
+        from robovast.execution.share_providers.naming import (  # pylint: disable=import-outside-toplevel
+            INCOMPLETE, RAW, archive_name)
         if self.campaign_is_live(campaign_id):
             return archive_name(campaign_id, INCOMPLETE)
-        return f"{campaign_id}.tar.gz"
+        return archive_name(campaign_id, RAW) if raw else f"{campaign_id}.tar.gz"
 
     # -- the data plane, in-process --
     #
@@ -1241,19 +1259,44 @@ class ServiceBase(RobovastInterface):
             raise RuntimeError("no auth token bound to this service; build it with build_app")
         return auth.scoped_token(token, scope)
 
-    def campaign_tar_stream(self, campaign_id: str,
-                            selection: Optional[ArchiveSelection] = None):
+    def campaign_tar_stream(self, campaign_id: str, raw: bool = False):
         """Tar this host's campaign directory straight into the response.
 
-        ``_postproc/`` is left out with ``.cache`` -- it is postprocessing's staging, not
-        part of the campaign. A campaign that is still running carries a snapshot marker
-        (see ``campaign_archive.iter_campaign_tar``) so what lands cannot be mistaken for
-        a finished one; liveness is this transport's knowledge, from its registry.
+        With its built tables, or *raw* (``campaign_archive.download_skip``). A campaign
+        that is still running carries a snapshot marker (see
+        ``campaign_archive.iter_campaign_tar``) so what lands cannot be mistaken for a
+        finished one; liveness is this transport's knowledge, from its registry.
         """
         live = self.campaign_is_live(campaign_id)
         return self._data_plane().campaign_tar_stream(
-            campaign_id, selection, live=live,
+            campaign_id, raw=raw, live=live,
             facts=self._snapshot_facts(campaign_id) if live else None)
+
+    def campaign_live(self, campaign_id: str, run: str, tables):
+        """A subscription to a run's tables as it records; the data plane's, over this root.
+
+        The watchers behind it are per results root in this process
+        (:class:`robovast.service.live.LiveCampaigns`), so the plane made here per call
+        reaches the same ones every time.
+        """
+        return self._data_plane().campaign_live(campaign_id, run, tables)
+
+    def campaign_frame(self, campaign_id: str, run: str, topic: str, t=None):
+        """``(stamp, JPEG)`` of a run's camera frame at or before *t*; the data plane's."""
+        return self._data_plane().campaign_frame(campaign_id, run, topic, t)
+
+    def campaign_frame_index(self, campaign_id: str, run: str, topic: str):
+        """The stamps of a run's image topic's frames; the data plane's."""
+        return self._data_plane().campaign_frame_index(campaign_id, run, topic)
+
+    def campaign_frame_full(self, campaign_id: str, run: str, topic: str, t=None):
+        """A run's camera frame at or before *t*, whole; the data plane's."""
+        return self._data_plane().campaign_frame_full(campaign_id, run, topic, t)
+
+    def campaign_points(self, campaign_id: str, run: str, topic: str, t=None,
+                        after: bool = False):
+        """A run's point cloud at or before *t* (after it, with *after*); the data plane's."""
+        return self._data_plane().campaign_points(campaign_id, run, topic, t, after)
 
     def _workspace_tar_members(self, workspace_id: str):
         """``(add_members, workspace_id)`` for tarring a workspace's project tree.
@@ -1460,8 +1503,9 @@ class ServiceBase(RobovastInterface):
         # campaign again.
         self._admit_storage("import a campaign")
         campaign_id, fetch, raw = self._resolve_import_source(request)
-        note = ("this archive has no metric tables, so postprocessing runs once it lands -- "
-                "the import is not over when the extraction is") if raw else ""
+        note = ("this archive carries no postprocessing record, so postprocessing runs once "
+                "it lands -- the import is not over when the extraction is; its tables are "
+                "built from its records the first time something names them") if raw else ""
 
         # Pre-flight, the same shape as preflight_upload_to_share: the authoritative claim
         # (which deletes, under force) happens in the worker once the busy guard has
@@ -1515,8 +1559,8 @@ class ServiceBase(RobovastInterface):
                 owned = archive.resolve().parent == staged_root
             except OSError:
                 owned = False
-            return (read_campaign_id(archive), lambda _log: (archive, owned),
-                    not _archive_has_metrics(archive))
+            return (read_campaign_id(archive, fits_in=self._campaigns_root()),
+                    lambda _log: (archive, owned), not _archive_has_metrics(archive))
 
         object_name, campaign_id, variant = self._find_share_archive(request.share_archive)
 
@@ -1609,6 +1653,8 @@ class ServiceBase(RobovastInterface):
         """
         from robovast.client.logging_config import (  # pylint: disable=import-outside-toplevel
             add_campaign_log_handler, remove_campaign_log_handler)
+        from robovast.common.campaign_data import \
+            clear_import_marker  # pylint: disable=import-outside-toplevel
         from robovast.service.ingest import (  # pylint: disable=import-outside-toplevel
             blocking_summary, claim_campaign_dir, extract_archive, ingest_campaign,
             read_campaign_id)
@@ -1632,7 +1678,9 @@ class ServiceBase(RobovastInterface):
             # and reports `config, layout` -- the archive's own symptom -- under an id that
             # is not the one that failed. Reading the id costs the tar's index, which the
             # upload path already pays (`_resolve_import_source`); this closes the other.
-            inner = read_campaign_id(archive)
+            # With the room to unpack it: a share archive's size is known only now, and a
+            # staged upload's free space may have been taken since the request admitted it.
+            inner = read_campaign_id(archive, fits_in=self._campaigns_root())
             if inner != campaign_id:
                 raise RuntimeError(
                     f"the archive fetched for {campaign_id} holds campaign {inner!r}. "
@@ -1641,7 +1689,8 @@ class ServiceBase(RobovastInterface):
                     f"would then mean what it says.")
             logger.info("extracting %s into %s ...", Path(archive).name,
                         self._campaigns_root())
-            extract_archive(archive, self._campaigns_root(), remove_archive=owned)
+            extract_archive(archive, self._campaigns_root(), campaign_id,
+                            remove_archive=owned)
             report = ingest_campaign(target, rebuild_store=request.rebuild_store)
             for name, stage in report["stages"].items():
                 logger.info("  %-15s %-10s %s", name, stage["verdict"], stage["detail"])
@@ -1669,6 +1718,9 @@ class ServiceBase(RobovastInterface):
             state.set_phase(Phase.FAILED)
             return
         finally:
+            # Concluded either way: what landed is the campaign, or the failure is
+            # recorded. Only a process that dies before this leaves the marker behind.
+            clear_import_marker(target)
             remove_campaign_log_handler(handler)
 
         self._postprocess_after_import(state, campaign_id, target)
@@ -1689,24 +1741,94 @@ class ServiceBase(RobovastInterface):
             logger.warning("Could not record the failed import outcome for %s",
                            target.name, exc_info=True)
 
-    @abstractmethod
     def _postprocess_campaign(self, campaign_id: str, campaign_dir: Path, *,
-                              force: bool = False, skip=(), state=None) -> tuple:
+                              force: bool = False, replay: bool = False, skip=(),
+                              state=None) -> tuple:
         """Run the campaign's own postprocessing pipeline; return ``(ok, message)``.
 
-        One call for both callers -- the ``run_postprocessing`` retrigger and the
-        chain an import starts -- so a raw archive taken in is postprocessed exactly
-        the way asking for it later would be. Where it runs is the implementation's: in
-        this process, or as a workload of its own.
+        One call for both callers -- the ``run_postprocessing`` retrigger and the chain an
+        import starts -- so a raw archive taken in is postprocessed exactly the way asking
+        for it later would be. It runs in this process, beside the campaign on the results
+        volume.
+
+        ``campaign`` scopes the work to this campaign; with no ``vast_file`` the run reads
+        the campaign's own ``_config/<name>.vast``. ``output_callback`` is what puts the
+        step-by-step narrative ("[2/4] Executing: …", "✓ …") into whichever campaign log
+        handler the caller opened. Without it those lines default to ``print`` and land on
+        the service's stdout, so the phase file held only what modules logged themselves --
+        the campaign log looked empty for the run you had just asked for.
+
+        With *state*, those same lines also become the live ``stage`` marker -- see
+        :func:`~robovast.execution.control_server.stage_output_callback`. Both callers have
+        one, and both are watched from the campaign view, so a re-run narrates itself there
+        exactly as an auto-chained run does; without it a retrigger was the case where the
+        view showed ``postprocessing`` and nothing else for the whole run.
         """
+        from robovast.execution.control_server import \
+            stage_output_callback  # pylint: disable=import-outside-toplevel
+        from robovast.results_processing.postprocessing import \
+            run_postprocessing  # pylint: disable=import-outside-toplevel
+        return run_postprocessing(
+            results_dir=str(campaign_dir.parent), campaign=campaign_id,
+            force=force, replay=replay, skip=list(skip),
+            output_callback=stage_output_callback(state, logger.info),
+            # A re-run is a tracked campaign like any other while it is going, so
+            # ``stop_campaign`` reaches it -- and with this, ends it.
+            should_stop=stop_checker(state))
+
+    def run_postprocessing(self, request) -> ActionResult:
+        self._admit_storage(f"postprocess {request.campaign_id}")
+        campaign_dir = self.campaign_dir(request.campaign_id)
+
+        def work(state):
+            from robovast.client.logging_config import (add_campaign_log_handler,
+                                                        remove_campaign_log_handler)
+            from robovast.execution.status_recovery import record_step_outcome
+            handler = None
+            try:
+                handler = add_campaign_log_handler(
+                    str(campaign_dir / "_execution" / "postprocessing.log"))
+            except Exception:  # pylint: disable=broad-except
+                logger.warning("Could not open postprocessing.log for %s",
+                               request.campaign_id, exc_info=True)
+            try:
+                ok, message = self._postprocess_campaign(
+                    request.campaign_id, campaign_dir,
+                    force=request.force, replay=request.replay,
+                    skip=list(request.skip or []), state=state)
+            finally:
+                remove_campaign_log_handler(handler)
+            status = record_step_outcome(campaign_dir, postprocessing=(ok, message))
+            state.update(postprocessed=status.postprocessed,
+                         postprocessing_error=status.postprocessing_error)
+            # The recorded phase, not `finished`: `record_step_outcome` preserves how the
+            # campaign ended, and a live entry that disagreed with the record would say
+            # `finished` until the next service restart said `stopped` -- the same fact,
+            # two answers depending on uptime.
+            state.set_phase(status.phase)
+            # Same one-shot notifier as a re-triggered share: this op runs from disk with
+            # no live entry to inherit one from, and it reports on a campaign that ended
+            # long ago -- so neither branch is the campaign's terminal message.
+            notifier = self._notifier(request.campaign_id)
+            if ok:
+                notifier.postprocessed()
+            elif state.postprocessing_stop_requested:
+                # A re-run is a tracked campaign while it lasts, so ``stop_campaign``
+                # reaches it and ends it. What comes back then is the operator's own
+                # doing, and announcing it as a failure would file that under faults.
+                notifier.postprocessing_cancelled(message)
+            else:
+                notifier.postprocessing_failed(message)
+
+        return self._dispatch_background(
+            request.campaign_id, phase=Phase.POSTPROCESSING, work=work)
 
     def _postprocess_after_import(self, state, campaign_id: str, target: Path) -> None:
         """Chain postprocessing when the imported campaign has none of its own.
 
-        Asked of postprocessing's provenance record, which is what says a campaign has
-        derived data now that the rows go to the central index. An archive that arrived
-        complete must not be recomputed: its rows were just ingested, and in a process with
-        no Docker the rosbag steps have nothing to run in.
+        Asked of postprocessing's provenance record, which is what says a campaign has been
+        postprocessed. An archive that arrived complete is not postprocessed again: its tables
+        are built from its records when something names them, like any campaign's.
         """
         from robovast.execution.status_recovery import (  # pylint: disable=import-outside-toplevel
             record_step_outcome, reconstruct_status_from_disk)
@@ -1814,11 +1936,12 @@ class ServiceBase(RobovastInterface):
     def _sweep_caches(self, clear: bool) -> ServiceCache:
         """Report every cache this service keeps, removing what may go when *clear*.
 
-        The scene cache is the only one: the results directory is the campaigns' durable
-        home, not a copy of one, so nothing under it is ever offered.
+        The scene cache, and the table cache: the built tables under each campaign's
+        ``.cache/``. The results directory is otherwise the campaigns' durable home, not a
+        copy of one, so nothing else under it is ever offered.
         """
         report = ServiceCache()
-        for sweep in (self._sweep_scene_cache,):
+        for sweep in (self._sweep_scene_cache, self._sweep_table_cache):
             swept = sweep(clear)
             report.caches.append(swept.size)
             report.kept.extend(swept.kept)
@@ -1842,6 +1965,153 @@ class ServiceBase(RobovastInterface):
             kept=[KeptCacheEntry(cache=SCENE_CACHE, name=name, size_bytes=size,
                                  reason="a viewer is loading it right now")
                   for name, size in kept])
+
+    def _tables_in_use(self, campaign_id: str) -> str:
+        """Why *campaign_id*'s tables may not be removed now, or ``""`` when they may."""
+        with self._lock:
+            entry = self._campaigns.get(campaign_id)
+        if entry is not None and not self._is_done(entry):
+            return "its campaign is running, and its tables are read and built as it goes"
+        with self._table_builds_lock:
+            if campaign_id in self._table_builds:
+                return "they are being built right now"
+        if self._exports.running(campaign_id):
+            return "an export is reading them right now"
+        return ""
+
+    def _sweep_table_cache(self, clear: bool) -> _Swept:
+        from robovast.results_processing.campaign_tables import (  # pylint: disable=import-outside-toplevel
+            clear_tables, table_cache_bytes)
+        root = self._campaigns_root()
+        remaining, removed, freed, kept = [], 0, 0, []
+        campaigns = sorted(p for p in root.iterdir() if (p / "campaign.db").is_file()) \
+            if root.is_dir() else []
+        for campaign_dir in campaigns:
+            size = table_cache_bytes(str(campaign_dir))
+            if not size:
+                continue
+            reason = self._tables_in_use(campaign_dir.name) if clear else ""
+            if clear and not reason:
+                freed += clear_tables(str(campaign_dir))
+                removed += 1
+                continue
+            remaining.append(size)
+            if reason:
+                kept.append(KeptCacheEntry(cache=TABLE_CACHE, name=campaign_dir.name,
+                                           size_bytes=size, reason=reason))
+        return _Swept(size=CacheSize(name=TABLE_CACHE, size_bytes=sum(remaining),
+                                     entries=len(remaining)),
+                      freed_bytes=freed, removed=removed, kept=kept)
+
+    def build_campaign_tables(self, request) -> ActionResult:
+        """Build a finished campaign's tables in the background; see the interface."""
+        from robovast_decode.build import available_tables  # pylint: disable=import-outside-toplevel
+        from robovast_decode.layout import decoder_config  # pylint: disable=import-outside-toplevel
+
+        campaign_id = request.campaign_id
+        campaign_dir = self.campaign_dir(campaign_id)
+        if not (campaign_dir / "campaign.db").is_file():
+            raise FileNotFoundError(f"no campaign {campaign_id!r}")
+        busy = self._tables_in_use(campaign_id)
+        if busy:
+            raise RuntimeError(f"not building {campaign_id}'s tables now: {busy}")
+        self._admit_storage(f"build the tables of {campaign_id}")
+        tables = list(request.tables) or sorted(
+            available_tables(str(campaign_dir), decoder_config(str(campaign_dir))))
+        with self._table_builds_lock:
+            if campaign_id in self._table_builds:
+                raise RuntimeError(f"{campaign_id}'s tables are already being built")
+            self._table_builds.add(campaign_id)
+        self._archive_repeatable_sections(campaign_id)
+
+        def work():
+            from robovast.client.logging_config import (  # pylint: disable=import-outside-toplevel
+                add_campaign_log_handler, remove_campaign_log_handler)
+            from robovast.results_processing.campaign_tables import (  # pylint: disable=import-outside-toplevel
+                build_tables, compact_tables)
+            handler = None
+            try:
+                handler = add_campaign_log_handler(
+                    str(campaign_dir / "_execution" / "tables.log"))
+                logger.info("Building %d table(s) of %s: %s", len(tables), campaign_id,
+                            ", ".join(tables))
+
+                def progress(done, total):
+                    if done == total or done % 10 == 0:
+                        logger.info("  built %d/%d run(s)", done, total)
+
+                problems = build_tables(str(campaign_dir), tables, progress=progress)
+                for problem in problems[:50]:
+                    logger.warning("  %s", problem)
+                if len(problems) > 50:
+                    logger.warning("  ... %d more", len(problems) - 50)
+                logger.info("Tables of %s built%s", campaign_id,
+                            f"; {len(problems)} could not be built for some runs"
+                            if problems else "")
+                compacted = compact_tables(str(campaign_dir))
+                for table, why in sorted(compacted.skipped.items()):
+                    logger.warning("  %s left one file per run: %s", table, why)
+                logger.info("%d table(s) of %s compacted into one file each",
+                            len(compacted.compacted), campaign_id)
+            except Exception:  # pylint: disable=broad-except
+                logger.exception("Building the tables of %s failed", campaign_id)
+            finally:
+                remove_campaign_log_handler(handler)
+                with self._table_builds_lock:
+                    self._table_builds.discard(campaign_id)
+
+        threading.Thread(target=work, name=f"tables-{campaign_id}", daemon=True).start()
+        return ActionResult(ok=True, message=(
+            f"building {len(tables)} table(s) of {campaign_id} for every run; progress is in "
+            "the campaign log's TABLES section. Not needed for any answer: each table is "
+            "built the first time something names it."))
+
+    def create_export(self, campaign_id: str, request) -> ExportRef:
+        """Start an export of *campaign_id*; see the interface.
+
+        The plan is made here, before anything starts: the catalog is read (building
+        nothing), a table the campaign does not have refuses the request, and the reserve
+        is checked; only then does the export's directory exist and its thread run.
+        """
+        from robovast.service.exports import plan_tables  # pylint: disable=import-outside-toplevel
+        from robovast_data import Engine, Scope  # pylint: disable=import-outside-toplevel
+
+        campaign_dir = self.campaign_dir(campaign_id)
+        if not (campaign_dir / "campaign.db").is_file():
+            raise KeyError(f"no campaign {campaign_id!r} on this service")
+        if self.campaign_is_live(campaign_id):
+            raise RuntimeError(f"not exporting {campaign_id} now: it is still running, and "
+                               "its records and tables are changing as it goes")
+        tables = plan_tables(Engine([Scope(str(campaign_dir))], **query_limits()).catalog(),
+                             request.tables)
+        self._admit_storage(f"export {campaign_id}")
+        logger.info("Exporting %s: %d table(s) as %s, bags %s, records %s", campaign_id,
+                    len(tables), request.format, request.bags, request.records)
+        return self._exports.start(campaign_dir, campaign_id, request, tables)
+
+    def get_export_status(self, campaign_id: str, export_id: str) -> ExportStatus:
+        """Where an export has got to; see the interface."""
+        campaign_dir = self.campaign_dir(campaign_id)
+        if not campaign_dir.is_dir():
+            raise KeyError(f"no campaign {campaign_id!r} on this service")
+        return self._exports.status(campaign_dir, campaign_id, export_id)
+
+    def export_tar_stream(self, campaign_id: str, export_id: str):
+        """A finished export's file, from the data plane over this root."""
+        return self._data_plane().export_tar_stream(campaign_id, export_id)
+
+    def clear_campaign_tables(self, campaign_id: str) -> CampaignTablesCleared:
+        """Remove one campaign's built tables; see the interface."""
+        from robovast.results_processing.campaign_tables import \
+            clear_tables  # pylint: disable=import-outside-toplevel
+        campaign_dir = self.campaign_dir(campaign_id)
+        if not (campaign_dir / "campaign.db").is_file():
+            raise FileNotFoundError(f"no campaign {campaign_id!r}")
+        busy = self._tables_in_use(campaign_id)
+        if busy:
+            raise RuntimeError(f"not clearing {campaign_id}'s tables now: {busy}")
+        return CampaignTablesCleared(campaign_id=campaign_id,
+                                     freed_bytes=clear_tables(str(campaign_dir)))
 
     def _exec_container_state(self):
         """The held exec container, or ``None`` — without creating a manager.
@@ -1991,7 +2261,7 @@ class ServiceBase(RobovastInterface):
         this service.
         """
 
-    def _campaign_context(self, campaign_id: str, project, should_stop=None):
+    def _campaign_context(self, campaign_id: str, project, should_stop=None, options=None):
         """Per-campaign setup entered *inside* the worker thread.
 
         A context manager, so anything thread-scoped is established where the composition
@@ -2003,14 +2273,24 @@ class ServiceBase(RobovastInterface):
         *should_stop* is the campaign's own stop flag as a predicate, for the waits inside
         the span that are long enough for an operator to give up on — a helper image being
         pulled, most of all. A preview has no campaign and passes none.
+
+        *options* are the campaign's :class:`~robovast.execution.backends.RunOptions`: which
+        image project it resolves from, and the digests it has fixed or replays. The images
+        its auxiliary containers run are the campaign's, so they are fixed and recorded like
+        every other image it runs. A preview has no campaign and passes none.
         """
-        return self._aux_runner_context(campaign_id, project, should_stop=should_stop)
+        return self._aux_runner_context(campaign_id, project, should_stop=should_stop,
+                                        options=options)
 
     @abstractmethod
     def _aux_runner_context(self, tag: str, project, *, hold: bool = False,
-                            should_stop=None):
+                            should_stop=None, options=None):
         """A context yielding the runner a variation plugin's auxiliary container is started
         through, or ``None`` where each call starts an ephemeral one.
+
+        *options* are given for a campaign's span only: its auxiliary containers and the
+        sidecar beside them then run digests the campaign's launch record holds, fixed before
+        the first pod on a fresh launch and taken from the record on a replay.
         """
 
     def _record_campaign_failure(self, campaign_id, results_dir, state, exc, backend):
@@ -2412,8 +2692,11 @@ class ServiceBase(RobovastInterface):
             try:
                 # How the campaign was ASKED FOR, recorded next to it. Here rather than in the
                 # request handler for the same reason as the line above: a record written later
-                # would be missing from exactly the campaigns someone comes looking at.
-                self._record_launch(campaign_id, results_dir, request)
+                # would be missing from exactly the campaigns someone comes looking at. A replay
+                # states the digests it replays from this first write on; a fresh launch adds
+                # each as it fixes it, before the pod that runs it exists.
+                self._record_launch(campaign_id, results_dir, request,
+                                    images=target.pinned_images)
                 if target.materialize is not None:
                     state.set_phase(Phase.STARTING, stage="staging the project")
                     target.materialize()
@@ -2430,7 +2713,13 @@ class ServiceBase(RobovastInterface):
                     # never touches the build context, which is absent here by definition.
                     self._build_specs_for(target, campaign_config,
                                           should_stop=stop_checker(state, scope=STOP_RUNS))
-                    options.images = dict(target.pinned_images)
+                    # Every image the replay runs, and the flag that makes anything else a
+                    # refusal: composition, the aux pods and the batch runner read these and
+                    # resolve nothing from the environment.
+                    options.images = dict(target.pinned_images.containers)
+                    options.sidecar_image = target.pinned_images.sidecar
+                    options.aux_images = dict(target.pinned_images.aux)
+                    options.images_fixed = True
                     state.raise_if_stopped("stopped while installing the campaign's plugins")
                 else:
                     # Build (or join a sibling's build of) the experiment image and pin the
@@ -2454,19 +2743,13 @@ class ServiceBase(RobovastInterface):
                             image_project=options.image_project,
                             image_project_tag=options.image_project_tag,
                             should_stop=stop_checker(state, scope=STOP_RUNS))
-                # Re-record the launch, now that the symbolic image refs have become
-                # concrete ones. Written here rather than merged in later because this is
-                # the last moment before the campaign starts spending compute, and the
-                # record is what a re-launch after a restart pins its images from -- a
-                # re-resolve would silently pick up a base that moved in the meantime.
-                self._record_launch(campaign_id, results_dir, request,
-                                    images=options.images)
                 state.set_phase(Phase.STARTING)
                 # The last boundary before the backend's own pre-flight -- a project push, a
                 # registry read, the object-store tunnel -- none of which reads the flag.
                 state.raise_if_stopped("stopped before the campaign's runs began")
                 with self._campaign_context(campaign_id, target,
-                                            should_stop=lambda: state.stop_requested):
+                                            should_stop=lambda: state.stop_requested,
+                                            options=options):
                     backend = self._build_backend(state)
                     if is_search:
                         run_search_campaign(
@@ -2664,7 +2947,7 @@ class ServiceBase(RobovastInterface):
                 raise CampaignStopped(
                     f"campaign stopped while waiting for image build {build_id}")
             time.sleep(self._BUILD_POLL_SECONDS)
-        if status.phase not in ("succeeded", "cached"):
+        if status.phase not in IMAGE_BUILT_PHASES:
             from robovast.common.errors import ImageBuildFailed
             err = status.error
             detail = f" ({err.message})" if err and err.message else ""
@@ -2895,7 +3178,8 @@ class ServiceBase(RobovastInterface):
         # family. The stepped shape is unaffected: there the simulator genuinely *is* the
         # scenario container, and the backend says so.
         execution = apply_backend(campaign_config.execution.model_dump(),
-                                  os.path.dirname(os.path.abspath(vast_file)))
+                                  os.path.dirname(os.path.abspath(vast_file)),
+                                  recording=campaign_config.recording)
         plan = plan_containers(execution)
         target = plan.by_name(container) if container else plan.main
 
@@ -3074,10 +3358,12 @@ class ServiceBase(RobovastInterface):
         without this "was this the full sweep or a one-config pilot?" cannot be answered about
         any campaign in the results root, by a retrigger or by a human.
 
-        Called at the top of the worker so it lands before anything that can fail, and
-        **again** once the launch has resolved its images — see ``write_launch_record``'s
-        ``images``. Never fatal: a campaign that runs correctly must not be failed by an
-        unwritable record.
+        Called at the top of the worker so it lands before anything that can fail. *images* are
+        a replay's digests, stated from this first write; a fresh launch passes none and
+        records each image as it fixes it (``update_launch_images``). Not fatal here, because
+        what makes the record replayable comes next: the digests are written before any pod
+        exists, and that write is fatal -- a campaign whose record cannot take them stops
+        before it runs anything.
         """
         from robovast.common.campaign_data import write_launch_record
         campaign_root = Path(results_dir) / campaign_id
@@ -3118,9 +3404,8 @@ class ServiceBase(RobovastInterface):
 
         One implementation serves every case: a campaign this process is driving answers
         from the store its controller is writing right now, and any other from its durable
-        records. It reads the store rather than going through the SQL query endpoint because
-        the index holds a campaign only once it is ingested, so a query there returns nothing
-        for the running search this exists to show.
+        records. It reads the store directly: the per-batch objectives are the store's own
+        rows, and a search running now is exactly the one this exists to show.
         """
         from robovast.common.store import read_batch_objectives
         history = read_batch_objectives(self.campaign_dir(campaign_id))
@@ -3132,35 +3417,29 @@ class ServiceBase(RobovastInterface):
         """Apply the recovery path's ``postprocessed`` rule to a **live** snapshot.
 
         ``reconstruct_status_from_disk`` states it: *postprocessed is a fact about the
-        campaign, not about who last drove it*, and derives it from the built
-        ``_execution/data.db``. The live ``ControllerState`` answers a narrower question —
-        ``_postprocess`` records ``True`` only when the ``.vast`` declared postprocessing
-        **entries**, which is what decides whether the stored archive is the postprocessed
-        one. Both are wanted, but only the first is what a reader means by "is there data
-        here", so the two have to agree on that.
-
-        They did not, and it was visible: a campaign whose ``.vast`` declares no
-        ``results_processing.postprocessing`` still builds ``data.db``, yet reported
-        ``postprocessed=False`` for as long as this process still tracked it — hiding the
-        web UI's Results and Run views, which read exactly that file — and then started
-        reporting ``True`` once a restart dropped the entry and the disk path answered
-        instead. Same campaign, same bytes, two answers depending on service uptime.
+        campaign, not about who last drove it*, and derives it from the provenance record
+        the campaign-end pass writes last. The live ``ControllerState`` answers a narrower
+        question — ``_postprocess`` records ``True`` only when the ``.vast`` declared
+        postprocessing **entries**, which is what decides whether the stored archive is the
+        postprocessed one. Both are wanted, but only the first is what a reader means by
+        "is there data here", so the two have to agree on that: a campaign that declares no
+        ``results_processing.postprocessing`` still has its tables built, and must not read
+        as unpostprocessed for as long as this process tracks it and as postprocessed once
+        a restart hands the question to the disk path.
 
         Only ever promotes ``False`` → ``True``, and only on the evidence the recovery path
         uses — :func:`~robovast.common.campaign_data.campaign_has_derived_data`, which both
         call so they cannot disagree; what ``_postprocess`` records is untouched, and so is
-        the archive decision that reads it. Best-effort on the cluster in exactly the
-        way the recovery path already is: ``data.db`` is not among ``_RECORD_OBJECTS``, so a
-        campaign whose derived data was never fetched here answers the same as before.
+        the archive decision that reads it.
 
-        Two states are deliberately *not* promoted, both of which the plain existence of
-        ``data.db`` would promote — this is the live path, so it sees them where the
+        Two states are deliberately *not* promoted, both of which a record left by an
+        earlier pass would promote — this is the live path, so it sees them where the
         recovery path (which runs only once nothing is driving the campaign) mostly cannot:
 
-        * a build **in progress**, which the *phase* decides. The file appears at 0%, so a
-          campaign would otherwise spend the whole of a twenty-minute ``data.db`` build
-          reporting that its results were ready, and the web UI gates its Results views on
-          exactly this flag -- it would offer them over a database being appended to. Read
+        * a pass **in progress**, which the *phase* decides. A re-run leaves the previous
+          record in place until it writes its own, so a campaign would otherwise report its
+          results ready while its tables are being built again, and the web UI gates its
+          Results views on exactly this flag. Read
           from the phase and not from "some earlier attempt left an error", which is a fact
           about the past that happens to correlate: a first postprocess, or a re-run of one
           that previously succeeded, has no such error and is no less in progress.
@@ -3178,44 +3457,114 @@ class ServiceBase(RobovastInterface):
             pass          # a status read must not fail over an unreachable record dir
         return snap
 
-    def get_campaign_logs(self, campaign_id: str, offset: int = 0):
-        """Serve the campaign's unified infrastructure log from the campaigns root.
+    def get_campaign_logs(self, campaign_id: str, cursor: str = "", *,
+                          phase: Optional[str] = None, min_level: Optional[str] = None,
+                          grep: Optional[str] = None) -> CampaignLogChunk:
+        """The campaign's infrastructure log rows after *cursor*, from its phase files.
 
-        Assembles the per-phase files (variation → run → postprocessing) under the
-        campaign's ``_execution/`` into one divider-separated stream (see
-        :func:`robovast.common.campaign_logs.assemble_log`). Local runs write those
-        files in place and they grow there, so the same read serves a live and a
-        finished campaign; ``eof`` is set once the campaign is no longer driven here.
+        The files under the campaign's ``_execution/`` grow in place while the campaign
+        runs, so a running campaign and a finished one are read alike
+        (:mod:`robovast.service.campaign_log`). ``eof`` once the campaign is over -- not
+        driven here, or driven to its end -- and nothing was held back.
         """
-        from robovast.common.campaign_logs import assemble_log_from_dir
-        campaign_dir = self._campaigns_root() / campaign_id
-        with self._lock:
-            entry = self._campaigns.get(campaign_id)
-        eof = entry is None or self._is_done(entry)
-        text, next_offset, eof = assemble_log_from_dir(campaign_dir, offset, eof)
-        return LogChunk(text=text, next_offset=next_offset, eof=eof)
+        from robovast.service import campaign_log  # pylint: disable=import-outside-toplevel
+        campaign_dir = self.campaign_dir(campaign_id)
+        final = not self.campaign_is_live(campaign_id)
+        read = campaign_log.read_rows(campaign_dir, cursor, final=final, phase=phase,
+                                      min_level=min_level, grep=grep)
+        return CampaignLogChunk(rows=read.rows, cursor=read.cursor,
+                                eof=final and not read.pending, phases=read.phases)
+
+    def campaign_log_watch(self, campaign_id: str):
+        """A :class:`~robovast.service.dir_watch.DirWatch` over the campaign's phase files,
+        for a stream that pushes rows as they are written. The caller closes it."""
+        from robovast.service import campaign_log  # pylint: disable=import-outside-toplevel
+        return campaign_log.watch(self.campaign_dir(campaign_id))
 
     #: Directories under a campaign that are not per-configuration results.
     _RESERVED_DIRS = frozenset({"_config", "_execution", "_transient"})
 
-    @abstractmethod
-    def _new_job_log_tail(self, campaign_id: str, job_name: str):
-        """An incremental reader over one job's log, for :meth:`_job_log_tail`'s cache.
-        """
+    def _job_artifact_hint(self, campaign_id: str, job_name: str) -> str:
+        """The campaign-relative directory of a job the job-link manifest does not name.
 
-    def _job_log_tail(self, campaign_id: str, job_name: str):
-        """The cached log tail for a job, created on first use (LRU-bounded)."""
-        key = (campaign_id, job_name)
-        with self._job_log_guard:
-            tail = self._job_log_tails.get(key)
-            if tail is None:
-                tail = self._new_job_log_tail(campaign_id, job_name)
-                self._job_log_tails[key] = tail
-                while len(self._job_log_tails) > self._JOB_LOG_CACHE_MAX:
-                    self._job_log_tails.popitem(last=False)
-            else:
-                self._job_log_tails.move_to_end(key)
-            return tail
+        The manifest names each run's job, keyed by ``<config>/<run>``. A service whose job
+        names are not run keys -- a Kubernetes Job's is not -- answers here from what it
+        knows of the job itself; ``""`` when it knows nothing.
+        """
+        del campaign_id, job_name
+        return ""
+
+    def _job_is_queued(self, campaign_id: str, job_name: str) -> bool:
+        """Whether *job_name* is a job of the campaign queued for capacity, not created yet.
+
+        Such a job has no directory and no log yet, and will have both. ``False`` for a
+        service that queues nothing of its own.
+        """
+        del campaign_id, job_name
+        return False
+
+    def _job_log_dir(self, campaign_id: str, job_name: str) -> Tuple[Optional[Path], List[str]]:
+        """``(job directory, runs placed in it)``, or ``(None, [])`` before it is known.
+
+        Raises ``KeyError`` for a job the campaign does not have.
+        """
+        from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
+            read_job_links, resolve_job_artifact_rel)
+        from robovast.service import job_log  # pylint: disable=import-outside-toplevel
+
+        campaign_dir = self.campaign_dir(campaign_id)
+        if not campaign_dir.is_dir():
+            raise KeyError(f"no campaign {campaign_id!r}")
+        links = read_job_links(campaign_dir)
+        try:
+            rel = resolve_job_artifact_rel(links, job_name)
+        except FileNotFoundError:
+            rel = self._job_artifact_hint(campaign_id, job_name)
+        if not rel:
+            # Before the first job starts there is no manifest yet: a run the campaign has
+            # is a job whose log does not exist yet, as is a job queued for capacity;
+            # anything else is not a job of it.
+            if self._job_is_queued(campaign_id, job_name):
+                return None, []
+            try:
+                run_dir = safe_join(campaign_dir, job_name)
+            except UnsafePathError as exc:
+                raise KeyError(str(exc)) from exc
+            if not links and run_dir.is_dir():
+                return None, []
+            raise KeyError(f"job {job_name!r} not found in campaign {campaign_id!r}")
+        try:
+            job_dir = safe_join(campaign_dir, rel)
+        except UnsafePathError as exc:
+            raise KeyError(str(exc)) from exc
+        return job_dir, job_log.runs_of_job(links, rel)
+
+    def job_log_watch(self, campaign_id: str, job_name: str):
+        """A :class:`~robovast.service.dir_watch.DirWatch` over the job's log files, for a
+        stream that pushes rows as they are written. The caller closes it."""
+        from robovast.service import job_log  # pylint: disable=import-outside-toplevel
+        job_dir, _runs = self._job_log_dir(campaign_id, job_name)
+        return job_log.watch(job_dir)
+
+    def get_job_log(self, campaign_id: str, job_name: str, cursor: str = "") -> JobLogChunk:
+        """A job's log rows after *cursor*, read from its ``logs/system*.log`` files.
+
+        The files grow in the campaign directory while the job runs, so a
+        running job and a finished one are read alike (:mod:`robovast.service.job_log`).
+        ``eof`` once the job is over -- the campaign no longer live, or every run placed in
+        the job has its settled verdict -- and a read found nothing more.
+        """
+        from robovast.service import job_log  # pylint: disable=import-outside-toplevel
+
+        job_dir, runs = self._job_log_dir(campaign_id, job_name)
+        live = self.campaign_is_live(campaign_id)
+        if job_dir is None:
+            job_log.decode_cursor(cursor)
+            return JobLogChunk(cursor=cursor, eof=not live)
+        finished = not live or job_log.runs_finished(self.campaign_dir(campaign_id), runs)
+        rows, next_cursor, pending = job_log.read_rows(job_dir, cursor, final=finished)
+        return JobLogChunk(rows=rows, cursor=next_cursor,
+                           eof=finished and not rows and not pending)
 
     def _campaign_execution(self, campaign_id: str) -> dict:
         """The ``execution`` block of this campaign's own frozen configuration.
@@ -3232,25 +3581,30 @@ class ServiceBase(RobovastInterface):
         return campaign_execution(self.campaign_dir(campaign_id))
 
     def get_job_state(self, campaign_id: str, job_name: str) -> "JobState":
-        """What a running job is doing, from the run's own tools by fixed commands.
+        """What a running job is doing: its scenario's tree from the run's own tables, its
+        simulator's and resource monitor's word from the run's containers by fixed commands.
 
-        Two readers, asked independently on purpose: the scenario's tree is there whatever the
+        Three readers, asked independently on purpose: the scenario's tree is there whatever the
         simulator is, so a campaign whose simulator cannot report on itself still gets the more
         useful half. Coupling them would have made the absence of one hide the other.
 
-        Neither parses another component's file format. The tool that owns each record reads it
-        and prints JSON, so a record can be reshaped by its owner without breaking this.
+        The scenario half is folded from the run's ``behaviors`` and ``behaviors_meta`` tables
+        (:mod:`robovast.service.scenario_state`) -- the rows the campaign's data engine reads out
+        of the ``behaviors.jsonl`` the run writes, which grows in the campaign directory -- so
+        nothing runs in the run to answer it. It is read fresh every time: a fold over
+        every recorded transition rather than a tail, which is why it is asked for here and never
+        polled. A log without its metadata record raises, naming the file.
 
         The health half is served from whatever the status path last pulled (see
         :meth:`_read_health`), so an agent asking is never charged for a check a poll has already
-        paid for. The scenario's tree is always read fresh: it is the expensive half -- a fold over
-        every recorded transition rather than a tail -- which is exactly why it is asked for here
-        and never polled.
+        paid for. It parses no simulator's file format: the tool that owns the record reads it and
+        prints JSON, so the record can be reshaped by its owner without breaking this.
 
-        **Each read is asked of the container that owns it**, which is why the target is resolved
-        per role and not per job: the scenario runs in the scenario container always, while a
-        simulator with a container of its own answers only there. Sending both to one target sent
-        ``roqsim health`` into a container with no roqsim in it for every ROS-shape campaign.
+        **Each exec is asked of the container that owns it**, which is why the target is resolved
+        per role and not per job: the resource monitor writes under the scenario container's
+        ``/out``, while a simulator with a container of its own answers only there. Sending both
+        to one target sent ``roqsim health`` into a container with no roqsim in it for every
+        ROS-shape campaign.
 
         Everything that decides *what* is asked is here, and only :meth:`_job_state_target`
         knows how to address the job's pod.
@@ -3270,13 +3624,94 @@ class ServiceBase(RobovastInterface):
         except Exception as err:  # noqa: BLE001 - a job between scheduling and running, or gone
             state.unavailable.append(str(err))
             return state
-        self._read_scenario_state(state, target, run_dir)
+        self._fold_scenario_state(state, campaign_id)
         self._read_resources(state, target, job_dir)
         document, reason = self._read_health(campaign_id, job_name, job_dir, run_dir)
         if reason:
             state.unavailable.append(reason)
         state.simulator = document
         return state
+
+    def tap_job(self, campaign_id: str, job_name: str, selection: Optional[list] = None, *,
+                max_seconds: int = TAP_MAX_S, source: str = "api"):
+        """Start the backend's following command in the job's simulation container and
+        relay its lines (:class:`~robovast.service.tap.TapStream`).
+
+        Every decision is made **before** anything runs, in this order: the job is running
+        (:meth:`_require_running_job`), the campaign's simulator has a tap for this
+        selection (:func:`~robovast.common.simulators.tap_command`; ``None`` is refused naming
+        the backend, since a tap that printed nothing would otherwise be indistinguishable
+        from a simulator that cannot be tapped), no tap is open on this job, and only then
+        the probe is recorded and the exec started. A refusal therefore records nothing.
+
+        The command is bounded twice. The runner's ``stream_in`` ends the *relay* at the bound
+        or when the reader closes; the process in the container outlives both
+        (see :meth:`~robovast.service.container_exec.ExecRunner.stream_in`), so the command
+        itself runs under ``timeout``, which ends it in the container at the same bound
+        whatever became of the reader. Run through :func:`~robovast.common.execution.in_run_env`
+        as every live-job exec is, so ``ros2`` resolves.
+
+        Like :meth:`get_job_state`, what is asked is decided here; the implementation says the
+        target (:meth:`_job_state_target`) and where the probe is recorded (:meth:`_job_probe_dir`).
+        """
+        from robovast.common.campaign_data import KIND_PROBED, record_intervention
+        from robovast.common.execution import in_run_env
+        from robovast.common.simulators import backend_name, tap_command
+        from robovast.service.tap import TapStream
+
+        selection = [str(name) for name in (selection or [])]
+        limit_s = max(1, min(int(max_seconds), TAP_MAX_S))
+        self._require_running_job(campaign_id, job_name)
+        try:
+            execution = self._campaign_execution(campaign_id)
+        except Exception as err:  # noqa: BLE001 - the reason a tap cannot be chosen
+            raise ValueError(f"could not read this campaign's configuration: {err}") from err
+        target, run_dir = self._job_state_target(campaign_id, job_name, SIMULATION_CONTAINER)
+        argv = tap_command(execution, run_dir=run_dir, selection=selection)
+        if not argv:
+            backend = backend_name(execution) or f"a '{execution.get('mode')}' campaign " \
+                                                 f"without a simulator backend"
+            raise ValueError(
+                f"no tap for {backend}: this campaign's simulator names no following command, "
+                f"so there is nothing to relay from a live run")
+        with self._taps_guard:
+            if (campaign_id, job_name) in self._taps:
+                raise RuntimeError(
+                    f"a tap is already open on job {job_name!r} of {campaign_id!r}; one relay "
+                    f"per job at a time -- read that one, or wait for it to end")
+            self._taps.add((campaign_id, job_name))
+
+        def release():
+            with self._taps_guard:
+                self._taps.discard((campaign_id, job_name))
+
+        try:
+            job_dir, runs = self._job_probe_dir(campaign_id, job_name)
+            # Before the command, as exec_in_job records: a process the service started is
+            # about to run in the simulator's container, and a crash in between must not
+            # leave a perturbed run with nothing saying why.
+            record_intervention(self.campaign_dir(campaign_id), kind=KIND_PROBED,
+                                job_dir=job_dir, job_name=job_name, source=source,
+                                detail=f"tap {shlex.join(selection) or '(topic list)'} "
+                                       f"for {limit_s}s", runs=runs)
+            bounded = (f"exec timeout --signal=INT --kill-after={_TAP_KILL_GRACE_S} "
+                       f"{limit_s} {shlex.join(argv)}")
+            runner = self._exec_runner()
+        except BaseException:
+            release()
+            raise
+        return TapStream(
+            lambda on_line, should_stop: runner.stream_in(
+                target, in_run_env(bounded), limit_s=limit_s, on_line=on_line,
+                should_stop=should_stop),
+            on_close=release)
+
+    @abstractmethod
+    def _job_probe_dir(self, campaign_id: str, job_name: str) -> tuple:
+        """``(job_dir, runs)`` a probe of *job_name* is recorded against: the job's
+        campaign-relative artifact dir, and the run keys the implementation already knows it carries
+        (see :func:`~robovast.common.campaign_data.record_intervention`).
+        """
 
     @abstractmethod
     def _job_output_dir(self, campaign_id: str, job_name: str, run_dir: str) -> str:
@@ -3315,14 +3750,11 @@ class ServiceBase(RobovastInterface):
         use -- and this read is part of that shape: it is a process the service starts *inside the
         simulator's container*, charged to the simulator's memory, on every interval somebody is
         watching. A probe spared it would be sized without it, and the jobs would then meet, on top
-        of a limit that has no room for it, the one cost the probe never saw. The postprocessing
-        conversion is the job that genuinely carries no run.
+        of a limit that has no room for it, the one cost the probe never saw.
         """
         out = []
         for job in self.list_jobs(campaign_id).jobs:
             if job.status != "running":
-                continue
-            if job.kind == JobKind.POSTPROCESSING:
                 continue
             try:
                 target, run_dir = self._job_state_target(
@@ -3611,55 +4043,27 @@ class ServiceBase(RobovastInterface):
             return ""
         return prefix + " | ".join(lines[-cls._STDERR_TAIL_LINES:])
 
-    #: How scenario-execution reports where a scenario has got to. A *fixed* command, so this is
-    #: a read and not a probe -- and named here rather than derived from a backend because the
-    #: scenario runs in every campaign whatever the simulator is.
-    _TREE_STATE_COMMAND = "python3 -m scenario_execution.tree_state"
+    def _fold_scenario_state(self, state, campaign_id: str) -> None:
+        """Fold the run's behaviour-tree tables into ``state.scenario``, or say why not.
 
-    def _read_scenario_state(self, state, target, run_dir: str) -> None:
-        """Fold the run's behaviour-tree log into ``state.scenario``, or say why not.
+        From the campaign directory, which holds the run's ``behaviors.jsonl`` as it grows,
+        and through the campaign's data engine, so the tree an agent is shown here
+        is the one a query of ``behaviors`` sees. The run is the one ``state.run`` names; a job
+        whose run could not be resolved has no log to fold, and says so.
 
-        Asked of scenario-execution's own reader rather than parsed here: the log's shape is
-        its record to change, and a second implementation of someone else's format in this repo
-        would be the thing that breaks when it does.
-
-        Run through :func:`~robovast.common.execution.in_run_env`, which is not optional:
-        ``scenario_execution`` is colcon-built into ``/ws`` and is on no interpreter's path until
-        that overlay is sourced, so a bare argv answers ``No module named 'scenario_execution'``
-        in every image ever built.
+        A log that has not been written or not ticked is the reader's own stated reason, already
+        phrased for a reader. A log without its metadata record, or one the engine could not
+        turn into rows, raises: an unreadable tree reported as "unavailable" beside a healthy
+        simulator reads as a run with nothing to show, which it is not.
         """
-        from robovast.common.execution import in_run_env
-        # The exit code is not consulted: the reader states its own outcome in the JSON (``found``
-        # plus its reason), and a nonzero exit with a usable reply is its business, not ours.
-        _code, stdout, stderr, timed_out = self._exec_runner().exec_in(
-            target, in_run_env(f"{self._TREE_STATE_COMMAND} {shlex.quote(run_dir)}"),
-            _JOB_STATE_LIMIT_S)
-        if timed_out:
+        from robovast.service.scenario_state import scenario_state
+        if state.run is None:
             state.unavailable.append(
-                f"reading the scenario's tree did not finish within {_JOB_STATE_LIMIT_S}s")
+                "which run this job is on could not be resolved, so its scenario tree was not "
+                "read")
             return
-        text = (stdout or "").strip()
-        if not text:
-            # The reader is a command RoboVAST ships, so there are only two ways it can be
-            # missing, and the stderr above distinguishes them: the note says whether the run's
-            # overlay was sourced, and Python says whether it was the package or the module it
-            # could not find. Naming that here rather than leaving a runpy sentence to be
-            # interpreted -- three rounds of this were spent deciding which of the two it was.
-            state.unavailable.append(
-                "could not read the scenario's tree"
-                + (self._said(stderr) or ": it printed nothing at all")
-                + ". If the note says the overlay was sourced, this image's scenario-execution "
-                  "is older than the reader and the image needs rebuilding; if it says no "
-                  "overlay was found, the container is not one a run's tools live in.")
-            return
-        try:
-            reply = json.loads(text)
-        except ValueError:
-            state.unavailable.append("the scenario's tree reader did not return JSON")
-            return
+        reply = scenario_state(str(self.campaign_dir(campaign_id)), campaign_id, state.run)
         if not reply.get("found"):
-            # Its own stated reason -- a run with bt_log off, or one that has not ticked yet --
-            # which is more use than "unavailable" and is already phrased for a reader.
             state.unavailable.append(reply.get("error", "the scenario reported no tree"))
             return
         state.scenario = reply
@@ -3689,7 +4093,7 @@ class ServiceBase(RobovastInterface):
         The monitor writes this file itself for every container of the run, so nothing new runs in
         the run and nothing is added to the image.
         """
-        from robovast.results_processing.resource_usage import ScanStats, parse_container_rows
+        from robovast_decode.resource_usage import ScanStats, parse_container_rows
 
         script = (f'find {shlex.quote(run_dir)} -maxdepth {self._RESOURCE_FIND_DEPTH} '
                   f'-name "resource_usage_*.csv" -type f | while read -r f; do '
@@ -3734,14 +4138,8 @@ class ServiceBase(RobovastInterface):
         """``{container: [csv lines]}`` from the marked concatenation the read above prints.
 
         The container is taken from the file name, which is what
-        :func:`~robovast.results_processing.resource_usage.expected_container_files` already
+        :func:`~robovast_decode.resource_usage.expected_container_files` already
         encodes: ``resource_usage_<container>.csv``, with ``main`` for the scenario container.
-
-        A packed Job holds several runs under one ``/out``, so the same container appears more than
-        once. The **last** block for a name wins, and the parser then keeps that block's newest
-        tick: the question is what is happening now, and the run still being appended to is the one
-        that answers it. Merging the blocks would put a finished run's processes beside a live
-        one's under a single container.
         """
         blocks: dict = {}
         current = None
@@ -3816,12 +4214,6 @@ class ServiceBase(RobovastInterface):
                 f"job {job_name!r} is a node-calibration probe, not one of the campaign's "
                 f"runs — it cannot be stopped individually: there is no run to record as "
                 f"killed, and the batch abandons its own probes when it ends")
-        if job.kind == JobKind.POSTPROCESSING:
-            raise RuntimeError(
-                f"job {job_name!r} is the campaign's postprocessing conversion, not one of "
-                f"its runs — it cannot be stopped individually: there is no run to record as "
-                f"killed, and the runs it converts are already recorded. Stopping the "
-                f"campaign ends it; re-running postprocessing replaces what this produced")
         if job.status != "running":
             running = [j.job_name for j in jobs if j.status == "running"]
             hint = f"; running now: {', '.join(running)}" if running else ""
@@ -3963,14 +4355,18 @@ class ServiceBase(RobovastInterface):
         Two guards shared by the local and cluster transports before anything is
         removed:
 
-        * The id must match the campaign naming pattern — this blocks a traversal
-          value like ``..`` from ever reaching the ``rmtree`` / bucket delete and
-          taking out the results root or an unrelated bucket (``ValueError`` → 400).
+        * The id must be one directory name matching the campaign naming pattern. The
+          pattern alone lets a separator through (``../x-<stamp>``, ``/elsewhere/x-<stamp>``)
+          (``ValueError`` → 400).
         * No live in-memory driver entry may exist — the authoritative "still
           running here" signal. Stop the campaign first (``RuntimeError`` → 409).
         """
         from robovast.common.execution import is_campaign_dir
-        if not campaign_id or not is_campaign_dir(campaign_id):
+        try:
+            valid = is_campaign_dir(check_segment(campaign_id))
+        except UnsafePathError:
+            valid = False
+        if not valid:
             raise ValueError(
                 f"Refusing to delete {campaign_id!r}: not a valid campaign id.")
         with self._lock:
@@ -3978,40 +4374,6 @@ class ServiceBase(RobovastInterface):
         if entry is not None and not self._is_done(entry):
             raise RuntimeError(
                 f"Campaign {campaign_id!r} is still running; stop it before deleting.")
-
-    def _forget_in_index(self, campaign_id: str) -> None:
-        """Drop the campaign's rows from the central index.
-
-        Deleting a campaign has to reach the index, or the index outlives what it
-        describes: rows are derived, and a derived copy that survives its source is worse
-        than none -- it answers questions about a campaign nobody can reach or check, with
-        nothing left to compare against.
-
-        It also removes the ingest registry entry, so the campaign reads as *never
-        ingested* rather than as ingested-and-empty. Those are different answers, and only
-        one of them is true after a delete.
-
-        Never raises. A delete that removed the campaign's data but reported failure
-        because the index was unreachable would invite a retry against a campaign that is
-        already gone; the orphaned rows are re-cleared by the next ingest of that id, and
-        by ``index_scope``'s repair sweep.
-        """
-        from robovast.common import index_db  # pylint: disable=import-outside-toplevel
-        from robovast.common.errors import \
-            IndexUnreachableError  # pylint: disable=import-outside-toplevel
-        from robovast.results_processing import \
-            index_schema  # pylint: disable=import-outside-toplevel
-        try:
-            with index_db.connect() as conn:
-                deleted = index_schema.forget_campaign(conn, campaign_id)
-        except IndexUnreachableError:
-            logger.warning("index unreachable; %s's rows remain indexed", campaign_id)
-        except Exception:  # pylint: disable=broad-except
-            logger.exception("could not remove %s from the index", campaign_id)
-        else:
-            if deleted:
-                logger.info("index: removed %d row(s) for deleted campaign %s",
-                            sum(deleted.values()), campaign_id)
 
     def _campaign_siblings(self, campaign_id: str) -> list[Path]:
         """Files that belong to *campaign_id* but live outside its directory.
@@ -4098,7 +4460,6 @@ class ServiceBase(RobovastInterface):
                 removed_archives += 1
                 archive_bytes += size
 
-        self._forget_in_index(campaign_id)
         with self._lock:
             self._campaigns.pop(campaign_id, None)
             for cache in (self._started_at_cache, self._finished_at_cache,
@@ -4160,13 +4521,13 @@ class ServiceBase(RobovastInterface):
 
         A repeatable phase (postprocess, share) writes the same filename every time it
         runs. Left in place, the next run either replaces those bytes or appends to them,
-        and either way the assembled campaign log stops being append-only: a reader
-        streams it by byte offset, so a section that changes behind an offset already
-        consumed is a section nobody is ever shown -- and a shorter one makes the stream
-        shrink under a reader that is watching it. Archived under
-        ``_execution/sections/<seq>-<phase>.log`` it is finished and immutable, the new
-        run's file is the only one still growing, and
-        :func:`~robovast.common.campaign_logs.ordered_sections` puts it last.
+        and either way the campaign log stops being append-only: a reader holds a cursor
+        into each file, so a file that changes behind the position already read is rows
+        nobody is ever shown -- and a shorter one makes the reader start it over. Archived
+        under ``_execution/sections/<seq>-<phase>.log`` it is finished and immutable, the
+        new run's file is the only one still growing,
+        :func:`~robovast.common.campaign_logs.ordered_sections` puts it last, and the
+        reader carries its cursor entry over to the archived name.
 
         **All** of them, not only the phase about to run, so at most one live base file
         exists and "the live one is last" has exactly one answer.
@@ -4506,11 +4867,62 @@ class ServiceBase(RobovastInterface):
                 "problems": list(result.get("problems") or []) + problems}
 
     def preview_configurations(
-        self, workspace_id: str, max_configs: int = 0, path: str = ""
+        self, workspace_id: str, max_configs: int = 0, path: str = "", wait: bool = True
     ) -> PreviewResponse:
+        project = self._resolve_project(workspace_id, path)
+        if wait:
+            return self._compose_preview(workspace_id, path, project, max_configs)
+        from robovast.common.common import load_config
+        vast = project.config_path
+        if (load_config(vast) or {}).get("search"):
+            raise ValueError(
+                "a search .vast draws its configurations while it runs, so there are no names "
+                "to list ahead of it, and a config filter does not apply to it")
+        mtime = os.stat(vast).st_mtime_ns
+        key = (workspace_id, vast, max_configs)
+        with self._previews_lock:
+            held = self._previews.get(key)
+            # A composition in flight is answered as it stands even if the file has moved on:
+            # it cannot be stopped, and the first call after it lands composes again.
+            if held is not None and (held[1].state == "composing" or held[0] == mtime):
+                return held[1]
+            started = PreviewResponse(state="composing")
+            self._previews[key] = (mtime, started)
+        threading.Thread(
+            target=self._compose_preview_in_background,
+            args=(key, mtime, workspace_id, path, project, max_configs),
+            name=f"robovast-{_preview_tag(workspace_id, path)}-preview", daemon=True).start()
+        return started
+
+    def _compose_preview_in_background(self, key, mtime, workspace_id, path, project,
+                                       max_configs) -> None:
+        """Compose the preview, publishing its step counter and then the result into
+        ``_previews[key]``; a failure is the result the caller polls for."""
+        from robovast.client.status import StepProgress
+        from robovast.common.config_generation import parse_composition_step
+
+        def publish(result: PreviewResponse) -> None:
+            with self._previews_lock:
+                self._previews[key] = (mtime, result)
+
+        def on_line(line):
+            step = parse_composition_step(line)
+            if step is not None:
+                publish(PreviewResponse(state="composing",
+                                        progress=StepProgress(done=step[0], total=step[1])))
+
+        try:
+            publish(self._compose_preview(workspace_id, path, project, max_configs, on_line))
+        except Exception as e:  # noqa: BLE001 - the failure is the result the caller polls for
+            logger.info("Previewing %s failed: %s", project.config_path, e)
+            publish(PreviewResponse(state="failed", error=str(e)))
+
+    def _compose_preview(self, workspace_id: str, path: str, project, max_configs: int,
+                         on_line=None) -> PreviewResponse:
+        """The preview of *project*'s ``.vast``, composed now; *on_line* hears the composition's
+        progress lines."""
         from robovast.common.common import load_config
         from robovast.common.config_generation import generate_scenario_variations
-        project = self._resolve_project(workspace_id, path)
         aux_containers: list = []
         # Both branches compose, so both need whatever the service uses to reach a variation's
         # helper image -- and a search .vast reaches it through the same variation loop.
@@ -4531,7 +4943,8 @@ class ServiceBase(RobovastInterface):
             else:
                 try:
                     campaign_data = generate_scenario_variations(
-                        variation_file=project.config_path, output_dir=None)
+                        variation_file=project.config_path, output_dir=None,
+                        progress_update_callback=on_line)
                 except Exception as e:  # noqa: BLE001 - surface resolution errors as 400
                     raise ValueError(str(e)) from e
                 configs = campaign_data["configs"]
@@ -4551,7 +4964,7 @@ class ServiceBase(RobovastInterface):
                     sut=convert_dataclasses_to_dict(c.get("sut", {})),
                     internals=convert_dataclasses_to_dict(
                         {k: v for k, v in c.items()
-                         if k.startswith("_") and k != "_config_block"}),
+                         if k.startswith("_") and k not in ("_config_block", "_read_files")}),
                     contribution=_config_view_contribution(c, vast_dir),
                     previews=_config_previews(c, remotes))
                  for c in shown]
@@ -4661,12 +5074,19 @@ class ServiceBase(RobovastInterface):
         (:mod:`robovast.service.endpoint_plugin`), so a plugin reads the same tree
         whichever service serves it.
 
-        Campaigns all live under the shared results root (see :meth:`_campaigns_root`);
-        an absolute id is honoured as-is, for analysis of an arbitrary folder.
+        Campaigns all live under the shared results root (see :meth:`_campaigns_root`),
+        and an id is one directory name there
+        (:func:`~robovast.client.safe_path.check_segment`), since every reader here confines
+        its path against the campaign's directory alone. ``ValueError`` for one that is
+        not; an absolute id is refused by name, since a caller of the service may read its
+        campaigns and no other folder on its host.
         """
         if os.path.isabs(campaign_id):
-            return Path(campaign_id)
-        return self._campaigns_root() / campaign_id
+            raise ValueError(
+                f"{campaign_id!r} is a folder, not a campaign id: the service reads only "
+                "the campaigns in its results tree. An absolute campaign folder is read "
+                "by the MCP tools only when they run without a service.")
+        return self._campaigns_root() / check_segment(campaign_id)
 
     # -- results data query (eval viewer) -----------------------------------
 
@@ -4683,16 +5103,17 @@ class ServiceBase(RobovastInterface):
     ) -> "DataQueryResult":
         """Run a read-only ``SELECT`` against *campaign_id*, and only against it.
 
-        The index confines the session to that campaign, so a query that forgets
-        ``WHERE campaign_id = ...`` -- which the web UI's results tree did, and served
-        another campaign's runs with it -- returns this campaign's rows rather than the
-        corpus.
+        The query sees that campaign's tables and no other's, so one that forgets
+        ``WHERE campaign_id = ...`` answers about this campaign rather than a corpus.
 
-        *campaigns* is the deliberate way out, for the comparison this one index exists to
-        make cheap: name every campaign the query may see and it may see them.
+        *campaigns* is the deliberate way out, for a comparison: name every campaign the
+        query may see and it may see them. Each is held to :meth:`campaign_dir` as
+        *campaign_id* is.
         """
         from robovast.results_processing.data_query import query_data_db
         from robovast.service.interface import DataQueryResult
+        for other in campaigns or []:
+            self.campaign_dir(other)
         result = query_data_db(self.campaign_dir(campaign_id), sql, max_rows,
                                max_bytes=max_bytes, campaigns=campaigns,
                                campaign_id=campaign_id)
@@ -4702,6 +5123,11 @@ class ServiceBase(RobovastInterface):
         from robovast.results_processing.data_query import stream_query_csv
         return stream_query_csv(self.campaign_dir(campaign_id), sql,
                                 campaign_id=campaign_id)
+
+    def stream_campaign_query_arrow(self, campaign_id: str, sql: str, tables=None):
+        from robovast.results_processing.data_query import stream_query_arrow
+        return stream_query_arrow(self.campaign_dir(campaign_id), sql, tables,
+                                  campaign_id=campaign_id)
 
     def list_campaign_plots(self, campaign_id: str) -> "CampaignPlotsResponse":
         # Raw-load (not full validation) — reading declared plots must not depend on
@@ -4737,7 +5163,8 @@ class ServiceBase(RobovastInterface):
         markers = [m.model_dump() for m in contribution.markers]
         path = choose_path(markers, marker_label)
         return TrackDeviation(**track_deviation(
-            campaign_id, config_name, run_id, path=path, source=source, frame=frame))
+            self.campaign_dir(campaign_id), config_name, run_id, path=path, source=source,
+            frame=frame))
 
     def list_campaign_panels(self, campaign_id: str) -> "CampaignPanelsResponse":
         # Raw-load (not full validation) — reading declared panels must not depend on
@@ -4808,26 +5235,58 @@ class ServiceBase(RobovastInterface):
 
     # -- on-demand 3D geometry ---------------------------------------------
 
-    def _scene_capture(self, campaign_id: str, config_name: str, run_id: str) -> dict:
-        """The run's parsed ``capture/capture.json``, which names the world it needs.
+    #: The run's ``sim_recording`` row. ``*`` rather than the three columns the identity reads:
+    #: a campaign none of whose runs recorded anything has the table with its key columns alone,
+    #: and naming a column it lacks answers a binder error where "no row" is the fact.
+    _SCENE_RECORDING_SQL = "SELECT * FROM sim_recording WHERE config_name = ? AND run_id = ?"
+    #: What the identity reads of that row: the world it was recorded from, the overrides it was
+    #: built with, and the format that says what those mean.
+    _SCENE_RECORDING_COLUMNS = ("world", "overrides_json", "format_version")
 
-        Raises ``SceneUnavailable`` when the run has none -- a run recorded without a capture has no
-        motion to replay either, so there is nothing for geometry to serve.
+    def _scene_recording(self, campaign_id: str, config_name: str, run_id: str) -> dict:
+        """The run's ``sim_recording`` row, which names the world it needs.
+
+        Read through the campaign's tables rather than off a file: the recording is the
+        simulator's own format, and the decoder is the one reader of it. A run still going has
+        its row as soon as the simulator has written its provenance, which is before its first
+        sample, so a preview resolves its world the same way a finished run does.
+
+        Raises ``SceneUnavailable`` when the run has no row -- a run that recorded no simulator
+        state has no motion to replay either, so there is nothing for geometry to serve -- or
+        when the campaign's tables cannot be opened at all.
         """
-
-        from robovast.service.scene_cache import SceneUnavailable
-        path = (self.campaign_dir(campaign_id) / config_name / str(run_id)
-                / "capture" / "capture.json")
+        from robovast.results_processing.data_query import (  # pylint: disable=import-outside-toplevel
+            DataQueryError, open_data_db)
+        from robovast.service.scene_cache import \
+            SceneUnavailable  # pylint: disable=import-outside-toplevel
         try:
-            with open(path, "r", encoding="utf-8") as handle:
-                return json.load(handle)
-        except FileNotFoundError as err:
+            db = open_data_db(self.campaign_dir(campaign_id), campaign_id)
+            cursor = db.execute(self._SCENE_RECORDING_SQL, (config_name, int(run_id)))
+            row = cursor.fetchone()
+        except (DataQueryError, ValueError) as err:
             raise SceneUnavailable(
-                "this run has no capture, so there is nothing to replay and no world to build geometry "
-                "from. A capture is the simulator backend's to record -- see its documentation for "
-                "what enables one -- and is written only on a clean stop.") from err
-        except (OSError, ValueError) as err:
-            raise SceneUnavailable(f"this run's capture manifest could not be read: {err}") from err
+                f"this run's recording could not be read from the campaign's tables: {err}") from err
+        if row is None:
+            raise SceneUnavailable(
+                "this run has no sim_recording row, so there is nothing to replay and no world to "
+                "build geometry from. The recording is the simulator backend's to write -- see its "
+                "documentation for what enables one -- and a run that never reached its first "
+                "sample leaves none.")
+        record = dict(zip((d[0] for d in cursor.description), row))
+        return {name: record.get(name) for name in self._SCENE_RECORDING_COLUMNS}
+
+    def _run_recording_path(self, campaign_id: str, config_name: str, run_id: str):
+        """Where this run's recording sits, or ``None`` for a campaign whose simulator records none
+        or whose configuration cannot say."""
+        from robovast.common.simulators import \
+            run_state_filename  # pylint: disable=import-outside-toplevel
+        try:
+            filename = run_state_filename(self._campaign_execution(campaign_id))
+        except Exception:  # noqa: BLE001 - an unreadable config is reported by the read itself
+            return None
+        if not filename:
+            return None
+        return self._run_state_path(campaign_id, config_name, run_id, filename)
 
     @abstractmethod
     @abstractmethod
@@ -4844,32 +5303,35 @@ class ServiceBase(RobovastInterface):
     def _scene_identity(self, campaign_id, config_name, run_id):
         """``(identity, cache key)`` of the geometry this run needs, memoised at rest.
 
-        Asked on every run switch in the run view, and not cheap: it parses the run's capture and
-        the campaign's frozen ``.vast``, hashes every byte of each ``_config/`` tree a
-        campaign-file world reads, and for a campaign that recorded only an image tag resolves
-        the digest the tag names. None of that can change for a campaign nothing is driving, so the
-        answer is kept against :meth:`_rest_key` plus the stat of the run's own capture --
-        the one input the campaign's record files do not cover. A refusal is not memoised: it
-        is cheap to repeat, and its cause (a missing capture, an unpulled image) may be fixed.
+        Asked on every run switch in the run view, and not cheap: it queries the run's
+        ``sim_recording`` row, parses the campaign's frozen ``.vast``, hashes every byte of each
+        ``_config/`` tree a campaign-file world reads, and for a campaign that recorded only an
+        image tag resolves the digest the tag names. None of that can change for a campaign
+        nothing is driving, so the answer is kept against :meth:`_rest_key` plus the stat of the
+        run's own recording -- the one input the campaign's record files do not cover. A refusal
+        is not memoised: it is cheap to repeat, and its cause (a missing recording, an unpulled
+        image) may be fixed.
         """
         from robovast.service import scene_cache
         with self._lock:
             entry = self._campaigns.get(campaign_id)
         rest = self._rest_key(campaign_id, entry)
-        capture = (self.campaign_dir(campaign_id) / config_name / str(run_id)
-                   / "capture" / "capture.json")
-        try:
-            st = capture.stat()
-            memo_key = (rest, st.st_mtime_ns, st.st_size) if rest is not None else None
-        except OSError:
-            memo_key = None  # no capture: _scene_capture below raises the reason
+        memo_key = None
+        if rest is not None:
+            recording = self._run_recording_path(campaign_id, config_name, run_id)
+            try:
+                st = recording.stat() if recording is not None else None
+            except OSError:
+                st = None  # no recording: _scene_recording below raises the reason
+            if st is not None:
+                memo_key = (rest, st.st_mtime_ns, st.st_size)
         run = (config_name, str(run_id))
         if memo_key is not None:
             hit = self._scene_identity_cache.get(campaign_id, {}).get(run)
             if hit is not None and hit[0] == memo_key:
                 return hit[1]
-        manifest = self._scene_capture(campaign_id, config_name, run_id)
-        identity = scene_cache.world_identity(str(self.campaign_dir(campaign_id)), manifest,
+        recording_row = self._scene_recording(campaign_id, config_name, run_id)
+        identity = scene_cache.world_identity(str(self.campaign_dir(campaign_id)), recording_row,
                                               resolve_digest=self._resolve_image_digest,
                                               config_name=config_name)
         answer = (identity, scene_cache.cache_key(identity))
@@ -4907,7 +5369,7 @@ class ServiceBase(RobovastInterface):
         else:
             note = "geometry has not been built for this world yet"
         if not identity["overrides_known"]:
-            note += ("; this run's capture predates override recording, so geometry is compiled from "
+            note += ("; this run's recording carries no overrides, so geometry is compiled from "
                      "the bare world and may not reflect per-config world overrides")
         return base.model_copy(update={
             "cached": cached,
@@ -5123,6 +5585,10 @@ class ServiceBase(RobovastInterface):
         del campaign_id  # scopes the route, but a cache entry belongs to a world, not a campaign
         from robovast.service import scene_cache
         key, _, rel = str(path).partition("/")
+        try:
+            check_segment(key)
+        except UnsafePathError:
+            key = ""
         if not key or not rel:
             raise KeyError(f"scene asset path must be '<key>/<file>', got {path!r}")
         scene_cache.touch(key)
@@ -5258,10 +5724,9 @@ class ServiceBase(RobovastInterface):
     #: :func:`~robovast.common.campaign_data.campaign_has_derived_data`).
     #:
     #: This is a stat fingerprint, so an entry that can never exist is worse than a missing
-    #: one: it contributes nothing that can change. It listed ``_execution/data.db`` until
-    #: that file was retired, and the consequence was invisible -- postprocessing finishing
-    #: changed nothing in the tuple, so a card could sit at "not postprocessed" over a
-    #: campaign whose tables were all there, until some unrelated file's mtime moved.
+    #: one: it contributes nothing that can change, so postprocessing finishing would change
+    #: nothing in the tuple, and a card could sit at "not postprocessed" over a campaign
+    #: whose tables were all there, until some unrelated file's mtime moved.
     #:
     #: The SQLite sidecars are listed because a store in WAL mode commits into ``-wal`` and
     #: can leave the main file's mtime standing still -- no journal_mode is set today, so
@@ -5349,7 +5814,8 @@ class ServiceBase(RobovastInterface):
         campaign_dir = self.campaign_dir(cid)
         # One precedence rule, shared with get_status: a tracked campaign's live
         # ControllerState wins; otherwise reconstruct the Status from disk (the one
-        # documented recovery path — it also derives `postprocessed` from data.db).
+        # documented recovery path — it also derives `postprocessed` from the provenance
+        # record).
         # `started_at` follows the same rule via _started_at_for, which is also what
         # list_campaigns orders by — so the time shown on a row and the time it was
         # sorted by cannot disagree.
@@ -5424,18 +5890,6 @@ class ServiceBase(RobovastInterface):
                 logger.debug("run-row backfill failed for %s: %s", campaign_dir, e)
         if counts is not None and counts["num_runs"] > 0:
             return counts
-        # The index, before the disk walk: a store predating the run table, or one that is
-        # absent, still has its rows in the index, because importing and postprocessing
-        # both ingest.
-        #
-        # Below the store rather than above it: campaign.db is this campaign's own record
-        # and is authoritative for what it ran, while the index is a copy of it. They agree
-        # when both exist; when they disagree the file is the one to believe.
-        from robovast.results_processing import \
-            index_query  # pylint: disable=import-outside-toplevel
-        indexed = index_query.run_counts(Path(campaign_dir).name)
-        if indexed is not None:
-            return indexed
         return self._walk_counts(campaign_dir)
 
     @staticmethod
