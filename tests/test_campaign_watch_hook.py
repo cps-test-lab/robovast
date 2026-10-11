@@ -17,6 +17,7 @@ It ships in the plugin rather than as loose glue, so these tests load it by path
 import importlib.util
 import json
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -110,12 +111,34 @@ def test_an_unrelated_bash_command_does_not_stand_it_down(hook, capsys):
     assert _check(hook, capsys) is not None
 
 
+def _stop_reply(ok):
+    """What ``stop_campaign`` itself answers, so the hook is pinned to the tool's reply
+    rather than to a shape written down beside it."""
+    from robovast.mcp_server import service_access
+    from robovast.mcp_server.plugins import execution
+
+    class _Service:
+        def stop(self, campaign_id):
+            return types.SimpleNamespace(ok=ok, message="stopping" if ok else "already over")
+
+    service_access.use_in_process_service(_Service())
+    try:
+        return execution.stop_campaign("camp-a")
+    finally:
+        service_access.use_in_process_service(None)
+
+
 def test_stopping_a_campaign_settles_it(hook, capsys):
     """Abandoning one deliberately is a decision; what the hook objects to is silence."""
     _start(hook, "camp-a")
-    hook.clear({"session_id": "s1",
-                "tool_response": {"campaign_id": "camp-a", "ok": True}}, _ledger(hook))
+    hook.clear({"session_id": "s1", "tool_response": _stop_reply(True)}, _ledger(hook))
     assert _check(hook, capsys) is None
+
+
+def test_a_refused_stop_settles_nothing(hook, capsys):
+    _start(hook, "camp-a")
+    hook.clear({"session_id": "s1", "tool_response": _stop_reply(False)}, _ledger(hook))
+    assert _check(hook, capsys) is not None
 
 
 def test_a_refused_launch_records_nothing(hook, capsys):
