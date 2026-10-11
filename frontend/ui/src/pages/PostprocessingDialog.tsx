@@ -20,9 +20,9 @@ import { useToasts } from '@/components/ToastProvider'
 // The 'Retrigger postprocessing' modal. A campaign is self-contained — it carries the `.vast`
 // that ran — so computing different metrics would otherwise mean hand-editing that file.
 // Here the user adapts the `results_processing.postprocessing` block in Monaco (same editor as
-// the run-view 'edit visualization' dropdown) and reruns. If the text changed, it is first saved
-// as a new `.vast` override revision (validated server-side; the immutable `_config/` snapshot is
-// never touched), then postprocessing reruns against the effective config.
+// the run-view 'edit visualization' dropdown) and reruns. If the text changed, it is first
+// validated by the service and written into the campaign's own `_config/<name>.vast` in place --
+// only that block, the recordings untouched -- then postprocessing reruns against it.
 export function PostprocessingDialog({
   campaignId,
   open,
