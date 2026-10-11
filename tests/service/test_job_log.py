@@ -228,6 +228,19 @@ def test_a_job_the_manifest_does_not_name_is_found_through_the_hint(transport, m
     assert _messages(transport.get_job_log(CID, "camp-b0-j7")) == ["hinted job"]
 
 
+def test_a_job_queued_for_capacity_has_no_log_yet_rather_than_being_unknown(
+        transport, monkeypatch):
+    """The job listing shows a queued job before it has a Job, a directory or a log; opening
+    it waits for its first row instead of failing as a job the campaign does not have."""
+    _run(transport, log=_stamp(1, "a"), xml=_XML)
+    _live(transport, monkeypatch)
+    monkeypatch.setattr(transport, "_job_is_queued", lambda cid, name: name == "camp-b0-j9")
+    chunk = transport.get_job_log(CID, "camp-b0-j9")
+    assert chunk.rows == [] and chunk.eof is False
+    with pytest.raises(KeyError):
+        transport.get_job_log(CID, "camp-b0-j8")
+
+
 # -- the stream ---------------------------------------------------------------------------
 
 def test_the_stream_pushes_rows_and_ends_a_finished_job(transport):
