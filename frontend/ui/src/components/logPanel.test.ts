@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { logFooter, trimHead } from './LogPanel'
+import { logFooter, parseLogDelta, trimHead } from './LogPanel'
 
 // The state this exists for: the stream is open with nothing in it, and that means two
 // opposite things. The server flushes the response headers before its first pull, so a log
@@ -107,5 +107,16 @@ describe('trimHead', () => {
     for (let i = 0; i < 5; i++) text = trimHead(`${text}\n${line(90000 + i)}`)
     expect(text.split('earlier output not shown')).toHaveLength(2)
     expect(text.startsWith('[…')).toBe(true)
+  })
+})
+
+describe('parseLogDelta', () => {
+  it('reads the JSON string a frame carries', () => {
+    expect(parseLogDelta(JSON.stringify('line one\nline two\n'))).toBe('line one\nline two\n')
+  })
+
+  it('refuses a frame that is not a JSON string, rather than skipping its text', () => {
+    expect(() => parseLogDelta('not json')).toThrow()
+    expect(() => parseLogDelta('{"text": "x"}')).toThrow('log frame is not a string')
   })
 })
