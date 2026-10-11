@@ -28,13 +28,12 @@ const queryClient = new QueryClient({
 // error path: it rejects the `import()`, which `lazyView` retries and then shows a boundary
 // for. So this listener only logs.
 //
-// It used to call `event.preventDefault()`, on the belief that the default was a reload.
-// Vite's helper is `baseModule().catch(handlePreloadError)` and `handlePreloadError` rethrows
-// only if the event was *not* default-prevented, so preventing it made the import resolve
-// with `undefined` instead. Every `import(...).then((m) => ({ default: m.Page }))` in the app
-// then threw `m is undefined` — a TypeError, which reads as a code bug rather than a missing
-// chunk, so the retry never ran and the boundary showed "stopped working" with a JS message.
-// A service restarted onto a new build (new asset hashes) hit exactly that.
+// It must not call `event.preventDefault()`. Vite's helper is
+// `baseModule().catch(handlePreloadError)` and `handlePreloadError` rethrows only if the event
+// was *not* default-prevented, so preventing it makes the import resolve with `undefined`.
+// Every `import(...).then((m) => ({ default: m.Page }))` in the app then throws
+// `m is undefined` — a TypeError, which reads as a code bug rather than a missing chunk, so the
+// retry never runs and the boundary shows "stopped working" with a JS message.
 window.addEventListener('vite:preloadError', (event) => {
   console.warn('chunk preload failed; lazyView will retry and then offer a reload', event)
 })
