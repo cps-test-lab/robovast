@@ -31,10 +31,8 @@
 // from context (`useTheme()`) instead of these constants, and every token a panel uses to live on
 // the theme. That is the whole delta; nothing here blocks it.
 //
-// Import a token from here instead of writing a hex. Before this module the surfaces were spread
-// across theme.ts and two components, the panel canvas colour was copied into six files, the
-// series scale existed twice — with a comment on one copy asking the other to stay in sync — and
-// the scenario tree and the log view each had their own private green and red.
+// Import a token from here instead of writing a hex: a colour written out in a component is a
+// second copy of one of these, and the two drift apart.
 
 /** Everything a style must define. Sub-grouped to match the four groups above. */
 export interface Style {

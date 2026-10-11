@@ -564,8 +564,9 @@ def tap_job(campaign_id: str, job_name: str, selection: list[str] | None = None,
         max_seconds: How long to collect; capped at 30 here.
 
     Returns:
-        ``{lines, count, exit_code, timed_out, max_seconds, stream_url}`` (the tap as
-        server-sent events, for longer), or ``{error}``.
+        ``{lines, count, exit_code, timed_out, max_seconds}``, plus ``stream_url`` (the
+        tap as server-sent events, for longer) when this service declares an origin; or
+        ``{error}``.
     """
     client = service_access.require_service()
     if max_seconds < 1:
@@ -582,11 +583,12 @@ def tap_job(campaign_id: str, job_name: str, selection: list[str] | None = None,
         lines.append(item.line)
     query = "?" + urlencode({"job_name": job_name, "selection": ",".join(names),
                              "max_seconds": seconds})
+    stream_url = service_access.web_url(client, Routes.job_tap(campaign_id) + query)
     return {"lines": lines, "count": len(lines),
             "exit_code": None if end is None else end.exit_code,
             "timed_out": bool(end is not None and end.timed_out),
             "max_seconds": seconds,
-            "stream_url": service_access.web_url(client, Routes.job_tap(campaign_id) + query)}
+            **({"stream_url": stream_url} if stream_url else {})}
 
 
 def _job_log_text(rows: list) -> str:
@@ -653,11 +655,14 @@ def stop_campaign(campaign_id: str) -> dict:
         campaign_id: The id from ``start_campaign``.
 
     Returns:
-        ``{campaign_id, stopped, status, note}`` or ``{error}``.
+        ``{campaign_id, stopped, status, note}``, or ``{error}`` naming why the stop was
+        refused.
     """
     client = service_access.require_service()
     res = client.stop(campaign_id)
-    return {"campaign_id": campaign_id, "stopped": res.ok,
+    if not res.ok:
+        return {"error": res.message or f"stopping {campaign_id} was refused"}
+    return {"campaign_id": campaign_id, "stopped": True,
             "status": "stopping", "note": res.message}
 
 
@@ -675,14 +680,17 @@ def stop_job(campaign_id: str, job_name: str, reason: str = "") -> dict:
         reason: Why — the only record explaining the kill later.
 
     Returns:
-        ``{campaign_id, job_name, stopped, note}`` or ``{error}``.
+        ``{campaign_id, job_name, stopped, note}``, or ``{error}`` naming why the kill was
+        refused.
     """
     from robovast.mcp_server.client_text import unescape_client_text
     client = service_access.require_service()
     res = client.stop_job(campaign_id, job_name,
                           unescape_client_text(reason) or None, "mcp")
+    if not res.ok:
+        return {"error": res.message or f"stopping job {job_name} was refused"}
     return {"campaign_id": campaign_id, "job_name": job_name,
-            "stopped": res.ok, "note": res.message}
+            "stopped": True, "note": res.message}
 
 
 def get_resource_usage() -> dict:
@@ -712,30 +720,15 @@ def get_resource_usage() -> dict:
     return resource_usage_report(client)
 
 
-def _build_wait_next_step(build_id: str, builds: dict | None, cached: bool,
-                          cached_builds: dict | None = None) -> str:
+def _build_wait_next_step(builds: dict, cached_builds: dict) -> str:
     """The literal command to run next, ids already filled in — as ``_wait_next_step``.
 
-    A build that hands back only ids offered nothing but "poll this" prose, which is the
-    same defect that seam fixes for campaigns: the operation returns while its work runs
-    on, and nothing waits for it.
-
-    Waits on exactly the builds that are **not** cache hits. Previously it waited on all of
-    them or none, and "none" was chosen from one container's ``cached`` flag: a project whose
-    scenario image was cached and whose ``sut`` image was still building was told "nothing to
-    wait for", and the caller went straight on to a container whose image did not exist yet.
-    That is the reported bug this line is the other half of.
-
-    Everything cached needs no wait at all, and names both destinations: which of them the
-    caller wanted is not knowable from here.
+    Waits on exactly the builds that are not cache hits, judged per container: one
+    container's cache hit says nothing about another's. With every image cached there is
+    nothing to wait for, and the step names both destinations, since which one the caller
+    wanted is not knowable from here.
     """
-    per_container = cached_builds or {}
-    if per_container:
-        ids = [bid for name, bid in (builds or {}).items() if not per_container.get(name)]
-    else:
-        # An older service that reports no per-container verdicts: wait on everything rather
-        # than trusting one aggregate flag, which is what went wrong.
-        ids = [] if cached else (list((builds or {}).values()) or [build_id])
+    ids = [bid for name, bid in builds.items() if not cached_builds.get(name)]
     if not ids:
         return ("every image is built — start_campaign(...) to run it, or "
                 "exec_in_container(...) to look inside it")
@@ -801,11 +794,8 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
         workspace_id=workspace_id, config_path=config_path,
         container=container or None))
     return {"build_id": ref.build_id, "tag": ref.tag, "cached": ref.cached,
-            "builds": ref.builds,
-            "cached_builds": getattr(ref, "cached_builds", {}) or {},
-            "next_step": _build_wait_next_step(
-                ref.build_id, ref.builds, ref.cached,
-                getattr(ref, "cached_builds", None))}
+            "builds": ref.builds, "cached_builds": ref.cached_builds,
+            "next_step": _build_wait_next_step(ref.builds, ref.cached_builds)}
 
 
 def get_image_build_status(build_id: str) -> dict:
