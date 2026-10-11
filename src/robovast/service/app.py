@@ -1124,8 +1124,14 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             how_to_change=settings_report.how_to_change())
 
     @app.get(Routes.ADMIN_EVENTS, response_model=ServiceEvents, tags=["admin"])
-    def get_service_events(since: int = 0, limit: int = 200) -> ServiceEvents:
+    def get_service_events(since: Optional[int] = None, limit: int = 200,
+                           newest: bool = False) -> ServiceEvents:
         """What this service did, from cursor *since* -- durable across restarts.
+
+        ``newest=true`` answers the newest *limit* events instead, in the same order and with
+        the same ``next_seq``: what a reader opening the record wants, where a reader holding a
+        cursor resumes from it. The two are exclusive, so a request naming both is refused
+        rather than having one of them ignored.
 
         Its own cursor-keyed route rather than a field on a polled payload, per the tiers in
         ``docs/http_api.rst``: this grows, and the campaign list is re-sent once a second for
@@ -1134,7 +1140,13 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         Not the same thing as ``/admin/log``, which is this process's recent stderr and dies
         with it. The events worth keeping are the ones a restart destroys.
         """
-        rows = _events.read(since=since, limit=limit)
+        if newest and since is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="since and newest=true are exclusive: newest reads the end of the "
+                       "record, since resumes from a cursor")
+        since = since or 0
+        rows = _events.latest(limit=limit) if newest else _events.read(since=since, limit=limit)
         return ServiceEvents(
             events=[ServiceEvent(seq=e.seq, at=e.at, kind=e.kind, severity=e.severity,
                                  actor=e.actor, subject_type=e.subject_type,
@@ -2116,7 +2128,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     # catch-all mount. Cluster-transparent: dispatch resolves the campaign dir via
     # ``impl.campaign_dir``, which is the campaign itself.
     from robovast.service.endpoint_plugin import (  # pylint: disable=import-outside-toplevel
-        RunDataContext, load_service_endpoints)
+        RunDataContext, core_campaign_segments, load_service_endpoints)
 
     def _make_endpoint_route(endpoint):
         def route(campaign_id: str, request: Request):
@@ -2127,7 +2139,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             return _guard(lambda: endpoint.handle(ctx))
         return route
 
-    for _name, _endpoint in load_service_endpoints().items():
+    for _name, _endpoint in load_service_endpoints(core_campaign_segments(app.routes)).items():
         # ``_name`` may contain '/' (namespacing, e.g. "nav/costmap") → a nested path.
         app.add_api_route(
             f"/campaigns/{{campaign_id}}/{_name}",
@@ -2182,8 +2194,8 @@ def _build_mcp_app(impl: RobovastInterface):
 
     *impl* is handed to the tool layer so a mounted MCP calls the implementation
     **directly** instead of going out over loopback HTTP and back into this same
-    process — which was a wasted round trip per tool call and, once a token was
-    required, a process authenticating to itself.
+    process, which would cost a round trip per tool call and a process authenticating
+    to itself.
     """
     from robovast.mcp_server.server import create_server  # pylint: disable=import-outside-toplevel
     from robovast.mcp_server.service_access import \
