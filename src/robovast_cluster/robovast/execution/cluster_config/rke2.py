@@ -66,7 +66,7 @@ kubectl apply -f robovast-manifest.yaml
 ### 2. Wait for the pod to be ready
 
 ```bash
-kubectl wait --for=condition=ready pod/robovast -n default --timeout=60s
+kubectl rollout status deployment/robovast -n default --timeout=60s
 ```
 
 The registry answers on `/v2` of the service's published host; the index on port 5432 of

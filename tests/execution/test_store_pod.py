@@ -45,6 +45,21 @@ def test_every_provider_deploys_the_same_pod():
     assert pod["spec"]["nodeSelector"] == {"n": "1"}
 
 
+def test_every_providers_readme_waits_on_the_deployment(tmp_path):
+    """The pod a Deployment runs has a generated name, so a manual setup waits on the rollout."""
+    from robovast.execution.cluster_config import azure, gcp, minikube, rke2
+
+    for cls in (rke2.Rke2ClusterConfig, minikube.MinikubeClusterConfig,
+                azure.AzureClusterConfig, gcp.GcpClusterConfig):
+        out = tmp_path / cls.__name__
+        out.mkdir()
+        cls().prepare_setup_cluster(str(out))
+        readme = "".join(p.read_text() for p in out.glob("README*.md"))
+
+        assert f"rollout status deployment/{store_pod.STORE_DEPLOYMENT_NAME}" in readme, cls
+        assert f"pod/{store_pod.STORE_DEPLOYMENT_NAME} " not in readme, cls
+
+
 def test_the_pod_carries_the_registry_and_the_index_and_nothing_else():
     """Campaigns are on the service's results volume; nothing here holds them."""
     docs = store_pod.attach_infrastructure([], "robotics")
