@@ -563,6 +563,118 @@ def test_a_batch_whose_every_job_was_dropped_still_fails(monkeypatch, tmp_path):
         runner.run_batch_in_pod(str(tmp_path), _TOKEN)
 
 
+# --- A run pod stuck behind an OOM-killed init step is a pod that cannot start -------
+#
+# The kubelet records a one-shot init container that ended OOMKilled, then neither starts
+# the next container nor fails the pod: it stays Pending with no event and its Job reads
+# active. Read through the real pod list, not a patched reason, so the shared detector is
+# what is under test.
+
+def _init_status(name, *, oom):
+    term = types.SimpleNamespace(reason="OOMKilled", exit_code=0) if oom else None
+    return types.SimpleNamespace(
+        name=name, restart_count=0, last_state=None,
+        state=types.SimpleNamespace(waiting=None, running=None, terminated=term))
+
+
+def _run_pod(job_name, *, oom_in, sidecar_oom=False):
+    """A Pending scenario pod: one-shot ``fetch-inputs``, then the native sidecar ``sim``."""
+    init_specs = [types.SimpleNamespace(name="fetch-inputs", restart_policy=None),
+                  types.SimpleNamespace(name="sim", restart_policy="Always")]
+    statuses = [_init_status("fetch-inputs", oom=oom_in == "fetch-inputs"),
+                _init_status("sim", oom=sidecar_oom)]
+    return types.SimpleNamespace(
+        metadata=types.SimpleNamespace(name=f"{job_name}-pod", namespace="ns",
+                                       labels={"job-name": job_name}),
+        spec=types.SimpleNamespace(node_name="a-node", init_containers=init_specs,
+                                   containers=[types.SimpleNamespace(name="scenario")]),
+        status=types.SimpleNamespace(phase="Pending", init_container_statuses=statuses,
+                                     container_statuses=None, conditions=None,
+                                     start_time=None, reason=None))
+
+
+class _PodListCore(_FakeCore):
+    def __init__(self, pods):
+        super().__init__()
+        self.pods = pods
+
+    def list_namespaced_pod(self, namespace, label_selector=None, **_kw):
+        return types.SimpleNamespace(items=list(self.pods))
+
+
+def _wedged_runner(monkeypatch, tmp_path, jobs, pods, *, blocked_grace=0.0):
+    _no_config_preparation(monkeypatch)
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend.restarted_job_forensics",
+        lambda core, ns, label, job_names=None: {})
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend._short_job_name",
+        lambda campaign, tag, index: f"rrroqs-x-{index}")
+    runner = _runner_for_batch_test([{"name": "cfgA"}])
+    runner.k8s_client = _PodListCore(pods)
+    runner._build_jobs = lambda: jobs
+    runner.create_job_manifest = lambda job, total, node_figures=None: {
+        "metadata": {"name": f"rrroqs-x-{job.index}"}}
+    runner._BLOCKED_GRACE_SECONDS = blocked_grace
+    runner._CONTENDED_GRACE_SECONDS = 900.0
+    names = [f"rrroqs-x-{j.index}" for j in jobs]
+    polls = [names, []]
+    runner.get_remaining_jobs = lambda _names: polls.pop(0) if polls else []
+    return runner
+
+
+def test_a_run_pod_wedged_behind_an_oom_killed_fetch_inputs_is_dropped_naming_it(
+        monkeypatch, tmp_path):
+    import json
+
+    runner = _wedged_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
+        [_run_pod("rrroqs-x-0", oom_in="fetch-inputs")])
+
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)  # a part of the batch: must NOT raise
+
+    assert runner.k8s_batch_client.deleted == ["rrroqs-x-0"]
+    entry, = json.loads((tmp_path / "_execution" / "interventions.json").read_text())
+    assert entry["kind"] == "invalid"
+    assert entry["runs"] == ["cfgA/0"]
+    assert "never started" in entry["detail"]
+    assert "OOMKilled: init container fetch-inputs" in entry["detail"]
+
+
+def test_a_wedged_run_pod_is_left_alone_inside_its_grace(monkeypatch, tmp_path):
+    runner = _wedged_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
+        [_run_pod("rrroqs-x-0", oom_in="fetch-inputs")], blocked_grace=900.0)
+
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+
+    assert runner.k8s_batch_client.deleted == []
+
+
+def test_a_whole_batch_wedged_behind_fetch_inputs_fails_naming_the_step(monkeypatch,
+                                                                       tmp_path):
+    runner = _wedged_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
+        [_run_pod("rrroqs-x-0", oom_in="fetch-inputs"),
+         _run_pod("rrroqs-x-1", oom_in="fetch-inputs")])
+
+    with pytest.raises(CampaignConfigError, match="init container fetch-inputs"):
+        runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+
+
+def test_an_oom_killed_native_sidecar_is_not_a_wedged_init_step(monkeypatch, tmp_path):
+    """The kubelet restarts a ``restartPolicy: Always`` init container; its death is a
+    restart, judged elsewhere, not a pod that cannot start."""
+    from robovast.execution.cluster_execution.cluster_execution import pod_block_reason
+
+    pod = _run_pod("rrroqs-x-0", oom_in=None, sidecar_oom=True)
+    assert pod_block_reason(pod) is None
+
+    runner = _wedged_runner(monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")], [pod])
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+    assert runner.k8s_batch_client.deleted == []
+
+
 # --- Every container says which image bytes it wants, and how hard to look -----------
 #
 # Kubernetes defaults imagePullPolicy to IfNotPresent -- except for a `:latest` tag, where

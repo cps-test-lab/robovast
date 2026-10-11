@@ -3327,9 +3327,9 @@ class BatchJobRunner:
                             f"runs the same images with the same reservation, so a whole "
                             f"batch blocked points at the campaign rather than at the "
                             f"cluster: an image reason at the execution image reference "
-                            f"and its pull credentials, an Unschedulable one at a "
-                            f"reservation no node can satisfy (the message above names "
-                            f"it).")
+                            f"and its pull credentials, an OOMKilled init container at that "
+                            f"step's memory limit, an Unschedulable one at a reservation no "
+                            f"node can satisfy (the message above names it).")
                     self._drop_blocked_jobs(rnd.expired, blocked, jobs_by_name,
                                             campaign_root)
             # No grace period, deliberately: unlike a blocked pod, a restart has already
