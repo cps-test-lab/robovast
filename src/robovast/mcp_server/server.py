@@ -40,8 +40,6 @@ from .registry import load_plugins, registered_tools
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8801
 _MAX_REPR = 400  # max chars for logged values
 
 #: The robovast logger subtree whose WARNING+ records are forwarded into tool
@@ -411,19 +409,13 @@ def compose_instructions(plugins) -> str:
     return text
 
 
-def create_server(
-    host: str = DEFAULT_HOST,
-    port: int = DEFAULT_PORT,
-    debug: int = 0,
-) -> FastMCP:
+def create_server(debug: int = 0) -> FastMCP:
     """Create and configure the MCP server instance.
+
+    It binds nothing itself: ``vast serve`` mounts its HTTP app at ``/mcp``.
 
     Parameters
     ----------
-    host:
-        Host to bind when using an HTTP transport.
-    port:
-        Port to bind when using an HTTP transport.
     debug:
         Verbosity for the human-readable request/reply log at ``DEBUG`` level.
         ``0`` disables it, ``1`` logs each tool call with its arguments, and
@@ -446,9 +438,7 @@ def create_server(
     _install_argument_help(mcp)
     _install_tool_stats(mcp)
 
-    logger.info(
-        f"Started MCP server: host={host}, port={port}, debug={debug}, plugins=[{', '.join(plugin_names)}]"
-    )
+    logger.info(f"Created MCP server: debug={debug}, plugins=[{', '.join(plugin_names)}]")
 
     if debug:
         _install_debug_logging(mcp, debug)

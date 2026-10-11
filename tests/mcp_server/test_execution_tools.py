@@ -469,15 +469,6 @@ def test_stop_without_service_fails_loudly(no_service):
     assert "no robovast-service" in execution.stop_campaign("x")["error"]
 
 
-def _dummy_arguments(fn) -> dict:
-    """One value per required parameter, by its annotation."""
-    import inspect
-    by_type = {str: "x", int: 1, float: 1.0, bool: False}
-    return {name: by_type[param.annotation]
-            for name, param in inspect.signature(fn).parameters.items()
-            if param.default is inspect.Parameter.empty}
-
-
 def _tools_of(*modules):
     """The registered tools whose functions live in *modules*, as test parameters."""
     from tests.mcp_server.conftest import registered_tools
@@ -487,7 +478,7 @@ def _tools_of(*modules):
             yield pytest.param(tool.fn, id=f"{module}.{name}")
 
 
-@pytest.mark.parametrize("tool", [p for p in _tools_of("execution")
+@pytest.mark.parametrize("tool", [p for p in _tools_of("execution", "results_lifecycle")
                                   if p.id != "execution.get_campaign_log"])
 def test_every_control_tool_refuses_with_the_one_no_service_sentence(no_service, tool):
     """The server instructions promise that every control tool says so when no service
@@ -498,7 +489,7 @@ def test_every_control_tool_refuses_with_the_one_no_service_sentence(no_service,
     ``get_campaign_log`` is the exception, and reads an archived campaign on this host.
     """
     from robovast.mcp_server.service_access import NO_SERVICE
-    assert tool(**_dummy_arguments(tool)) == {"error": NO_SERVICE}
+    assert tool(**_workspace_arguments(tool)) == {"error": NO_SERVICE}
 
 
 #: Plugins whose tools answer from this process alone: the docs, the examples, the plugin
