@@ -245,7 +245,7 @@ class ResourcesConfig(BaseModel):
     #: * The **simulator and scenario** are not under test and should split. The simulator's
     #:   peak-to-mean ratio can be an order of magnitude (a fraction of a core sustained,
     #:   several at its startup burst), so there is no honest single number: reserving the
-    #:   peak costs more than leaving the container untuned, and capping at the sustained
+    #:   peak costs more than leaving the container un-tuned, and capping at the sustained
     #:   figure clips a burst that changes nothing the robot experiences. Realtime pacing
     #:   already normalises what the simulated world looks like, and ``runs.clock_map_*``
     #:   records per run whether it kept pace -- so the guard that makes a soft limit safe
