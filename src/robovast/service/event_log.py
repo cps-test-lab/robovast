@@ -172,8 +172,22 @@ class EventLog:
         """Events after *since*, oldest first -- the shape a cursor wants.
 
         Oldest first because the caller is resuming a position, not browsing: a reader holding
-        ``seq`` asks for what came after it and appends. A newest-first view is the UI's job.
+        ``seq`` asks for what came after it and appends. A reader that wants what just
+        happened asks :meth:`latest` instead.
         """
+        return self._select("WHERE seq > ? ORDER BY seq LIMIT ?", (int(since), _bounded(limit)))
+
+    def latest(self, *, limit: int = 200) -> list:
+        """The newest *limit* events, oldest first.
+
+        The tail of the record in the order :meth:`read` returns, so a reader that starts here
+        resumes with :meth:`read` from the last ``seq`` it was given.
+        """
+        return self._select(
+            "WHERE seq IN (SELECT seq FROM event ORDER BY seq DESC LIMIT ?) ORDER BY seq",
+            (_bounded(limit),))
+
+    def _select(self, where: str, params: tuple) -> list:
         with self._lock:
             conn = self._connect()
             if conn is None:
@@ -181,8 +195,7 @@ class EventLog:
             try:
                 rows = conn.execute(
                     "SELECT seq, at, kind, severity, actor, subject_type, subject_id, message, "
-                    "payload FROM event WHERE seq > ? ORDER BY seq LIMIT ?",
-                    (int(since), max(1, min(int(limit), 1000)))).fetchall()
+                    "payload FROM event " + where, params).fetchall()
             except sqlite3.Error:
                 logger.warning("could not read the event log", exc_info=True)
                 return []
@@ -196,3 +209,8 @@ class EventLog:
                              subject_type=row[5], subject_id=row[6], message=row[7],
                              payload=payload))
         return out
+
+
+def _bounded(limit) -> int:
+    """A page size between one and a thousand rows."""
+    return max(1, min(int(limit), 1000))

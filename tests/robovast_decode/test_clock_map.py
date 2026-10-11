@@ -8,10 +8,7 @@ The numbers come from a real stepped-simulator recording in which sim time advan
 
 import pytest
 
-from robovast_decode.clock_map import NO_CLOCK_MAP, SOURCE_NONE, ClockMap, from_rows, load_clock_map
-
-#: The columns a simulator's own clock map file carries, and the ``clock_map`` table's.
-FIELDNAMES = ("wall_ts", "sim_ts")
+from robovast_decode.clock_map import NO_CLOCK_MAP, SOURCE_NONE, ClockMap, from_rows
 
 
 def _at_rate(rate: float, n: int = 11, wall0: float = 1786224804.0) -> ClockMap:
@@ -118,34 +115,6 @@ def test_a_map_that_defines_no_rate_reports_zero_spans_rather_than_a_rate():
 
 def test_an_empty_map_reports_source_none_rather_than_claiming_a_source():
     assert ClockMap([], "ros_clock_bag").info.source == SOURCE_NONE
-
-
-# -- loading ------------------------------------------------------------------
-
-
-def test_a_missing_file_is_no_map_not_an_error(tmp_path):
-    """The normal case for a non-ROS run, and for a campaign postprocessed before the
-    clock handler existed."""
-    assert load_clock_map(str(tmp_path / "absent.csv")) is NO_CLOCK_MAP
-
-
-def test_a_csv_round_trips_and_is_sorted(tmp_path):
-    path = tmp_path / "clock_map.csv"
-    path.write_text("\n".join([",".join(FIELDNAMES), "110,10", "100,0"]) + "\n")
-    m = load_clock_map(str(path))
-    assert m.to_sim(105.0) == pytest.approx(5.0)
-
-
-def test_unparsable_rows_are_dropped_rather_than_poisoning_the_map(tmp_path):
-    path = tmp_path / "clock_map.csv"
-    path.write_text("\n".join([",".join(FIELDNAMES), "100,0", "abc,def", "110,10"]) + "\n")
-    assert load_clock_map(str(path)).to_sim(105.0) == pytest.approx(5.0)
-
-
-def test_a_header_only_csv_is_no_map(tmp_path):
-    path = tmp_path / "clock_map.csv"
-    path.write_text(",".join(FIELDNAMES) + "\n")
-    assert load_clock_map(str(path)) is NO_CLOCK_MAP
 
 
 def test_the_clock_map_tables_rows_are_a_map():

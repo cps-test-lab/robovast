@@ -217,7 +217,8 @@ def _writer_options(sample: pa.Table, schema: pa.Schema, level: int) -> dict:
     plain = {name for name, how in chosen.items() if how != "dictionary"}
     split = {_leaf(schema.field(name)): "BYTE_STREAM_SPLIT"
              for name, how in chosen.items() if how == "byte_stream_split"}
-    return {"use_dictionary": [f.name for f in schema if f.name not in plain],
+    # Both options name a column by its leaf path: a list column's encoding is its values'.
+    return {"use_dictionary": [_leaf(f) for f in schema if f.name not in plain],
             "column_encoding": split or None}
 
 
