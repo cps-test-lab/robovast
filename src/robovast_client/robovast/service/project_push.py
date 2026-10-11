@@ -415,23 +415,16 @@ def sync_directory_to_workspace(client, workspace_id: str, directory, *,
     "skipped_dirs"}`` counts.
 
     Raises:
-        FileNotFoundError: *directory* does not exist. Checked rather than left to
-            ``rglob``, which yields nothing for a missing path: the sync then reported a
-            cheerful ``{"written": 0, "uploaded": 0}`` for a push that pushed nothing,
-            and with *prune* it went further and deleted every file in the workspace,
-            because "no local files" and "the path is wrong" were indistinguishable. A
-            typo was enough. This is the likeliest mistake of all against a remote
-            service, where the directory is read on the service host and a path from the
-            caller's machine is *expected* to be absent.
+        FileNotFoundError: *directory* does not exist. Checked rather than left to the
+            walk, which yields nothing for a missing path: a push that pushed nothing would
+            report success, and with *prune* delete every file in the workspace, because
+            "no local files" and "the path is wrong" would be indistinguishable.
     """
     require_not_in_use(client, workspace_id, echo=echo)
 
     root = Path(directory).resolve()
     if not root.is_dir():
-        raise FileNotFoundError(
-            f"no such directory on the service host: {root}. This path is read where "
-            "the service runs, not where you are -- if the service is remote, put the "
-            "project in a workspace instead (vast workspace init <dir>).")
+        raise FileNotFoundError(f"no such directory to push: {root}")
     stats = {"written": 0, "uploaded": 0, "pruned": 0}
     local_rels: set[str] = set()
     files, skipped = collect_inputs(root, skip_dirs=skip_dirs,
