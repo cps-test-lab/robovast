@@ -2661,7 +2661,7 @@ edit and no frontend change** (the run view already reaches any such endpoint vi
 core-coupling for a self-contained analysis package: it ships a **postprocessing** plugin (writes a
 run-level data file, which is a table), a **service endpoint** (serves it), and a **panel**
 (renders it) — all via entry points; a table the decoder already builds needs only the last two. The mechanism mirrors the MCP-plugin loader: a ``ServiceEndpoint`` ``Protocol``
-(``name`` + ``handle(ctx)``) and ``load_service_endpoints()``; ``build_app`` registers one route per
+(``name`` + ``handle(ctx)``) and ``load_service_endpoints(reserved)``; ``build_app`` registers one route per
 plugin (before the SPA mount) and dispatches to ``handle`` with a **``RunDataContext``** facade —
 ``ctx.open_db()`` (a read-only connection to this campaign's tables, from the public
 ``data_query.open_data_db``, which builds what a statement names),
@@ -2670,7 +2670,7 @@ plugin (before the SPA mount) and dispatches to ``handle`` with a **``RunDataCon
 resolves the campaign dir through the public ``impl.campaign_dir(campaign_id)`` seam, which is
 a directory under the results root — so a plugin endpoint works on every deployment
 unchanged. Endpoint names should be **package-namespaced** (``nav/foo``) to avoid
-collisions; core route names are reserved (``RESERVED_CAMPAIGN_ENDPOINTS``). **Scope:** run-scoped
+collisions; every first segment a core ``/campaigns/{id}/`` route owns is reserved, read off the app's own routes (``core_campaign_segments``), and a plugin under one is skipped with a warning. **Scope:** run-scoped
 GET→JSON only — *binary/large per-run artifacts* are already served by the file address space,
 ``GET /results/<campaign>/<config>/<run>/<path>`` (``DataProvider.runFileUrl``), and
 *producing* data is a postprocessing plugin's job. **Reference:** ``robovast_nav``'s

@@ -69,3 +69,19 @@ def test_another_image_builds_again(project):
 def test_an_unreadable_digest_fails_the_build(project):
     with pytest.raises(RuntimeError, match="no digest"):
         _build(project, None)
+
+
+@pytest.mark.parametrize("build", ["artifacts", "variations"])
+def test_a_missing_campaign_directory_is_refused_by_name(tmp_path, build):
+    """Not answered with ``None``, which its caller unpacked into a bare ``TypeError``."""
+    from robovast_nav.floorplan_generation import generate_floorplan_variations
+
+    runner = _Runner(tmp_path / "workspace", "example.org/scenery_builder@sha256:aaaa")
+    missing = str(tmp_path / "no-such-project")
+    with pytest.raises(FileNotFoundError, match="no-such-project"):
+        if build == "artifacts":
+            generate_floorplan_artifacts(missing, ["rooms.fpm"], str(tmp_path / "out"),
+                                         lambda _msg: None, runner)
+        else:
+            generate_floorplan_variations(missing, ["rooms.variation"], 1, 0,
+                                          str(tmp_path / "out"), lambda _msg: None, runner)
