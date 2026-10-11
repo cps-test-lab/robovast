@@ -56,6 +56,7 @@ The dataset serves as a comprehensive validation tool for navigation stacks such
    configuration
    images
    simulators
+   streaming_a_backend
    example
    variation
    cluster_execution
@@ -68,6 +69,5 @@ The dataset serves as a comprehensive validation tool for navigation stacks such
    http_api
    deployment
    web_ui
-   run_capture
    developer_guide
    future_work

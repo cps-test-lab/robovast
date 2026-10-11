@@ -23,8 +23,18 @@ class _FakeClusterConfig:
         return types.SimpleNamespace(pull_secret_name="")
 
 
+def _pinned(ref):
+    """What the stubbed registry fixes *ref* to: its repository, at one fixed digest.
+
+    A ref that is a digest already is its own answer, as it is to the real resolver.
+    """
+    if "@sha256:" in ref:
+        return ref
+    return ref.rsplit(":", 1)[0] + "@sha256:" + "0" * 64
+
+
 def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast",
-            cluster_gpus=0, runtime_class=None):
+            cluster_gpus=0, runtime_class=None, sidecar_image=None):
     """Build a BatchJobRunner via for_batch with external calls stubbed.
 
     ``cluster_gpus``/``runtime_class`` stand in for the live cluster probe, which is the
@@ -56,13 +66,11 @@ def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast"
 
     monkeypatch.setattr(kubernetes_backend.client.CoreV1Api, "read_namespaced_secret",
                         _no_such_secret)
-    # And the registry, which `for_batch` dials through `_pin_image_refs`: it resolves
-    # every image ref to the digest it names right now, one HEAD each. The same
-    # fail-soft shape as the Secret read -- an unreachable registry leaves the ref as it
-    # was -- so it too cost time rather than correctness. It stayed hidden while the
-    # Secret read above was costing thirty-five seconds a test, which is a good reason
-    # to state both here rather than leave the next reader to find the second one.
-    monkeypatch.setattr(BatchJobRunner, "_resolve_digest", lambda self, ref: "")
+    # And the registry, which `for_batch` dials through `_pin_image_refs`: it fixes every
+    # image ref to the digest it names right now, one HEAD each, and refuses the campaign
+    # when it cannot. Answered here with a fixed digest per repository (`_pinned`), so the
+    # manifests under test carry what a launch writes and no test waits on a socket.
+    monkeypatch.setattr(BatchJobRunner, "_resolve_digest", lambda self, ref: _pinned(ref))
     campaign_data = {
         "configs": configs or [{"name": "cfgA"}],
         "execution": execution or {},
@@ -72,7 +80,7 @@ def _runner(monkeypatch, *, execution=None, configs=None, tmp_vast="/tmp/x.vast"
     return BatchJobRunner.for_batch(
         campaign_data=campaign_data, campaign_id="camp-2026-07-17-120000",
         batch_tag="batch-0", runs=1, cluster_config=_FakeClusterConfig(),
-        namespace="ns", image="img:test", kube_context=None)
+        namespace="ns", image="img:test", kube_context=None, sidecar_image=sidecar_image)
 
 
 def _env_dict(container):
@@ -91,7 +99,7 @@ def test_base_manifest_carries_no_external_queue_label_and_has_deadline(monkeypa
     labels = r.manifest["metadata"].get("labels", {})
     assert not [k for k in labels if k.startswith("kueue.x-k8s.io/")], labels
     # Every Job is wall-clock capped so a stuck scenario is force-killed.
-    assert r.manifest["spec"]["activeDeadlineSeconds"] == 30  # per-run * runs_per_job(1)
+    assert r.manifest["spec"]["activeDeadlineSeconds"] == 30  # the declared timeout
 
 
 def test_create_job_manifest_shape(monkeypatch):
@@ -122,6 +130,21 @@ def test_create_job_manifest_shape(monkeypatch):
     # The behaviour tree is recorded unless a campaign opts out, so a cluster run is
     # explainable afterwards without anyone having remembered to ask for it.
     assert main_env["BT_LOG"] == "true"
+
+
+def test_every_data_plane_container_runs_the_campaigns_own_sidecar(monkeypatch):
+    """The service fixes the sidecar once per campaign, before its first pod and from the
+    campaign's own image project; every Job of it runs that digest in each container the
+    sidecar image serves, rather than the deployment's own."""
+    sidecar = "registry.example.com/dev/robovast-sidecar@sha256:" + "e" * 64
+    r = _runner(monkeypatch, sidecar_image=sidecar)
+    m = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
+
+    spec = m["spec"]["template"]["spec"]
+    images = {c["name"]: c for c in spec["initContainers"] + spec["containers"]}
+    for name in ("fetch-inputs", pod_upload.UPLOADER_CONTAINER, pod_upload.AGENT_CONTAINER):
+        assert images[name]["image"] == sidecar, name
+        assert images[name]["imagePullPolicy"] == "IfNotPresent", name
 
 
 def test_the_pod_is_told_which_node_it_landed_on(monkeypatch):
@@ -177,7 +200,7 @@ def test_a_sidecar_is_appended_with_its_own_image(monkeypatch):
     m = r.create_job_manifest(job, total_jobs=1)
 
     sut = _sidecar(m, "sut")
-    assert sut["image"] == "nav2:humble"
+    assert sut["image"] == _pinned("nav2:humble")
     # No command declared -> the scenario-execution server, so a scenario can drive it
     # with remote("ipc:///ipc/sut").
     assert sut["command"][-1].endswith("secondary_entrypoint.sh")
@@ -275,9 +298,38 @@ def test_the_pod_carries_one_uploader_that_waits_for_every_container(monkeypatch
     assert spec["terminationGracePeriodSeconds"] >= pod_upload.UPLOAD_TERMINATION_GRACE
 
 
+def test_the_pod_carries_a_file_agent_the_uploader_waits_for(monkeypatch):
+    """The file agent ships the growth of the run's line files while it runs; the uploader
+    waits for its marker, so the run-end tar is the pod's last delivery."""
+    r = _runner(monkeypatch, execution={"containers": {
+        "scenario": {"image": "img:test"},
+        "sut": {"image": "sut:test"},
+        "simulation": {"image": "roqsim-ros:jazzy", "command": ["roqsim", "sim", "w.yaml"]}}})
+    spec = r.create_job_manifest(r._build_jobs()[0],
+                                 total_jobs=1)["spec"]["template"]["spec"]
+
+    agent = next(c for c in spec["containers"] if c["name"] == pod_upload.AGENT_CONTAINER)
+    uploader = next(c for c in spec["containers"]
+                    if c["name"] == pod_upload.UPLOADER_CONTAINER)
+    sidecars = [sc.name for sc in r.plan.sidecars]
+    assert "restartPolicy" not in agent
+    assert agent["image"] == uploader["image"]
+    assert agent["command"] == pod_upload.agent_command(sidecars)
+    assert agent["command"][:2] == ["python3", "/config/file_agent.py"]
+    assert agent["env"] == pod_access.campaign_pod_env("ns", r.campaign)
+    assert agent["resources"] == pod_upload.AGENT_RESOURCES
+    mounts = {m["name"]: m for m in agent["volumeMounts"]}
+    assert {n: m["mountPath"] for n, m in mounts.items()} == {
+        "out": "/out", "ipc": "/ipc", "config": "/config"}
+    assert mounts["config"].get("readOnly") is True
+    assert f"WAIT_FOR=\"main {' '.join(sidecars)} {pod_upload.AGENT_CONTAINER}\"" \
+        in uploader["command"][2]
+
+
 def test_only_the_transfer_containers_carry_the_campaigns_access(monkeypatch):
-    """A pod reaches the data plane by address and scoped token, and only the two
-    containers that move bytes -- the inputs fetch and the uploader -- carry them. The
+    """A pod reaches the data plane by address and scoped token, and only the three
+    containers that move bytes -- the inputs fetch, the file agent and the uploader --
+    carry them. The
     workload containers run images that are not ours and are given nothing to reach it."""
     r = _runner(monkeypatch, execution={"containers": {
         "scenario": {"image": "img:test"},
@@ -288,7 +340,8 @@ def test_only_the_transfer_containers_carry_the_campaigns_access(monkeypatch):
     access = {pod_access.DATA_URL_ENV, pod_access.TOKEN_ENV, pod_access.CAMPAIGN_ID_ENV}
     carriers = {c["name"] for c in spec["containers"] + spec["initContainers"]
                 if access & {e["name"] for e in c.get("env", [])}}
-    assert carriers == {"fetch-inputs", pod_upload.UPLOADER_CONTAINER}
+    assert carriers == {"fetch-inputs", pod_upload.UPLOADER_CONTAINER,
+                        pod_upload.AGENT_CONTAINER}
 
 
 # -- GPUs ---------------------------------------------------------------------------
@@ -575,14 +628,14 @@ def test_only_native_sidecars_can_be_restarted(monkeypatch):
 def test_the_main_container_is_named_as_the_constant_says(monkeypatch):
     """`_container_role` maps this one name onto the `scenario` role; it is the single
     container name that never appears in a .vast. It is the pod's first regular container,
-    ahead of the uploader that delivers what it wrote."""
+    ahead of the uploader and the file agent that deliver what it wrote."""
     from robovast.execution.cluster_execution.manifests import MAIN_CONTAINER_NAME
 
     r = _runner(monkeypatch)
     spec = r.create_job_manifest(r._build_jobs()[0],
                                  total_jobs=1)["spec"]["template"]["spec"]
     assert [c["name"] for c in spec["containers"]] == [
-        MAIN_CONTAINER_NAME, pod_upload.UPLOADER_CONTAINER]
+        MAIN_CONTAINER_NAME, pod_upload.UPLOADER_CONTAINER, pod_upload.AGENT_CONTAINER]
 
 def test_a_job_pod_tolerates_the_campaign_node_taint_itself(monkeypatch):
     """The pod itself must carry it, not whatever admits it.
@@ -710,11 +763,11 @@ def test_a_stepped_cells_own_world_reaches_the_container_that_runs_it(monkeypatc
         manifest = r.create_job_manifest(job, total_jobs=2)
         spec = manifest["spec"]["template"]["spec"]
         # The premise of the shape: no separate simulator container to deliver it to --
-        # the pod's other regular container only uploads what it wrote.
+        # the pod's other regular containers only deliver what it wrote.
         assert [c["name"] for c in spec["containers"]][1:] == [
-            pod_upload.UPLOADER_CONTAINER]
+            pod_upload.UPLOADER_CONTAINER, pod_upload.AGENT_CONTAINER]
         env = _env_dict(_main_of(manifest))
-        worlds[job.items[0].config_name] = env["ROQSIM_WORLD"]
+        worlds[job.config_name] = env["ROQSIM_WORLD"]
 
     assert worlds == {"depot": "/config/worlds/depot.yaml",
                       "warehouse": "/config/worlds/warehouse.yaml"}

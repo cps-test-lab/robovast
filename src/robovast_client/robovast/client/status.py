@@ -42,12 +42,11 @@ from pydantic import BaseModel, ConfigDict, Field
 class Phase(StrEnum):
     """The campaign lifecycle vocabulary carried by ``Status.phase``.
 
-    A ``StrEnum`` so members *are* their plain string value: the wire format is
-    unchanged (JSON still sees ``"finished"``), existing string comparisons keep
-    working, and set membership against raw strings does too. Prefer the group
+    A ``StrEnum`` so members *are* their plain string value: JSON sees
+    ``"finished"``, and string comparisons and set membership against raw strings
+    work. Prefer the group
     predicates (:func:`is_terminal` / :func:`is_running`) over re-listing phase
-    names at a call site — that re-listing had drifted into several divergent
-    "terminal" sets across the CLI, service, and MCP plugins.
+    names at a call site, since each re-listing is a copy free to drift.
 
     ``Status.phase`` stays typed ``str`` on purpose (the field is deliberately
     open, so a future ``stage``-like marker slots in without a schema change);
@@ -56,7 +55,7 @@ class Phase(StrEnum):
     # -- live: the campaign is still working ------------------------------
     # Ordered by when they occur: acceptance → pre-flight → image build (if any)
     # → plugin install (if any) → config-variation expansion (batch) → the run loop
-    # → finish → postprocess → share. (``importing`` is the exception: it is where a
+    # → finish → share (if any) → postprocess. (``importing`` is the exception: it is where a
     # campaign that was taken in rather than run *starts*.) ``initializing``, ``building``, ``plugin
     # install`` and ``variation`` precede ``running`` and exist so the pre-run steps
     # are observable rather than a blank "starting".
@@ -83,8 +82,8 @@ class Phase(StrEnum):
     # "live" -- ``vast campaign wait``, the busy guard, the campaign view -- treats an import
     # like any other work in progress without being told about imports.
     IMPORTING = "importing"
-    POSTPROCESSING = "postprocessing"
     SHARING = "sharing"
+    POSTPROCESSING = "postprocessing"
     # -- terminal: the campaign is over, one way or another ---------------
     FINISHED = "finished"
     FAILED = "failed"
@@ -175,6 +174,14 @@ class RunProgress(BaseModel):
     killed: int = 0
     invalid: int = 0
     outcomes_counted: bool = False
+
+
+class StepProgress(BaseModel):
+    """How far composing a ``.vast`` has got: *done* of *total* variation steps, one step per
+    variation of each configuration block. A step can expand into any number of
+    configurations, so this counts work, not configurations."""
+    done: int = 0
+    total: int = 0
 
 
 class HealthFinding(BaseModel):
@@ -286,9 +293,8 @@ class Status(BaseModel):
     # last actual advance is what separates them. See
     # ``ControllerState._stamp_progress`` for what counts as an advance.
     progress_since: float = Field(default_factory=time.time)
-    # How long ``progress_since`` may legitimately stand still: the declared job budget
-    # (``execution.timeout`` — see ``common.config.declared_job_seconds``), used as
-    # declared, because packed runs can publish their results in one burst per job.
+    # How long ``progress_since`` may legitimately stand still: the declared budget of one
+    # run (``execution.timeout`` — see ``common.config.declared_job_seconds``).
     # Carried on the status so a reader calls a run stalled against a *declared* limit
     # instead of a threshold it invented, and left on the conservative side: a missed
     # stall is recoverable, a false accusation against a healthy long run is not.
@@ -329,6 +335,9 @@ class Status(BaseModel):
     # reconstructed from disk -- the same caveat ``batch_since`` carries.
     search_since: Optional[float] = None
     stage: Optional[str] = None
+    # Composition's step counter while ``phase == "variation"``; ``None`` until the first step
+    # is counted, and for a campaign whose composition was served from the cache.
+    variation: Optional[StepProgress] = None
     mode: Optional[str] = None
     campaign_id: Optional[str] = None
     batch: int = 0                       # current batch index (0-based)

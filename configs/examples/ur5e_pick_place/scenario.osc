@@ -27,8 +27,9 @@ scenario ur5e_pick_place:
 
     do serial:
         # The simulator publishes /clock, and everything downstream is on sim time -- move_group
-        # timestamps trajectories, bag_record(use_sim_time: true) stamps messages. Starting the
-        # stack before the clock exists gives every node a zero time it never recovers from.
+        # timestamps trajectories, the run's bag (recording.ros2.use_sim_time in the .vast) stamps
+        # messages. Starting the stack before the clock exists gives every node a zero time it
+        # never recovers from.
         #
         # BOUNDED: an unbounded wait turns a dead simulator into a hung trial that burns the job's
         # whole timeout and reports nothing, instead of a failed one that says why.
@@ -49,18 +50,11 @@ scenario ur5e_pick_place:
                 remote('ipc:///ipc/sut')
 
             serial:
-                # /tf carries the box's ground-truth pose, which is what the verdict reads;
-                # /detections is what the trial actually planned against, so the bag holds both
-                # what was believed and what was true.
-                # No trailing comma after the last element: OSC rejects one, and the parse error it
-                # produces points at the modifiers on the next line rather than at the list.
-                bag_record([
-                    '/clock',
-                    '/tf',
-                    '/tf_static',
-                    '/joint_states',
-                    '/detections'
-                ], use_sim_time: true, timestamp_suffix: false)
+                # The run's bag is RoboVAST's, recorded from before this scenario starts; the
+                # .vast's `recording:` block says what it holds. /tf carries the box's
+                # ground-truth pose, which is what the verdict reads; /detections is what the
+                # trial actually planned against, so the bag holds both what was believed and
+                # what was true.
 
                 # The trial. `--out` is REQUIRED by the script rather than defaulted, and it is
                 # given the run's own output directory: a hardcoded /out is how a campaign silently

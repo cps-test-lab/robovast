@@ -117,3 +117,17 @@ def test_get_image_build_log_streams(monkeypatch):
     out = cc.get_image_build_log("b1")
     assert out["text"] == "building...\n"
     assert out["eof"] is True
+
+
+def test_get_image_build_log_summarizes_without_its_default_tail(monkeypatch):
+    """``tail`` defaults to 200 for a read of lines only; a summary asks for none."""
+    class _Client:
+        def get_image_build_log(self, build_id, offset):
+            return SimpleNamespace(text="#5 1.2MB / 3MB\n#5 2.4MB / 3MB\n", next_offset=30,
+                                   eof=True)
+
+    monkeypatch.setattr(service_access, "service_client", lambda: _Client())
+    out = cc.get_image_build_log("b1", summarize=True)
+    assert "error" not in out and out["patterns_total"] >= 1
+    refused = cc.get_image_build_log("b1", summarize=True, tail=50)
+    assert "tail=50 cannot be combined with summarize" in refused["error"]

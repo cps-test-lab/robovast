@@ -99,7 +99,7 @@ kwargs to an action (``logger``, ``output_dir``, ``tick_period``), so an action 
 Runs remotely                               Stays in the scenario container
 ==========================================  ==================================================
 ``ros_launch``, ``ros_run``,                every ROS action — ``check_data``,
-``run_process``, ``log``                    ``service_call``, ``bag_record``, ``init_nav2``,
+``run_process``, ``log``                    ``service_call``, ``init_nav2``,
                                             ``nav_to_pose``, ``assert_*`` — and anything
                                             touching the simulation
 ==========================================  ==================================================
@@ -140,23 +140,47 @@ Hooks, all optional except as noted:
 ``CONFIG_CLASS`` / ``SUPPORTED_SHAPES``
    A pydantic model for the backend's own keys, and which shapes it serves. An
    unsupported shape is refused at validation time, naming what *is* supported.
+``DOTTED_ROOT``
+   The backend key a bare dotted ``sim:`` path lands under, or ``None`` for no short form
+   (:ref:`varying the simulator <sim-channel>`).
+``ASSET_ENTRY_POINT_GROUPS``
+   Entry-point groups whose providers supply the simulator's assets: which of the
+   distributions a run records (version, and commit for a VCS install) its results name as
+   asset providers.
+``sim_document(cfg, execution)``
+   The part of ``cfg`` that travels as a file rather than on the command line — a nested
+   override tree, written per job and read by whatever ``containers`` puts in argv. ``None``
+   (the default) means everything the backend needs is already on argv.
 ``containers(cfg, execution)``
    Container blocks it contributes, merged **underneath** what the campaign declared, so
    an author always wins.
 ``simulation_ref(cfg, execution)``
    ``module:Class`` of the ``SimulationInterface`` — stepped shape only, and never called
    otherwise.
-``env(cfg, execution)``
+``env(cfg, execution, recording)``
    Environment the simulator reads. A campaign's own ``execution.env`` wins over it.
+   ``recording`` is the campaign's :ref:`recording: <recording-config>` block, or ``None`` for
+   an absent one, which means "record everything"; a backend that records reads its own
+   section of it. roqsim reads ``recording.roqsim`` and asks for its recording with
+   ``ROQSIM_RECORD`` (``roqsim_bag/roqsim.mcap``, relative to the run directory), the capture
+   rate with ``ROQSIM_CAPTURE_FPS`` and the tracks with ``ROQSIM_RECORD_TRACKS`` /
+   ``ROQSIM_RECORD_EXCLUDE`` (comma-separated patterns) -- each only when the block sets it.
 ``input_files(cfg, execution, vast_dir)``
    What must travel with the campaign. Return a ``ContainerSpec`` when working it out
    needs the simulator itself. ``vast_dir`` is the campaign directory the paths in ``cfg``
    are relative to: a backend that reads one of those files resolves it against this, never
    against the working directory, which differs between the CLI, a service worker and the
    isolated compose subprocess.
-``produces_run_capture(cfg, execution)``
-   Whether runs write the capture a ``scene3d`` panel replays.
-``scene_export(cfg, execution, *, world, max_tex_dim, overrides)``
+``records_scene_state(cfg, execution)``
+   Whether runs record the simulator state a ``scene3d`` panel replays -- the recording the
+   decoder reads into ``sim_poses``, ``joint_states``, ``sim_recording`` and ``sim_entities``.
+``default_panels(cfg, execution)``
+   Run-view panels this backend contributes, as ``{<type>: <props>}`` entries — the panel
+   that replays a recorded scene state, for a backend that records one; ``[]`` otherwise.
+``describe_query(cfg, execution, *, entities, targets)``
+   A query describing what this world *provides* — the addresses a campaign's overrides may
+   name — or ``None``; :ref:`what the check does with it <sim-channel>`.
+``scene_export(cfg, execution, *, world, max_tex_dim, overrides, overrides_file=None)``
    Command that compiles a world into a web scene descriptor, or ``None``.
 ``run_state_file(cfg, execution)``
    The run-relative recording a screenshot is rendered from, or ``None``. Whatever the
@@ -164,6 +188,38 @@ Hooks, all optional except as noted:
    lookup cannot drift apart.
 ``simulation_screenshot(cfg, execution, *, state, at, view, focus, camera, size)``
    Command that re-renders **one moment of one run** from a chosen viewpoint, or ``None``.
+``health_command(cfg, execution, *, run_dir)``
+   Command that prints, as JSON, whether a **live** run is healthy and where everything is,
+   or ``None``. A fixed read the service polls while somebody watches the campaign
+   (:ref:`what a running campaign says is wrong <mcp-health-findings>`).
+``tap_command(cfg, execution, *, run_dir, selection)``
+   Command whose stdout is a live run's present state, line by line, or ``None`` -- the
+   **tap**, below. Argv rather than a string, and the only hook with a default that is not
+   "nothing": in the ROS shape the base class answers ``ros2 topic echo`` of the selected
+   topics (``ros2 topic list`` for none), since the simulation container speaks ROS whatever
+   the simulator is; the stepped shape answers ``None``.
+
+Asking a live run: the health read and the tap
+``````````````````````````````````````````````
+
+Everything else on this page is read from what a run *wrote*. Two hooks ask the run itself,
+and both run inside its simulation container through the service's exec runner
+(``pods/exec``), so nothing is deployed for them. ``health_command`` is the service's own
+read: fixed, cheap to poll, answered as JSON ``findings`` that ride on the campaign's status.
+``tap_command`` is the reader's: the service starts it on demand (``tap_job`` on every
+surface -- ``GET /campaigns/{id}/job-tap``, ``vast campaign tap``, the MCP tool, the run
+view's **Now** toggle), relays its stdout for a bounded time and ends it. Because a process
+the service started is running in the simulator's container for as long as the tap lasts, a
+tap is recorded against the run as a probe, exactly as ``exec_in_job`` is; one tap per job at
+a time.
+
+``selection`` is whatever the backend's command takes -- topic names for the ROS answer, with
+``csv`` as a flag for one value per line. ``None`` is a normal answer and is reported as "no
+tap for" the backend, never as a tap that printed nothing: roqsim gives it in both shapes,
+because its CLI has no following command and its recording is chunk-flushed every wall
+second, so the live view the service already follows is within a second of the simulator.
+A backend with a tool of its own that follows the run names it here, as argv, and reads its
+records under ``run_dir``.
 
 Showing a run: two questions, two hooks
 ```````````````````````````````````````
@@ -189,6 +245,84 @@ more; it documents that itself.
 
 Quote every value: the return is a *string*, and a vector like ``lookat=1,2,0`` has to survive
 ``shlex.split`` as one word.
+
+.. _scene-descriptor:
+
+The scene descriptor
+````````````````````
+
+The :ref:`run view <run-view>`'s 3D panel replays a run from **two artifacts**, and from nothing
+else -- no ROS, no rosbag, no postprocessing:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 40 20 28
+
+   * - artifact
+     - what it carries
+     - when
+     - who can produce it
+   * - **scene descriptor**
+     - geometry: a body tree with rest transforms, named joints, geoms, materials, textures,
+       skins, an initial camera
+     - static, per world
+     - **any tool that can read the world** -- it need not be the simulator that ran
+   * - **recording**
+     - motion: the simulator's own recording, read back as the ``sim_poses``,
+       ``joint_states``, ``sim_recording`` and ``sim_entities`` tables
+     - per run
+     - **only the simulator that ran**
+
+That split is what lets a second simulator be admitted. Geometry is world-authored, so it can be
+compiled offline from an SDF, a USD, an MJCF or a floorplan by whatever tool reads that format;
+only the motion is a property of the execution, and its format is the simulator's own
+(``records_scene_state`` says whether it writes one). Producing them is an **optional
+capability**: a simulator that emits both gets a replay; one that does not simply has no
+``scene3d`` panel, exactly as a Gazebo campaign has none. The dependency fails by *absence*, which
+is visible, rather than through a fallback that renders something misleading.
+
+The descriptor is ``scene.json`` + ``scene.bin`` + one ``tex_<i>.png`` per image texture, in one
+directory: the loader fetches the binary and the textures as **relative siblings** of
+``scene.json``, which is why the file address space preserves path segments. The format is
+defined by its producer, ``roqsim/export_web.py``, and its full field list lives there. Three notes
+matter to a *second* producer:
+
+* It is a plain scene graph -- bodies with rest transforms and a parent index, named joints
+  carrying ``type``/``axis``/``pos``, geoms as primitives or indexed meshes -- and nothing in it
+  is MuJoCo-specific in substance.
+* ``joints[].qposadr`` is **optional and legacy**. It names an index into MuJoCo's state vector,
+  and the reference loader has never read it: animation is addressed entirely by joint *name*.
+  A new producer should omit it.
+* It states what it is with ``format: "roqsim.web_scene"`` and a ``version``. The panel refuses
+  another format or a version newer than it reads, naming both, so a descriptor written to a later
+  contract is an error rather than a plausible drawing; an unstamped descriptor is version 1.
+
+**Names are the whole addressing scheme.** A recording drives the scene by body name
+(``sim_poses``) and by joint name (``joint_states``), in the joint's own unit; no index crosses
+the interface, so a producer resolves names from its own model. The test to apply to any field
+is "could this be written from ``/joint_states`` and ``/tf``?" -- with the caveat that poses must
+be in the scene's frame, not a map frame: a nav stack's ``base_link`` lives in a *map* frame that
+can be meters from the world origin, and no reader can tell the two apart from the numbers.
+
+**When it is produced.** Not by the run: a descriptor is a function of the world, so the service
+compiles it on first view -- inside the campaign's own pinned image, through ``scene_export`` --
+and caches it by **world identity**: the simulator image's digest plus the ``world`` and
+``overrides`` the run's ``sim_recording`` row carries. The digest is what settles what
+``overrides`` means -- the convention is the simulator's, and the simulator that wrote the
+recording is the one in that image -- so the row's ``format_version`` is reported but not keyed.
+Every run and every campaign that used the same world shares the entry, and so does a
+workspace's Config tab, which compiles the world before anything has run. That is why the recording's world
+identity is a contract and not decoration: it is the input to obtaining geometry, and a producer
+must record the overrides it actually built with -- ``{}`` when none were applied, and absent
+only when it genuinely did not record them, which the panel reports rather than reading as
+none. How the service serves it: :ref:`its delivery section <scene-descriptor-delivery>`.
+
+**Adding a producer.** For a simulator that is not roqsim, either emit the descriptor directly
+from ``scene_export``, or compile it offline from the world the simulator ran -- for an SDF
+world, ``roqsim scenes sdf-to-scene`` → ``scene-to-mjcf`` → ``roqsim export web`` already does
+this, and a campaign can run it as an ``execution.generate`` step so the descriptor is a frozen
+campaign input with a freshness manifest. The motion is the simulator's own recording, decoded
+into the tables above (:doc:`results_processing`).
 
 Two rules that are not negotiable
 `````````````````````````````````
@@ -235,9 +369,10 @@ family member, which is the only one carrying roqsim *and* the RoboVAST contract
 (the ``org.robovast.compat-version`` label, scenario-execution, the ``/out`` mount):
 
 - ``mode: ros2`` — a ``simulation`` container of its own, running
-  ``roqsim sim <config> --ros --headless``. Nothing a campaign owns contains roqsim, so the
-  GL packages, the ``mujoco`` pin and the ``roqsim`` package list leave the ``.vast``
-  entirely.
+  ``roqsim sim <config> --headless --pacing realtime``, plus ``--override`` when the
+  configuration has overrides (:ref:`below <sim-channel>`). Nothing a campaign owns contains
+  roqsim, so the GL packages, the ``mujoco`` pin and the ``roqsim`` package list leave the
+  ``.vast`` entirely.
 - ``mode: base`` — the same image as the ``scenario`` container, because a stepped
   simulator shares the scenario's process.
 
@@ -246,10 +381,17 @@ runner rejects it, and no workflow publishes that tag in any case. The family me
 by ``container/robovast/build.sh --image roqsim``; which registry it is pulled from is
 ``ROBOVAST_PROJECT`` (:doc:`images`), never a ``.vast`` field.
 
+It has no tap (``tap_command`` answers ``None`` in both shapes): the recording every run
+writes is chunk-flushed every wall second and the service follows it as it grows, so the run
+view, ``pose_track_view`` and ``get_job_state`` are already within a second of the
+simulator, and ``roqsim state`` reads a moment or a range of that recording rather than
+following anything.
+
 Its own keys are ``config`` (a world YAML beside the ``.vast``, or a package ref such as
-``roqsim_scenes:depot``) and ``adapter``. It is ``config`` rather than ``world`` because the
-file is roqsim's whole configuration — physics, plugins, robot, sensors and its
-``extends`` chain — and "world" understates what a campaign selects.
+``roqsim_scenes:depot``), ``overrides`` (what the ``sim:`` channel below writes into) and
+``adapter`` (the stepped shape's ``SimulationInterface``). It is ``config`` rather than
+``world`` because the file is roqsim's whole configuration — physics, plugins, robot, sensors
+and its ``extends`` chain — and "world" understates what a campaign selects.
 
 .. _sim-channel:
 
@@ -274,6 +416,7 @@ A ``.vast`` reaches those keys through the ``sim:`` channel -- the sibling of ``
          values: [world/depot.yaml, world/warehouse.yaml]
      - ParameterVariationDistributionUniform:
          sim: components.floorplan.floor.friction  # or vary a value inside it
+         num_variations: 5
          min: 0.6
          max: 1.4
      - ParameterVariationList:
@@ -425,12 +568,6 @@ its containers after the spec's image. Both were once missing here and the query
 run at all: it asked for an image called ``family``, and once past that it was given a world
 path relative to a directory the container did not have.
 
-**Packing groups by the resolved block.** A job's containers start once and are not restarted
-between packed work items, so one job runs one compiled model; ``runs_per_job > 1`` therefore
-chunks *within* work items that agree on their simulator settings. A campaign whose
-configurations share a world -- every campaign before this existed -- packs exactly as it
-always did.
-
 **Transport is the world's, not the campaign's.** RoboVAST passes no middleware flags at
 all: which topics a world speaks, under which namespace (``ros2_bridge``, whose config
 carries ``tf_namespace``), and whether it serves the ``simulation_interfaces`` control
@@ -447,10 +584,11 @@ Building the image from your own roqsim
 ```````````````````````````````````````
 
 The Dockerfile clones roqsim at a ref, so what reaches the image is roqsim as *pushed*. Push
-the work to a branch and name it::
+the work to a branch and name it in the environment — the script resolves it to a commit
+before building, so the image is keyed on what was actually fetched::
 
-    container/robovast/build.sh --image roqsim \
-        --project docker.io/<you> --push -- --build-arg ROQSIM_REF=<branch>
+    ROQSIM_REF=<branch> container/robovast/build.sh --image roqsim \
+        --project docker.io/<you> --push
 
 The image records the commit it was built from and ``roqsim --version`` reports it, which is
 what lets a campaign say which simulator it ran — a commit nobody can fetch names nothing. A

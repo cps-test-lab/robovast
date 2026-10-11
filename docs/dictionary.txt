@@ -481,3 +481,14 @@ yaml
 Zenodo
 zlib
 µs
+parquet
+tarball
+zstd
+backoff
+inotify
+lexicographically
+mispredict
+pax
+unstamped
+undecodable
+unwritable

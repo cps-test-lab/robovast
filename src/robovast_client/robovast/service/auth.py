@@ -208,9 +208,14 @@ def scope_allows(scope: str, path: str) -> bool:
     if not subject:
         return False
     if kind == "campaign":
-        return path in {Routes.campaign_archive(subject),
-                        Routes.campaign_inputs(subject),
-                        Routes.campaign_outputs(subject)}
+        if path in {Routes.campaign_archive(subject),
+                    Routes.campaign_inputs(subject),
+                    Routes.campaign_outputs(subject)}:
+            return True
+        # The campaign's exports, each by its id: one more segment and no further path.
+        exports = Routes.campaign_export_download(subject, "")
+        return path.startswith(exports) and "/" not in path[len(exports):] \
+            and len(path) > len(exports)
     if kind == "staged":
         return path == Routes.staged(subject)
     return False

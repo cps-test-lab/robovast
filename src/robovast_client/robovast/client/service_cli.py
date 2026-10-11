@@ -19,6 +19,7 @@ started in a venv is "however it was installed and started", so it has no image 
 
 
 import csv
+import json
 import sys
 from datetime import datetime
 
@@ -27,7 +28,7 @@ import click
 from robovast.client.errors import handle_cli_exception
 from robovast.client.lazy_group import LazyPluginGroup
 from robovast.client.service_target import echo_target as _echo_target
-from robovast.client.service_target import service_client, target_options
+from robovast.client.service_target import service_client
 from robovast.client.tail import tail_chunks
 
 #: Entry-point group for subcommands that attach to ``vast service``.
@@ -46,14 +47,13 @@ def service():
 @service.command('log')
 @click.option('--follow', '-f', is_flag=True,
               help='Keep printing new output until interrupted.')
-@target_options
-def service_log(follow, namespace, context):
+def service_log(follow):
     """Print what the robovast-service itself has been doing.
 
     Not a campaign's log -- this is the service process: what it decided, what it refused,
     and the reason behind a failure whose visible half was one terse line. Several failures
-    say so in as many words ("the real reason is only in the service log"), and until now
-    there was no way to read it short of ``kubectl logs``.
+    say so in as many words ("the real reason is only in the service log"); this prints it,
+    and ``kubectl logs`` is the only other way to it.
 
     The service keeps the last few hundred kilobytes in memory, so this covers what it has
     been doing recently, not its whole life, and a restart clears it. A container that has
@@ -61,7 +61,7 @@ def service_log(follow, namespace, context):
     process cannot outlive the process.
     """
     try:
-        with service_client(namespace, context) as (client, target):
+        with service_client() as (client, target):
             _echo_target(target)
             tail_chunks(lambda o: client.get_service_log(o),  # pylint: disable=unnecessary-lambda
                         lambda text: click.echo(text, nl=False), follow=follow)
@@ -81,13 +81,12 @@ def service_log(follow, namespace, context):
 @click.option('--wait', is_flag=True,
               help='Block until the new pod is the one serving, instead of returning once '
                    'the roll has been asked for.')
-@target_options
-def restart(yes, wait, namespace, context):
+def restart(yes, wait):
     """Roll the deployed service onto the newest image at its tag, and nothing else.
 
     Asks the service to restart itself, so this needs only a URL and a token -- which is the
-    point: ``vast service upgrade`` needs a kubeconfig, so somebody who reached the
-    deployment through ``vast login`` had the web UI's button and no command at all.
+    point: ``vast service upgrade`` needs a kubeconfig, and somebody who reaches the
+    deployment through ``vast login`` alone has none.
 
     \b
     restart  the image, by stamping the Deployment's restart annotation. With
@@ -107,7 +106,7 @@ def restart(yes, wait, namespace, context):
     and names them. ``--yes`` skips the question.
     """
     try:
-        with service_client(namespace, context) as (client, target):
+        with service_client() as (client, target):
             _echo_target(target)
             info = client.upgrade_info()
             if not info.supported:
@@ -173,8 +172,10 @@ def _wait_for_handover(client, before):
 
 
 @service.command('info')
-@target_options
-def info(namespace, context):
+@click.option('--json', 'as_json', is_flag=True,
+              help='Print the answer as one JSON object, the fields the MCP '
+                   'get_service_info tool returns.')
+def info(as_json):
     """Which service is answering, which code it runs, and which backend it drives.
 
     Call this first when something behaves unexpectedly. A service loads robovast **once,
@@ -185,83 +186,106 @@ def info(namespace, context):
     ``version`` is the package semver, so it stays the same across every edit and reading
     it as a revision is a live trap.
 
-    ``robovast_version``, the field the compatibility handshake compares, is not printed:
-    it resolves to a revision when there is one and to the semver otherwise, so it is
-    always already on one of these two lines. Printing it as ``version`` as well would show
-    the same SHA twice on every deployed service.
+    ``code_version``, the field the compatibility handshake compares, is not printed: it
+    resolves to a revision when there is one and to the semver otherwise, so it is always
+    already on one of these two lines.
+
+    ``--json`` prints every field on stdout and the target on stderr.
     """
+    from robovast.client.service_report import \
+        service_info_report  # pylint: disable=import-outside-toplevel
     try:
-        with service_client(namespace, context) as (client, label):
-            _echo_target(label)
-            version = client.version()
+        with service_client() as (client, label):
+            _echo_target(label, err=as_json)
+            report = service_info_report(client)
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return
 
-    click.echo(f"  version   {version.package_version or '(unavailable — no package metadata)'}")
-    click.echo(f"  revision  {version.code_revision or '(unavailable — cannot compare with your tree)'}")
-    # Only when known. A source checkout has no build to date, and an absent line says that
-    # more honestly than a placeholder that would have to be read as one.
-    if version.built_at:
-        click.echo(f"  built     {version.built_at}")
-    click.echo(f"  api       {version.api_version}")
-    if version.backend:
-        click.echo(f"  backend   {version.backend}")
-    # Only when the service said: an older one has no verdict, and printing "none" for it
-    # would claim no queue for a service that may well have one.
-    if version.can_schedule is not None:
-        click.echo("  queue     " + ("priority and pause" if version.can_schedule
+    if as_json:
+        click.echo(json.dumps(report))
+        return
+    version = report.get('package_version', '(unavailable — no package metadata)')
+    revision = report.get('code_revision', '(unavailable — cannot compare with your tree)')
+    click.echo(f"  version   {version}")
+    click.echo(f"  revision  {revision}")
+    if "built_at" in report:
+        click.echo(f"  built     {report['built_at']}")
+    click.echo(f"  api       {report['api_version']}")
+    if report["backend"]:
+        click.echo(f"  backend   {report['backend']}")
+    if "web_base" in report:
+        click.echo(f"  web       {report['web_base']}")
+    # Absent means the service did not say, so neither line claims a "no".
+    if "can_schedule" in report:
+        click.echo("  queue     " + ("priority and pause" if report["can_schedule"]
                                      else "none (one campaign at a time)"))
-    if version.kube_context:
-        source = f" ({version.kube_context_source})" if version.kube_context_source else ""
-        click.echo(f"  context   {version.kube_context}{source}")
+    if "can_build_images" in report:
+        why = report.get('build_unavailable') or 'no reason given'
+        click.echo("  builds    " + ("yes" if report["can_build_images"] else f"no — {why}"))
+    if report.get("kube_context"):
+        source = report.get("kube_context_source")
+        click.echo(f"  context   {report['kube_context']}{f' ({source})' if source else ''}")
+    if report.get("namespace"):
+        in_pod = {True: "in the cluster", False: "outside the cluster"}.get(report.get("in_pod"))
+        click.echo(f"  namespace {report['namespace']}{f' ({in_pod})' if in_pod else ''}")
 
 
 @service.command('resources')
-@target_options
-def resources(namespace, context):
+@click.option('--json', 'as_json', is_flag=True,
+              help='Print the usage as one JSON object, the fields the MCP '
+                   'get_resource_usage tool returns.')
+def resources(as_json):
     """Does the cluster have room, and is it reachable?
 
     Ask before a sweep.
 
     ``pending`` is work the backend has accepted but is not executing, which is why it is
-    counted apart from usage rather than folded into it -- counting queued work as *used*
-    reported more cores in use than the cluster had.
+    counted apart from usage rather than folded into it: queued work has no cores yet.
+
+    ``--json`` prints every field on stdout and the target on stderr.
     """
+    from robovast.client.service_report import \
+        resource_usage_report  # pylint: disable=import-outside-toplevel
     try:
-        with service_client(namespace, context) as (client, label):
-            _echo_target(label)
-            usage = client.resource_usage()
+        with service_client() as (client, label):
+            _echo_target(label, err=as_json)
+            usage = resource_usage_report(client)
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
+        return
+
+    if as_json:
+        click.echo(json.dumps(usage))
         return
 
     def _gib(value):
         return f"{value / (1024 ** 3):.1f} GiB"
 
-    click.echo(f"  backend   {usage.backend}"
-               f" ({'parallel runs' if usage.parallel_runs else 'one run at a time'})")
-    click.echo(f"  cpu       {usage.cpu_used:.1f} / {usage.cpu_capacity:.1f} cores")
-    click.echo(f"  memory    {_gib(usage.memory_used_bytes)} /"
-               f" {_gib(usage.memory_capacity_bytes)}")
-    click.echo(f"  runs      {usage.jobs_running} running, {usage.jobs_pending} pending")
+    click.echo(f"  backend   {usage['backend']}"
+               f" ({'parallel runs' if usage['parallel_runs'] else 'one run at a time'})")
+    click.echo(f"  cpu       {usage['cpu_used']:.1f} / {usage['cpu_capacity']:.1f} cores")
+    click.echo(f"  memory    {_gib(usage['memory_used_bytes'])} /"
+               f" {_gib(usage['memory_capacity_bytes'])}")
+    if usage["metrics_unavailable"]:
+        click.echo(f"  measured  not read: {usage['metrics_unavailable']}")
+    click.echo(f"  runs      {usage['jobs_running']} running, {usage['jobs_pending']} pending")
     # In GB, the unit the free-space reserve is stated in, so the two lines can be compared.
-    for label, space in (("disk", usage.disk), ("store", usage.store)):
-        if space is not None and space.capacity_bytes > 0:
-            free = max(0, space.capacity_bytes - space.used_bytes)
+    for label, space in (("disk", usage["disk"]), ("results", usage["results"])):
+        if space is not None and space["capacity_bytes"] > 0:
+            free = max(0, space["capacity_bytes"] - space["used_bytes"])
             click.echo(f"  {label:<9} {free / 1000 ** 3:.0f} GB free of "
-                       f"{space.capacity_bytes / 1000 ** 3:.0f} GB")
-    if usage.disk is None and usage.disk_unavailable:
-        click.echo(f"  disk      not read: {usage.disk_unavailable}")
-    if usage.storage_refusal:
-        click.echo(f"  refusing  {usage.storage_refusal}")
+                       f"{space['capacity_bytes'] / 1000 ** 3:.0f} GB")
+    if usage["disk"] is None and usage["disk_unavailable"]:
+        click.echo(f"  disk      not read: {usage['disk_unavailable']}")
+    if usage["storage_refusal"]:
+        click.echo(f"  refusing  {usage['storage_refusal']}")
 
 
 @service.command('cache')
 @click.option('--clear', is_flag=True,
               help='Remove every entry nothing may still be using, and say what that freed.')
-@target_options
-def cache(clear, namespace, context):
+def cache(clear):
     """What the service's rebuildable caches hold; with --clear, free what may go.
 
     Only copies of durable data -- a campaign's files fetched from the object store, compiled
@@ -270,7 +294,7 @@ def cache(clear, namespace, context):
     operation or a recent reader may still be using is kept, and listed with the reason.
     """
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             _echo_target(label)
             report = client.clear_service_cache() if clear else client.service_cache()
     except Exception as e:  # noqa: BLE001
@@ -300,8 +324,7 @@ def cache(clear, namespace, context):
               help='How many calls to print with --calls.')
 @click.option('--csv', 'as_csv', is_flag=True,
               help='Write the call log as CSV to stdout, for a spreadsheet or a script.')
-@target_options
-def mcp_stats(show_calls, tool, failed, limit, as_csv, namespace, context):
+def mcp_stats(show_calls, tool, failed, limit, as_csv):
     """Which MCP tools agents actually call, and what happened when they did.
 
     The same record the web UI's Admin page shows, on a terminal: a ranking of tools by
@@ -312,11 +335,11 @@ def mcp_stats(show_calls, tool, failed, limit, as_csv, namespace, context):
     the whole answer in context, and the question -- "is this tool surface worth what it
     costs?" -- is one asked *about* agents rather than by one.
 
-    The record lives in the central index, so it outlives a service restart but not the
-    results store, and it covers a bounded window that the ranking prints.
+    The record is a file on the service's workspaces volume, so it outlives a service
+    restart, and it covers a bounded window that the ranking prints.
     """
     try:
-        with service_client(namespace, context) as (client, label):
+        with service_client() as (client, label):
             if not as_csv:
                 _echo_target(label)
             if show_calls or as_csv:
@@ -326,12 +349,6 @@ def mcp_stats(show_calls, tool, failed, limit, as_csv, namespace, context):
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return
-
-    # "The record cannot be read" and "nothing has been called" are different answers, and a
-    # reader who is shown an empty table for the first has been told something false.
-    if answer.status != 'ok':
-        raise click.ClickException(
-            f"the MCP call record is unavailable: {answer.detail or answer.status}")
 
     if as_csv:
         writer = csv.writer(sys.stdout)

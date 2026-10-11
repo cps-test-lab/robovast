@@ -158,11 +158,6 @@ KNOWN: dict[str, Known] = {
         "the service's own environment.", Sensitivity.SERVER_ONLY),
     "ROBOVAST_NODE_CALIBRATION": Known(
         _CLUSTER, "Whether per-node capacity is calibrated rather than assumed."),
-    "ROBOVAST_POSTPROCESS_MAX_PARALLEL": Known(
-        _CLUSTER, "A cap on how many Jobs one campaign's postprocessing is split into; 1 "
-        "runs it in one Job. Unset, it is split into as many parts as the cluster could run "
-        "at once. Set in the operator's .env and applied by 'vast cluster setup' and "
-        "'vast service upgrade'."),
     "ROBOVAST_NODE_HEADROOM_CPU": Known(
         _CLUSTER, "CPU held back on each node when placing campaign Jobs."),
     "ROBOVAST_NODE_HEADROOM_MEMORY": Known(
@@ -343,8 +338,7 @@ def describe(loopback: bool = False) -> list[Described]:
 
     Args:
         loopback: whether the caller reached this service over the loopback interface, and
-            may therefore be shown host paths — the rule ``/version`` already applies to
-            ``results_root`` / ``sources_root``.
+            may therefore be shown host paths.
 
     The environment decides what is reported; :data:`KNOWN` decides only how. A key it does
     not cover still appears, without its value.

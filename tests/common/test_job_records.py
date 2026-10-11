@@ -1,11 +1,10 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The ``job`` table: one host record per execution job, shared by its runs.
+"""The ``job`` table: one host record per execution job, pointed at by its run.
 
-``sysinfo.yaml`` is written once per *job*, not per run — a packed multi-config job
-executes several (config, run) pairs and they all reach the same file through each run
-dir's ``job`` symlink. These tests pin the two properties that follow: the record is
-stored once and pointed at, and a run whose layout has no symlink still keeps its host
+``sysinfo.yaml`` is written by the *job*, and its run reaches it through the run dir's
+``job`` symlink. These tests pin the two properties that follow: the record is stored in
+the job row and pointed at, and a run whose layout has no symlink still keeps its host
 info rather than losing it.
 """
 
@@ -38,21 +37,14 @@ def _write_run(run_dir, *, job_dir=None, sysinfo=_SYSINFO):  # pylint: disable=d
         (run_dir / "sysinfo.yaml").write_text(yaml.dump(sysinfo), encoding="utf-8")
 
 
-def test_runs_of_one_packed_job_share_a_single_job_row(tmp_path):
-    """Two runs behind one ``job`` symlink must produce ONE job row, both pointing at it.
-
-    This is the whole reason ``job`` is a table and not a ``run.sysinfo_json`` column: a
-    per-run copy would repeat the blob and destroy the fact that the runs shared a host,
-    which is what makes "did the slow runs land together?" answerable.
-    """
+def test_a_runs_job_is_one_row_the_run_points_at(tmp_path):
     job = tmp_path / "_jobs" / "batch-0" / "job-3"
     _write_run(tmp_path / "cfg-a" / "0", job_dir=job)
-    _write_run(tmp_path / "cfg-b" / "0", job_dir=job)
 
     with CampaignStore(tmp_path / STORE_FILENAME) as store:
         cid = store.create_campaign("c", {}, mode="batch")
         bid = store.open_batch(cid, 0, ".")
-        for cfg in ("cfg-a", "cfg-b"):
+        for cfg in ("cfg-a",):
             unit = store.record_unit(batch_id=bid, paramset_id=cfg, config_name=cfg,
                                      params={}, objectives={}, measures={},
                                      status="evaluated", result_dir=cfg)
@@ -61,15 +53,14 @@ def test_runs_of_one_packed_job_share_a_single_job_row(tmp_path):
     conn = sqlite3.connect(tmp_path / STORE_FILENAME)
     conn.row_factory = sqlite3.Row
     jobs = conn.execute("SELECT id, job_dir, sysinfo_json FROM job").fetchall()
-    assert len(jobs) == 1, "the shared job must be recorded once, not once per run"
+    assert len(jobs) == 1
     assert jobs[0]["job_dir"] == "_jobs/batch-0/job-3"
     assert json.loads(jobs[0]["sysinfo_json"])["cpu_name"] == "Intel Xeon"
 
     rows = conn.execute(
         "SELECT u.config_name, r.job_id FROM run r JOIN unit u ON r.unit_id = u.id "
         "ORDER BY u.config_name").fetchall()
-    assert [r["job_id"] for r in rows] == [jobs[0]["id"]] * 2, \
-        "both runs must point at the shared job row"
+    assert [r["job_id"] for r in rows] == [jobs[0]["id"]]
 
 
 def test_run_without_job_symlink_keeps_its_sysinfo(tmp_path):

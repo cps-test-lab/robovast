@@ -59,7 +59,7 @@ def _project(tmp_path):
     (tmp_path / "scenario.osc").write_text(_SCENARIO)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent(f"""\
-        version: 4
+        version: 7
         metadata: {{name: robot-diameter-test}}
         configuration:
         - name: cell
@@ -114,6 +114,7 @@ def test_a_waypoint_the_planner_refuses_is_a_redraw(tmp_path):
     """The residual case: the two clearance tests disagree on a pose near a wall. The
     generator redraws, as it does for a path that is too long or not found -- raising
     would end the campaign over one pose nobody asked for."""
+    from robovast_nav.path_generator import WaypointRefused
     from robovast_nav.variation import path_variation
 
     original = path_variation.PathGenerator
@@ -126,7 +127,7 @@ def test_a_waypoint_the_planner_refuses_is_a_redraw(tmp_path):
         def generate_path(self, waypoints, obstacles):
             calls["n"] += 1
             if calls["n"] == 1:
-                raise ValueError("Invalid waypoint grid position: (19, 4)")
+                raise WaypointRefused("Invalid waypoint grid position: (19, 4)")
             return self._inner.generate_path(waypoints, obstacles)
 
     path_variation.PathGenerator = _RefusesFirst

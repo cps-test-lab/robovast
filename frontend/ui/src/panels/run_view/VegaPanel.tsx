@@ -213,6 +213,15 @@ function VegaPanel({ spec, clock, data }: PanelProps) {
           )}
         </Alert>
       ) : null}
+      {/* The other bound: a live series keeps its newest rows, so a long run's chart starts
+          after the run did. Said like the truncation above, because it is the same kind of
+          silence -- a chart that looks whole and is not. */}
+      {query.data?.dropped ? (
+        <Alert severity="info" variant="outlined" sx={{ py: 0, mb: 0.5 }}>
+          Live: the oldest {query.data.dropped} rows of <code>{source.table}</code> were dropped
+          to keep the newest {rows.length}. The whole run is read once it finishes.
+        </Alert>
+      ) : null}
       <VegaLiteChart spec={chartSpec} datasets={{ [TABLE]: rows, [CURSOR]: [{ t }] }} />
     </Box>
   )

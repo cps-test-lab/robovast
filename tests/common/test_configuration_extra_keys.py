@@ -15,7 +15,7 @@ from robovast.common.config import validate_config
 
 
 def _cfg(*entries):
-    return {"version": 4,
+    return {"version": 7,
             "execution": {"containers": {"scenario": {"image": "a"}}, "runs": 1},
             "configuration": list(entries)}
 
@@ -92,3 +92,32 @@ def test_an_archived_campaign_with_execution_local_still_reads(caplog):
         c = validate_config(_with_local(), strict=False)
     assert "execution.local" in caplog.text
     assert c.execution.runs == 1
+
+
+# -- execution: the backend reads the raw block ---------------------------------
+
+def _with_execution(**keys):
+    cfg = _cfg({"name": "a"})
+    cfg["execution"].update(keys)
+    return cfg
+
+
+def test_the_execution_keys_the_backend_honours_are_declared():
+    c = validate_config(_with_execution(pre_command="/config/files/pre.sh",
+                                        post_command="/config/files/post.sh",
+                                        run_as_user=0))
+    assert (c.execution.pre_command, c.execution.post_command, c.execution.run_as_user) == (
+        "/config/files/pre.sh", "/config/files/post.sh", 0)
+
+
+def test_a_misspelled_execution_key_is_refused():
+    """``pre_comand`` would reach the backend in the raw block and be read by nothing."""
+    with pytest.raises(ValueError, match="execution.pre_comand"):
+        validate_config(_with_execution(pre_comand="/config/files/pre.sh"))
+
+
+def test_an_archived_campaign_with_a_stray_execution_key_still_reads(caplog):
+    with caplog.at_level(logging.WARNING):
+        c = validate_config(_with_execution(pre_comand="/x.sh", run_as_user=0), strict=False)
+    assert "pre_comand" in caplog.text
+    assert c.execution.run_as_user == 0

@@ -154,6 +154,10 @@ def plan_for(service, campaign_id: str, campaign_root: Path):
         if refusal is not None:
             return None, None, refusal
 
+    # Every image the first half ran -- containers, sidecar, aux helpers -- from the launch
+    # record, and nothing resolved again: a second half that re-resolved a tag, or took the
+    # project from the restarted service's environment, would be a different experiment
+    # under the same name. A record lacking any digest is a refusal, not a fresh resolve.
     try:
         pinned = campaign_pinned_images(campaign_root)
     except CampaignImageUnpinnable as e:
@@ -175,7 +179,7 @@ def plan_for(service, campaign_id: str, campaign_root: Path):
         paused=launch.get("paused", False),
         description=_description(campaign_root))
     target = WorkspaceTarget(config_path=str(vast_path), campaign_id=campaign_id,
-                             pinned_images=pinned or None)
+                             pinned_images=pinned)
     return target, request, None
 
 

@@ -24,7 +24,7 @@ def campaign(tmp_path):
     cfg = cdir / "_config"
     cfg.mkdir(parents=True)
     (cfg / "demo.vast").write_text(yaml.safe_dump({
-        "version": 4,
+        "version": 7,
         "configuration": [{"name": "sweep"}],          # an "as-ran" block to preserve
         "results_processing": {"postprocessing": ["rosbags_to_csv"]},
     }))
@@ -38,21 +38,54 @@ def test_get_reads_the_config_vast(campaign):
 
 
 def test_update_overwrites_config_in_place_no_override_dir(campaign):
-    update_postprocessing(campaign, ["rosbags_to_csv", "compress"])
+    update_postprocessing(campaign, ["rosbags_to_csv", "command"])
     # No override file/dir is created.
     assert not (campaign / "_control").exists()
     # The campaign's own .vast now carries the new block...
     data = yaml.safe_load(campaign_vast(campaign).read_text())
-    assert data["results_processing"]["postprocessing"] == ["rosbags_to_csv", "compress"]
+    assert data["results_processing"]["postprocessing"] == ["rosbags_to_csv", "command"]
     # ...and the as-ran block is preserved.
     assert data["configuration"] == [{"name": "sweep"}]
-    assert get_postprocessing(campaign)["entries"] == ["rosbags_to_csv", "compress"]
+    assert get_postprocessing(campaign)["entries"] == ["rosbags_to_csv", "command"]
+
+
+_AUTHORED = """\
+version: 7
+# why this image: the one the paper's figures were made with
+execution:
+  image: 'example.invalid/sim:1'  # pinned on purpose
+configuration:
+  - name: sweep
+results_processing:
+  postprocessing: [rosbags_to_csv]
+---
+second: document
+"""
+
+
+def test_an_edit_keeps_the_files_comments_quoting_and_other_documents(campaign):
+    """The campaign's .vast is what a rerun hands a person to edit, so an edit of one
+    block leaves the rest of the file as it was written: its comments, its quoting and
+    every document after the first."""
+    campaign_vast(campaign).write_text(_AUTHORED)
+    update_postprocessing(campaign, ["rosbags_to_csv", "command"])
+    update_visualization(campaign, "visualization:\n  panels: []\n")
+    text = campaign_vast(campaign).read_text()
+    assert "# why this image: the one the paper's figures were made with" in text
+    assert "image: 'example.invalid/sim:1'  # pinned on purpose" in text
+    assert text.endswith("---\nsecond: document\n")
+    assert get_postprocessing(campaign)["entries"] == ["rosbags_to_csv", "command"]
+    assert "panels: []" in get_visualization(campaign)["content"]
+    documents = list(yaml.safe_load_all(text))
+    assert documents[0]["results_processing"]["postprocessing"] == ["rosbags_to_csv", "command"]
+    assert documents[0]["visualization"] == {"panels": []}
+    assert documents[1] == {"second": "document"}
 
 
 def test_update_is_idempotent_overwrite(campaign):
     update_postprocessing(campaign, ["rosbags_to_csv"])
-    update_postprocessing(campaign, ["compress"])            # overwrite, not a new rev
-    assert get_postprocessing(campaign)["entries"] == ["compress"]
+    update_postprocessing(campaign, ["command"])            # overwrite, not a new rev
+    assert get_postprocessing(campaign)["entries"] == ["command"]
     assert not (campaign / "_control").exists()
 
 
@@ -79,9 +112,9 @@ def test_get_source_serializes_the_block(campaign):
 
 def test_update_source_overwrites_and_round_trips(campaign):
     content = yaml.safe_dump(
-        {"results_processing": {"postprocessing": ["rosbags_to_csv", "compress"]}})
+        {"results_processing": {"postprocessing": ["rosbags_to_csv", "command"]}})
     update_postprocessing_source(campaign, content)
-    assert get_postprocessing(campaign)["entries"] == ["rosbags_to_csv", "compress"]
+    assert get_postprocessing(campaign)["entries"] == ["rosbags_to_csv", "command"]
     assert not (campaign / "_control").exists()
 
 
@@ -91,10 +124,10 @@ def test_update_source_preserves_other_results_processing_keys(campaign):
     data["results_processing"]["evaluation"] = {"metric": "x"}
     cfg.write_text(yaml.safe_dump(data))
     update_postprocessing_source(
-        campaign, yaml.safe_dump({"results_processing": {"postprocessing": ["compress"]}}))
+        campaign, yaml.safe_dump({"results_processing": {"postprocessing": ["command"]}}))
     out = yaml.safe_load(campaign_vast(campaign).read_text())
     assert out["results_processing"]["evaluation"] == {"metric": "x"}
-    assert out["results_processing"]["postprocessing"] == ["compress"]
+    assert out["results_processing"]["postprocessing"] == ["command"]
 
 
 def test_update_source_missing_key_rejected(campaign):

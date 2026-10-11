@@ -1,0 +1,248 @@
+# Copyright (C) 2026 Frederik Pasch
+# SPDX-License-Identifier: Apache-2.0
+"""A table is built for a run when something names it, once, and says what it could not do."""
+
+import json
+import shutil
+
+import pyarrow.parquet as pq
+import pytest
+import yaml
+
+from robovast_decode import build as build_module
+from robovast_decode import DATA_CONTRACT
+from robovast_decode.build import (SharedJobError, available_tables, bag_information, build,
+                                   find_runs, scenario_recording)
+from robovast_decode.cli import main
+
+from .conftest import make_campaign
+
+
+def _manifest(campaign):
+    return json.loads((campaign / ".cache" / "MANIFEST.json").read_text())
+
+
+def test_every_recorded_topic_is_a_table_unless_there_is_a_reason(campaign):
+    tables = available_tables(str(campaign))
+    for name in ("poses", "nav2_behavior_tree", "costmaps", "rosbag2_collision", "rosbag2_scan",
+                 "action_navigate_to_pose_feedback", "action_navigate_to_pose_status",
+                 "rosout", "clock_map"):
+        assert name in tables, name
+    assert all(counts["built"] == 0 for counts in tables.values())
+
+
+def test_the_recording_report_says_what_was_not_tabulated_and_why(campaign):
+    build(str(campaign), tables=["rosbag2_collision"])
+    rows = pq.read_table(campaign / ".cache" / "tables" / "_recording" / "cfg" / "0.parquet")
+    by_topic = {r["topic"]: r for r in rows.to_pylist()}
+    assert by_topic["/scan"]["table"] == "rosbag2_scan"    # a scan's ranges are one list cell
+    assert by_topic["/scan"]["reason"] is None
+    assert by_topic["/collision"]["table"] == "rosbag2_collision"
+    assert by_topic["/collision"]["messages"] == 40 and by_topic["/collision"]["bytes"] > 0
+    assert by_topic["/rosout"]["recording"] == "logs/rosout_bag"
+
+
+def test_only_the_named_table_is_built_and_a_second_build_does_nothing(campaign):
+    first = build(str(campaign), tables=["poses"])
+    assert first.built == {"poses": ["cfg/0"], "_recording": ["cfg/0"]}
+    assert set(_manifest(campaign)["tables"]) == {"poses", "_recording"}
+    second = build(str(campaign), tables=["poses"])
+    assert second.built == {}
+    assert second.skipped == {"poses": ["cfg/0"], "_recording": ["cfg/0"]}
+
+
+def test_a_grown_recording_is_built_again(campaign):
+    build(str(campaign), tables=["rosbag2_collision"])
+    with open(campaign / "cfg" / "0" / "rosbag2" / "rosbag2_0.mcap", "ab") as fh:
+        fh.write(b"\x00")                                 # the bytes changed: stale
+    assert build(str(campaign), tables=["rosbag2_collision"]).built == {
+        "rosbag2_collision": ["cfg/0"], "_recording": ["cfg/0"]}
+
+
+def test_a_table_laid_out_under_another_contract_is_built_again(campaign):
+    build(str(campaign), tables=["rosbag2_collision"])
+    manifest = _manifest(campaign)
+    entry = manifest["tables"]["rosbag2_collision"]["runs"]["cfg/0"]
+    assert entry["contract"] == DATA_CONTRACT
+    entry["contract"] = DATA_CONTRACT - 1                # the same decoder version wrote it
+    (campaign / ".cache" / "MANIFEST.json").write_text(json.dumps(manifest))
+    report = build(str(campaign), tables=["rosbag2_collision"])
+    assert report.built == {"rosbag2_collision": ["cfg/0"]}
+    assert report.skipped == {"_recording": ["cfg/0"]}, "the report's own entry is current"
+    rebuilt = _manifest(campaign)["tables"]["rosbag2_collision"]["runs"]["cfg/0"]
+    assert rebuilt["contract"] == DATA_CONTRACT
+
+
+def test_a_required_frame_that_never_resolves_fails_its_table_only(campaign):
+    config = {"groups": [{"bag_dir": "rosbag2", "plugins": [
+        {"type": "tf_to_csv", "frames": "all", "require": ["nowhere"]}]}]}
+    report = build(str(campaign), config=config)
+    assert "nowhere" in report.failed["poses"]["cfg/0"]
+    assert "rosbag2_collision" in report.built
+    assert not (campaign / ".cache" / "tables" / "poses").exists()
+
+
+def test_a_run_that_is_not_there_is_refused(campaign):
+    with pytest.raises(KeyError):
+        build(str(campaign), runs=["cfg/7"])
+
+
+def test_a_table_no_recording_gives_is_reported(campaign):
+    assert build(str(campaign), tables=["nope"]).unknown == ["nope"]
+
+
+def test_rows_carry_their_run(tmp_path):
+    campaign = make_campaign(tmp_path / "c-2026-01-01-00000000", runs=(("a", 0), ("b", 3)))
+    build(str(campaign), tables=["rosbag2_collision"])
+    for config, run_id in (("a", 0), ("b", 3)):
+        rows = pq.read_table(campaign / ".cache" / "tables" / "rosbag2_collision" / config /
+                             f"{run_id}.parquet").to_pylist()
+        assert {(r["campaign_id"], r["config_name"], r["run_id"]) for r in rows} == {
+            (campaign.name, config, run_id)}
+
+
+def test_a_campaign_whose_runs_share_a_job_is_refused_by_name(tmp_path):
+    """A job's records are its one run's; shared, they cannot be divided between runs."""
+    campaign = make_campaign(tmp_path / "c-2026-01-01-00000000", runs=(("a", 0), ("a", 1)),
+                             shared_job=True)
+    for call in (lambda: build(str(campaign), tables=["rosout"]),
+                 lambda: available_tables(str(campaign))):
+        with pytest.raises(SharedJobError, match=r"runs a/0 and a/1 share the job _jobs/job-0"):
+            call()
+    assert not (campaign / ".cache").exists()
+
+
+def test_a_run_without_its_verdict_is_built_but_not_complete(tmp_path):
+    campaign = make_campaign(tmp_path / "c-2026-01-01-00000000", verdict=False)
+    build(str(campaign), tables=["rosbag2_collision"])
+    entry = _manifest(campaign)["tables"]["rosbag2_collision"]["runs"]["cfg/0"]
+    assert entry["complete"] is False and entry["rows"] == 40
+
+
+def test_the_command_line_builds_and_lists(campaign, capsys):
+    assert main(["build", str(campaign), "--table", "costmaps"]) == 0
+    assert main(["tables", str(campaign)]) == 0
+    out = capsys.readouterr().out
+    assert "built   costmaps: 1 run(s)" in out
+    assert "costmaps" in out and "built for 1 of 1" in out
+
+
+def test_a_runs_own_data_files_are_tables_typed_by_their_values(campaign):
+    run = campaign / "cfg" / "0"
+    (run / "out.csv").write_text("# units: m\ndistance,label,missing\n1.5,a,\ninf,007,\n")
+    (run / "behaviors.jsonl").write_text(
+        '{"format": "behavior_tree_log"}\n'
+        '{"id": 1, "name": "root", "status": "RUNNING", "is_active": true}\n')
+    report = build(str(campaign), tables=["out", "behaviors"])
+    assert not report.failed
+    out = pq.read_table(campaign / ".cache" / "tables" / "out" / "cfg" / "0.parquet")
+    assert out.schema.field("distance").type == "double"
+    assert out.column("label").to_pylist() == ["a", "007"]       # leading zero: text
+    assert out.column("distance").to_pylist()[1] == float("inf")
+    behaviors = pq.read_table(campaign / ".cache" / "tables" / "behaviors" / "cfg" / "0.parquet")
+    row = behaviors.to_pylist()[0]
+    assert (row["status"], row["status_name"], row["is_active"]) == (2, "RUNNING", 1)
+
+
+def test_a_data_file_claiming_a_built_table_is_refused_by_name(campaign):
+    (campaign / "cfg" / "0" / "poses.csv").write_text("frame,timestamp\nx,1\n")
+    report = build(str(campaign), tables=["poses"])
+    assert "poses.csv" in report.failed["poses"]["cfg/0"]
+
+
+def test_a_ragged_file_fails_its_own_table_only(campaign):
+    (campaign / "cfg" / "0" / "bad.csv").write_text("a,b\n1,2,3\n")
+    (campaign / "cfg" / "0" / "good.csv").write_text("a,b\n1,2\n")
+    report = build(str(campaign), tables=["bad", "good"])
+    assert "more fields than its header" in report.failed["bad"]["cfg/0"]
+    assert report.built["good"] == ["cfg/0"]
+
+
+def test_a_pose_table_gets_its_heading(campaign):
+    build(str(campaign), tables=["poses"], config={"groups": []})
+    poses = pq.read_table(campaign / ".cache" / "tables" / "poses" / "cfg" / "0.parquet")
+    assert "orientation.yaw" in poses.column_names
+
+
+def test_a_table_a_run_has_nothing_for_is_recorded_so_it_is_not_looked_for_again(campaign):
+    build(str(campaign), tables=["rosbag2_nope"])
+    entry = _manifest(campaign)["tables"]["rosbag2_nope"]["runs"]["cfg/0"]
+    assert entry["files"] == [] and entry["rows"] == 0 and entry["complete"] is True
+    assert entry["reason"] is None
+    assert entry["known"] is False, "a table this run never had, not one that came out empty"
+
+
+def test_a_failed_table_is_recorded_with_its_reason_and_counted_as_failed(campaign):
+    config = {"groups": [{"bag_dir": "rosbag2", "plugins": [
+        {"type": "tf_to_csv", "frames": "all", "require": ["nowhere"]}]}]}
+    build(str(campaign), tables=["poses"], config=config)
+    entry = _manifest(campaign)["tables"]["poses"]["runs"]["cfg/0"]
+    assert entry["files"] == [] and "nowhere" in entry["reason"]
+    counts = available_tables(str(campaign), config=config)["poses"]
+    assert counts["built"] == 0 and "nowhere" in counts["failed"]["cfg/0"]
+
+
+def test_the_catalog_counts_the_runs_a_table_is_built_for(tmp_path):
+    campaign = make_campaign(tmp_path / "c", runs=(("cfg", 0), ("cfg", 1)))
+    build(str(campaign), tables=["rosbag2_collision"], runs=["cfg/1"])
+    counts = available_tables(str(campaign))["rosbag2_collision"]
+    assert counts == {"runs": 2, "built": 1, "failed": {}}
+    assert available_tables(str(campaign), runs=["cfg/1"])["rosbag2_collision"]["runs"] == 1
+
+
+def test_a_schema_is_stored_once_however_many_runs_share_it(tmp_path):
+    campaign = make_campaign(tmp_path / "c", runs=(("cfg", 0), ("cfg", 1), ("cfg", 2)))
+    build(str(campaign), tables=["rosbag2_collision"])
+    manifest = _manifest(campaign)
+    ids = {e["schema"] for e in manifest["tables"]["rosbag2_collision"]["runs"].values()}
+    assert len(ids) == 1
+    assert ["run_id", "int64"] in manifest["schemas"][ids.pop()]
+
+
+def test_a_data_files_columns_are_read_from_its_header_alone(campaign):
+    from robovast_decode.authored import header
+
+    path = campaign / "cfg" / "0" / "sim_poses.csv"
+    path.write_text("# frame is the body\nframe,position.x,position.y\nrobot,1,2\n")
+    assert header(str(path)) == ["frame", "position.x", "position.y"]
+    jsonl = campaign / "cfg" / "0" / "behaviors.jsonl"
+    jsonl.write_text('{"format": "behavior_tree_log"}\n')
+    assert header(str(jsonl)) is None
+
+
+def test_naming_the_recording_report_builds_it_and_nothing_else(campaign):
+    report = build(str(campaign), tables=["_recording"])
+    assert report.built == {"_recording": ["cfg/0"]}
+    entry = _manifest(campaign)["tables"]["_recording"]["runs"]["cfg/0"]
+    assert entry["files"] and entry["rows"] > 0
+
+
+def test_a_recordings_metadata_is_read_once_and_again_once_rewritten(campaign, monkeypatch):
+    bag = campaign / "cfg" / "0" / "rosbag2"
+    first = bag_information(str(bag))
+    assert first["starting_time"]["nanoseconds_since_epoch"] > 0
+    reads = []
+    monkeypatch.setattr(build_module.yaml, "load", lambda *a, **k: reads.append(a) or {})
+    assert bag_information(str(bag)) is first
+    assert reads == []
+    meta = bag / "metadata.yaml"
+    meta.write_text(meta.read_text() + "\n# rewritten\n")
+    assert bag_information(str(bag)) is None           # read again: the stub has no bag in it
+    assert len(reads) == 1
+
+
+def test_a_recording_without_readable_metadata_has_none(tmp_path):
+    assert bag_information(str(tmp_path)) is None
+    (tmp_path / "metadata.yaml").write_text("rosbag2_bagfile_information: [unclosed")
+    assert bag_information(str(tmp_path)) is None
+
+
+def test_the_last_attempt_of_a_restarted_recorder_is_the_latest_started(campaign):
+    run = campaign / "cfg" / "0"
+    meta = yaml.safe_load((run / "rosbag2" / "metadata.yaml").read_text())
+    earlier = run / "rosbag2_2026_01_01-00_00_00"        # named after a later wall clock
+    shutil.copytree(run / "rosbag2", earlier)
+    meta["rosbag2_bagfile_information"]["starting_time"]["nanoseconds_since_epoch"] -= 1
+    (earlier / "metadata.yaml").write_text(yaml.safe_dump(meta))
+    (found,) = find_runs(str(campaign))
+    assert scenario_recording(found) == str(run / "rosbag2")

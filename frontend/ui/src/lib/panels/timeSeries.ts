@@ -5,11 +5,18 @@
 // This is the seam that keeps the panels source-agnostic and free of duplicated plumbing: the
 // CAST-to-REAL (a TEXT results column), the sort-by-time, and the nearest-sample lookup all
 // live here, once. A panel binds a `{ table, time_column }` from its .vast spec, gets a
-// TimeSeriesSource, and just renders `at(t)` / `upTo(t)` / `all()`. A future live view implements this
-// same interface over a rosbridge buffer without any panel change.
+// TimeSeriesSource, and just renders `at(t)` / `upTo(t)` / `all()`.
+//
+// A run that is still recording is the same source with a tail: the history comes through SQL
+// once, and the rows the provider's live subscription delivers after it are appended here, so a
+// panel re-renders with a longer series when rows land and never asks again on its own. On `eof`
+// -- and after a gap in the stream -- the history is re-read once (see `useLiveTail`).
 
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { lastAtOrBefore, type DataProvider, type DataRow } from '@robovast/panel-kit'
+import { isLiveProvider } from './dataProvider'
+import { afterHistory, appendBounded, liveShape, shapeLiveRows } from './liveSeries'
 
 /** How a .vast spec names a time series: a results table, its time column (default `timestamp`), and
  *  an optional equality filter to isolate one series from a multi-keyed table (e.g. `{ frame: base_link }`). */
@@ -47,6 +54,10 @@ export interface TimeSeriesSource {
   /** The service's explanation when it truncated for a reason other than the row cap (the reply-size
    *  ceiling). Null for a plain row-cap truncation, which the panels already word themselves. */
   truncationNote: string | null
+  /** How many of the OLDEST rows a live series let go to stay within its bound
+   *  (`MAX_LIVE_ROWS`): the newest are kept, so the series starts later than the run did. Zero
+   *  for a series read whole. */
+  dropped: number
   /** The columns present on the rows (from the first sample). */
   columns: string[]
   /** The numeric time (seconds) extracted from a row, using this source's time column. */
@@ -62,6 +73,7 @@ export function timeSeriesFromRows(
   timeColumn = DEFAULT_TIME_COLUMN,
   truncated = false,
   truncationNote: string | null = null,
+  dropped = 0,
 ): TimeSeriesSource {
   const timeOf = (row: DataRow) => Number(row[timeColumn])
   // Sort a shallow copy by numeric time; drop rows whose time isn't a finite number so lookups and
@@ -93,9 +105,65 @@ export function timeSeriesFromRows(
     },
     truncated,
     truncationNote,
+    dropped,
     columns,
     timeOf,
   }
+}
+
+/** The rows a live run delivered after the history, shaped as the binding reads them.
+ *
+ *  Subscribed for a live provider only; a finished run has no tail. The tail is bounded like the
+ *  series it joins, and is emptied when the stream reports a gap or the end of the run -- both
+ *  times the history is re-read through SQL, which then holds what the tail held. `version`
+ *  moves on every change so a memo over the tail recomputes. */
+function useLiveTail(
+  data: DataProvider,
+  binding: TimeSeriesBinding,
+  columns: string[] | undefined,
+  queryKey: readonly unknown[],
+) {
+  const queryClient = useQueryClient()
+  const tail = useRef<{ rows: DataRow[]; dropped: number }>({ rows: [], dropped: 0 })
+  const [version, setVersion] = useState(0)
+  const keyString = JSON.stringify(queryKey)
+  useEffect(() => {
+    if (!isLiveProvider(data) || !data.live) return
+    const shape = liveShape(binding, columns)
+    tail.current = { rows: [], dropped: 0 }
+    return data.subscribeLive(binding.table, (event) => {
+      if (event.kind === 'batch') {
+        const add = shapeLiveRows(event.rows, shape)
+        if (!add.length) return
+        const next = appendBounded(tail.current.rows, add)
+        tail.current = { rows: next.rows, dropped: tail.current.dropped + next.dropped }
+        setVersion((v) => v + 1)
+      } else if (event.kind === 'gap' || event.kind === 'eof') {
+        tail.current = { rows: [], dropped: 0 }
+        shape.thinner?.reset()
+        setVersion((v) => v + 1)
+        queryClient.invalidateQueries({ queryKey })
+      }
+      // An error is followed by `eof`, which is handled above; the message is the feed's to show.
+    })
+    // The binding and the columns are in the key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, keyString, queryClient])
+  return { tail: tail.current, version }
+}
+
+/** `history` with the live rows after it, bounded. */
+function withTail(
+  history: TimeSeriesSource,
+  tail: { rows: DataRow[]; dropped: number },
+  timeCol: string,
+): TimeSeriesSource {
+  if (!tail.rows.length && !tail.dropped) return history
+  const all = history.all()
+  const add = afterHistory(all, tail.rows, history.timeOf)
+  const { rows, dropped } = appendBounded(all, add)
+  return timeSeriesFromRows(
+    rows, timeCol, history.truncated, history.truncationNote, tail.dropped + dropped)
 }
 
 /** Resolve a binding to a TimeSeriesSource by bulk-loading the run's rows once through the provider.
@@ -130,21 +198,30 @@ export function useTimeSeries(
   maxRows?: number,
 ) {
   const timeCol = binding.time_column ?? DEFAULT_TIME_COLUMN
-  return useQuery({
-    queryKey: [
-      'time-series',
-      data.scope,
-      binding.table,
-      timeCol,
-      binding.filter ?? null,
-      binding.key ?? null,
-      binding.decimate_hz ?? null,
-      columns ?? null,
-      maxRows ?? null,
-    ],
+  const queryKey = [
+    'time-series',
+    data.scope,
+    binding.table,
+    timeCol,
+    binding.filter ?? null,
+    binding.key ?? null,
+    binding.decimate_hz ?? null,
+    columns ?? null,
+    maxRows ?? null,
+  ]
+  const query = useQuery({
+    queryKey,
     queryFn: () => buildTimeSeriesSource(binding, data, columns, maxRows),
     retry: false,
   })
+  const { tail, version } = useLiveTail(data, binding, columns, queryKey)
+  const merged = useMemo(
+    () => (query.data ? withTail(query.data, tail, timeCol) : query.data),
+    // `version` is what says the tail changed; the ref's identity does not.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [query.data, version, timeCol],
+  )
+  return { ...query, data: merged }
 }
 
 /** How a .vast spec names a *multi-keyed* table: one series per distinct value of `key`. `poses` is
@@ -201,19 +278,85 @@ export function useTimeSeriesGroups(
   maxRows?: number,
 ) {
   const timeCol = binding.time_column ?? DEFAULT_TIME_COLUMN
-  return useQuery({
-    queryKey: [
-      'time-series-groups',
-      data.scope,
-      binding.table,
-      binding.key,
-      timeCol,
-      binding.filter ?? null,
-      binding.decimate_hz ?? null,
-      columns ?? null,
-      maxRows ?? null,
-    ],
+  const queryKey = [
+    'time-series-groups',
+    data.scope,
+    binding.table,
+    binding.key,
+    timeCol,
+    binding.filter ?? null,
+    binding.decimate_hz ?? null,
+    columns ?? null,
+    maxRows ?? null,
+  ]
+  const query = useQuery({
+    queryKey,
     queryFn: () => buildTimeSeriesGroups(binding, data, columns, maxRows),
     retry: false,
   })
+  const { tail, version } = useLiveTail(data, binding, columns, queryKey)
+  const merged = useMemo(() => {
+    if (!query.data || (!tail.rows.length && !tail.dropped)) return query.data
+    // The tail by key, then each series takes its own; a key the history never saw -- a body
+    // that appeared mid-run -- becomes a series of its own.
+    const byKey = new Map<string, DataRow[]>()
+    for (const row of tail.rows) {
+      const k = row[binding.key]
+      if (k == null) continue
+      const list = byKey.get(String(k))
+      if (list) list.push(row)
+      else byKey.set(String(k), [row])
+    }
+    const out = new Map(query.data)
+    for (const [k, rows] of byKey) {
+      const history = out.get(k) ?? timeSeriesFromRows([], timeCol)
+      out.set(k, withTail(history, { rows, dropped: tail.dropped }, timeCol))
+    }
+    return out
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query.data, version, timeCol, binding.key])
+  return { ...query, data: merged }
+}
+
+/** Re-read a query of a live run's table whenever the table grows.
+ *
+ *  For a reader that builds something other than a time series from the rows (the scenario tree)
+ *  and re-derives it from the whole table: a batch invalidates the query, coalesced so a table
+ *  that grows every tick is re-read at most once per `minGapMs`. Nothing is asked of a finished
+ *  run, and the run's end re-reads once. */
+export function useLiveTable(
+  data: DataProvider,
+  table: string,
+  queryKey: readonly unknown[],
+  minGapMs = 1000,
+) {
+  const queryClient = useQueryClient()
+  const keyString = JSON.stringify(queryKey)
+  useEffect(() => {
+    if (!isLiveProvider(data) || !data.live) return
+    let last = 0
+    let pending: ReturnType<typeof setTimeout> | null = null
+    const refetch = () => {
+      pending = null
+      last = Date.now()
+      queryClient.invalidateQueries({ queryKey })
+    }
+    const unsubscribe = data.subscribeLive(table, (event) => {
+      if (event.kind === 'error') return
+      if (event.kind !== 'batch') {
+        if (pending != null) clearTimeout(pending)
+        refetch()
+        return
+      }
+      if (pending != null) return
+      const wait = minGapMs - (Date.now() - last)
+      if (wait <= 0) refetch()
+      else pending = setTimeout(refetch, wait)
+    })
+    return () => {
+      unsubscribe()
+      if (pending != null) clearTimeout(pending)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, table, keyString, minGapMs, queryClient])
 }

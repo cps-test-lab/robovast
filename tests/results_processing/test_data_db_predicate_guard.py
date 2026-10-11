@@ -1,23 +1,20 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""No live predicate tests for ``_execution/data.db``, the file the index replaced.
+"""No predicate on ``_execution/data.db``: nothing writes that file.
 
-That file is not written any more, so every test for it answers "no" forever -- and each
-time, the consequence was silent rather than an error: archives labelled raw, ``Status
-.postprocessed`` stuck at false, and an import re-postprocessing campaigns that arrived
-complete. A predicate that can only be wrong is worse than a missing one, because it reads
-as a check.
+Every test for it answers "no" forever, and the consequence is silent rather than an error:
+archives labelled raw, ``Status.postprocessed`` stuck at false, an import re-postprocessing a
+campaign that arrived complete. A predicate that can only be wrong is worse than a missing one,
+because it reads as a check.
 
-**Shape, not words.** Prose about the retired file is legitimate and often necessary -- a
-comment saying *why* something no longer looks for it is the record of this whole class.
-What is banned is the file's name in a *value*: a string literal, an f-string, or a
-JS/TS regex, which is how a path is built, globbed, matched or stat-ed. Python docstrings
-are excluded for that reason (they are prose that happens to be a string), and so are
-comments, which never reach the AST at all.
+**Shape, not words.** What is banned is the file's name in a *value*: a string literal, an
+f-string, or a JS/TS regex, which is how a path is built, globbed, matched or stat-ed. Python
+docstrings are excluded (they are prose that happens to be a string), and so are comments,
+which never reach the AST at all.
 
-The replacements are ``common.campaign_data.campaign_has_derived_data`` ("has
-postprocessing finished?", from its provenance record) and
-``results_processing.index_query.campaign_is_ingested`` ("are its rows queryable?").
+The questions such a predicate would ask are answered by
+``common.campaign_data.campaign_has_derived_data`` ("has postprocessing finished?", from its
+provenance record) and by the campaign's ``.cache/MANIFEST.json`` ("which tables are built?").
 """
 
 from __future__ import annotations
@@ -31,13 +28,9 @@ _ROOT = Path(__file__).resolve().parents[2]
 _TREES = ("src", "frontend/ui/src", "frontend/panel-kit/src", "container", "tools")
 
 #: Deliberately retained occurrences, each with the reason it is not a stale predicate.
-#: An entry here is a claim that the code *means* to talk about a legacy artifact; adding
-#: one without that being true is how the defect comes back.
-_ALLOWED = {
-    # Reports a legacy per-campaign analysis DB found in an archive written before the
-    # central index. It says "absent" is the ordinary answer, so it cannot mislead.
-    "src/robovast/service/ingest.py": "ingest report: legacy per-campaign analysis DB",
-}
+#: An entry here is a claim that the code *means* to talk about the file; adding one without
+#: that being true is how the defect comes back.
+_ALLOWED: dict = {}
 
 #: Directory names holding build output rather than source, skipped wherever they appear
 #: under a scanned tree.
@@ -105,9 +98,9 @@ def test_no_data_db_predicate_in_shipped_code():
         if hits:
             offenders[rel] = hits
     assert not offenders, (
-        "``_execution/data.db`` is never written any more, so a literal naming it in code "
-        "is a predicate that can only answer 'no':\n"
+        "Nothing writes ``_execution/data.db``, so a literal naming it in code is a "
+        "predicate that can only answer 'no':\n"
         + "\n".join(f"  {rel}: {'; '.join(hits)}" for rel, hits in sorted(offenders.items()))
-        + "\nUse campaign_data.campaign_has_derived_data (postprocessing finished?) or "
-          "index_query.campaign_is_ingested (rows queryable?). Prose about the retired "
-          "file stays fine -- put it in a comment or a docstring.")
+        + "\nUse campaign_data.campaign_has_derived_data (postprocessing finished?) or the "
+          "campaign's table manifest (tables built?). Prose about the file stays fine -- put "
+          "it in a comment or a docstring.")

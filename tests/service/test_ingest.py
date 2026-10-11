@@ -11,9 +11,12 @@ The two properties worth defending: a *degraded* ingest is still usable and must
 away to keep a boolean clean, and every non-ok stage has to name what to do about it.
 """
 
+import io
+import json
 import os
 import shutil
 import sqlite3
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -21,8 +24,9 @@ import yaml
 
 from robovast.common.store import _MIGRATIONS, SCHEMA_VERSION
 from robovast.service.ingest import (STAGE_ABSENT, STAGE_DEGRADED, STAGE_FAILED, STAGE_MIGRATED,
-                                     STAGE_NEWER, STAGE_OK, blocking_summary, ingest_campaign,
-                                     missing_for_import, missing_for_import_in)
+                                     STAGE_NEWER, STAGE_OK, blocking_summary,
+                                     claim_campaign_dir, extract_archive, ingest_campaign,
+                                     missing_for_import, missing_for_import_in, read_campaign_id)
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "historic_campaigns"
 
@@ -64,7 +68,8 @@ def test_an_old_config_migrates_and_the_archive_is_untouched(campaign):
     before = vast_path.read_bytes()
     stage = ingest_campaign(campaign)["stages"]["config"]
     assert stage["verdict"] == STAGE_MIGRATED
-    assert stage["steps"] == ["1_to_2", "2_to_3", "3_to_4"]
+    assert stage["steps"] == ["1_to_2", "2_to_3", "3_to_4", "4_to_5", "5_to_6",
+                              "6_to_7"]
     assert "not modified" in stage["detail"]
     assert vast_path.read_bytes() == before
 
@@ -198,6 +203,19 @@ def test_a_missing_execution_record_degrades_rather_than_failing(tmp_path, campa
     assert report["ok"] is True, "degraded must not block: the campaign is still usable"
 
 
+def test_the_importers_own_log_is_not_an_execution_record(tmp_path, campaign):
+    """An import claims ``_execution/``, marks it as under way and opens its log there before
+    extracting, so an archive without ``_execution/`` arrives with one holding only the
+    importer's files."""
+    shutil.rmtree(campaign / "_execution")
+    target = claim_campaign_dir(tmp_path / "results", campaign.name)
+    (target / "_execution" / "import.log").write_text("importing\n", encoding="utf-8")
+    shutil.copytree(campaign, target, dirs_exist_ok=True)
+    report = ingest_campaign(target)
+    assert report["stages"]["layout"]["verdict"] == STAGE_DEGRADED
+    assert "_execution" in report["stages"]["layout"]["detail"]
+
+
 def test_a_store_indexing_no_runs_is_degraded_not_ok(campaign):
     """A campaign that lists and reports nothing is the shape of an archive stripped of its run
     directories. Passing that as `ok` would read as "checked, all fine"."""
@@ -208,19 +226,31 @@ def test_a_store_indexing_no_runs_is_degraded_not_ok(campaign):
     assert "no runs" in stage["detail"]
 
 
-def test_a_raw_archive_reports_the_analysis_db_as_recoverable(campaign):
-    """Absent is expected for a pre-postprocess archive, so it names the command that produces
-    it rather than reading as damage."""
-    stage = ingest_campaign(campaign)["stages"]["analysis_db"]
+def test_records_that_give_no_table_are_reported_absent(campaign):
+    """An archive stripped of its run directories lists and opens but answers nothing."""
+    stage = ingest_campaign(campaign)["stages"]["tables"]
     assert stage["verdict"] == STAGE_ABSENT
-    assert "postprocess" in stage["detail"]
+    assert "no data file" in stage["detail"]
+
+
+def test_the_tables_stage_builds_nothing(campaign):
+    """Importing is not building: a table is built the first time something names it."""
+    run_dir = campaign / "nominal" / "0"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "metrics.csv").write_text("value\n1.5\n2.5\n", encoding="utf-8")
+
+    stage = ingest_campaign(campaign)["stages"]["tables"]
+
+    assert stage["verdict"] == STAGE_OK, stage
+    assert "built the first time" in stage["detail"]
+    assert not (campaign / ".cache" / "tables").exists()
 
 
 def test_every_stage_carries_an_actionable_detail(campaign):
     """A verdict a reader cannot act on is not worth returning."""
     report = ingest_campaign(campaign)
-    assert set(report["stages"]) == {"layout", "config", "completeness", "campaign_store",
-                                     "index", "analysis_db"}
+    assert set(report["stages"]) == {"archive", "layout", "config", "completeness",
+                                     "environment", "campaign_store", "tables"}
     for name, stage in report["stages"].items():
         assert stage["detail"].strip(), f"{name} has no detail"
 
@@ -269,147 +299,12 @@ def test_the_export_check_reads_a_list_of_paths_as_readily_as_a_tree():
     assert missing_for_import(["_config/nav.vast"]) == []
 
 
-# -- the index stage: importing IS ingesting ---------------------------------
-
-DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
-pg = pytest.mark.skipif(not DSN, reason="ROBOVAST_TEST_PG_DSN is not set")
-
-
-def test_an_unreachable_index_degrades_the_import_rather_than_failing_it(
-        campaign, monkeypatch):
-    """The campaign imported fine and its files are intact; only the queryable copy is not.
-
-    Discarding a campaign somebody already has, to keep a boolean clean, is the trade this
-    module refuses everywhere else. But it must not be SILENT either -- a campaign that
-    lists and opens and answers nothing, with no stage saying why, is exactly what this
-    stage exists to make visible.
-    """
-    from robovast.common.errors import IndexUnreachableError
-
-    monkeypatch.setattr("robovast.common.index_db.connect",
-                        lambda *a, **k: (_ for _ in ()).throw(
-                            IndexUnreachableError("ROBOVAST_INDEX_DSN is not set")))
-
-    report = ingest_campaign(campaign)
-
-    assert report["ok"] is True, "an unreachable index must not discard the campaign"
-    stage = report["stages"]["index"]
-    assert stage["verdict"] == STAGE_DEGRADED
-    assert "not queryable" in stage["detail"]
-    assert "ROBOVAST_INDEX_DSN" in stage["detail"], "it must name what is wrong"
-
-
-@pg
-def test_importing_a_campaign_loads_its_rows_without_running_postprocessing(
-        campaign, monkeypatch):
-    """An imported campaign must be queryable, and the archive already holds what it takes.
-
-    Before this, the import only REPORTED that the rows were absent and pointed at
-    postprocessing -- which re-runs the plugin pipeline against the campaign's own image to
-    regenerate derived files the archive already carries. Ingestion is not a command a user
-    issues; it happens wherever results arrive, and an import is one of those places.
-    """
-    import psycopg
-
-    from robovast.results_processing import index_schema
-
-    schema = "import_index_test"
-    with psycopg.connect(DSN, autocommit=True) as setup:
-        for stmt in (f"DROP SCHEMA IF EXISTS {schema} CASCADE",
-                     f"DROP SCHEMA IF EXISTS {index_schema.CAMPAIGN_SCHEMA} CASCADE",
-                     f"CREATE SCHEMA {schema}"):
-            setup.execute(stmt)
-    monkeypatch.setenv("ROBOVAST_INDEX_DSN", f"{DSN} options=-csearch_path={schema}")
-
-    run_dir = campaign / "nominal" / "0"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "metrics.csv").write_text("value\n1.5\n2.5\n", encoding="utf-8")
-
-    report = ingest_campaign(campaign)
-
-    assert report["stages"]["index"]["verdict"] == STAGE_OK, report["stages"]["index"]
-    with psycopg.connect(f"{DSN} options=-csearch_path={schema}", autocommit=True) as conn:
-        rows = conn.execute("SELECT COUNT(*) FROM metrics WHERE campaign_id = %s",
-                            (campaign.name,)).fetchone()[0]
-    assert rows == 2, "the archive's own derived files are what make it queryable"
-
-    with psycopg.connect(DSN, autocommit=True) as teardown:
-        teardown.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
-        teardown.execute(f"DROP SCHEMA IF EXISTS {index_schema.CAMPAIGN_SCHEMA} CASCADE")
-
-
-def test_deleting_a_campaign_reaches_the_index(tmp_path, monkeypatch):
-    """A delete that removed the files and left the rows is a half-delete.
-
-    The index would then answer questions about a campaign nobody can reach, re-import or
-    check -- confidently, and with nothing left to compare against. Every delete goes through
-    one helper that reaches the index.
-    """
-    from tests.service.null_service import NullService
-    from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
-
-    forgotten = []
-    monkeypatch.setattr(
-        "robovast.results_processing.index_schema.forget_campaign",
-        lambda conn, cid: forgotten.append(cid) or {"poses": 3})
-    monkeypatch.setattr("robovast.common.index_db.connect",
-                        lambda *a, **k: _NullIndexConn())
-
-    results = tmp_path / "results"
-    cid = "gone-2026-09-01-101500"
-    (results / cid / "_execution").mkdir(parents=True)
-    store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    transport = NullService(store=store)
-    transport._campaigns_root = lambda: results        # noqa: SLF001
-
-    result = transport.delete_campaign(cid)
-
-    assert result.ok
-    assert forgotten == [cid], "deleting the files must also drop the rows"
-    assert not (results / cid).exists()
-
-
-def test_an_unreachable_index_does_not_fail_a_delete(tmp_path, monkeypatch):
-    """The files are already gone by then.
-
-    Reporting failure would invite a retry against a campaign that no longer exists, and
-    the orphaned rows are re-cleared by the next ingest of that id anyway.
-    """
-    from robovast.common.errors import IndexUnreachableError
-    from tests.service.null_service import NullService
-    from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
-
-    def _down(*_a, **_k):
-        raise IndexUnreachableError("ROBOVAST_INDEX_DSN is not set")
-
-    monkeypatch.setattr("robovast.common.index_db.connect", _down)
-    results = tmp_path / "results"
-    cid = "gone-2026-09-01-101501"
-    (results / cid / "_execution").mkdir(parents=True)
-    store = WorkspaceStore(registry=WorkspaceRegistry(root=str(tmp_path / "ws")))
-    transport = NullService(store=store)
-    transport._campaigns_root = lambda: results        # noqa: SLF001
-
-    assert transport.delete_campaign(cid).ok
-    assert not (results / cid).exists()
-
-
-class _NullIndexConn:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_exc):
-        return False
+# -- what an import runs afterwards -------------------------------------------
 
 
 def test_an_archive_that_arrived_postprocessed_is_not_recomputed(tmp_path, monkeypatch):
-    """The predicate used to ask for a file that no longer exists anywhere.
-
-    It tested `_execution/data.db`, postprocessing's old output. Rows go to the central
-    index now, so that test was permanently false and EVERY import re-postprocessed --
-    including archives that arrived complete, whose rows the import had just ingested. On a
-    cluster it also dispatched the rosbag steps into the service pod, which has no Docker.
-    """
+    """The postprocessing record is the evidence the pass finished; an archive carrying it
+    is not postprocessed again, and its tables are built from its records on first use."""
     from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
@@ -435,7 +330,7 @@ def test_an_archive_that_arrived_postprocessed_is_not_recomputed(tmp_path, monke
 
 
 def test_a_raw_archive_still_gets_postprocessed(tmp_path, monkeypatch):
-    """The other half: without the record there is nothing derived, so compute it."""
+    """The other half: without the record the campaign-end pass never ran, so run it."""
     from tests.service.null_service import NullService
     from robovast.service.workspaces import WorkspaceRegistry, WorkspaceStore
 
@@ -453,7 +348,7 @@ def test_a_raw_archive_still_gets_postprocessed(tmp_path, monkeypatch):
 
     transport._postprocess_after_import(_State(), cid, target)   # noqa: SLF001
 
-    assert ran, "a raw archive carries no derived data and must be postprocessed"
+    assert ran, "a raw archive has not been postprocessed and must be"
 
 
 class _State:
@@ -475,7 +370,6 @@ def test_a_snapshot_import_is_degraded_and_says_what_is_missing(campaign):
     campaign only in what is absent — so the marker the archiver wrote is the campaign
     saying so itself.
     """
-    import json
 
     from robovast.execution.campaign_archive import SNAPSHOT_MEMBER
 
@@ -490,3 +384,301 @@ def test_a_snapshot_import_is_degraded_and_says_what_is_missing(campaign):
     stage = report["stages"]["completeness"]
     assert stage["verdict"] == "degraded"
     assert "3/20 runs" in stage["detail"]
+
+
+def test_an_export_is_refused_as_an_export_and_told_which_archive_imports(tmp_path):
+    """An export (``vast campaign export``) holds ``export.json`` and ``tables/`` beside the
+    campaign's records, so it is not one campaign directory -- but it is the other archive
+    this system writes of a campaign, and the refusal says so and names the download that
+    imports, rather than counting its members."""
+    source = _FIXTURES / "v1-campaign-2025-03-04-101500"
+    export = tmp_path / "export.tar.gz"
+    with tarfile.open(export, "w:gz") as tar:
+        manifest = tarfile.TarInfo("export.json")
+        manifest.size = 2
+        tar.addfile(manifest, io.BytesIO(b"{}"))
+        tables = tarfile.TarInfo("tables/runs.parquet")
+        tables.size = 1
+        tar.addfile(tables, io.BytesIO(b"x"))
+        tar.add(source, arcname=source.name)
+
+    with pytest.raises(ValueError, match="is an export") as refused:
+        read_campaign_id(export)
+    assert "vast campaign download" in str(refused.value)
+
+
+def _bomb(tmp_path, unpacked: int) -> Path:
+    """One campaign whose single file unpacks to *unpacked* bytes of zeros -- kilobytes packed."""
+    out = tmp_path / "bomb.tar.gz"
+    with tarfile.open(out, "w:gz") as tar:
+        tar.add(_FIXTURES / "v1-campaign-2025-03-04-101500",
+                arcname="bomb-2026-01-01-000000")
+        info = tarfile.TarInfo("bomb-2026-01-01-000000/zeros.bin")
+        info.size = unpacked
+        tar.addfile(info, io.BytesIO(bytes(unpacked)))
+    return out
+
+
+def test_an_archive_that_unpacks_past_the_room_above_the_reserve_is_refused(
+        tmp_path, monkeypatch):
+    """The compressed size says nothing about what extraction writes: the member sizes the
+    index already carries are summed and held to the room above the reserve, before a byte
+    is written. Only when asked -- reading an id alone stays a read of the index."""
+    from robovast.common.errors import InsufficientStorageError
+    archive = _bomb(tmp_path, 4 * 1024 * 1024)
+    assert archive.stat().st_size < 1024 * 1024
+    monkeypatch.setattr("robovast.common.disk_reserve.room_bytes", lambda _path: 1024 * 1024)
+
+    with pytest.raises(InsufficientStorageError, match="unpacks to .* GB free above its reserve"):
+        read_campaign_id(archive, fits_in=tmp_path / "results")
+    assert read_campaign_id(archive) == "bomb-2026-01-01-000000"
+
+    monkeypatch.setattr("robovast.common.disk_reserve.room_bytes", lambda _path: 10 ** 9)
+    assert read_campaign_id(archive, fits_in=tmp_path / "results") == "bomb-2026-01-01-000000"
+
+
+def test_an_archive_of_many_empty_entries_is_held_to_the_blocks_they_take(tmp_path, monkeypatch):
+    """Sizes of zero still take a block each: an archive of empty entries is charged for them."""
+    from robovast.common.errors import InsufficientStorageError
+    out = tmp_path / "entries.tar.gz"
+    with tarfile.open(out, "w:gz") as tar:
+        tar.add(_FIXTURES / "v1-campaign-2025-03-04-101500",
+                arcname="entries-2026-01-01-000000")
+        for i in range(2000):
+            info = tarfile.TarInfo(f"entries-2026-01-01-000000/empty/{i}")
+            info.type = tarfile.DIRTYPE if i % 2 else tarfile.REGTYPE
+            tar.addfile(info)
+    monkeypatch.setattr("robovast.common.disk_reserve.block_bytes", lambda _path: 4096)
+    monkeypatch.setattr("robovast.common.disk_reserve.room_bytes", lambda _path: 2000 * 4096 - 1)
+
+    with pytest.raises(InsufficientStorageError, match="unpacks to"):
+        read_campaign_id(out, fits_in=tmp_path / "results")
+
+
+# -- what the configuration needs from this deployment -----------------------
+
+def _vast(campaign) -> Path:
+    return next((campaign / "_config").glob("*.vast"))
+
+
+def _declare(campaign, **sections):
+    """Add *sections* to the campaign's frozen ``.vast`` (the version-1 fixture's)."""
+    vast = _vast(campaign)
+    raw = yaml.safe_load(vast.read_text(encoding="utf-8"))
+    for key, value in sections.items():
+        if key == "variations":
+            raw.setdefault("configuration", [{"name": "cfg"}])[0]["variations"] = value
+        elif key in ("postprocessing", "metadata_processing", "health_checks"):
+            raw.setdefault("results_processing", {})[key] = value
+        else:
+            raw[key] = value
+    vast.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+
+
+def test_what_the_configuration_names_and_this_deployment_lacks_is_degraded_by_name(campaign):
+    """A raw import chains postprocessing straight away, so what it would lack is named in the
+    import report. Never blocking: the campaign lists without any of it."""
+    _declare(campaign,
+             variations=[{"NoSuchVariation": {}}, {"ParameterVariationList": {}}],
+             postprocessing=["rosbags_tf_to_csv", {"no_such_command": {}},
+                             "./missing.py:Step"],
+             plugins=["robovast-no-such-plugin==1.0"])
+    stage = ingest_campaign(campaign)["stages"]["environment"]
+    assert stage["verdict"] == STAGE_DEGRADED
+    for name in ("NoSuchVariation", "no_such_command", "./missing.py:Step",
+                 "robovast-no-such-plugin==1.0"):
+        assert name in stage["detail"]
+    for present in ("ParameterVariationList", "rosbags_tf_to_csv"):
+        assert present not in stage["detail"]
+
+
+def test_a_configuration_this_deployment_can_run_is_ok(campaign):
+    _declare(campaign, variations=[{"ParameterVariationList": {}}],
+             postprocessing=["rosbags_tf_to_csv"])
+    assert ingest_campaign(campaign)["stages"]["environment"]["verdict"] == STAGE_OK
+
+
+def test_a_configuration_that_cannot_be_parsed_is_reported_not_raised(campaign):
+    """The config stage refuses such a file by name; the environment stage must not turn that
+    refusal into an exception that loses the whole report."""
+    _vast(campaign).write_text("version: [unclosed\n", encoding="utf-8")
+    report = ingest_campaign(campaign)
+    assert report["stages"]["config"]["verdict"] == STAGE_FAILED
+    assert report["stages"]["environment"]["verdict"] == STAGE_ABSENT
+
+
+def test_no_configuration_is_not_reported_as_needing_nothing(campaign):
+    _vast(campaign).unlink()
+    assert ingest_campaign(campaign)["stages"]["environment"]["verdict"] == STAGE_ABSENT
+
+
+def test_what_a_raw_import_postprocessing_runs_is_checked_in_full(campaign):
+    """Postprocessing also runs the metadata processors and the health checks the campaign
+    declares, and a health check that is not installed is skipped rather than failing -- so
+    the import report is the one place that says it will not run."""
+    (_vast(campaign).parent / "check.py").write_text("class Check: pass\n", encoding="utf-8")
+    _declare(campaign,
+             postprocessing=["rosbags_to_cvs"],
+             metadata_processing=["no_such_processor"],
+             health_checks=["no_such_check", "./check.py:Check", "./absent.py:Check"])
+    stage = ingest_campaign(campaign)["stages"]["environment"]
+    assert stage["verdict"] == STAGE_DEGRADED
+    for name in ("rosbags_to_cvs", "no_such_processor", "no_such_check", "./absent.py:Check"):
+        assert name in stage["detail"]
+    assert "./check.py:Check" not in stage["detail"]
+
+
+def test_a_config_that_is_not_a_mapping_blocks_the_import_by_name(campaign):
+    """A .vast whose document is a list parses as YAML but holds no configuration. The config
+    stage refuses it and says why, rather than the import raising and reporting nothing."""
+    vast_path = next((campaign / "_config").glob("*.vast"))
+    vast_path.write_text("- a list\n- not a mapping\n", encoding="utf-8")
+    report = ingest_campaign(campaign)
+    stage = report["stages"]["config"]
+    assert stage["verdict"] == STAGE_FAILED
+    assert "not a mapping" in stage["detail"]
+    assert report["ok"] is False and "config" in report["blocking"]
+    assert report["stages"]["environment"]["verdict"] == STAGE_ABSENT
+
+
+# -- the archive layout ------------------------------------------------------
+
+def _stamp(campaign, **fields):
+    from robovast.common.migrations.archive import ARCHIVE_STAMP
+    (campaign / ARCHIVE_STAMP).write_text(json.dumps(fields), encoding="utf-8")
+
+
+def test_an_archive_without_a_stamp_is_the_current_layout_and_is_left_unstamped(campaign):
+    from robovast.common.migrations.archive import ARCHIVE_LAYOUT, ARCHIVE_STAMP
+    report = ingest_campaign(campaign)
+    assert report["ok"] is True
+    stage = report["stages"]["archive"]
+    assert stage["verdict"] == STAGE_OK
+    assert stage["version"] == ARCHIVE_LAYOUT
+    assert not (campaign / ARCHIVE_STAMP).exists()
+
+
+def test_an_archive_at_the_current_layout_is_ok(campaign):
+    from robovast.common.migrations.archive import ARCHIVE_LAYOUT
+    _stamp(campaign, layout=ARCHIVE_LAYOUT)
+    report = ingest_campaign(campaign)
+    assert report["stages"]["archive"]["verdict"] == STAGE_OK
+    assert report["ok"] is True
+
+
+def test_an_archive_from_a_newer_layout_is_newer_and_named(campaign):
+    """Somebody's data from a newer robovast still lists; the stage says which layout and
+    which robovast wrote it, rather than refusing or passing it silently."""
+    from robovast.common.migrations.archive import ARCHIVE_LAYOUT
+    _stamp(campaign, layout=ARCHIVE_LAYOUT + 1, robovast="99.0.0")
+    report = ingest_campaign(campaign)
+    stage = report["stages"]["archive"]
+    assert stage["verdict"] == STAGE_NEWER
+    assert f"layout {ARCHIVE_LAYOUT + 1}" in stage["detail"] and "99.0.0" in stage["detail"]
+    assert f"up to {ARCHIVE_LAYOUT}" in stage["detail"]
+    assert report["ok"] is True
+
+
+def test_a_stamp_that_states_no_layout_blocks_the_import(campaign):
+    _stamp(campaign, layout="one")
+    report = ingest_campaign(campaign)
+    assert report["ok"] is False and report["blocking"] == ["archive"]
+    assert "'one'" in report["stages"]["archive"]["detail"]
+
+
+# -- extraction stays inside the campaign ------------------------------------
+
+def _results_with_victim(tmp_path):
+    """A results tree holding another campaign, whose files an archive must not reach."""
+    results = tmp_path / "results"
+    victim = results / "victim-2026-01-01-000000"
+    (victim / "_config").mkdir(parents=True)
+    (victim / "campaign.db").write_bytes(b"original")
+    return results, victim
+
+
+def _archive_of(tmp_path, campaign_id, members) -> Path:
+    """An archive of the version-1 fixture under *campaign_id*, plus *members* after it.
+
+    Each member is ``(name, payload)`` for a file, ``(name, ("symlink", target))`` or
+    ``(name, ("hardlink", target))``.
+    """
+    out = tmp_path / "archive.tar.gz"
+    with tarfile.open(out, "w:gz") as tar:
+        tar.add(_FIXTURES / "v1-campaign-2025-03-04-101500", arcname=campaign_id)
+        for name, what in members:
+            info = tarfile.TarInfo(name)
+            if isinstance(what, tuple):
+                info.type = tarfile.SYMTYPE if what[0] == "symlink" else tarfile.LNKTYPE
+                info.linkname = what[1]
+                tar.addfile(info)
+            else:
+                info.size = len(what)
+                tar.addfile(info, io.BytesIO(what))
+    return out
+
+
+@pytest.mark.parametrize("members", [
+    pytest.param([("camp-2026-02-02-000000/../victim-2026-01-01-000000/campaign.db", b"x")],
+                 id="dot-dot-at-the-top"),
+    pytest.param([("camp-2026-02-02-000000/_config/../../victim-2026-01-01-000000/campaign.db",
+                   b"x")], id="dot-dot-below"),
+    pytest.param([("camp-2026-02-02-000000/aside", ("symlink", "../victim-2026-01-01-000000")),
+                  ("camp-2026-02-02-000000/aside/campaign.db", b"x")],
+                 id="through-a-symlink-to-a-sibling"),
+    pytest.param([("camp-2026-02-02-000000/twin",
+                   ("hardlink", "camp-2026-02-02-000000/../victim-2026-01-01-000000/campaign.db"))],
+                 id="hard-link-to-a-sibling"),
+    pytest.param([("other-2026-03-03-000000/campaign.db", b"x")], id="another-campaign"),
+])
+def test_a_member_that_leaves_its_campaign_directory_is_refused_by_name(tmp_path, members):
+    """The archive is extracted beside every other campaign, so "inside the results tree"
+    is not confinement: a member that resolves to a sibling campaign would overwrite its
+    records, and Python's data filter allows it. Every member is held to the campaign's own
+    directory instead, and the extraction fails naming the one that left it."""
+    results, victim = _results_with_victim(tmp_path)
+    campaign_id = "camp-2026-02-02-000000"
+    (results / campaign_id / "_execution").mkdir(parents=True)
+    archive = _archive_of(tmp_path, campaign_id, members)
+
+    with pytest.raises(ValueError, match="outside the") as refused:
+        extract_archive(archive, results, campaign_id)
+
+    assert "victim-2026-01-01-000000" in str(refused.value) or "other-2026" in str(refused.value)
+    assert (victim / "campaign.db").read_bytes() == b"original"
+    assert not (results / "other-2026-03-03-000000").exists()
+
+
+def test_links_within_the_campaign_survive_the_confinement(tmp_path):
+    """The ``job`` symlinks beside a campaign's runs and a hard link to one of its own files
+    are what an archive of one campaign carries, and both land."""
+    results, _ = _results_with_victim(tmp_path)
+    campaign_id = "camp-2026-02-02-000000"
+    (results / campaign_id / "_execution").mkdir(parents=True)
+    archive = _archive_of(tmp_path, campaign_id, [
+        (f"{campaign_id}/cfg/0/job", ("symlink", "../../_execution")),
+        (f"{campaign_id}/twin", ("hardlink", f"{campaign_id}/_config/campaign.vast")),
+    ])
+
+    extract_archive(archive, results, campaign_id)
+
+    landed = results / campaign_id
+    assert (landed / "cfg" / "0" / "job").is_symlink()
+    assert (landed / "cfg" / "0" / "job" / "execution.yaml").is_file()
+    assert (landed / "twin").read_bytes() == (landed / "_config" / "campaign.vast").read_bytes()
+
+
+def test_a_dot_rooted_archive_extracts_under_its_campaign_name(tmp_path):
+    """``tar -C <dir> .`` names every member under ``./``; that root writes nothing and the
+    campaign lands under its own name."""
+    results, _ = _results_with_victim(tmp_path)
+    campaign_id = "v1-campaign-2025-03-04-101500"
+    staging = tmp_path / "staging"
+    shutil.copytree(_FIXTURES / campaign_id, staging / campaign_id)
+    archive = tmp_path / "dotted.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(staging, arcname=".")
+
+    extract_archive(archive, results, campaign_id)
+
+    assert (results / campaign_id / "_config" / "campaign.vast").is_file()

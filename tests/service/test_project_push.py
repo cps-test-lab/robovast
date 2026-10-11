@@ -410,7 +410,7 @@ def test_a_workspace_round_trips_through_a_directory(tmp_path):
 
     source = tmp_path / "project"
     (source / "files").mkdir(parents=True)
-    (source / "campaign.vast").write_text("version: 4\n", encoding="utf-8")
+    (source / "campaign.vast").write_text("version: 7\n", encoding="utf-8")
     (source / "scenario.osc").write_text("# scenario\n", encoding="utf-8")
     (source / "files" / "params.yaml").write_text("a: 1\n", encoding="utf-8")
 
@@ -422,7 +422,7 @@ def test_a_workspace_round_trips_through_a_directory(tmp_path):
     counts = pull_workspace_to_directory(client, workspace.workspace_id, target)
 
     assert counts["fetched"] == 3
-    assert (target / "campaign.vast").read_text(encoding="utf-8") == "version: 4\n"
+    assert (target / "campaign.vast").read_text(encoding="utf-8") == "version: 7\n"
     assert (target / "scenario.osc").read_text(encoding="utf-8") == "# scenario\n"
     # Nested paths survive, rather than being flattened into the target root.
     assert (target / "files" / "params.yaml").read_text(encoding="utf-8") == "a: 1\n"
@@ -436,7 +436,7 @@ def test_pulling_refuses_to_overwrite_local_files(tmp_path):
 
     source = tmp_path / "project"
     source.mkdir()
-    (source / "campaign.vast").write_text("version: 4\n", encoding="utf-8")
+    (source / "campaign.vast").write_text("version: 7\n", encoding="utf-8")
 
     client = _transport(tmp_path / "store")
     workspace = client.create_workspace(CreateWorkspaceRequest(name="no-clobber"))
@@ -451,7 +451,7 @@ def test_pulling_refuses_to_overwrite_local_files(tmp_path):
     assert (target / "campaign.vast").read_text(encoding="utf-8") == "my local edits\n"
 
     pull_workspace_to_directory(client, workspace.workspace_id, target, overwrite=True)
-    assert (target / "campaign.vast").read_text(encoding="utf-8") == "version: 4\n"
+    assert (target / "campaign.vast").read_text(encoding="utf-8") == "version: 7\n"
 
 
 def test_the_executable_bit_survives_the_round_trip(tmp_path):
@@ -463,7 +463,7 @@ def test_the_executable_bit_survives_the_round_trip(tmp_path):
 
     source = tmp_path / "project"
     source.mkdir()
-    (source / "campaign.vast").write_text("version: 4\n", encoding="utf-8")
+    (source / "campaign.vast").write_text("version: 7\n", encoding="utf-8")
     script = source / "run.sh"
     script.write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
     script.chmod(0o755)
@@ -545,3 +545,27 @@ def test_a_refused_upload_reaches_the_caller_as_the_services_sentence(tmp_path):
         push_file(http_client, _address("ws-1", "data.bin"), binary)
     assert excinfo.value.status == 507
     assert excinfo.value.detail == "The service ran out of disk space."
+
+
+def test_an_archive_member_cannot_escape_into_a_sibling_sharing_the_prefix(tmp_path):
+    """``pulled/../pulled2`` shares ``pulled`` as a string prefix but is not under it.
+
+    The archive came from another machine, so a member that resolves beside the target
+    rather than inside it is refused, and nothing is written there.
+    """
+    import io
+    import tarfile
+
+    from robovast.service.project_push import pull_workspace_to_directory
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        payload = b"escaped\n"
+        member = tarfile.TarInfo("ws/../pulled2/evil.txt")
+        member.size = len(payload)
+        tar.addfile(member, io.BytesIO(payload))
+    client = SimpleNamespace(workspace_tar_stream=lambda _wid: iter([buf.getvalue()]))
+
+    with pytest.raises(ValueError, match="outside"):
+        pull_workspace_to_directory(client, "ws-1", tmp_path / "pulled")
+    assert not (tmp_path / "pulled2").exists()

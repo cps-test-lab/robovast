@@ -19,9 +19,9 @@ it worked.
 
 A downloaded campaign -- from a colleague, or from a published dataset -- has to become
 something this deployment can list, display and re-run. That is not one operation, so
-"succeeded" is not one bit: a campaign archive carries **two schema ladders of its own** beyond
-the ``.vast``'s version (``campaign.db``'s ``user_version`` and the analysis DB's), and each can
-independently be older, newer, absent or corrupt.
+"succeeded" is not one bit: a campaign archive carries three ladders -- its layout
+(``_execution/archive.json``), the ``.vast``'s version and ``campaign.db``'s ``user_version``
+-- and each can independently be older, newer, absent or corrupt.
 
 So ingestion reports per stage, and every stage that is not ``ok`` carries a recovery action.
 The interesting property is that most of the failure modes are *recoverable*, and only saying
@@ -51,10 +51,13 @@ re-implementing the sequence.
 
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import tarfile
 from pathlib import Path
+
+from robovast.client.safe_path import UnsafePathError, check_segment
 
 logger = logging.getLogger(__name__)
 
@@ -111,9 +114,11 @@ def _checked_campaign_name(name: str) -> str:
     """
     from robovast.common.execution import is_campaign_dir
 
-    if name in ('.', '..') or '/' in name or '\\' in name:
+    try:
+        check_segment(name)
+    except UnsafePathError as err:
         raise ValueError(
-            f"the archive's top-level entry {name!r} is not a campaign directory name")
+            f"the archive's top-level entry {name!r} is not a campaign directory name") from err
     if not is_campaign_dir(name):
         raise ValueError(
             f"{name!r} is not a campaign directory name (expected "
@@ -123,7 +128,7 @@ def _checked_campaign_name(name: str) -> str:
     return name
 
 
-def read_campaign_id(archive_path) -> str:
+def read_campaign_id(archive_path, *, fits_in=None) -> str:
     """The campaign id an archive holds, read from its member list alone.
 
     Known before anything is extracted, which is what lets an import be a *tracked*
@@ -133,18 +138,47 @@ def read_campaign_id(archive_path) -> str:
 
     ``ValueError`` -- the interface's vocabulary for "this input is wrong", mapped to 400 by
     the HTTP layer -- when the archive is not exactly one campaign.
+
+    Given *fits_in*, the directory the archive would be extracted under, an archive that
+    would unpack past that filesystem's room above its reserve raises
+    :class:`~robovast.common.errors.InsufficientStorageError` (507); see
+    :func:`~robovast.common.disk_reserve.refuse_unless_room`.
     """
     archive_path = Path(archive_path)
     try:
         with tarfile.open(archive_path, 'r:*') as tar:
-            tops = _top_level_entries(tar.getnames())
+            members = tar.getmembers()
     except (tarfile.TarError, OSError) as e:
         raise ValueError(f"could not read {archive_path.name}: {e}") from e
+    tops = _top_level_entries(m.name for m in members)
+    if fits_in is not None:
+        from robovast.common.disk_reserve import \
+            refuse_unless_room  # pylint: disable=import-outside-toplevel
+        refuse_unless_room(archive_path.name, members, fits_in, "the results volume",
+                           "delete campaigns no longer needed, then import it again")
     if len(tops) != 1:
+        if _is_export(tops):
+            raise ValueError(
+                f"{archive_path.name} is an export -- the campaign's tables as files beside "
+                f"its records -- which is the campaign to read, not the campaign to import: "
+                f"open it with robovast-data, or import the campaign's download "
+                f"('vast campaign download') instead.")
         raise ValueError(
             f"archive holds {len(tops)} top-level entries; expected one campaign "
             f"directory: {sorted(tops)[:5]}")
     return _checked_campaign_name(tops.pop())
+
+
+def _is_export(tops) -> bool:
+    """Whether *tops* are an export's members: its manifest and its tables beside the campaign.
+
+    Named rather than counted among the "several top-level entries" refusals, because an
+    export is the other archive this system writes of a campaign, and the person holding
+    one is told which of the two imports.
+    """
+    from robovast.service.exports import (  # pylint: disable=import-outside-toplevel
+        EXPORT_FILE, TABLES_MEMBER)
+    return EXPORT_FILE in tops and TABLES_MEMBER in tops
 
 
 def claim_campaign_dir(results_root, campaign_id: str, *, force: bool = False) -> Path:
@@ -158,7 +192,17 @@ def claim_campaign_dir(results_root, campaign_id: str, *, force: bool = False) -
     Creates the campaign's ``_execution/`` directory, because the importer's log lives there
     and it must be open before the slow part starts -- an import whose account of itself only
     begins after the download is an import with no account of the download.
+
+    Marks the directory as an import under way (``_execution/importing.json``), for the
+    importer to clear once the import has concluded. An archive carries the archived
+    campaign's own ``outcome.json``, so a tree an import died in the middle of would
+    otherwise reconstruct as that campaign -- finished, with every run the record counts
+    -- while holding whichever members had landed. The marker is what makes such a tree
+    read as the failed import it is (:func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`).
     """
+    from robovast.common.campaign_data import \
+        write_import_marker  # pylint: disable=import-outside-toplevel
+
     root = Path(results_root)
     root.mkdir(parents=True, exist_ok=True)
     target = root / _checked_campaign_name(campaign_id)
@@ -170,11 +214,54 @@ def claim_campaign_dir(results_root, campaign_id: str, *, force: bool = False) -
                 f"with force to replace it.")
         shutil.rmtree(target)
     (target / "_execution").mkdir(parents=True, exist_ok=True)
+    write_import_marker(target)
     return target
 
 
-def extract_archive(archive_path, results_root, *, remove_archive: bool = False) -> None:
-    """Unpack a campaign archive into *results_root*.
+class MemberOutsideCampaign(tarfile.FilterError):
+    """A member of a campaign archive that would land outside the campaign it holds."""
+
+    def __init__(self, member_name: str, campaign_id: str, where: str):
+        super().__init__(
+            f"member {member_name!r} would land at {where!r}, outside the campaign "
+            f"directory {campaign_id}/")
+
+
+def _confined_to(campaign_id: str):
+    """An extraction filter for the campaign's own directory, not the results root.
+
+    Each member is renamed relative to the campaign directory and handed to
+    ``tarfile.data_filter`` with that directory as its destination, so a ``..``, a symlink
+    or a hard link that reaches a sibling campaign is refused by name. The ``./`` root of a
+    ``tar -C <dir> .`` archive writes nothing.
+    """
+    prefix = campaign_id + "/"
+
+    def _inside(name: str, member_name: str) -> str:
+        rel = os.path.normpath(name.lstrip("/"))
+        if rel != campaign_id and not rel.startswith(prefix):
+            raise MemberOutsideCampaign(member_name, campaign_id, rel)
+        return rel[len(prefix):] or "."
+
+    def _filter(member, dest):
+        if os.path.normpath(member.name.lstrip("/")) == ".":
+            return None
+        inner = {"name": _inside(member.name, member.name)}
+        if member.islnk():
+            inner["linkname"] = _inside(member.linkname, member.name)
+        return tarfile.data_filter(member.replace(**inner), dest)
+
+    return _filter
+
+
+def extract_archive(archive_path, results_root, campaign_id: str, *,
+                    remove_archive: bool = False) -> None:
+    """Unpack the archive of *campaign_id* into ``<results_root>/<campaign_id>``.
+
+    An archive from elsewhere is untrusted input: every member is confined to the
+    campaign's own directory (:func:`_confined_to`), and one that would land anywhere else
+    fails the extraction naming the member. A campaign's ``job`` symlinks point within the
+    campaign, so they survive it.
 
     *remove_archive* deletes *archive_path* afterwards. It is for a copy the service staged
     -- from an upload, or from the share -- and now owns; a path the caller named is never
@@ -184,10 +271,8 @@ def extract_archive(archive_path, results_root, *, remove_archive: bool = False)
     archive_path = Path(archive_path)
     try:
         with tarfile.open(archive_path, 'r:*') as tar:
-            # `filter='data'` refuses absolute paths and ../ escapes. An archive from elsewhere is
-            # untrusted input, and the default became an error in newer Pythons for that reason.
-            # A campaign's `job` symlinks point within the campaign, so they survive it.
-            tar.extractall(path=Path(results_root), filter='data')
+            tar.extractall(path=Path(results_root) / _checked_campaign_name(campaign_id),
+                           filter=_confined_to(campaign_id))
     except (tarfile.TarError, OSError) as e:
         raise ValueError(f"could not read {archive_path.name}: {e}") from e
 
@@ -212,14 +297,17 @@ def ingest_campaign(campaign_dir, *, rebuild_store: bool = False) -> dict:
     has to reach around this function to do.
     """
     campaign_dir = Path(campaign_dir)
-    stages = {
-        "layout": _check_layout(campaign_dir),
-        "config": _check_config(campaign_dir),
-    }
+    # First: every other stage reads records whose paths and formats the layout decides.
+    stages = {"archive": _migrate_archive(campaign_dir)}
+    if stages["archive"]["verdict"] == STAGE_FAILED:
+        return {"campaign_id": campaign_dir.name, "ok": False, "blocking": ["archive"],
+                "stages": stages}
+    stages["layout"] = _check_layout(campaign_dir)
+    stages["config"] = _check_config(campaign_dir)
     stages["completeness"] = _check_completeness(campaign_dir)
+    stages["environment"] = _check_environment(campaign_dir)
     stages["campaign_store"] = _ingest_store(campaign_dir, rebuild=rebuild_store)
-    stages["index"] = _ingest_index(campaign_dir)
-    stages["analysis_db"] = _check_analysis_db(campaign_dir)
+    stages["tables"] = _check_tables(campaign_dir)
     blocking = sorted(name for name, stage in stages.items()
                       if stage["verdict"] in BLOCKING_STAGES)
     return {"campaign_id": campaign_dir.name, "ok": not blocking,
@@ -282,6 +370,32 @@ def missing_for_import_in(campaign_root) -> list:
     return missing_for_import(["_config"] + [f"_config/{p.name}" for p in config.iterdir()])
 
 
+def _migrate_archive(campaign_dir: Path) -> dict:
+    """Bring the extracted tree to the archive layout this robovast reads.
+
+    No stamp is the baseline layout. A newer layout is ``newer``, as a
+    newer ``.vast`` or store is, and not blocking: the campaign still lists, but its records
+    may be misread, so the stage names the layout and the robovast that wrote it. An
+    unreadable stamp or a failing step blocks: nothing after it knows what the tree holds.
+    """
+    from robovast.common.migrations.archive import (  # pylint: disable=import-outside-toplevel
+        ARCHIVE_LAYOUT, ArchiveLayoutError, ArchiveTooNew, upgrade_archive)
+
+    try:
+        found, applied = upgrade_archive(campaign_dir)
+    except ArchiveTooNew as e:
+        return _stage(STAGE_NEWER,
+                      f"{e} The campaign is registered as it is, and records this robovast "
+                      f"does not know may be misread.", recovery="upgrade robovast")
+    except ArchiveLayoutError as e:
+        return _stage(STAGE_FAILED, str(e),
+                      recovery="re-export the campaign from the service that holds it")
+    if not applied:
+        return _stage(STAGE_OK, f"archive layout {found}", version=found)
+    return _stage(STAGE_MIGRATED, f"archive layout {found} migrated to {ARCHIVE_LAYOUT}",
+                  version=found, steps=applied)
+
+
 def _check_layout(campaign_dir: Path) -> dict:
     """Is this a campaign directory at all?
 
@@ -289,9 +403,22 @@ def _check_layout(campaign_dir: Path) -> dict:
     different answers -- registering a half-campaign would make every later reader fail on it
     instead of the import saying so once.
     """
+    from robovast.common.campaign_data import \
+        IMPORT_MARKER_FILENAME  # pylint: disable=import-outside-toplevel
+    from robovast.common.migrations.archive import \
+        ARCHIVE_STAMP  # pylint: disable=import-outside-toplevel
+
     if not campaign_dir.is_dir():
         return _stage(STAGE_FAILED, f"{campaign_dir} is not a directory")
     missing = [name for name in ("_config", "_execution") if not (campaign_dir / name).is_dir()]
+    # The importer's log, report and under-way marker and the archive's layout stamp all sit
+    # in ``_execution/``, so a directory holding only those is an execution record the archive
+    # lacked.
+    importer_records = {Path(ARCHIVE_STAMP).name, "import.log", "import.json",
+                        IMPORT_MARKER_FILENAME}
+    if ("_execution" not in missing
+            and {e.name for e in (campaign_dir / "_execution").iterdir()} <= importer_records):
+        missing.append("_execution")
     if "_config" in missing:
         return _stage(STAGE_FAILED,
                       "no _config/ directory, so this is not a campaign this deployment can "
@@ -387,6 +514,84 @@ def _check_config(campaign_dir: Path) -> dict:
         return _stage(STAGE_FAILED, found.message, recovery=recovery[found.state])
     return _stage(STAGE_FAILED, found.message, version=found.version,
                   recovery=recovery[found.state])
+
+
+def _check_environment(campaign_dir: Path) -> dict:
+    """What the campaign's ``.vast`` names that this deployment does not have.
+
+    Degraded, never blocking: the campaign lists and displays without any of it; only
+    postprocessing, which a raw import chains straight away, and a re-run need it. Names are
+    checked, never loaded, so no code from the archive runs here. Postprocessing installs the
+    ``plugins:`` packages before it runs and they may provide a missing entry point, so the
+    detail says that rather than guessing.
+    """
+    from importlib.metadata import entry_points  # pylint: disable=import-outside-toplevel
+
+    from robovast.common.config_plugins import \
+        is_installed  # pylint: disable=import-outside-toplevel
+    from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
+        read_vast, upgrade_config)
+    from robovast.common.plugin_ref import (  # pylint: disable=import-outside-toplevel
+        file_ref_path, is_file_ref)
+    from robovast.common.results_utils import \
+        campaign_vast_or_none  # pylint: disable=import-outside-toplevel
+    from robovast.results_processing.campaign_tables import \
+        is_decoder_command  # pylint: disable=import-outside-toplevel
+
+    vast_path = campaign_vast_or_none(campaign_dir)
+    config = None
+    if vast_path is not None:
+        try:
+            config, _ = upgrade_config(read_vast(vast_path))
+        except Exception:  # pylint: disable=broad-except -- the config stage says why
+            config = None
+    if not isinstance(config, dict):
+        return _stage(STAGE_ABSENT, "the configuration could not be read (see the config "
+                                    "stage), so what it needs cannot be listed")
+
+    def names(entries):
+        for entry in entries or ():
+            name = next(iter(entry), None) if isinstance(entry, dict) else entry
+            if isinstance(name, str):
+                yield name
+
+    results = config.get("results_processing") or {}
+    # (what, entry-point group, names, whether a ./file.py:Class ref is accepted there)
+    wanted = (
+        ("variation types", "robovast.variation_types",
+         {name for cfg in config.get("configuration") or () if isinstance(cfg, dict)
+          for name in names(cfg.get("variations"))}, True),
+        ("postprocessing commands", "robovast.postprocessing_commands",
+         {name for name in names(results.get("postprocessing"))
+          if not is_decoder_command(name)}, True),
+        ("metadata processors", "robovast.metadata_processing",
+         set(names(results.get("metadata_processing"))), False),
+        ("health checks", "robovast.health_checks",
+         set(names(results.get("health_checks"))), True),
+    )
+
+    missing, file_refs = [], set()
+    for what, group, wanted_names, takes_file_refs in wanted:
+        installed = {ep.name for ep in entry_points(group=group)}
+        if takes_file_refs:
+            file_refs |= {name for name in wanted_names if is_file_ref(name)}
+        if gone := sorted(name for name in wanted_names - installed
+                          if not (takes_file_refs and is_file_ref(name))):
+            missing.append(f"{what} {', '.join(gone)}")
+    if gone := sorted(ref for ref in file_refs
+                      if not (vast_path.parent / (file_ref_path(ref) or ref)).is_file()):
+        missing.append(f"local plugins {', '.join(gone)} (not in the archive's _config/)")
+    specs = [s for s in config.get("plugins") or () if isinstance(s, str) and s.strip()]
+    if gone := sorted(s for s in specs if not is_installed(s)):
+        missing.append(f"plugin packages {', '.join(gone)} (postprocessing installs these "
+                       f"from the campaign's plugins: before it runs, and they may provide "
+                       f"what is listed above)")
+    if missing:
+        return _stage(STAGE_DEGRADED,
+                      "not installed here: " + "; ".join(missing) + ". The campaign lists "
+                      "and displays; postprocessing and a re-run need them.",
+                      recovery="install the packages that provide them on this service")
+    return _stage(STAGE_OK, "every plugin the configuration names is installed here")
 
 
 def _ingest_store(campaign_dir: Path, *, rebuild: bool) -> dict:
@@ -500,72 +705,24 @@ def _migrate_store_in_place(campaign_dir: Path, store_path: Path) -> None:
     backfill_run_rows(campaign_dir)
 
 
-def _ingest_index(campaign_dir: Path) -> dict:
-    """Load the campaign's rows into the central index. A stage, not a separate command.
+def _check_tables(campaign_dir: Path) -> dict:
+    """What tables the campaign's records can give. A stage, reported like the others.
 
-    Ingestion is not something a user asks for -- it happens wherever a campaign's results
-    ARRIVE, and this function is the arrival for two of the three ways they do: an import
-    from a share, and a user upload. (The third is a campaign finishing, which
-    ``results_processing.postprocessing`` covers.) Anything else leaves a campaign that
-    lists, opens and has files, and answers nothing when queried.
-
-    Before this existed, the stage below merely *reported* that the rows were absent and
-    told the reader to run postprocessing -- which re-runs the plugin pipeline against the
-    campaign's own image to regenerate derived files that the archive already contains.
-    The ingest reads those files, so an imported campaign is queryable without resolving a
-    single plugin.
-
-    Not blocking when the index is unreachable, deliberately, and consistent with the rest
-    of this module: the campaign itself imported fine and its files are intact, so
-    discarding it to keep a boolean clean is the wrong trade. Degraded says the queryable
-    copy is missing and names the remedy, and re-importing (or postprocessing) supplies it
-    later. The one thing this must not do is stay silent -- a campaign that lists but
-    cannot be queried, with nothing saying why, is the failure this whole stage exists to
-    make visible.
+    Nothing is loaded: a table is built from the records the first time something names it,
+    by the same decoder wherever the campaign is. What this can say at import is whether the
+    records give any, which is the question a reader of an import report has -- a campaign
+    that lists and opens but whose records give no table at all is the one worth flagging.
     """
-    from robovast.common import index_db  # pylint: disable=import-outside-toplevel
-    from robovast.common.errors import \
-        IndexUnreachableError  # pylint: disable=import-outside-toplevel
-    from robovast.results_processing import \
-        campaign_ingest  # pylint: disable=import-outside-toplevel
+    from robovast_decode.build import available_tables  # pylint: disable=import-outside-toplevel
+    from robovast_decode.layout import decoder_config  # pylint: disable=import-outside-toplevel
 
     try:
-        with index_db.connect() as conn:
-            totals = campaign_ingest.ingest_campaign(conn, str(campaign_dir),
-                                                     campaign_dir.name)
-    except IndexUnreachableError as exc:
-        return _stage(STAGE_DEGRADED,
-                      f"the campaign is imported but not queryable: {exc}. It is loaded "
-                      f"by re-importing once the index is reachable, or by "
-                      f"'vast campaign postprocess {campaign_dir.name}'.")
+        tables = available_tables(str(campaign_dir), decoder_config(str(campaign_dir)))
     except Exception as exc:  # pylint: disable=broad-except
-        logger.warning("index ingest failed for %s", campaign_dir.name, exc_info=True)
-        return _stage(STAGE_DEGRADED,
-                      f"the campaign is imported but its rows could not be loaded: {exc}")
-    rows = sum(totals.values())
-    if not rows:
-        # Recorded, so "ingested and empty" stays distinguishable from "never ingested".
-        return _stage(STAGE_ABSENT,
-                      "no rows to load -- the archive carries no derived data. Run "
-                      f"'vast campaign postprocess {campaign_dir.name}' to produce it.")
-    return _stage(STAGE_OK,
-                  f"{rows} row(s) across {len(totals)} table(s) loaded into the index")
-
-
-def _check_analysis_db(campaign_dir: Path) -> dict:
-    """Whether the campaign carries a per-campaign analysis database.
-
-    Historical only: postprocessed rows now stream into the central index, so a modern
-    campaign directory carries none and *absent* is the ordinary answer -- recoverable, as
-    it always was, by running postprocessing, which is what loads the campaign into the
-    index. Reported rather than dropped because an archive from before the index still has
-    such a file, and saying so is how a reader knows where its metrics are.
-    """
-    candidates = sorted(campaign_dir.glob("**/*.duckdb")) + sorted(campaign_dir.glob("**/data.db"))
-    if not candidates:
-        return _stage(STAGE_ABSENT,
-                      "no per-campaign analysis database. Expected -- postprocessed rows "
-                      "live in the central index, and the 'index' stage above reports "
-                      "whether this campaign's are loaded.")
-    return _stage(STAGE_OK, f"{len(candidates)} legacy per-campaign analysis database(s) "
-                            f"present; the queryable copy is the central index")
+        logger.warning("could not read %s's records", campaign_dir.name, exc_info=True)
+        return _stage(STAGE_DEGRADED, f"the campaign's records could not be read: {exc}")
+    if not tables:
+        return _stage(STAGE_ABSENT, "the records give no tables: no recording and no data "
+                                    "file in any run")
+    return _stage(STAGE_OK, f"{len(tables)} table(s) can be built from the records; each is "
+                            "built the first time something names it")

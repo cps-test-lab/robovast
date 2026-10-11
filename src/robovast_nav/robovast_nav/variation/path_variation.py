@@ -30,9 +30,10 @@ from robovast.common.variation.base_variation import (SCENARIO_CHANNEL, SIM_CHAN
                                                       VariationInfeasibleError)
 
 from ..data_model import Orientation, Pose, Position
+from ..map_loader import map_files
 # `path_length` here always means the length a campaign ASKED for; the measurement of a
 # path in hand is imported under a name that cannot be confused with it.
-from ..path_generator import PathGenerator, path_length as arc_length
+from ..path_generator import PathGenerator, WaypointRefused, path_length as arc_length
 from ..waypoint_generator import WaypointGenerator
 from .. import config_view
 from .nav_base_variation import NavVariation
@@ -315,7 +316,8 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
         # The prefix names the pickle layout: a cache written under an earlier layout is
         # not found rather than unpacked into the wrong shape.
         file_cache = FileCache(cache_path, "robovast_path_generation_v2_", [self.parameters, seed, path_length, num_goal_poses])
-        cache = file_cache.get_cached_file([map_file_path], binary=True)
+        cache_inputs = map_files(map_file_path)
+        cache = file_cache.get_cached_file(cache_inputs, binary=True)
         if cache:
             cached_start_pose, cached_goal_poses, cached_path = pickle.loads(cache)
             self.progress_update(f"Using cached start/goal poses {cached_start_pose} -> {cached_goal_poses}")
@@ -388,7 +390,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
             # Generate path considering any existing static objects
             try:
                 path = path_generator.generate_path(waypoints, [])
-            except ValueError as exc:
+            except WaypointRefused as exc:
                 # The two clearance tests are not the same test: the sampler checks a disc
                 # of cells around a candidate, the planner a distance transform of the whole
                 # grid, so a pose close to a wall can pass one and fail the other. That is
@@ -464,7 +466,7 @@ class PathVariationRandom(StartGoalSlots, NavVariation):
         self.progress_update(f"  Found path after {attempt} attempts: {start_pose} -> {goal_poses}")
         file_content = pickle.dumps((start_pose, goal_poses, path))
         file_cache.save_file_to_cache(
-            input_files=[map_file_path],
+            input_files=cache_inputs,
             file_content=file_content,
             binary=True)
         return start_pose, goal_poses, path, map_file_path
@@ -514,9 +516,9 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
     - ``raster_size``: Grid spacing between raster points in meters.
     - ``path_length``: Target path length in meters.
     - ``robot_diameter``: Robot diameter for collision checking in meters.
-    - ``start_pose``: Optional start position as parameter reference (``@start_pose``)
-      or direct pose with ``x``, ``y``, ``yaw``.  If omitted, all valid raster points
-      are used as potential start poses.
+    - ``start_from``: Optional start position as a reference to a pose the configuration
+      carries (``@start_pose``), or a direct pose with ``x``, ``y``, ``yaw``.  If omitted,
+      all valid raster points are used as potential start poses.
     - ``num_goal_poses``: Number of goal poses per path (default: ``1``).
       Single goal mode uses grid-to-grid paths; multi-goal mode uses a search radius
       algorithm.
@@ -581,7 +583,14 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
                     # Reference to a config parameter
                     pose_ref = self.parameters.start_from.lstrip('@')
                     self.check_scenario_parameter_reference(pose_ref)
-                    start_poses = [None]  # Will be resolved from config later
+                    referenced = (config.get('config') or {}).get(pose_ref)
+                    if referenced is None:
+                        raise ValueError(
+                            f"PathVariationRasterized: start_from '@{pose_ref}' names a pose "
+                            f"configuration '{config['name']}' does not carry; state it in "
+                            f"the configuration's parameters or have an earlier variation "
+                            f"set it.")
+                    start_pose = Pose.from_any(referenced)
                 else:
                     # Directly specified pose
                     start_pose = Pose(
@@ -592,14 +601,14 @@ class PathVariationRasterized(StartGoalSlots, NavVariation):
                             yaw=self.parameters.start_from.yaw
                         )
                     )
-                    if not waypoint_generator.is_valid_position(
-                        start_pose.position.x,
-                        start_pose.position.y,
-                        self.parameters.robot_diameter/2.
-                    ):
-                        raise ValueError(f"PathVariationRasterized: Start pose {start_pose} is not valid on the map for config '{config['name']}'.")
-                    start_poses = [start_pose]
-                    self.progress_update(f"Using provided start pose: {start_pose}")
+                if not waypoint_generator.is_valid_position(
+                    start_pose.position.x,
+                    start_pose.position.y,
+                    self.parameters.robot_diameter/2.
+                ):
+                    raise ValueError(f"PathVariationRasterized: Start pose {start_pose} is not valid on the map for config '{config['name']}'.")
+                start_poses = [start_pose]
+                self.progress_update(f"Using provided start pose: {start_pose}")
             else:
                 # Use all raster points as start poses
                 start_poses = [

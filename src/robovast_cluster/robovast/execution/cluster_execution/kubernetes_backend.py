@@ -31,7 +31,7 @@ Per batch it:
 
 1. prepares the batch's config tree straight into ``campaign_root`` (reusing
    :func:`prepare_campaign_configs` and the :class:`BatchJobRunner` manifest building),
-2. creates one Kubernetes Job per packed job and waits for completion. Each Job's init
+2. creates one Kubernetes Job per run and waits for completion. Each Job's init
    container fetches the campaign's inputs from the service's data plane as one tar
    stream, and an uploader container delivers the pod's whole output tree back the same
    way once every container of the pod is done -- so when a Job is complete its results
@@ -66,21 +66,22 @@ from kubernetes import client
 from robovast.common import (get_execution_env_variables, plan_containers,
                              prepare_campaign_configs, scenario_env)
 from robovast.common.campaign_data import (KIND_INVALID, KIND_SIZING, PROBE_DIR,
-                                           record_container_failures, record_intervention)
+                                           image_is_pullable, record_container_failures,
+                                           record_intervention)
 from robovast.common.common import get_scenario_parameters
-from robovast.common.config import SCENARIO_CONTAINER, job_deadline_seconds
+from robovast.common.config import SCENARIO_CONTAINER, job_deadline_seconds, recording_config
 from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter_documents,
                                        create_job_links, dump_multi_document_yaml,
                                        job_artifact_rel, node_label, read_job_links,
                                        resolve_sidecar_image, sidecar_backend_env,
                                        write_job_links_manifest)
-from robovast.common.quantity import to_bytes
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
 from robovast.execution.backends import (CampaignConfigError, ExecutionBackend, RunOptions,
                                          refuse_unimportable,
                                          ShareStopped)
 from robovast.execution.campaign_archive import job_documents
-from robovast.execution.packer import build_jobs
+from robovast.execution.jobs import build_jobs
+from robovast_decode.quantity import to_bytes
 
 from . import pod_access, pod_upload
 from .cluster_context import resolve_resources
@@ -95,6 +96,7 @@ from .manifests import (CALIBRATION_JOB_KIND, JOB_KIND_LABEL, MAIN_CONTAINER_NAM
                         POD_TEMPLATE, SCENARIO_JOB_TTL_SECONDS)
 # node_admission imports nothing from this package, so there is no cycle to route around
 # by importing late.
+from .node_admission import CREATE_ATTEMPT_LIMIT
 from .node_admission import CREATED as _ADMIT_CREATED
 from .node_placement import job_node_pool
 
@@ -157,24 +159,15 @@ def _instance_type_command(cluster_config) -> str | None:
 
 
 def _run_output_dir_env(job) -> tuple:
-    """``RUN_OUTPUT_DIR`` for a job that is exactly one run, else nothing.
+    """``RUN_OUTPUT_DIR``: where this job's run writes its results.
 
     ``/out`` is the pod's campaign root and ``OUTPUT_DIR`` is a per-*job* subdir, so neither names the
-    place this run's results land -- ``/out/<config>/<run>``, which scenario_execution derives per work
-    item from its parameter document. A process the scenario merely *launched* (a simulator brought up
-    by a ROS launch file, say) therefore has nowhere correct to drop a per-run artifact: writing to
+    place this run's results land -- ``/out/<config>/<run>``, which scenario_execution derives from
+    the run's parameter document. A process the scenario merely *launched* (a simulator brought up
+    by a ROS launch file, say) therefore needs it named to drop a per-run artifact: writing to
     ``/out`` collides across runs, since every pod mirrors its ``/out`` into the same campaign prefix.
-
-    So name it, for the case where it is unambiguous. With the default packing (``runs_per_job: 1``,
-    :class:`OnePerJob`) that is every job; a packed job runs several work items sequentially and one
-    variable cannot serve them all, so it is omitted rather than made wrong, and a consumer falls back
-    to ``OUTPUT_DIR``.
     """
-    items = getattr(job, "items", None) or []
-    if len(items) != 1:
-        return ()
-    item = items[0]
-    return (('RUN_OUTPUT_DIR', f"/out/{item.config_name}/{item.run_number}"),)
+    return (('RUN_OUTPUT_DIR', f"/out/{job.config_name}/{job.run_number}"),)
 
 
 def _merge_env(entries: list, values: dict) -> None:
@@ -454,7 +447,7 @@ def _declared_cores(declared: dict):
     form leaves calibration exactly as it was rather than clamping against a number that is
     not one.
     """
-    from robovast.common.quantity import to_cores  # noqa: PLC0415
+    from robovast_decode.quantity import to_cores  # noqa: PLC0415
 
     raw = declared.get("cpu_limit") or declared.get("cpu")
     if not raw:
@@ -680,7 +673,7 @@ class BatchJobRunner:
                   namespace, image, kube_context=None, log_tree=False, state=None,
                   built_images=None, image_digest_cache=None, admission=None,
                   image_label_cache=None, build_lock_cache=None,
-                  on_configs_staged=None):
+                  on_configs_staged=None, sidecar_image=None, images_fixed=False):
         self = cls()
         self.on_configs_staged = on_configs_staged
         # The process-wide admission queue, or None. None means "create every job at once",
@@ -700,7 +693,7 @@ class BatchJobRunner:
         self.configs = campaign_data.get("configs", [])
         self.num_runs = runs
         # The SUT image ref the run pods use; captured back as an immutable digest
-        # after the batch runs (see run_batch_in_pod) so postprocessing reuses the
+        # after the batch runs (see run_batch_in_pod) so the campaign records the
         # exact image the runs recorded their bags with.
         self.image = image
         self._resolved_image_digest = None
@@ -712,9 +705,10 @@ class BatchJobRunner:
         #: while draining -- see :meth:`_node_figures`.
         self._calibration = None
         self._resolved_image_digests = {}
-        # Set for real by _pin_image_refs; the plain ref until then, so an offline caller
-        # (manifest emit, tests) that never reaches a cluster still renders a valid pod.
-        self._sidecar_image = resolve_sidecar_image()
+        # The campaign's sidecar, fixed to a digest by the service before its first pod
+        # (``RunOptions.sidecar_image``); the deployment's own ref for a runner built without
+        # a campaign behind it. _pin_image_refs fixes whichever it is before any manifest.
+        self._sidecar_image = sidecar_image or resolve_sidecar_image()
         self._registry_ca_file = None
         # ``None`` ⇒ classic single-batch layout; the controller sets
         # a tag per search batch so jobs, param files and `_jobs/<tag>` don't collide.
@@ -756,7 +750,7 @@ class BatchJobRunner:
         # more: the backend is asked for a campaign's locks after the batch, when no runner
         # is alive, and only a runner holds the registry credentials to read them.
         self._build_lock_cache = {} if build_lock_cache is None else build_lock_cache
-        self._pin_image_refs(image_digest_cache)
+        self._pin_image_refs(image_digest_cache, images_fixed=images_fixed)
         # Immediately after the pin and before any manifest is written, so the verdict is
         # about the exact bytes the pods will run and no pod is created if it fails.
         self._check_image_compat()
@@ -850,12 +844,12 @@ class BatchJobRunner:
     def _build_job_manifest(self, *, job_short_name, job_full_name, item_tag,
                             sim_overlay=None, node_figures=None,
                             total_jobs, init_cmd, extra_main_env=()):
-        """Assemble a job manifest shared by single-config and packed jobs.
+        """Assemble a job manifest.
 
-        The two paths differ only in job naming, the initContainer fetch command, and
+        The callers differ only in job naming, the initContainer fetch command, and
         a few extra env vars (``extra_main_env``); everything else (volumes, the init
-        container, the main container env, the secondary containers, the uploader) is
-        identical and lives here.
+        container, the main container env, the secondary containers, the file agent, the
+        uploader) is identical and lives here.
         """
         job_manifest = copy.deepcopy(self.manifest)
 
@@ -1026,7 +1020,7 @@ class BatchJobRunner:
 
             containers[0]['volumeMounts'] = shared_volume_mounts
 
-        # Add secondary containers (they receive the same packed env so a
+        # Add secondary containers (they receive the same env so a
         # sim/SUT server resolves file-valued reset parameters identically).
         for sc in self.plan.sidecars:
             sc_name = sc.name
@@ -1127,6 +1121,22 @@ class BatchJobRunner:
                 {'name': 'ipc', 'mountPath': '/ipc'},
             ],
         })
+        # The file agent: ships the growth of the run's log and line files and bags to the campaign
+        # while the run runs, and signs `done.agent` after its final drain, which the
+        # uploader waits for. See `robovast/execution/data/file_agent.py`.
+        spec['containers'].append({
+            'name': pod_upload.AGENT_CONTAINER,
+            'image': self._sidecar_image,
+            'imagePullPolicy': pull_policy_for(self._sidecar_image),
+            'command': pod_upload.agent_command([sc.name for sc in self.plan.sidecars]),
+            'env': list(access_env),
+            'resources': pod_upload.AGENT_RESOURCES,
+            'volumeMounts': [
+                {'name': 'out', 'mountPath': '/out'},
+                {'name': 'ipc', 'mountPath': '/ipc'},
+                {'name': 'config', 'mountPath': '/config', 'readOnly': True},
+            ],
+        })
         # A deadline or a stop TERMs every container at once; the uploader's handler
         # delivers what /out holds within this window, so a hard-killed run still lands
         # its evidence.
@@ -1138,17 +1148,15 @@ class BatchJobRunner:
 
     def create_job_manifest(self, job, total_jobs: int, node_figures=None,
                             also_reads=()) -> dict:
-        """Create a manifest for one job (1..K configs).
+        """Create a manifest for one job, which is one run.
 
-        One K8s Job runs all the job's configs via a multi-document param file
-        (the simulator is reset between them). ``/out`` is this pod's emptyDir shaped
-        as the campaign root, delivered to the campaign once the pod is done, so per-config
-        results land at ``<campaign>/<config>/<run>/`` via each document's
-        ``_output_dir``. Job-level artifacts go to a per-job subdir, and each
-        config's files are staged at ``/config/<deploy path>`` -- where the campaign's
-        own copy would otherwise be, so ``/config`` is the view belonging to the cell
-        that is running. The job's multi-document param file ships in ``_transient/``
-        and so lands at ``/config/<job-tag>.params.yaml``.
+        ``/out`` is this pod's emptyDir shaped as the campaign root, delivered to the
+        campaign once the pod is done, so the run's results land at
+        ``<campaign>/<config>/<run>/`` via its parameter document's ``_output_dir``.
+        Job-level artifacts go to a per-job subdir, and the configuration's files are
+        staged at ``/config/<deploy path>`` -- where the campaign's own copy would otherwise
+        be, so ``/config`` is the view belonging to the cell that is running. The job's
+        param file ships in ``_transient/`` and so lands at ``/config/<job-tag>.params.yaml``.
 
         The inputs request names the job's tag, so the pod is sent its own documents and
         no other job's (see :func:`~robovast.execution.campaign_archive.iter_inputs_tar`).
@@ -1176,17 +1184,11 @@ class BatchJobRunner:
         #
         # Named on the inputs request as `config_file=<config>:<rel>`, and the data plane
         # emits the cell's copy after the campaign's, so the later member wins on
-        # extraction; the packer keeps one file-owning configuration per job, so which copy
-        # wins is never in question (see `WorkItem.files_key`).
-        staged = []
-        for item in job.items:
-            for deploy_rel, _src in (item.config.get("_config_files") or []):
-                entry = (item.config_name, deploy_rel)
-                if entry not in staged:
-                    staged.append(entry)
+        # extraction.
+        staged = [deploy_rel for deploy_rel, _src in (job.config.get("_config_files") or [])]
         query = "&".join(
             ["job=" + quote(tag, safe="") for tag in (job_tag, *also_reads)]
-            + ["config_file=" + quote(f"{cn}:{rel}", safe="") for cn, rel in staged])
+            + ["config_file=" + quote(f"{job.config_name}:{rel}", safe="") for rel in staged])
         init_cmd = (
             pod_access.fetch_command(f"/campaigns/{self.campaign}/inputs", "/config", query)
             + " && " + (sim_rename.rstrip("; ") or "true"))
@@ -1213,30 +1215,25 @@ class BatchJobRunner:
     def _sim_overlay(self, job) -> dict:
         """This job's resolved simulator command, environment and overrides document.
 
-        ``job.items[0]`` speaks for the whole job: the packer groups work items by
-        ``sim_key``, so a job that mixed simulator settings cannot be built. Asked of the
-        backend with the job's own block, which is why the world differs per job while the
-        image, the resources and the container set do not.
+        Asked of the backend with the job's own configuration's block, which is why the
+        world differs per job while the image, the resources and the container set do not.
         """
         return sim_job_overlay(self.campaign_data.get("execution") or {},
-                               job.items[0].config.get("sim") or {},
-                               os.path.dirname(self.campaign_data.get("vast") or ""))
-
-    def _runs_per_job(self) -> int:
-        """How many runs (config × run-number work items) to pack into one job."""
-        return int((self.campaign_data.get("execution") or {}).get("runs_per_job") or 1)
+                               job.config.get("sim") or {},
+                               os.path.dirname(self.campaign_data.get("vast") or ""),
+                               recording=recording_config(self.campaign_data.get("recording")))
 
     def _build_jobs(self):
-        """Group (config, run) work items into jobs per runs_per_job.
+        """One job per (config, run).
 
         Deterministic, so the jobs used to write per-job param files match the
         jobs used to create job manifests.
         """
-        return build_jobs(self.configs, self.num_runs, self.campaign_data.get("execution") or {})
+        return build_jobs(self.configs, self.num_runs)
 
     @staticmethod
     def _jobs_already_done(jobs, campaign_root: str) -> set:
-        """Indices of *jobs* whose every run already has a verdict under *campaign_root*.
+        """Indices of *jobs* whose run already has a verdict under *campaign_root*.
 
         Empty for a campaign starting now -- the root is bare, so this is one ``isfile``
         miss per job and the batch behaves exactly as it always did. It is not empty for a
@@ -1248,23 +1245,16 @@ class BatchJobRunner:
         The verdict, not the presence of a job artifact directory: ``test.xml`` is the
         evidence ``_run_batch_mode`` builds the store from and
         ``reconstruct_status_from_disk`` decides finished-vs-crashed on, so using anything
-        else here would let two readers disagree about the same run. A job whose items
-        landed *partly* is therefore not done, and is re-created whole -- the honest
-        granularity, since a packed job's items share one simulator process and there is no
-        way to re-enter it halfway.
+        else here would let two readers disagree about the same run.
         """
-        done = set()
-        for job in jobs:
-            if all(os.path.isfile(os.path.join(campaign_root, item.config_name,
-                                               str(item.run_number), "test.xml"))
-                   for item in job.items):
-                done.add(job.index)
-        return done
+        return {job.index for job in jobs
+                if os.path.isfile(os.path.join(campaign_root, job.config_name,
+                                               str(job.run_number), "test.xml"))}
 
     def _write_job_param_files(self, out_dir, campaign_root=None):
-        """Write one multi-document scenario-parameter file per packed job into
-        ``out_dir/_transient/`` so they upload with the campaign and are mirrored
-        into each packed job's ``/config`` as ``job-<idx>.params.yaml``."""
+        """Write one scenario-parameter file per job into ``out_dir/_transient/`` so they
+        upload with the campaign and are mirrored into each job's ``/config`` as
+        ``job-<idx>.params.yaml``."""
         # Already resolved against the .vast's location by config generation; prepending the
         # .vast's directory again doubles it whenever the project's config path has a
         # directory part.
@@ -1278,8 +1268,7 @@ class BatchJobRunner:
             params_name, sim_name = job_documents(self._job_tag(job.index))
             with open(os.path.join(transient_dir, params_name), "w") as f:
                 f.write(dump_multi_document_yaml(docs))
-            # The simulation channel's per-job document. Single-document, because the
-            # packer groups by `sim_key` and a job's items therefore agree on it.
+            # The simulation channel's per-job document.
             document = self._sim_overlay(job)["document"]
             if document:
                 with open(os.path.join(transient_dir, sim_name), "w") as f:
@@ -1727,6 +1716,30 @@ class BatchJobRunner:
                                       tick_ratio=tick):
                 self._refuse_a_probe_that_could_not_measure(node_id, calibration)
                 calibration.abandon(node_id, key)
+            else:
+                self._note_allocation(calibration, node_id)
+
+    def _note_allocation(self, calibration, node_id) -> None:
+        """Keep what *node_id*'s figures came to, for the campaign's record of the node.
+
+        Rendered, not recomputed: the pod spec a job gets on that node is what its runs had,
+        so its containers' requests and limits are read from the same manifest the queue
+        sizes from (:meth:`_job_sizing`). Every job of a batch is the same shape, and the
+        figures are frozen once set, so one rendering is every run's.
+        """
+        template = getattr(self, "_sizing_template", None)
+        if template is None:
+            return
+        job, total_jobs = template
+        spec = self.create_job_manifest(job, total_jobs,
+                                        node_figures=self._node_figures(node_id))
+        spec = spec["spec"]["template"]["spec"]
+        containers = list(spec.get("containers") or [])
+        containers += [c for c in (spec.get("initContainers") or [])
+                       if c.get("restartPolicy") == "Always"]
+        calibration.note_allocation(
+            node_id, rule=self._calibration_by_container(),
+            allocated={c.get("name"): dict(c.get("resources") or {}) for c in containers})
 
     def _refuse_a_probe_that_could_not_measure(self, node_id, calibration) -> None:
         """Fail the campaign when a node's probe was refused.
@@ -1975,7 +1988,7 @@ class BatchJobRunner:
         impossible rather than believed as a peak. Without it the probe's bring-up samples
         size a node from numbers no cgroup could produce.
         """
-        from robovast.common.quantity import to_cores  # noqa: PLC0415
+        from robovast_decode.quantity import to_cores  # noqa: PLC0415
 
         limits = {}
         plan = getattr(self, "plan", None)
@@ -2418,29 +2431,30 @@ class BatchJobRunner:
                         })
         return manifest
 
-    def _pin_image_refs(self, cache) -> None:
-        """Resolve every image ref this campaign's pods run to the digest it names now.
+    def _pin_image_refs(self, cache, *, images_fixed: bool = False) -> None:
+        """Fix every image ref this campaign's pods run to the digest it names now.
 
-        The root-cause half of the pull-storm fix (see :func:`pull_policy_for`), and a
-        provenance fix in the same move. Robovast already recorded the digest -- but
-        *after* a batch had run, read back off the pods (:meth:`_capture_image_digest`).
-        Resolving it *before* the pods are written gets three things at once:
+        Before the pods are written, which gets three things at once:
 
         * the kubelet stops re-contacting the registry for an image the node already has,
-          because a digest ref takes ``IfNotPresent``;
+          because a digest ref takes ``IfNotPresent`` (see :func:`pull_policy_for`);
         * every pod of the campaign provably runs the same bytes, instead of a floating
           tag that may be re-pushed between batch 1 and batch 50 -- a campaign whose
           system under test changes underneath it is not one experiment;
-        * ``execution.yaml`` records what ran rather than what was asked for.
+        * the launch record and ``execution.yaml`` name what ran rather than what was asked
+          for, which is what a replay of the campaign runs from.
 
         *cache* is the backend's per-campaign dict, so a sweep asks the registry once for
         each distinct ref and not once per batch.
 
-        **Fail-soft, deliberately.** An unreachable registry, a ref in a registry this
-        deployment holds no credential for, a registry that omits the digest header: the
-        ref is left exactly as it was, which is what would have run anyway. A campaign
-        must not fail to start because an optimisation could not be applied -- and the
-        unpinned ref then keeps ``Always``, which is correct for a name that may move.
+        **Refuses rather than runs a tag.** A ref whose digest cannot be read -- a registry
+        that does not have it, does not answer, or will not name the bytes -- would leave the
+        campaign running bytes nothing recorded, and every replay of it unable to say what it
+        repeats. The refusal names each such ref and why, before any pod exists.
+
+        *images_fixed* is a replay (``RunOptions.images_fixed``): every ref is a digest from
+        the launch record already, nothing is asked of the registry, and a ref that is not
+        one is refused as a gap in that record rather than resolved.
         """
         if cache is None:
             cache = {}
@@ -2448,19 +2462,33 @@ class BatchJobRunner:
             self._ensure_k8s_initialized()
         except Exception:  # noqa: BLE001 - offline manifest emit and tests reach no cluster
             logger.debug("no cluster to resolve image digests against", exc_info=True)
-        sidecar = resolve_sidecar_image()
-        refs = {c.image for c in self.plan.containers if c.image}
-        refs.add(sidecar)
+        sidecar = self._sidecar_image
+        # Which containers run each ref, so a refusal can say what it is refusing.
+        users: dict = {}
+        for container in self.plan.containers:
+            if container.image:
+                users.setdefault(container.image, []).append(f"container {container.name!r}")
+        users.setdefault(sidecar, []).append("the sidecar")
         if self.image:
-            refs.add(self.image)
-        for ref in sorted(refs):
-            if ref in cache:
-                continue
-            cache[ref] = self._resolve_digest(ref)
+            users.setdefault(self.image, ["the scenario container"])
+        if images_fixed:
+            unfixed = sorted(ref for ref in users if not image_is_pullable(ref))
+            if unfixed:
+                raise CampaignConfigError(
+                    "the launch record this campaign replays fixes no digest for "
+                    + "; ".join(f"{', '.join(users[ref])} ({ref})" for ref in unfixed)
+                    + ". A replay runs only recorded digests, and resolving these now could "
+                      "run bytes the source campaign never ran.")
+        for ref in sorted(users):
+            if not cache.get(ref):
+                cache[ref] = self._resolve_digest(ref)
 
         def pinned(ref):
             return cache.get(ref) or ref
 
+        unpinned = {ref: users[ref] for ref in sorted(users)
+                    if not image_is_pullable(cache.get(ref) or "")}
+        self._refuse_unpinned_images(unpinned)
         import dataclasses  # noqa: PLC0415 - only this method rebuilds the plan
         self.plan = dataclasses.replace(self.plan, containers=tuple(
             dataclasses.replace(c, image=pinned(c.image)) if c.image else c
@@ -2473,15 +2501,6 @@ class BatchJobRunner:
                         len(moved), self.campaign,
                         ", ".join(f"{r} -> {d.rsplit('@', 1)[-1]}"
                                   for r, d in sorted(moved.items())))
-        unpinned = sorted(ref for ref in refs if not cache.get(ref))
-        self._refuse_absent_images(unpinned)
-        if unpinned:
-            logger.warning(
-                "Could not resolve %d image ref(s) to a digest: %s. They keep their tag "
-                "and imagePullPolicy 'Always', so every pod re-checks them with the "
-                "registry -- which a wide batch can rate-limit itself out of. The pods "
-                "also carry no guarantee of running the same bytes for the whole "
-                "campaign.", len(unpinned), ", ".join(unpinned))
 
     def build_lock(self, image: str) -> dict:
         """The build lock inside *image*, read from the registry; ``{}`` when unreadable.
@@ -2513,52 +2532,49 @@ class BatchJobRunner:
         self._build_lock_cache[image] = lock
         return lock
 
-    def _refuse_absent_images(self, unresolved: list) -> None:
-        """Refuse the campaign when the registry says an image it needs is simply not there.
+    def _refuse_unpinned_images(self, unresolved: dict) -> None:
+        """Refuse the campaign when an image it runs could not be fixed to a digest.
 
-        The pin above asks the registry, with the **pull** credential, what each ref resolves
-        to -- which is the same question the kubelet asks a moment later. A ref it could not
-        resolve was treated as a missed optimisation and the campaign went ahead; if the reason
-        was that the image does not exist, every job then died at once on ``ErrImagePull ...
-        NotFound``, having already been scheduled. The answer was in hand one step before any
-        pod existed, next to the compat check that refuses here for the same reason: a refusal
-        costs no pods.
+        *unresolved* is ``{ref: [what runs it]}``. Asked with the **pull** credential, which is
+        the question the kubelet asks a moment later, and before any pod exists: a refusal
+        costs no pods, where launching would leave the campaign running bytes nothing recorded.
 
-        Only on a **definite** absence -- ``ABSENT`` is a 404 and nothing else. A registry that
-        is unreachable, or one this deployment holds no credential for, answers ``UNKNOWN`` and
-        is left alone: refusing on that is the mistake the image store's ``present`` exists to
-        prevent, since it blames the artifact for a problem with reaching it. So this cannot be
-        tripped by a registry blip, only by an image that is genuinely gone.
-
-        A campaign whose own image is missing needs it rebuilt, and says so, rather than
-        reporting a whole batch that could not start.
+        Every ref is named with the registry's own answer, because the three need different
+        responses: an image the registry does not have was never pushed and has to be built,
+        a registry that did not answer has to be reached, and one that will not name the bytes
+        has to be configured to. One refusal lists them all, so a reader fixes every one
+        rather than relaunching to find the next.
         """
         if not unresolved:
             return
-        from .registry_client import ABSENT, manifest_state  # noqa: PLC0415 - optional path
+        from .registry_client import digest_unread_reason  # noqa: PLC0415 - optional path
+        registry, no_registry = None, ""
         try:
             registry = self.cluster_config.get_registry_config()
-        except Exception:  # noqa: BLE001 - a registry is optional
-            return
-        missing = []
+        except Exception as exc:  # noqa: BLE001 - reported as the reason, not swallowed
+            no_registry = f"this deployment has no registry to ask ({exc})"
+        reasons = {}
         for ref in unresolved:
+            if no_registry:
+                reasons[ref] = no_registry
+                continue
             try:
-                state = manifest_state(
+                reasons[ref] = digest_unread_reason(
                     ref, dockerconfigjson=self._registry_dockerconfig(registry),
                     insecure=getattr(registry, "insecure", False),
                     ca_path=self._registry_ca_path(registry))
-            except Exception:  # noqa: BLE001 - not knowing is not a refusal
-                continue
-            if state == ABSENT:
-                missing.append(ref)
-        if missing:
-            raise CampaignConfigError(
-                f"the registry does not have {', '.join(missing)}, so every job of this "
-                f"campaign would fail to start. Checked before any pod was created, with the "
-                f"credential the kubelet uses. An image robovast builds for a campaign is "
-                f"identified by its inputs, so a tag that is absent has never been pushed -- "
-                f"rebuild it (vast image build) and launch again. If the image is one you "
-                f"supplied, check the reference and its pull credentials.")
+            except Exception as exc:  # noqa: BLE001 - the failure IS the reason
+                reasons[ref] = f"reading it failed: {exc}"
+        raise CampaignConfigError(
+            f"refusing to launch {self.campaign}: every image a campaign runs is fixed to a "
+            f"digest before any pod starts, and {len(unresolved)} could not be:\n"
+            + "\n".join(f"  {ref} ({', '.join(unresolved[ref])}): {reasons[ref]}"
+                        for ref in sorted(unresolved))
+            + "\nChecked before any pod was created, with the credential the kubelet uses. An "
+              "image robovast builds for a campaign is identified by its inputs, so one the "
+              "registry does not have has never been pushed -- rebuild it (vast image build) "
+              "and launch again. If the image is one you supplied, check the reference and its "
+              "pull credentials. A registry that did not answer is retried by launching again.")
 
     def _check_image_compat(self) -> None:
         """Refuse the campaign here if this host cannot drive the image its pods will run.
@@ -2570,11 +2586,12 @@ class BatchJobRunner:
         The refs are pinned to digests immediately above, so this binds to the exact bytes the
         pods will run, and a refusal costs no pods at all.
 
-        **Fail closed.** Unlike pinning, which is an optimisation and is right to shrug, a
-        compat check that cannot read the image has not established anything -- and running
-        anyway is how an incompatible image becomes a campaign that fails obscurely halfway
-        through. ``ROBOVAST_SKIP_IMAGE_COMPAT_CHECK`` is the documented way past it for the
-        case this cannot distinguish: a registry that is briefly unreachable.
+        **Fail closed.** A compat check that cannot read the image has not established
+        anything -- and running anyway is how an incompatible image becomes a campaign that
+        fails obscurely halfway through. ``ROBOVAST_SKIP_IMAGE_COMPAT_CHECK`` is the
+        documented way past this check for the case it cannot distinguish: a registry that is
+        briefly unreachable. It waives the label read only; the digest the pin above needs is
+        never waived.
 
         The **scenario image only**. The sidecar sets no label and a user's system-under-test
         is not a robovast image at all, so an absent label on those means "not applicable",
@@ -2652,9 +2669,13 @@ class BatchJobRunner:
         """*ref* as ``repo@sha256:…`` if this deployment's registry will say, else ``""``.
 
         Uses the **pull** credential, because the question is what the kubelet will
-        resolve the ref to, and the kubelet uses that one.
+        resolve the ref to, and the kubelet uses that one. A ref that is a digest already is
+        returned as it is, without a registry: it names the bytes, and a replay's refs are
+        all of this kind.
         """
         from .registry_client import manifest_digest  # noqa: PLC0415 - optional path
+        if image_is_pullable(ref):
+            return ref
         try:
             registry = self.cluster_config.get_registry_config()
         except Exception:  # noqa: BLE001 - a registry is optional
@@ -2664,7 +2685,7 @@ class BatchJobRunner:
                 ref, dockerconfigjson=self._registry_dockerconfig(registry),
                 insecure=getattr(registry, "insecure", False),
                 ca_path=self._registry_ca_path(registry))
-        except Exception:  # noqa: BLE001 - never block a campaign on an optimisation
+        except Exception:  # noqa: BLE001 - "" is refused by the caller, with the reason
             logger.warning("could not resolve %s to a digest", ref, exc_info=True)
             return ""
 
@@ -2706,42 +2727,15 @@ class BatchJobRunner:
             logger.debug("Could not determine GPU support (%s); assuming none", exc)
 
     def _gpu_request(self, resources, container=None) -> int:
-        """How many GPUs one container should request. **Opt-in: none unless declared.**
+        """How many GPUs one container requests: ``resources.gpu``, none unless declared.
 
-        ``resources.gpu`` is the whole answer. A campaign that renders asks for a device; one
-        that does not gets none, and the cluster having a GPU is not taken as a reason to hand
-        one out.
-
-        Handing the simulator one automatically whenever the cluster advertises any -- so
-        "use the GPU if there is one" needs no ``.vast`` edit -- buys nothing measurable. On a
-        headless nav2 campaign that device does nothing: with ``gpu: 0`` the simulator's CPU is
-        unchanged (mean 0.34 cores either way), trials take the same time (33.8 s against
-        33.5 s), and the ``capture/`` the 3D run view replays is still written -- it is pose and
-        geometry, not rendered frames. Nothing in such a world draws anything: no camera, and a
-        lidar is a raycaster on the CPU. roqsim selects ``osmesa`` over ``egl`` by itself when no
-        device is present (``roqsim.gl.select_offscreen_gl``), so there is nothing to fall back
-        from.
-
-        What it costs is concurrency, silently. A request is charged against the cluster's
-        ``nvidia.com/gpu`` capacity at admission, and time-slicing replicas are a concurrency cap
-        and not a VRAM budget (see :data:`DEFAULT_GPU_REPLICAS`) -- so one auto-claimed device
-        per run caps a campaign that never renders a frame. Worse, it caps it *invisibly*: the
-        default replica count is chosen to sit above the CPU ceiling, so the GPU only starts
-        binding once someone right-sizes CPU, which is exactly when they are looking at CPU.
-
-        A simulator that DOES render -- a camera or image sensor in the world, a video in the
-        postprocessing -- declares ``resources: {gpu: 1}``, including on a CPU-only cluster,
-        where the declaration stands and the pre-flight refuses the campaign rather than
-        scheduling a job that would hang.
+        Opt-in, not "one wherever the cluster has one": a request is charged against
+        ``nvidia.com/gpu`` at admission, and time-slicing replicas cap concurrency
+        (:data:`DEFAULT_GPU_REPLICAS`), so a device claimed by a campaign that never renders
+        caps it for nothing. A world with a camera or image sensor declares ``gpu: 1``.
         """
         declared = (resources or {}).get('gpu')
-        if declared is None:
-            return 0
-        try:
-            return max(0, int(declared))
-        except (TypeError, ValueError):
-            logger.warning("Ignoring non-numeric resources.gpu %r", declared)
-            return 0
+        return 0 if declared is None else int(declared)
 
     def _apply_gpu_to_container(self, spec, env_list, count) -> None:
         """Put *count* GPUs on one container spec, with the env the runtime needs."""
@@ -2798,9 +2792,9 @@ class BatchJobRunner:
 
         Two sources, and the order matters. The **plan** was pinned to digests before any pod
         was written, so it answers for every container without a cluster round trip and without
-        a pod having to still exist. The batch's **pods** are then read on top, because they
-        report what the kubelet actually pulled and they name containers the plan does not (the
-        sidecar; the scenario container under its pod name ``robovast``).
+        a pod having to still exist, and it is what the launch record holds. The batch's
+        **pods** are then read for the containers the plan does not name (the data-plane
+        containers; the scenario container under its pod name ``robovast``).
 
         Best-effort on the pod half only: an unreadable status leaves whatever the plan already
         established, and never blocks the campaign.
@@ -2818,10 +2812,9 @@ class BatchJobRunner:
         # Taking it here is what up-front pinning promised ("execution.yaml records what ran
         # rather than what was asked for") and what this method did not do -- it read the
         # digest off the batch's pods instead, which is a race a SHORT batch loses: its pods
-        # are reaped before the read, `image_revision` is written "unknown", and the search
-        # loop's per-batch bag conversion can then resolve no execution image at all -- so
-        # every batch fails to score and the campaign blames the world. The pod read below
-        # still runs: it is the only source of a PER-CONTAINER digest.
+        # are reaped before the read, and `image_revision` is written "unknown" for a
+        # campaign whose image was pinned all along. The pod read below still runs: it is
+        # the only source of a PER-CONTAINER digest.
         if self.image and "@sha256:" in self.image and not self._resolved_image_digest:
             self._resolved_image_digest = self.image
         # The same argument, per container. `_pin_image_refs` resolved every ref in the plan to
@@ -2846,20 +2839,21 @@ class BatchJobRunner:
             # One digest per container, so a consumer can ask for the image a PARTICULAR
             # role ran. The single `image_revision` is the scenario container's, which is
             # the wrong answer for anything the simulator produced: the run view compiles
-            # a run's geometry from the world the capture names, and that world and its
+            # a run's geometry from the world the recording names, and that world and its
             # exporter live in the simulation image. Keyed on the container's own digest,
             # it was compiled -- or rather, failed to compile -- in the scenario image.
-            # The pod read OVERRIDES the seed rather than merely filling gaps: it reports what
-            # the kubelet actually pulled, which is the stronger claim. It also contributes
-            # names the plan does not have -- the sidecar, and the scenario container under its
-            # pod name `robovast`.
+            # The pod read only FILLS what the plan does not name -- the data-plane containers,
+            # and the scenario container under its pod name `robovast`. A planned container
+            # was pulled by the digest the launch record holds, so those bytes are that digest,
+            # and keeping the record's spelling of it is what keeps `image_revisions` and
+            # `launch.yaml` from naming one image two ways.
             observed = {}
             for cs in statuses:
                 name = getattr(cs, "name", None)
                 pullable = pullable_digest(getattr(cs, "image_id", None))
                 if name and pullable and name not in observed:
                     observed[name] = pullable
-            per_role = {**per_role, **observed}
+            per_role = {**observed, **per_role}
         except Exception as exc:  # noqa: BLE001 - never block the run on a status read
             logger.debug("Could not resolve SUT image digest for %s: %s",
                          self.campaign, exc)
@@ -3005,13 +2999,12 @@ class BatchJobRunner:
             return
         self._invalidated.add(job_name)
         job = jobs_by_name.get(job_name)
-        runs = tuple(f"{it.config_name}/{it.run_number}" for it in job.items) if job \
-            else ()
+        runs = (f"{job.config_name}/{job.run_number}",) if job else ()
         job_dir = f"_jobs/{self._job_artifact_path(job.index)}" if job else ""
         logger.warning(
-            "Batch %s: invalidating job %s -- %s. Its %d run(s) are discarded; the "
+            "Batch %s: invalidating job %s -- %s. Its run is discarded; the "
             "rest of the batch continues.",
-            self._batch_tag, job_name, detail, len(runs) or 1)
+            self._batch_tag, job_name, detail)
         # Evidence first, and never at the cost of the response: a diagnostic that
         # raises would turn the failure it documents into a different, worse one.
         if forensics is not None:
@@ -3105,7 +3098,7 @@ class BatchJobRunner:
                                           token)
 
 
-        # 2. Build and submit one Job per packed job, then wait.
+        # 2. Build and submit one Job per run, then wait.
         # The up-front "can these jobs ever be admitted?" check is admission.preflight()
         # below: it asks whether the request fits any node's allocatable, which is the
         # question, asked of the cluster directly.
@@ -3188,6 +3181,8 @@ class BatchJobRunner:
         else:
             from .node_admission import AdmissionRefused, campaign_start_key  # noqa: PLC0415
 
+            # Kept for the record of what a calibrated node gave its runs (_note_allocation).
+            self._sizing_template = (jobs[0], total_jobs)
             sizing = self._job_sizing(jobs[0], total_jobs)
             campaign_node = self._campaign_node_id()
             try:
@@ -3245,6 +3240,14 @@ class BatchJobRunner:
             # Deleting a Job is asynchronous, so one already dropped keeps reporting itself
             # blocked for a poll or two; its timer must not expire again.
             rnd = tracker.poll(ignore_blocked=self._invalidated or ())
+            if rnd.given_up:
+                # Read before `over`: a given-up Job is neither planned nor running, so a
+                # batch of them is otherwise a batch that finished with every run empty.
+                causes = "; ".join(f"{job}: {why}" for job, why in sorted(rnd.given_up.items()))
+                raise CampaignConfigError(
+                    f"{len(rnd.given_up)} job(s) of batch {self._batch_tag} could not be "
+                    f"created after {CREATE_ATTEMPT_LIMIT} attempts each, so the batch cannot "
+                    f"run. The API server's answer is the cause: {causes}")
             remaining, planned_count = rnd.remaining, rnd.planned
             if not planned_count:
                 # Every job this batch defined exists, so an uncreated probe has nothing left
@@ -3526,8 +3529,7 @@ class KubernetesBackend(ExecutionBackend):
         # process, and a backend built per campaign would give each its own -- which is
         # exactly the per-caller arbitration the queue exists to replace.
         self._admission = admission
-        #: The campaign's scoped data-plane token. Read by the controller too, for the
-        #: postprocessing Jobs it submits on this campaign's behalf.
+        #: The campaign's scoped data-plane token, which every pod of this campaign carries.
         self.data_token = data_token
         self.cluster_config = cluster_config
         self.namespace = namespace
@@ -3564,7 +3566,17 @@ class KubernetesBackend(ExecutionBackend):
         """
         if self._node_facts_cache is None:
             self._node_facts_cache = self._read_node_facts()
-        return self._node_facts_cache.get(label)
+        facts = self._node_facts_cache.get(label)
+        # The campaign's calibration of the machine, read now rather than cached: a node is
+        # calibrated after this map was first built, and its record is written as its first
+        # run is -- by then its figures are frozen.
+        campaign_id = getattr(self, "_campaign_id", None)
+        calibration = (self._admission.calibration(campaign_id)
+                       if self._admission is not None and campaign_id else None)
+        provenance = calibration.provenance(label) if calibration is not None else None
+        if provenance is None:
+            return facts
+        return {**(facts or {}), "calibration": provenance}
 
     def _read_node_facts(self) -> dict:
         """``{node label: facts}`` for every node this cluster has, or ``{}``.
@@ -3573,16 +3585,13 @@ class KubernetesBackend(ExecutionBackend):
         an unreachable API or a missing permission records the machines with no facts
         rather than ending the run.
         """
+        from . import kube_client  # pylint: disable=import-outside-toplevel
         try:
-            # Both members are set by the mixin this class is composed with, which the
-            # linter does not follow. Scoped to this block, so a real typo elsewhere in the
-            # method is still an error.
-            # pylint: disable=no-member
-            self._init_k8s_clients()
-            v1 = client.CoreV1Api(self.k8s_api_client)
-            nodes = (v1.list_node().items or [])
+            nodes = (kube_client.core_v1_client(context=self.kube_context).list_node().items
+                     or [])
         except Exception as exc:  # pylint: disable=broad-except
-            logger.debug("Could not read node facts: %s", exc)
+            logger.warning("Could not read the cluster's nodes, so this campaign's runs are "
+                           "recorded without their machines' facts: %s", exc)
             return {}
         facts = {}
         for node in nodes:
@@ -3612,35 +3621,22 @@ class KubernetesBackend(ExecutionBackend):
 
     @staticmethod
     def _record_launch_images(campaign_root: str, runner) -> None:
-        """Record every planned container's pinned image in ``_execution/launch.yaml``.
-
-        The launch record's ``images`` otherwise holds only what the campaign *built*, so a
-        container the backend supplies -- a simulator named by no ``image:`` in the ``.vast``
-        -- appears nowhere in it, and a retrigger re-resolves its family tag to whatever has
-        been pushed since.
+        """Record every planned container's digest, and the sidecar's, in ``launch.yaml``.
 
         Keyed by container name **and** by every role it backs, roles first so a name always
         wins: a role is how a reader asks ("which simulator ran?") while the name is what the
         pod calls it, and a stepped simulator makes one container answer to both.
 
-        Never fatal. This improves a record; the campaign it describes is already running.
-
-        Effective only where the driver shares a filesystem with whoever wrote the launch
-        record. Here the record is written by the service
-        and the driver runs elsewhere, so there may be nothing here to merge into -- and then
-        this does nothing, deliberately, rather than creating a launch record holding images
-        and no request, which every reader would take for a campaign that asked for nothing.
-        What answers "which bytes did this campaign run?" in that case is ``execution.yaml``'s
-        ``image_revisions``, which is why that file is written before the jobs too -- and from
-        the same :func:`_planned_images`, so the two records cannot name different bytes.
+        Before any of the batch's pods exists, and not best-effort: the launch record is what
+        every replay of the campaign runs from, and a campaign whose record could not take its
+        digests would run bytes no replay can name. :meth:`BatchJobRunner._pin_image_refs`
+        has already made every ref a digest, so nothing here can be a tag. ``execution.yaml``'s
+        ``image_revisions`` is written from the same :func:`_planned_images`, so the two
+        records cannot name different bytes.
         """
         from robovast.common.campaign_data import update_launch_images  # noqa: PLC0415
-        images = _planned_images(runner)
-        try:
-            update_launch_images(Path(campaign_root), images)
-        except (OSError, ValueError) as e:
-            logger.warning("Could not record the launched images for %s: %s",
-                           campaign_root, e)
+        update_launch_images(Path(campaign_root), containers=_planned_images(runner),
+                             sidecar=runner._sidecar_image)  # noqa: SLF001 - same module
 
     def read_build_lock(self, image: str) -> dict:
         """The build lock inside *image*, from what this campaign's runners read. See the base.
@@ -3659,9 +3655,16 @@ class KubernetesBackend(ExecutionBackend):
     def run_batch(self, campaign_data: dict, *, campaign_root: str, batch_tag: str,
                   runs: int, options: RunOptions) -> None:
         campaign_id = os.path.basename(os.path.normpath(campaign_root))
+        # The campaign this backend runs, for what it answers about it later (node_facts).
+        self._campaign_id = campaign_id
         execution_params = campaign_data.get("execution", {}) or {}
         from robovast.execution.backends import _scenario_image
         image = _scenario_image(execution_params, options)
+        # The campaign's own sidecar: fixed to a digest by the service before its first pod,
+        # or on a replay taken from the launch record. From the campaign's project otherwise,
+        # which is what a backend driven without the service is given.
+        sidecar = options.sidecar_image or resolve_sidecar_image(
+            project=options.image_project, tag=options.image_project_tag)
         runner = BatchJobRunner.for_batch(
             campaign_data=campaign_data,
             campaign_id=campaign_id,
@@ -3679,7 +3682,11 @@ class KubernetesBackend(ExecutionBackend):
             build_lock_cache=self._build_lock_cache,
             admission=self._admission,
             on_configs_staged=options.on_configs_staged,
+            sidecar_image=sidecar,
+            images_fixed=options.images_fixed,
         )
+        # Every later batch of the campaign runs the sidecar this one fixed.
+        options.sidecar_image = runner._sidecar_image  # noqa: SLF001 - same module
         # Now, and not after the batch: the runner's plan carries the digest every pod will
         # run (``_pin_image_refs``), and this is the earliest moment it is known. A campaign
         # that dies in its first batch still leaves a record naming the exact bytes it was
@@ -3821,7 +3828,7 @@ class KubernetesBackend(ExecutionBackend):
         """Write ``_execution/execution.yaml`` from what the runner has resolved.
 
         Not at finalize, so the campaign root is complete before the controller chains
-        analysis postprocessing -- which reads the execution image from it. This mirrors the
+        analysis postprocessing -- which reads it. This mirrors the
         local backend, whose run.sh writes execution.yaml during the run. Best-effort cluster
         info; degrades in-pod. Idempotent across a search's repeated batches, which is also
         what lets it be written twice per batch.
@@ -3860,18 +3867,20 @@ class KubernetesBackend(ExecutionBackend):
         # it, which is refused rather than guessed at. The plan already carries those bytes
         # (`_pin_image_refs`), and the launch record beside this one was already writing them.
         #
-        # Only refs that name bytes: pinning is fail-soft, so an unresolvable ref stays a tag,
-        # and a tag in `image_revisions` would claim an identity it does not have. It is left
-        # out, and the write after the batch fills it in from the pod that ran it.
-        from robovast.common.campaign_data import \
-            image_identifies_bytes  # pylint: disable=import-outside-toplevel
-        digests = {name: ref for name, ref in _planned_images(runner).items()
-                   if image_identifies_bytes(ref)}
+        # Every planned ref is a digest by now: `_pin_image_refs` refuses a campaign with one
+        # it could not fix, so these are the same digests the launch record holds.
+        digests = dict(_planned_images(runner))
         digests.update(getattr(runner, "_resolved_image_digests", None) or {})
+        # The scenario container's the same way: the pinned ref before the batch has a pod to
+        # read it back from, so `image_revision` names the digest the launch record does
+        # rather than "unknown".
+        scenario = getattr(runner, "image", None) or ""
         create_execution_yaml(runs, campaign_root,
                               execution_params=execution_params,
                               context=self.kube_context,
-                              image_digest=getattr(runner, "_resolved_image_digest", None),
+                              image_digest=(getattr(runner, "_resolved_image_digest", None)
+                                            or (scenario if image_is_pullable(scenario)
+                                                else None)),
                               image_digests=digests or None,
                               image_labels=image_labels or None,
                               nodes_skipped=runner.skipped_nodes() or None)
