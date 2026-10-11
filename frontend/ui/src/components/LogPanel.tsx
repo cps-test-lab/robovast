@@ -62,7 +62,7 @@ export type LogFooter = { text: string; kind: 'busy' | 'error' | 'note' } | null
  *
  * "(no output yet)" is still the right answer once it *is* a fact — a job whose containers
  * have not started writing has an open stream and no bytes, and PodLogTail swallows the
- * API's 400 for a container with no log — so it is kept, just no longer said blind.
+ * API's 400 for a container with no log — so it is said, but only once it is known.
  */
 export function logFooter(o: {
   end: LogEnd
@@ -111,6 +111,15 @@ export function trimHead(text: string): string {
   return `${HEAD_DROPPED}\n${text.slice(nl === -1 ? cut : nl + 1)}`
 }
 
+/** One `data:` frame of the text log: a JSON string, the text appended since the last frame.
+ *  Throws on anything else, so a frame the client cannot read ends the tail with an error
+ *  instead of leaving a log that silently skips text. */
+export function parseLogDelta(data: string): string {
+  const parsed: unknown = JSON.parse(data)
+  if (typeof parsed !== 'string') throw new Error('log frame is not a string')
+  return parsed
+}
+
 // How far from the bottom still counts as "at the bottom", in px. Not zero: a sub-pixel
 // scroll height (fractional line metrics, a zoomed browser) leaves a fraction of a pixel of
 // slack that would read as the reader having deliberately scrolled away.
@@ -136,12 +145,16 @@ export function LogPanel({ resetKey, streamUrl }: { resetKey: string; streamUrl:
   const { state, received, finish, generation } = useLiveStream(streamUrl, {
     resetKey,
     onMessage: (e) => {
+      let delta: string
       try {
-        const delta = JSON.parse(e.data) as string
-        if (delta) setText((t) => trimHead(t + delta))
-      } catch {
-        /* malformed frame — ignore rather than break the tail */
+        delta = parseLogDelta(String(e.data))
+      } catch (err) {
+        setErrorMsg(`unreadable log frame: ${(err as Error).message}`)
+        setEnd('error')
+        finish()
+        return
       }
+      if (delta) setText((t) => trimHead(t + delta))
     },
     events: {
       // Application error the server chose to surface (pod gone, upload missing, …).

@@ -50,6 +50,19 @@ def test_events_come_back_oldest_first_because_a_reader_is_resuming(tmp_path):
     assert seqs == sorted(seqs)
 
 
+def test_latest_answers_the_end_of_the_record_not_its_beginning(tmp_path):
+    """A reader opening the record wants what just happened; a cursor at zero answers the
+    oldest page instead once the record is longer than one."""
+    log = _log(tmp_path)
+    for i in range(5):
+        log.append("x", message=str(i))
+    tail = log.latest(limit=2)
+    assert [e.message for e in tail] == ["3", "4"]
+    # Same order as a cursor read, so a reader starting here resumes with ``read``.
+    log.append("x", message="5")
+    assert [e.message for e in log.read(since=tail[-1].seq)] == ["5"]
+
+
 def test_a_payload_round_trips_so_a_kind_can_carry_its_own_fields(tmp_path):
     """`kind` is open and `payload` is free-form: adding an event type must not be a migration."""
     log = _log(tmp_path)
@@ -350,3 +363,25 @@ def test_a_heartbeat_is_not_kept(tmp_path):
     notifier.stop_heartbeat()
     assert pushed, "the beat never fired, so this proves nothing about what it records"
     assert log.read() == []
+
+
+def test_the_route_serves_the_newest_page_on_request(tmp_path):
+    """What the admin panel asks for: the tail, with the cursor to resume from."""
+    client = _refusing_client(tmp_path)
+    for name in ("a", "b", "c"):
+        client.post(f"/campaigns/{name}/retrigger")
+    every = client.get("/admin/events", params={"limit": 1000}).json()["events"]
+    assert len(every) >= 3
+
+    body = client.get("/admin/events", params={"newest": "true", "limit": 2}).json()
+    assert [e["seq"] for e in body["events"]] == [e["seq"] for e in every[-2:]]
+    assert body["next_seq"] == every[-1]["seq"]
+
+
+def test_the_route_refuses_a_cursor_and_newest_together(tmp_path):
+    """Two readings of the record that cannot both be answered: neither may be ignored."""
+    client = _refusing_client(tmp_path)
+    for since in (3, 0):
+        refused = client.get("/admin/events", params={"newest": "true", "since": since})
+        assert refused.status_code == 400, refused.text
+        assert "since" in refused.json()["detail"]
