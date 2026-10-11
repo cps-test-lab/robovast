@@ -576,6 +576,58 @@ def test_a_restart_the_kubelet_has_not_explained_is_treated_as_a_crash():
     assert record["invalidating"] is True
 
 
+def _scenario_killed(phase="Running", reason="OOMKilled", exit_code=137, deleting=False):
+    """A pod whose scenario container died into ``state`` -- it is never restarted -- while
+    its uploader, a regular container waiting for the scenario's done marker, runs on."""
+    pod = _pod("j", phase=phase)
+    pod.metadata.deletion_timestamp = "2026-01-01T00:00:00Z" if deleting else None
+    pod.status.container_statuses = [
+        types.SimpleNamespace(
+            name="robovast", image="an-image", image_id="an-image@sha256:abc",
+            restart_count=0, last_state=None,
+            state=types.SimpleNamespace(waiting=None, terminated=types.SimpleNamespace(
+                reason=reason, exit_code=exit_code, signal=None, message=None,
+                started_at=None, finished_at=None))),
+        types.SimpleNamespace(
+            name="uploader", image="an-image", image_id="an-image@sha256:abc",
+            restart_count=0, last_state=None,
+            state=types.SimpleNamespace(waiting=None, terminated=None))]
+    return pod
+
+
+def test_an_oom_killed_scenario_container_in_a_running_pod_invalidates_the_trial():
+    """The kill takes the scenario's post-run with it, so the done marker the uploader waits
+    for is never written and the pod would run on to its deadline, reported as a timeout."""
+    record, = pod_container_failures(_scenario_killed())
+    assert record["container"] == "robovast"
+    assert record["role"] == "scenario"
+    assert record["restart_count"] == 0
+    assert record["invalidating"] is True
+    assert record["log"] == "current"
+    assert record["detail"] == "container robovast was OOMKilled (exit 137, SIGKILL)"
+    assert restarted_job_reasons(_Core([_scenario_killed()]), "ns", "sel") == {
+        "j": "ContainerKilled: container robovast was OOMKilled (exit 137, SIGKILL)"}
+
+
+def test_a_restarted_container_names_its_previous_log():
+    record, = pod_container_failures(_pod("j", restarts=("sut", 1, "Error", 135)))
+    assert record["log"] == "previous"
+
+
+def test_a_scenario_container_that_exited_non_zero_is_left_to_deliver():
+    """A non-zero exit, a signal's included, can be the entrypoint handing on the runner's
+    status after its post-run wrote the marker: that pod is uploading a result."""
+    assert pod_container_failures(_scenario_killed(reason="Error", exit_code=1)) == []
+    assert pod_container_failures(_scenario_killed(reason="Error", exit_code=139)) == []
+
+
+def test_an_oom_killed_scenario_container_in_an_ended_or_deleted_pod_is_not_acted_on():
+    """An ended pod has already finished its Job, and a pod being deleted kills its
+    containers itself; neither is a trial left running without its scenario."""
+    assert pod_container_failures(_scenario_killed(phase="Failed")) == []
+    assert pod_container_failures(_scenario_killed(deleting=True)) == []
+
+
 def test_a_restart_surfaces_in_the_listing_even_though_the_job_looks_healthy():
     """The case worth catching: a job on its way to a plausible result its simulator
     cannot justify."""

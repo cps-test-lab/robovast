@@ -291,7 +291,8 @@ def _restart_runner(monkeypatch, tmp_path, jobs, forensics, *, remaining_after=(
         lambda core, ns, label, job_names=None: forensics)
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kubernetes_backend.previous_container_log",
-        lambda core, ns, pod, container, tail_lines=400: ("boom\ntraceback\n", "captured"))
+        lambda core, ns, pod, container, tail_lines=400, previous=True: (
+            "boom\ntraceback\n" if previous else "current\n", "captured"))
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.admitted_jobs"
         ".blocked_and_contended_reasons", lambda core, ns, label: ({}, {}))
@@ -380,6 +381,28 @@ def test_the_evidence_is_captured_before_the_pod_is_deleted(monkeypatch, tmp_pat
     assert record["log_status"] == "captured"
     assert "traceback" in record["log_tail"]
     assert record["runs"] == ["cfgA/0"]
+
+
+def test_an_oom_killed_scenario_container_is_dropped_with_its_own_log(monkeypatch, tmp_path):
+    """The scenario container is not restarted, so what it printed before the kill is its
+    current log, not a previous instance's."""
+    import json
+
+    record = dict(_SUT_CRASH["containers"][0], container="robovast", role="scenario",
+                  restart_count=0, reason="OOMKilled", exit_code=137, signal=9,
+                  signal_name="SIGKILL", log="current",
+                  detail="container robovast was OOMKilled (exit 137, SIGKILL)")
+    killed = {"detail": f"ContainerKilled: {record['detail']}", "containers": [record]}
+    runner = _restart_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
+        {"rrroqs-x-0": killed}, remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+
+    assert runner.k8s_batch_client.deleted == ["rrroqs-x-0"]
+    captured, = json.loads(
+        (tmp_path / "_execution" / "container_failures.json").read_text())
+    assert captured["container"] == "robovast"
+    assert captured["log_tail"] == "current\n"
 
 
 def test_a_job_is_invalidated_only_once(monkeypatch, tmp_path):
