@@ -75,7 +75,7 @@ export type CampaignPhase =
 
 // Phases where the campaign is still working, so no final verdict exists yet. The single
 // copy of this set: it decides polling, the Stop button, the pulsing phase dot and the
-// Results tree's verdict, and three separate lists of it had already drifted apart.
+// Results tree's verdict, and a second list of it would drift apart from this one.
 //
 // `initializing` is the first: the service has accepted the campaign and it is listed and
 // addressable, but the service's pre-flight (project push, image resolution) has not finished.
@@ -83,8 +83,8 @@ export type CampaignPhase =
 // `importing` is the one live phase a campaign can reach without ever having run here — a
 // campaign taken in from an archive or the share enters at it, and rolls on into
 // `postprocessing` when what arrived was raw. It is work in progress like any other, which
-// is the whole point of it being in the phase enum rather than beside it; leaving it out
-// here made an import read as finished, so its card stopped polling and offered no Stop.
+// is the whole point of it being in the phase enum rather than beside it; left out here, an
+// import would read as finished, so its card would stop polling and offer no Stop.
 const RUNNING_PHASES: ReadonlySet<string> = new Set<CampaignPhase>([
   'initializing', 'building', 'starting', 'plugin install', 'variation', 'importing',
   'running', 'finishing', 'postprocessing', 'sharing',
@@ -484,11 +484,12 @@ export const robovast = {
   usageHistory: (window: '1h' | '24h') =>
     request<UsageHistory>('GET', `/usage/history?window=${window}`),
 
-  // What the service DID, from a cursor. Durable, unlike the log and the usage samples: it
-  // outlives the process, which is the whole reason it is a separate route rather than a
-  // section of either. Oldest-first from `since`, so a caller resumes rather than re-reads.
-  serviceEvents: (since = 0, limit = 200) =>
-    request<ServiceEvents>('GET', `/admin/events?since=${since}&limit=${limit}`),
+  // What the service DID, newest `limit` events. Durable, unlike the log and the usage
+  // samples: it outlives the process, which is the whole reason it is a separate route rather
+  // than a section of either. Oldest first within the page, with the `next_seq` a reader
+  // holding a cursor resumes from (`since`).
+  latestServiceEvents: (limit = 200) =>
+    request<ServiceEvents>('GET', `/admin/events?newest=true&limit=${limit}`),
 
   // Which MCP tools agents actually reach for, aggregated over the call log below --
   // never a counter kept beside it, so the two can never disagree. Tools with no calls
@@ -960,7 +961,7 @@ export const robovast = {
   },
 
   // The campaign's `results_processing.postprocessing` block as editable YAML text (the rerun
-  // dialog). `source` names the effective .vast; saving writes a new override revision.
+  // dialog). Saving writes it back into the campaign's own `_config/<name>.vast`, in place.
   getPostprocessingSource: (campaignId: string) =>
     request<PostprocessingSource>(
       'GET',

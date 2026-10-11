@@ -1296,7 +1296,10 @@ Then it writes two campaign-level tables:
 
 A table that could not be built for some run **fails postprocessing**, naming the table, the run
 and the reason: "postprocessed" means what the campaign declares is there. The records are
-untouched, so running it again builds again.
+untouched, so running it again builds again. The pass ends by writing
+``_transient/postprocessing.yaml``, the record that says the campaign is postprocessed; a record
+that cannot be written fails postprocessing too, rather than leaving a campaign reported as done
+that reads as not postprocessed.
 
 **A failure here does not fail the campaign.** Its runs are the deliverable and remain
 downloadable; the campaign stays ``finished`` and the failure is recorded on its own durable
