@@ -1,0 +1,3 @@
+# noChunking: each message reaches the file as it is written, so a bag is readable while it records
+# (a chunked writer holds messages back until a chunk fills, and closes them into the file only then).
+noChunking: true

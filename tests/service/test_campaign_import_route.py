@@ -14,9 +14,10 @@ directory. What this file defends is the part only the wire and the worker can s
   campaign that extracted but did not register lists blank -- which looks like success to
   everything except the person reading it.
 * **What arrives can be re-run.** Importing an old result is worth doing because the campaign
-  becomes one of ours: listable, readable, and launchable again. The retrigger pre-flight is
-  tested against fixture directories elsewhere; only here does it meet a directory the import
-  itself produced, which is the one a user would actually re-run.
+  becomes one of ours: listable, readable, and launchable again -- replayed as it ran when its
+  launch record fixes every image's digest, and refused naming what it lacks when not. The
+  retrigger pre-flight is tested against fixture directories elsewhere; only here does it meet
+  a directory the import itself produced, which is the one a user would actually re-run.
 * **A refusal happens before any bytes move.** A bad archive, a name that is not a campaign
   id, and a collision with a campaign already here are all synchronous errors on the POST. If
   any of them slipped into the worker instead, the caller would get a ref for an import that
@@ -208,6 +209,16 @@ def test_an_imported_historic_campaign_is_then_retriggerable(env, fixture, tmp_p
 
     imported = transport._campaigns_root() / fixture.name
     report = retrigger.check(imported, fixture.name, image_labels=lambda _ref: None, build_lock=lambda _ref: {})
+    # As archived, its launch record fixes no digest for every image it ran, so the images
+    # axis is the one thing that blocks -- and it says where to go instead.
+    assert report["blocking"] == ["images"], report["blocking"]
+    assert "--to-workspace" in report["axes"]["images"]["detail"]
+
+    # Given the record a launch writes now, the imported layout stages like any other.
+    from tests.service.test_historic_campaigns import _with_fixed_images
+    _with_fixed_images(imported)
+    report = retrigger.check(imported, fixture.name, image_labels=lambda _ref: None,
+                             build_lock=lambda _ref: {})
     assert report["runnable"] is True, report["blocking"]
 
     plan = retrigger.prepare(imported, fixture.name,
@@ -254,8 +265,8 @@ def test_the_stage_report_is_written_where_a_client_can_read_it(env, tmp_path):
     _settle(client, fixture.name)
 
     report = _report(transport, fixture.name)
-    assert set(report["stages"]) == {"layout", "config", "completeness", "campaign_store",
-                                     "index", "analysis_db"}
+    assert set(report["stages"]) == {"archive", "layout", "config", "completeness",
+                                     "environment", "campaign_store", "tables"}
     assert report["campaign_id"] == fixture.name
     # Served over the file route too, which is how the web UI reads it.
     served = client.get(f"/results/{fixture.name}/_execution/import.json?as=text&lines=0")
@@ -400,6 +411,22 @@ def test_a_name_that_is_not_campaign_shaped_is_refused(env, tmp_path):
     assert "not a campaign directory name" in detail
     assert "listed and deleted by that shape" in detail, \
         "the refusal has to say why, or it reads as an arbitrary rule"
+
+
+def test_an_archive_that_would_not_fit_is_a_507_before_anything_is_extracted(
+        env, tmp_path, monkeypatch):
+    """What an archive unpacks to is held to the room above the reserve on the POST, so the
+    caller gets the refusal rather than a ref for an import that would fill the volume."""
+    client, transport, _ = env
+    fixture = _fixtures()[0]
+    archive = _archive(fixture, tmp_path / "a.tar.gz")
+    monkeypatch.setattr("robovast.common.disk_reserve.room_bytes", lambda _path: 0)
+
+    refused = _import(client, _upload(client, archive))
+
+    assert refused.status_code == 507, refused.text
+    assert "unpacks to" in refused.json()["detail"]
+    assert not (transport._campaigns_root() / fixture.name).exists()
 
 
 def test_a_missing_path_is_a_404(env, tmp_path):

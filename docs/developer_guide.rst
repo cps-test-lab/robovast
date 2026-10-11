@@ -46,8 +46,8 @@ This is the same path every campaign takes, differing only in which service answ
     vast workspace validate <workspace> my.vast             # check it
     vast workspace run <workspace> my.vast --filter config1 --runs 1
 
-``vast workspace list`` names the workspace; ``vast workspace update . <workspace>`` pushes
-an edit. Before a campaign, ``vast container run`` (or the MCP ``exec_in_container``) runs
+``vast workspace list`` names the workspace; ``vast workspace update <workspace> .`` pushes
+an edit. Before a campaign, ``vast container exec`` (or the MCP ``exec_in_container``) runs
 a command or one configuration's scenario in the image, which is where an import error or
 a missing package shows up in seconds rather than after a pull.
 
@@ -145,17 +145,24 @@ To develop the notebooks, it is recommended to use e.g. VSCode. For the RoboVAST
     # for complete run
     DATA_DIR = '<path-to-your-results-directory>/<campaign-name>-<timestamp>'
 
-In case you are using ROS bags as output format, it is recommended to postprocess the results before analysis. This can be done with the postprocessing commands defined in the configuration file. RoboVAST provides several conversion scripts for common use-cases.
+A notebook reads the campaign through ``robovast-data`` (``open_data(DATA_DIR)``, then
+``.table(name)`` or ``.sql(...)``; see :ref:`evaluation-reading-results`). A recorded rosbag
+needs no conversion step first: a table is built from the campaign's records the first time
+something names it, into the campaign's ``.cache/``, and the second use reads it. The
+``rosbags_*`` entries under ``results_processing.postprocessing`` only configure how those
+tables are built (which frames, which topics, what is required).
 
-Postprocessing is cached based on the results directory hash. To bypass the cache and force postprocessing (e.g., after updating postprocessing scripts), use the ``--force`` or ``-f`` flag:
-
-Afterwards, read the results in the browser (``vast ui``, against a running service):
+Postprocessing runs the campaign's own steps and builds the tables it declares when it ends.
+To run it again — after editing a step, say — and to clear the built tables first so what the
+campaign declares is built again from its records, use ``--force`` (``-f``):
 
 .. code-block:: bash
 
     vast campaign postprocess <campaign-id>
-    # or, to force postprocessing even if results are unchanged:
+    # clear the campaign's built tables first, so what it declares is built again:
     vast campaign postprocess <campaign-id> --force
+
+Afterwards, read the results in the browser (``vast ui``, against a running service).
 
 .. note::
 
@@ -178,7 +185,7 @@ Afterwards, read the results in the browser (``vast ui``, against a running serv
 Working across the distributions
 --------------------------------
 
-RoboVAST is four packages in one checkout (see :ref:`architecture-distributions`), which
+RoboVAST is several packages in one checkout (see :ref:`architecture-distributions`), which
 changes two things about the development loop. Both have bitten; both are silent.
 
 **Install the client last.** ``robovast-client`` is a *non-optional path dependency* of
@@ -205,6 +212,11 @@ checkout looks entirely normal in the meantime. The failure mode depends on whic
   hook unregistered, no ``./.env`` is read, and ``vast service upgrade`` — which
   reconciles Secrets from the environment — concludes the registry and git credentials
   are gone and deletes both.
+* ``robovast.doctor_checks`` — the checks ``vast doctor`` runs beyond the client's own
+  (Docker from the core; the Kubernetes tools, cluster and deployment from
+  ``robovast-cluster``). Each entry takes the command's ``DoctorOptions`` and returns a list
+  of ``Check`` (both in ``robovast.client.doctor``). A plugin that fails, and a provider that
+  is installed but registered nothing, are each reported as a failed check naming it.
 
 The rule that follows: after touching any ``[tool.poetry.plugins."..."]`` block, reinstall
 before you conclude anything from a test run. ``make venv`` re-runs when a manifest *or
@@ -233,14 +245,14 @@ not importable. Anything the client needs must live in the client: a wire consta
 Releasing to PyPI
 -----------------
 
-The five distributions are released as **one set at one version**, because ``robovast``
-requires ``robovast-client`` and ``robovast-sim-roqsim`` at *exactly* the version being
-released, and ``robovast-nav`` and ``robovast-cluster`` require ``robovast``. A version
-that exists for some of them and not the others is a set nobody can install, so
-``.github/workflows/publish.yml`` stamps the tag's version into every manifest before it
-builds a wheel. The tree carries the version being released too, set in all five
-``pyproject.toml`` files in the release commit, because the images are built from the tree
-and report the version it names.
+The seven distributions are released as **one set at one version**, because ``robovast``
+requires ``robovast-client``, ``robovast-decode``, ``robovast-data`` and
+``robovast-sim-roqsim`` at *exactly* the version being released, and ``robovast-nav`` and
+``robovast-cluster`` require ``robovast``. A version that exists for some of them and not
+the others is a set nobody can install, so ``.github/workflows/publish.yml`` stamps the
+tag's version into every manifest before it builds a wheel. The tree carries the version
+being released too, set in every ``pyproject.toml`` in the release commit, because the
+images are built from the tree and report the version it names.
 
 **The version's section of ``CHANGELOG.md`` comes first**, written with the ``changelog``
 skill (``skills/changelog/SKILL.md``) from the merges since the previous tag and reviewed
@@ -295,7 +307,7 @@ on an index is created by its first upload through a *pending* publisher, regist
 same way.
 
 **Rehearsing without CI.** ``make publish-test`` uploads the set to TestPyPI from your
-checkout, stamped with a post-release of the tree's version that is free on all five
+checkout, stamped with a post-release of the tree's version that is free on all seven
 histories at once (``tools/next_testpypi_version.py``), and ``make publish-test-venv``
 installs it into a fresh venv and checks the bundles, the entry points and the CLI. Every
 manifest is restored afterwards, including on failure. ``DRY_RUN=1`` builds without
@@ -335,23 +347,22 @@ container, so it answers for an image that exists only in the registry.
   failing one init container per job in the batch.
 - **Retrigger pre-flight**: the service reads the label of each recorded image from
   its registry; an image the registry will not answer for is reported as unknown.
-- **Postprocessing**: ``docker_exec.sh`` checks before ``docker run``.
 
 The cluster check **fails closed**: if the registry will not say what protocol the
-image speaks, the campaign is refused rather than started.  Pinning, right beside
-it, does the opposite and is right to — pinning is an optimisation, and not applying
-it leaves exactly what would have run anyway, whereas a compat check that could not
-read the image has established nothing.  Set
+image speaks, the campaign is refused rather than started.  Set
 ``ROBOVAST_SKIP_IMAGE_COMPAT_CHECK=1`` to run anyway; that is the right move only
-when the registry is unreachable and you know the image.
+when the registry is unreachable and you know the image.  It waives this label read
+and nothing else: the digest pin right beside it refuses a launch whose digests cannot
+be read whatever the switch says, because a campaign running a tag is one no replay
+can repeat (:ref:`image-digest-pinning`).
 
 Only the campaign's own image is checked.  The sidecar sets no label and a
 system-under-test image is not a robovast image at all, so an absent label on those
 means "not applicable" rather than "unreadable" — failing closed on them would
 refuse every campaign that has a SUT.
 
-An image built before the label existed now reports nothing and is refused.  Those
-images predate protocol 2, which is also ``MIN_IMAGE_COMPAT``, so a refusal is the
+An image without the label reports nothing and is refused.  Such an image
+predates protocol 2, below ``MIN_IMAGE_COMPAT``, so a refusal is the
 right answer for them regardless — but the message says what to do about it
 (rebuild from the recorded revision, or re-tag with the label) rather than only
 that it could not tell.
@@ -361,7 +372,7 @@ direction because the fixes are not interchangeable: an image **older** than the
 window means "check out the revision the campaign recorded
 (``_execution/execution.yaml``) and run it there", while one **newer** means
 "upgrade robovast".  Neither ever advises pulling a newer image — a re-run needs the
-bytes the campaign recorded, not today's.
+bytes the campaign recorded, not the current ones.
 
 .. warning::
 
@@ -377,9 +388,8 @@ container changes:
 
 - A new Python or system package is required inside the container
 - The ROS distribution changes
-- The interface of mounted scripts changes (e.g. ``ros2_exec.sh``,
-  ``entrypoint.sh``)
-- A postprocessing script requires a new ROS package
+- The interface of mounted scripts changes (e.g. ``entrypoint.sh``,
+  ``secondary_entrypoint.sh``)
 
 How to bump the version
 ^^^^^^^^^^^^^^^^^^^^^^^
@@ -388,22 +398,20 @@ How to bump the version
 2. Rebuild and push the container images
 
 That is the whole procedure, because there is only one copy. The images take the
-value as a build arg that ``container/image_stamp.sh`` derives from that constant
-— the same way they take the git revision and the build date, and for the same
-reason: a constant copied by hand into each Dockerfile drifts, which is why it
-used to need a CI gate comparing the copies. ``image_stamp.sh`` refuses to build
-if it cannot read the constant, rather than producing an image that carries no
-protocol at all.
+value as a build arg derived from that constant -- by ``container/image_stamp.sh``
+for a local build, by ``image.yml`` in CI -- the same way they take the git
+revision and the build date, and for the same reason: a constant copied by hand
+into each Dockerfile drifts. Both refuse to build if they cannot read the
+constant, rather than producing an image that carries no protocol at all.
 
-``image.yml`` still guards the shape: each Dockerfile must declare
-``ARG ROBOVAST_COMPAT_VERSION`` and label from it, so a literal cannot creep back.
+``image.yml`` guards the shape: each Dockerfile must declare
+``ARG ROBOVAST_COMPAT_VERSION`` and label from it, not from a literal.
 
 **Remembering to bump is the part nothing could check** — the version is a claim,
 and it fails by being forgotten. ``make check-compat-version`` (run in CI on every
 pull request, beside the config-version check) compares the change against the
-files that define the contract — the two Dockerfiles, ``entrypoint.sh``,
-``secondary_entrypoint.sh``, ``ros2_exec.sh`` — and fails if one of them moved and
-the version did not.
+files that define the contract — the two Dockerfiles, ``entrypoint.sh`` and
+``secondary_entrypoint.sh`` — and fails if one of them moved and the version did not.
 
 It is a *prompt*, not a proof: it cannot tell a contract change from a comment
 edit in the same file, and it cannot see a change made somewhere it is not
@@ -501,7 +509,7 @@ Keep disk and database I/O off the event loop
 
 The service answers every request, ``/healthz`` included, from one event loop. A route or MCP
 tool declared ``def`` runs on a worker thread and may block; one declared ``async def`` runs
-on the loop, so anything it does that waits on a disk or on the index stalls every other
+on the loop, so anything it does that waits on a disk or on a query stalls every other
 request for as long as that takes. A disk that is filling makes every write slow
 at once, and a stalled loop fails the liveness probe, so the pod is restarted for being short
 of disk.
@@ -527,6 +535,13 @@ To your `pyproject.toml`, add an entry under `[tool.poetry.plugins."robovast.var
     [tool.poetry.plugins."robovast.variation_types"]
     "YourVariation" = "robovast_<yourplugin>.your_variation:YourVariation"
 
+A variation does not define ``__init__``: the base class is constructed as
+``Variation(base_path, parameters, progress_update_callback, scenario_file, output_dir,
+container_runner=None)`` and keeps each argument as the attribute of the same name, with
+``parameters`` validated against ``CONFIG_CLASS`` when the class sets one. ``parameters`` is
+the mapping written under the variation's entry, and it is the only configuration a variation
+receives, so every value it reads is declared there.
+
 A variation can also be loaded from a **local file relative to the .vast**
 without packaging it — reference it as ``<path>.py:<Class>`` wherever a variation
 name is expected (in a ``configuration[].variations`` list or a ``search.variations``
@@ -548,8 +563,8 @@ The referenced module travels with the campaign: it is archived into
 from that snapshot rather than replaying recorded configurations — can resolve it, and it
 is content-hashed into the campaign's ``config_identifier``, because the source
 that decides which configurations exist is part of what the experiment is. Editing it
-therefore gives the campaign a new identity, exactly as editing a packaged variation's
-module does.
+therefore gives the campaign a new identity. A packaged variation counts by its name, so a
+new release of its package leaves the identity as it was.
 
 .. important::
 
@@ -574,6 +589,14 @@ line the variation is written on and the config block that ran it
 code. That text is the same on the CLI, in the MCP tools (``validate_project``,
 ``preview_configurations``) and in the web UI's config editor, so the line to fix is in
 front of whoever is authoring the plugin.
+
+**What the composition cache sees.** A composition is cached under its ``.vast``, the files the
+``.vast`` names and the source of its variations. A file your plugin reads because another file
+names it — the image a map YAML points at — is not among them: return its absolute path from
+``get_read_files()`` and a cached composition is not reused once it changes, and the
+``config_identifier`` of each configuration it composed covers its content. The helper image a
+plugin declares with ``get_required_container`` is covered without this: the entry records the
+digest it ran, and a hit is served only while the image still resolves to it.
 
 .. note::
 
@@ -707,9 +730,9 @@ front of whoever is authoring the plugin.
 
    :mod:`robovast.common.container_runner_proxy` closes that: the parent serves its own
    live factory on a Unix socket beside the job file, and the worker installs a factory
-   whose runners forward ``run`` / ``close`` / ``expose`` back across it. The runner —
-   and with it the Kubernetes client, the storage client and the credentials both
-   authenticate with — stays in the parent; only the four calls of the
+   whose runners forward ``run`` / ``image_digest`` / ``close`` / ``expose`` back across
+   it. The runner — and with it the Kubernetes client, the storage client and the
+   credentials both authenticate with — stays in the parent; only the calls of the
    :class:`~robovast.common.variation.container_runner.ContainerRunner` contract cross,
    plus ``workspace``, which is a path both sides can already see. Command output is
    streamed frame by frame, so a plugin's progress still reaches the campaign log while
@@ -738,16 +761,13 @@ front of whoever is authoring the plugin.
      publish your own set (``make release-images PROJECT=docker.io/<you> PUSH=1``)
      and point ``ROBOVAST_PROJECT`` at it to iterate. This applies
      only to the built-in sources; independent plugins are handled by
-     ``discover_plugin_installs`` above (installed into the workspace, no image
-     rebuild needed).
+     ``config_plugins.ensure_workspace_plugins`` above (installed into the workspace, no
+     image rebuild needed).
 
    If your plugin's package pulls in a dependency that itself needs system
-   shared libraries (e.g. ``robovast-nav`` hard-depends on
-   ``pyside6-essentials``, whose bundled Qt6 libs need ``libGL.so.1`` and
-   friends to even *import*, regardless of whether any GUI is ever shown), the
-   controller image needs those apt packages too — see the
-   ``container/controller/Dockerfile`` apt-get block for the list verified
-   against ``robovast-nav``. A missing system lib shows up the same way as a
+   shared libraries to even *import*, the controller image needs those apt packages
+   too — see the ``container/controller/Dockerfile`` apt-get block for what it
+   carries. A missing system lib shows up the same way as a
    missing extra: the plugin's entry point fails to load and the variation
    type is reported as unknown.
 
@@ -765,7 +785,7 @@ Example plugin registration:
 
 .. code-block:: toml
 
-    [tool.poetry.plugins."vast.plugins"]
+    [tool.poetry.plugins."robovast.cli_plugins"]
     variation = "variation_utils.cli:variation"
 
 
@@ -836,13 +856,13 @@ configured in the ``.vast`` file under ``results_processing.metadata_processing`
            param1: value1
            param2: value2
 
-Each plugin must subclass ``robovast.common.metadata.MetadataProcessor`` and
+Each plugin must subclass ``robovast.results_processing.metadata.MetadataProcessor`` and
 implement the ``process_metadata`` method:
 
 .. code-block:: python
 
    from pathlib import Path
-   from robovast.common.metadata import MetadataProcessor
+   from robovast.results_processing.metadata import MetadataProcessor
 
    class MyMetadataPlugin(MetadataProcessor):
 
@@ -976,7 +996,7 @@ graph.
    ``collect_prov_metadata`` receives ``rdflib.Namespace`` objects
    (``campaign_namespace``, ``config_namespace``) so you can construct
    campaign-relative IRIs with ``campaign_namespace["some/path"]``.
-   ``rdflib`` is a required dependency of the core ``robovast`` package.
+   ``rdflib`` comes with the core package's ``fair`` extra.
 
 
 .. _extending-simulators:
@@ -1011,7 +1031,8 @@ options in preference order.
 
    That two install sites decide this, and only one of them is documented where a backend
    author would look, is worth revisiting: whether a backend *should* be shippable per
-   campaign is a design question, and today the answer is an accident of call order.
+   campaign is a design question, and the answer follows from call order rather than from a
+   decision.
 
 **Where it runs in composition.** ``apply_backend()`` is called once at the top of the
 ``execution`` extraction in ``generate_scenario_variations()``, so the container plan, the
@@ -1058,7 +1079,8 @@ and a half-written artifact can never be mistaken for a finished one.
 
 **Staleness.** Declare what was read by calling ``write_manifest(out_dir, paths)``, which
 writes ``.generated.json`` into the output directory; the next composition hashes those paths
-and skips the generator when nothing moved. Report the *real* set — for anything compiled from
+and skips the generator when nothing moved, and when the image of the container it declares
+still resolves to the same digest. Report the *real* set — for anything compiled from
 a description that can reference others, that includes the transitive ones. A generator that
 reports nothing is never cached, and a cached result is honored only while its outputs are
 still on disk unchanged: staleness fails towards doing the work, never towards serving a stale
@@ -1129,105 +1151,87 @@ A project can also skip packaging entirely and reference a local file:
 Add Postprocessing Command Plugin
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Postprocessing plugins are Python functions that process run result directories (e.g., convert rosbag data to CSV). They are registered as entry points and executed before analysis.
+A postprocessing step is something a campaign asks to *run* when it ends. It is not how a
+recording becomes a table: the decoder builds tables from the campaign's records the first
+time something names them (see :ref:`results-tables-build`), and a ``rosbags_*`` entry in the
+postprocessing list only configures that. A step is for work the tables do not already do —
+reading one table and writing another, calling an external tool, archiving. Steps run in the
+service process, in the order listed, before the campaign-end pass builds the
+tables the campaign declares.
 
-**Return value:** A plugin must return ``(success: bool, message: str)``. It may optionally return a third value, a list of **provenance entries**, so that each produced file is recorded (e.g. which CSV was created from which rosbag). Each entry is a dict with keys: ``output`` (path relative to results_dir), ``sources`` (list of paths), ``plugin`` (plugin name), ``params`` (optional dict). If returned, these entries are merged and written into ``postprocessing.yaml`` in each run folder (``<campaign-name>-<timestamp>/<config>/<run-number>/``).
+**Contract.** A step is a class deriving from
+:class:`~robovast.results_processing.postprocessing_plugins.BasePostprocessingPlugin`,
+registered under the ``robovast.postprocessing_commands`` entry-point group, or named in the
+``.vast`` as a local ``./path.py:Class`` file reference resolved against the ``.vast``'s
+directory. An entry point that is not a class is skipped with a warning. ``__call__`` gets
+``results_dir`` (the campaign directory), ``config_dir`` (the ``.vast``'s directory, for
+relative paths) and the entry's own parameters as keyword arguments; ``force`` and ``debug``
+are passed too when set, and ``should_stop`` (a predicate a long step polls to give up early)
+only to a step whose signature accepts it — so take ``**kwargs``, or an unexpected argument
+fails the step. Override
+:meth:`~robovast.results_processing.postprocessing_plugins.BasePostprocessingPlugin.get_files_to_copy`
+to have files the step needs copied into ``_config/``, where a re-run finds them.
 
-**Steps that work run by run:** a plugin whose output for a run depends only on that run, the
-scenario jobs it links, the other runs of those jobs and the campaign-level inputs
-(``_config``, ``_execution``, ``_transient``) declares ``scope = "run"``. A cluster may then run
-it on parts of the campaign in parallel (:ref:`deployment-postprocess-parallel`): every part
-is a set of whole scenario jobs with their runs, and the step must write only into those. The
-default, ``scope = "campaign"``, runs the step once over the whole tree. Only the leading run of
-run-scoped steps is split -- a run-scoped step listed after a campaign-scoped one runs after
-it, over the whole tree.
+**Return value:** ``(success: bool, message: str)``. A step may return a third value, a list
+of **provenance entries**, one per file it produced: dicts with ``output``, ``sources`` (paths
+relative to the directory holding the campaign), ``plugin`` and optional ``params``. They are
+written to ``_transient/postprocessing.yaml``, the campaign's provenance record, and into the
+campaign-level ``postprocessing_steps`` table beside one row per decoded table.
 
-**Steps that run in the campaign's execution image:** some work can only happen in the image the
-runs used — deserializing a bag needs the message definitions of the custom types it recorded. Such
-a plugin derives from
-:class:`~robovast.results_processing.postprocessing_plugins.ExecutionImagePlugin` and names the
-command to run there instead of implementing ``__call__``:
-
-.. code-block:: python
-
-    import os
-    from robovast.results_processing.postprocessing_plugins import ExecutionImagePlugin
-
-    class DecodeCamera(ExecutionImagePlugin):
-        def image_command(self, ctx, topic="/camera"):
-            # A file in the scripts directory, then its arguments. ctx says where the
-            # campaign is inside the container, and whether to force or be verbose.
-            argv = ["decode_camera.py", "--topic", topic]
-            if ctx.provenance_file:
-                argv += ["--provenance-file", ctx.provenance_file]
-            return argv + [ctx.campaign_dir]
-
-        def image_files(self):
-            # Shipped beside the conversion scripts, under their own names.
-            return [os.path.join(os.path.dirname(__file__), "decode_camera.py")]
-
-The postprocessing Job runs exactly that command from ``/scripts`` through ``ros2_exec.sh``
-in its image container; ``vast results postprocess`` on a development machine runs it with
-``docker_exec.sh`` against the campaign's execution image. A parameter the command does not
-take fails the step. The script runs **without**
-``robovast`` — only the standard library, what the image provides, and the files beside it
-(``rosbags_common`` among them). It writes its outputs into the campaign tree; on the cluster, every
-file it writes is delivered back, whether or not it records provenance. To record provenance it
-appends ``{"output", "sources", "plugin", "params"}`` entries (paths relative to the campaign) to
-``--provenance-file`` with ``rosbags_common.write_provenance_entry``.
+**What a step reads and writes.** A step reads tables through ``robovast-data``, which builds
+what it names, and writes its result as a file in a run directory: a run's ``*.csv`` or
+``*.jsonl`` *is* a table, named after the file's stem, with no registration
+(:mod:`robovast_decode.authored`). ``robovast_nav``'s ``nav2_bt_tree`` is the reference: it
+reads ``nav2_behavior_tree`` and writes each run's ``nav2_behaviors.csv``.
 
 **Creating a Postprocessing Plugin:**
 
 .. code-block:: python
 
-    from typing import Tuple, Optional, List
-    
-    def my_postprocessing_command(
-        results_dir: str,
-        config_dir: str,
-        custom_param: Optional[str] = None,
-        provenance_file: Optional[str] = None,
-    ) -> Tuple[bool, str]:
-        """Convert custom data to CSV.
-        
-        Args:
-            results_dir: Path to the <campaign-name>-<timestamp> run directory to process
-            config_dir: Config file directory (for resolving relative paths)
-            custom_param: Optional custom parameter
-            provenance_file: Optional path for provenance JSON (for container scripts)
-        
-        Returns:
-            Tuple of (success, message) or (success, message, provenance_entries)
-        """
-        import subprocess
-        import os
-        
-        script = os.path.join(config_dir, "tools/script.sh")
-        cmd = [script, results_dir]
-        if custom_param:
-            cmd.extend(["--param", custom_param])
-        
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            return False, f"Failed: {result.stderr}"
-        return True, "Success"
+    import os
+    from typing import Tuple
+
+    from robovast.results_processing.postprocessing_plugins import BasePostprocessingPlugin
+    from robovast_data import Campaign
+
+
+    class GoalDistance(BasePostprocessingPlugin):
+        """Write each run's final distance to the goal as ``goal_distance.csv``."""
+
+        def __call__(self, results_dir: str, config_dir: str,
+                     frame: str = "base_link", **kwargs) -> Tuple[bool, str]:
+            poses = Campaign(results_dir).table(
+                "poses", columns=["config_name", "run_id", "timestamp", "frame",
+                                  "position.x", "position.y"])
+            poses = poses[poses["frame"] == frame]
+            written = 0
+            for (config_name, run_id), track in poses.groupby(["config_name", "run_id"]):
+                last = track.sort_values("timestamp").iloc[-1]
+                out = os.path.join(results_dir, str(config_name), str(int(run_id)),
+                                   "goal_distance.csv")
+                with open(out, "w", encoding="utf-8") as f:
+                    f.write("x,y\n")
+                    f.write(f"{last['position.x']},{last['position.y']}\n")
+                written += 1
+            return True, f"wrote goal_distance.csv for {written} run(s)"
 
 **Register in pyproject.toml:**
 
 .. code-block:: toml
 
     [tool.poetry.plugins."robovast.postprocessing_commands"]
-    my_postprocessing_command = "your_package.postprocessing_plugins:my_postprocessing_command"
+    goal_distance = "your_package.postprocessing_plugins:GoalDistance"
 
 **Usage in .vast config:**
 
 .. code-block:: yaml
 
-    analysis:
+    results_processing:
       postprocessing:
-        - my_postprocessing_command:
-            custom_param: value
+        - goal_distance:
+            frame: base_link
+        # or, without packaging it:
+        - ./analysis/goal_distance.py:GoalDistance
 
 .. _extending-publication:
 
@@ -1292,7 +1296,7 @@ operate on the full results directory.
 Add Cluster Config Plugin
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
-To add a new cluster configuration option for RoboVAST, create a class that inherits from `robovast.execution.cluster_config.base.BaseConfig`.
+To add a new cluster configuration option for RoboVAST, create a class that inherits from `robovast.execution.cluster_config.base_config.BaseConfig`.
 Register your cluster config in your `pyproject.toml` under `[tool.poetry.plugins."robovast.cluster_configs"]`. The key is the name used to select the configuration, and the value is the import path to your configuration class.
 
 .. code-block:: toml
@@ -1301,7 +1305,7 @@ Register your cluster config in your `pyproject.toml` under `[tool.poetry.plugin
     "YourClusterConfig" = "robovast_<yourplugin>.your_cluster_config:YourClusterConfig"
 
 To test your cluster configuration, call
-:meth:`~robovast.execution.cluster_config.base_config.BaseClusterConfig.prepare_setup_cluster`
+:meth:`~robovast.execution.cluster_config.base_config.BaseConfig.prepare_setup_cluster`
 with an output directory. It writes the files and the instructions for performing the setup
 steps by hand, without applying anything. There is no CLI verb for it — ``vast cluster setup``
 is the applying path.
@@ -1453,7 +1457,7 @@ Add a MCP Plugin
 
 **Contribute data, not read tools.** A domain package (a robot type, a stack) makes its
 results readable through core rather than through tools of its own. A per-domain read tool
-is a second reader of facts the index already holds: it drifts from the first, it exists
+is a second reader of facts the campaign's tables already hold: it drifts from the first, it exists
 only where its package is installed, and every domain that adds one spends the tool budget
 every client pays for. The seams that make a domain's facts readable everywhere:
 
@@ -1494,6 +1498,10 @@ Then register the class as an entry point in ``pyproject.toml``:
    my_plugin = "my_package.mcp_plugin:MyMCPPlugin"
 
 The plugin is picked up automatically the next time the server starts.
+
+A tool need not catch what it cannot answer: whatever it raises reaches the caller as the
+one error document (:ref:`mcp-errors`). Catch only an exception the tool turns into a
+different answer.
 
 A call the tool rejects — an unknown or missing argument — is answered with the arguments
 the tool does take. Where a tool lacks an argument a caller will reach for on purpose,
@@ -1612,7 +1620,10 @@ responsibility:
            )
 
 ``objectives`` and ``measures`` are named dicts, so single- and multi-objective
-use the same shape. The framework records how many runs backed each result.
+use the same shape. The framework records how many runs backed each result. Every
+declared objective must be a finite number: a NaN, an infinity or a non-number is refused
+when the result is read, naming the extractor and the configuration, because no strategy
+can compare it.
 
 Register under ``robovast.extractors`` (referenced by ``search.extract.plugin``),
 or load from a local file with ``extract.plugin: ./search/extract.py:MyExtract``:
@@ -1633,8 +1644,8 @@ lists — by entry-point name or a local ``./path.py:Class`` file reference.
 
 .. _campaign-store:
 
-Campaign Store and Results Indexing
------------------------------------
+Campaign Store
+--------------
 
 Every campaign — batch or search — is described by a single sqlite store,
 ``campaign.db`` (``robovast.common.store.STORE_FILENAME``), written at the
@@ -1648,7 +1659,9 @@ batch per ask/tell round.
 Schema
 ^^^^^^
 
-``robovast.common.store.CampaignStore`` is a thin wrapper over five tables::
+``robovast.common.store.CampaignStore`` is a thin wrapper over seven tables: the five below, plus ``node`` (one row per
+cluster node a job ran on, keyed by a hash of its name) and ``container_failure`` (one row per
+container restart the runner saw under a job)::
 
     campaign (1) --< batch (1) --< unit (one per param set / config) (1) --< run (one per repetition)
     campaign (1) --< job  (one per execution job)  ...............<  run (via run.job_id)
@@ -1671,25 +1684,36 @@ Schema
   after it (see :ref:`the launch record <campaign-launch-record>`).
 * **job** — one row per **execution job**, holding that job's ``sysinfo.yaml``
   verbatim in ``sysinfo_json``. It is a table rather than a column on ``run``
-  because sysinfo is written once per *job*: a packed multi-config job runs several
-  ``(config, run)`` pairs which reach the same file through each run dir's ``job``
-  symlink. A per-run copy would repeat the blob and destroy the fact that those runs
-  shared a machine — which is what makes "did the slow runs land together?"
-  answerable. ``job_dir`` is campaign-relative (``_jobs/batch-0/job-3``), or the
+  because sysinfo is written by the *job*, the unit that ran on a host, and its run
+  reaches it through the run dir's ``job`` symlink. ``job_dir`` is campaign-relative (``_jobs/batch-0/job-3``), or the
   run's own directory for an older layout that wrote sysinfo beside the run.
 * **batch** — one ask/tell round (search), or the single batch (``idx=0``) of a
-  batch-mode campaign.
+  batch-mode campaign. ``asked`` is how many parameter sets the strategy proposed, and
+  ``recalls_recorded`` is 1 on every batch whose recalled cells have rows (NULL on one
+  written before schema 14). ``complete`` is 1 once every unit of the batch is recorded;
+  NULL on a batch still running or interrupted, whose units are not what it ended with.
+  For a batch written before schema 15 the migration sets it where the record decides it
+  (:doc:`search`, "Surviving a service restart").
 * **unit** — one evaluated parameter set (search) or one configuration (batch):
   the sampled ``params``, ``objectives``/``measures`` (JSON; ``{}`` for batch),
   and the ``result_dir``. ``n_samples`` and the aggregate ``status`` are roll-ups
-  of the unit's ``run`` rows, kept for convenience.
+  of the unit's ``run`` rows, kept for convenience. A search cell re-proposed after an
+  earlier batch measured it is a ``recalled`` row whose ``recalled_from`` names the unit
+  that measured it, with no outcome of its own.
 * **run** — one repetition of a unit (schema v2+). Mirrors that run's
-  ``test.xml``: ``status`` (``passed``/``failed``/``error``/``unknown``),
+  ``test.xml``: ``status`` (``passed``/``failed``/``error``/``killed``/``invalid``/``unknown``),
   ``passed`` (0/1), ``errors``/``failures``/``tests``, ``duration_s``,
   ``start_time`` and ``failure_message``. ``run_id`` is the numeric run index
   within the config dir — so it is **not unique on its own**; ``config_name`` lives
   on ``unit``. ``job_id`` points at the job it ran in. A run whose ``test.xml`` is
   missing or unparseable is still recorded, as ``unknown`` — never dropped.
+
+These rows are also a search's checkpoint: ``search.history.recorded_batches`` reads the
+complete batches back into the ``ask``/``tell`` sequence a resumed strategy is re-driven
+through (:doc:`search`, "Surviving a service restart"), and the live loop builds what it
+tells from the same ``RecordedBatch`` type, so what a replay tells is what the live run told.
+``search.history.unfinished_batch`` reads an incomplete last batch, which the loop's first
+round finishes.
 
 .. rubric:: Two definitions of the schema, on purpose
 
@@ -1698,7 +1722,7 @@ reader can see what a table looks like without replaying history. ``_MIGRATIONS`
 append-only ladder that upgrades an *existing* store; entry *i* takes ``user_version`` *i*
 to *i+1* and is never edited once shipped, because some database on disk has already
 applied it. Note migration 0→1 is a frozen copy of the v1 layout rather than ``_SCHEMA``
-— reusing ``_SCHEMA`` there would jump an old store to today's tables and the later
+— reusing ``_SCHEMA`` there would jump an old store to the current tables and the later
 ``ALTER TABLE`` steps would then fail on columns that already exist.
 
 Adding a column therefore means touching both, in the same position.
@@ -1713,19 +1737,22 @@ listing campaigns is cheap. ``test.xml`` (JUnit, one per run) is the runner's
 on-disk contract; the controller already parses it at record time, so capturing a
 ``run`` row there is free. Pass/fail counts are then one ``GROUP BY status`` over
 ``run`` — no filesystem walk — and are available **live**, before postprocessing.
-The central index's ``run_view`` is the analytics-wide *view* over these rows
-(joining sysinfo and the unit's params); the ingest mirrors ``campaign.db`` rather
-than re-parsing every ``test.xml``. Heavy per-run measurement data (metric
-time-series) is streamed into the index — ``campaign.db`` remains the lightweight
-live store.
+A SQL query sees the store as the ``campaign`` schema (``campaign.run``, ``campaign.job``, …;
+:mod:`robovast_data.record`), read whole per query, so it sees a running campaign's latest
+rows. The query-side ``runs`` table (:mod:`robovast_decode.runs`) and ``run_view``
+(:mod:`robovast_data.views`) are the analytics-wide *views* over these rows, joining the job's
+sysinfo and the unit's params as ``param_*`` columns; both are computed from ``campaign.db``
+at query time rather than re-parsing every ``test.xml``. Per-run measurement data (poses,
+logs, resource samples) stays in the run's records and is built into tables on first use —
+``campaign.db`` remains the lightweight live store.
 
 ::
 
     test.xml         runner artifact (per run) — the on-disk contract
       -> captured live at record time (data already in hand)
     campaign.db.run  operational source of truth — queryable DURING the run
-      -> postprocessing joins sysinfo/params/metrics
-    index runs view  analytics-ready wide view (param_* columns, metrics) — DERIVED
+      -> read per query, joined with sysinfo and params
+    runs / run_view  analytics-ready wide view (param_* columns, outcome) — DERIVED
 
 .. note::
 
@@ -1760,13 +1787,58 @@ Who writes it
 Taking a campaign in
 ^^^^^^^^^^^^^^^^^^^^
 
-``robovast.service.ingest`` owns both halves. :func:`~robovast.service.ingest.import_archive`
-unpacks an archive into a results root; :func:`~robovast.service.ingest.ingest_campaign`
-registers what came out and reports **per stage**, since a campaign archive carries three
-version surfaces of its own (the ``.vast``'s, ``campaign.db``'s and the analysis DB's) which
-can independently be older, newer, absent or corrupt. Neither re-implements a migration --
-the config ladder is applied in memory and the store migrates on open, so this module observes
-and reports.
+``robovast.service.ingest`` owns both halves. :func:`~robovast.service.ingest.read_campaign_id`,
+:func:`~robovast.service.ingest.claim_campaign_dir` and
+:func:`~robovast.service.ingest.extract_archive` unpack an archive into a results root, as
+separate steps so the importer can open the campaign's ``import.log`` once the directory is
+claimed. The extraction confines every member to the campaign's own directory: an archive
+is untrusted input, and a member that resolves to a sibling campaign -- through ``..``, a
+symlink or a hard link -- fails the import naming the member rather than landing there.
+Claiming also marks the directory as an import under way
+(``_execution/importing.json``), and the importer clears the mark once the import has
+concluded either way; :func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`
+reports a tree still carrying it as a failed import, ahead of the archived ``outcome.json``
+that would otherwise describe the whole campaign over a partial tree.
+:func:`~robovast.service.ingest.ingest_campaign` registers what came out and reports
+**per stage** (``archive``, ``layout``, ``config``, ``completeness``, ``environment``,
+``campaign_store``, ``tables``), since a campaign archive carries three version surfaces of its
+own which can independently be older, newer, absent or corrupt: its **layout**, the ``.vast``'s
+version and ``campaign.db``'s schema. This module re-implements none of their ladders -- it
+runs the layout ladder, the config ladder is applied in memory and the store migrates on open
+-- and reports what each did. The ``environment`` stage names what the
+configuration needs that this deployment lacks -- variation types, postprocessing commands,
+metadata processors and health checks not installed, ``./file.py:Class`` plugins not in the
+archive, ``plugins:`` packages not installed -- and is degraded, never blocking: the
+campaign lists without them, and only postprocessing and a re-run need them. The ``tables``
+stage loads nothing: a table the archive carries is used where this decoder wrote it the same
+way, and any other is built from the records the first time something names it. The stage
+only says whether the records give any table at all.
+
+.. rubric:: The archive layout
+
+Everything in a campaign tree that carries no number of its own -- where its records sit, and
+the formats of ``_execution/outcome.json``, ``launch.yaml``, ``execution.yaml`` and the other
+records -- is versioned by one number, the **archive layout**
+(:mod:`robovast.common.migrations.archive`). It is the single source of truth for those
+formats: ``outcome.json`` carries no schema field of its own, because a field on ``Status``
+would number one record and leave the others beside it unnumbered, and a record's format
+changes by moving the layout with a step that rewrites it.
+
+Both archive streams (:mod:`robovast.execution.campaign_archive`: the download and the
+upload-to-share, on the service and on the cluster) add ``_execution/archive.json`` as they
+write -- the layout, the robovast that wrote it, and the numbers of the surfaces that carry
+their own -- and never copy a stamp already in the tree. The ``archive`` stage runs first,
+because every other stage reads records whose paths and formats the layout decides:
+
+* **no stamp** is layout 1, the first layout;
+* **older** runs the steps in order over the extracted tree, then rewrites the stamp to the
+  layout the tree is now at, with ``layout_from``;
+* **newer** is ``newer``, not blocking, naming the layout and the robovast that wrote it;
+* a stamp that states no layout, or a step that fails, **blocks**.
+
+A step is ``migrate(campaign_dir) -> None`` and rewrites the tree in place; like a config step
+it may not import the current model its record is read with. Layout 1 is the only layout so far,
+so the ladder has no steps; ``src/robovast/common/migrations/README.md`` says how to add one.
 
 Three entry points, one implementation: ``vast campaign import`` (locally, or streamed to a
 reachable service), ``POST /campaigns/import`` behind the web UI's upload button, and the
@@ -1774,7 +1846,7 @@ reachable service), ``POST /campaigns/import`` behind the web UI's upload button
 archive side channel documented in :doc:`http_api`, and the import itself always takes a path
 on the host that will hold the campaign.
 
-Two refusals in ``import_archive`` are load-bearing rather than defensive. The archive must
+Two refusals in ``read_campaign_id`` are load-bearing rather than defensive. The archive must
 hold exactly **one** top-level entry, computed with a ``./`` root ignored -- reading the first
 path segment literally makes ``tar czf x.tar.gz -C <results> .`` look like one entry named
 ``.``, which resolves to the results root, so a forced import would have deleted every
@@ -1786,12 +1858,12 @@ stage ``ok``, and then be invisible and undeletable.
 Store-driven results views
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The results GUI (``RunResultsAnalyzer``) discovers campaigns by scanning
-``<results_dir>/*/campaign.db`` — there is no filesystem-walk or depth-based
-heuristic. It reads the campaign/batch/unit rows to build the tree
-(campaign → *batch*, search only → config), resolves notebook workloads from
-``config_json`` against ``config_dir``, and enumerates only the run-level leaves
-from each unit's ``result_dir``.
+The web UI's Results Explorer lists campaigns from the service's campaign listing and builds
+each campaign's tree (campaign → *batch*, search only → config → run) from one query over
+``run_view`` (``CAMPAIGN_RUNS_SQL`` in ``frontend/ui/src/lib/resultsTree.ts``). ``run_view`` is
+computed from ``campaign.db``, so a campaign whose runs recorded nothing still lists them, and
+the Run view's picker builds the same tree from the same rows. There is no filesystem walk or
+depth-based heuristic.
 
 
 .. _controller-control-interface:
@@ -1854,8 +1926,14 @@ Status: phase and stage
    * - ``sharing``
      - Streaming the raw pre-postprocessing archive to the configured share (only when
        ``upload_to_share`` was set).
+   * - ``importing``
+     - A campaign taken in from an archive or from the share, entering here and, when
+       what arrived was raw, rolling straight on into ``postprocessing``. In the enum so
+       that everything that knows "live" treats an import as work in progress.
    * - ``postprocessing``
-     - Chained analysis postprocessing (rosbag→CSV Job + index ingest) running.
+     - Chained analysis postprocessing running in the service process: the campaign's own
+       steps, then the campaign-end pass (the tables it declares, its health checks, its
+       provenance record). See :ref:`cluster-postprocessing`.
    * - ``finished``
      - Done; every run's output is on the service's results volume. **A post-run step may still
        have failed:** the runs are the deliverable, so a failed upload-to-share or
@@ -1874,8 +1952,8 @@ Status: phase and stage
 change, so a defensive re-set does not restart the clock). It exists because a phase name
 alone cannot separate *slow* from *wedged*: an image build in progress and one that will
 never finish both read ``building``. Readers render it as an age — the MCP status returns
-``phase_age_s``, and the web Monitor shows it beside the phase dot while a pre-run phase is
-in effect, where there is no progress bar to watch instead.
+``phase_age_s``, and the web UI's Campaigns page shows it beside the phase dot while a pre-run
+phase is in effect, where there is no progress bar to watch instead.
 
 .. _a-started-campaign-is-findable:
 
@@ -1951,7 +2029,7 @@ two campaigns needing the same image both wait on one build. Two consequences:
 * Stopping a building campaign **detaches** it. ``_await_build_image`` raises
   ``CampaignStopped`` and touches neither the build Job nor the local build thread: a
   sibling may be waiting on that build, and the image is a cache entry rather than this
-  campaign's property. Nothing cancels a build today — the cluster teardown is label-scoped
+  campaign's property. Nothing cancels a build — the cluster teardown is label-scoped
   to ``jobgroup=scenario-runs`` and cannot reach a ``jobgroup=image-builds`` Job, and the
   local ``docker rm -f robovast`` cannot reach a ``buildx`` thread — and it must stay that
   way.
@@ -1969,8 +2047,8 @@ is exactly when someone comes looking. It is also why
 ``controller._record_controller_outcome`` uploads ``build.log`` alongside ``outcome.json``
 — a campaign that died waiting for its image never reaches ``finalize_campaign`` at all.
 
-This changes an error path on purpose: a failed build is now an inspectable ``failed``
-campaign — reason in its status, output in its own log — rather than a 500 and no campaign.
+A failed build is therefore an inspectable ``failed`` campaign — reason in its status,
+output in its own log — rather than a 500 and no campaign.
 Building is part of the campaign's driven work, not a precondition of its existence.
 
 Control operations
@@ -1983,9 +2061,12 @@ Control operations
   campaign happens to be in does not decide how long the stop takes. Which work a stop
   lands on, and what each one leaves behind, is the
   :ref:`per-phase table <stopping-a-campaign>` in :doc:`architecture`.
-* ``get_campaign_logs`` — serves ``controller.log`` from a byte offset, the same file on
-  the service's results volume while the campaign runs and after. The web UI polls it to
-  stream the log; ``vast … monitor`` renders live status from ``get_status``.
+* ``get_campaign_logs`` — serves the campaign's infrastructure log as rows after a cursor,
+  read from the phase files under ``_execution/`` on the service's results volume while the
+  campaign runs and after (:mod:`robovast.service.campaign_log`); ``phase``, ``min_level``
+  and ``grep`` are applied in the read. The web UI and ``vast campaign log --follow`` read
+  the same rows over its SSE stream; ``vast … monitor`` renders live status from
+  ``get_status``.
 * ``upload_to_share`` (launch flag on ``create_campaign``) — when set, the driver
   streams a raw, pre-postprocessing archive of the campaign to the configured share
   the moment the runs finish, *before* analysis postprocessing. A share failure never
@@ -2016,8 +2097,8 @@ mappings documented under *Per-Cluster Resource Limits* in
 :doc:`cluster_execution`) lives in :mod:`robovast.execution.cluster_execution.cluster_context`:
 
 .. automodule:: robovast.execution.cluster_execution.cluster_context
-   :members: get_active_kube_context, list_all_contexts, get_config_context_names,
-             require_context_for_multi_cluster, resolve_resource_value, resolve_resources
+   :members: get_active_kube_context, list_all_contexts, resolve_resource_value,
+             resolve_resources
    :undoc-members:
 
 
@@ -2032,7 +2113,7 @@ behind it.
 **RoboVAST admits its own jobs.** A campaign's Jobs are created by
 :class:`~robovast.execution.cluster_execution.node_admission.AdmissionController`,
 one at a time, each only once the cluster has room for it — so nothing is ever
-submitted to a queue and left to wait. ``runs_per_job`` defaults to 1, so a
+submitted to a queue and left to wait. Every run is its own Job, so a
 typical campaign's plan is upwards of a thousand Jobs, and none is created before
 the cluster can hold it.
 
@@ -2102,8 +2183,8 @@ React app that reuses those libraries directly.
 request/response models (including :class:`~robovast.execution.control_server.Status`)
 — **1:1**, exactly as the Python ``HTTPTransport`` does. When the interface changes,
 update this file. Pages call the client via TanStack Query (``refetchInterval`` drives
-the Monitor's live polling; mutations drive create/stop). Current pages:
-``pages/Monitor.tsx`` (the launch bar merged into it — there is no separate Launcher),
+the Campaigns page's live polling; mutations drive create/stop). Pages:
+``pages/Monitor.tsx`` (the Campaigns page, which holds the launch bar),
 ``pages/config/ConfigPage.tsx``, ``pages/results/ResultsPage.tsx`` and
 ``pages/admin/AdminPage.tsx``, sharing ``components/StatusView.tsx`` for the live
 ``Status`` render.
@@ -2117,23 +2198,30 @@ rank it as their peer. It is a field on the one ``TOPICS`` declaration in ``App.
 rather than a second prop, so navigation still resolves from one source and ``hashNav``
 needs no change — a leaf topic already falls out of the existing grammar.
 
-``components/LogPanel.tsx`` is the one live-log renderer, for the campaign log, the job log
-and the service log alike. It is its own module rather than part of ``StatusView.tsx``:
-reaching it through there would drag ``BatchObjectiveChart``, ``DetailsBox`` and the ETA
-maths into a lazily-loaded page that needs none of them. That the same component fits all
-three is not a coincidence: every live log here is a ``fetch(offset) -> LogChunk`` behind
-one SSE loop.
+``components/LogPanel.tsx`` renders the one text log, the service's own, on the Admin page.
+It is its own module rather than part of ``StatusView.tsx``: reaching it through there would
+drag ``BatchObjectiveChart``, ``DetailsBox`` and the ETA maths into a lazily-loaded page that
+needs none of them. It is a ``fetch(offset) -> LogChunk`` behind one SSE loop. A campaign's
+log and a job's are rows, not text, and are rendered by
+``components/runLog/RunLogView.tsx`` -- the viewer the ``run_log`` table uses -- fed by
+``useCampaignLogStream`` and ``useJobLogStream``, which follow the newest row as it arrives.
+Both streams are one server-side loop, ``_sse_rows_stream`` in ``service/app.py``, over the
+pull their endpoint serves: frames of rows with the cursor as the event id, a wait on the
+files between reads, ``eof`` when the log is over. The campaign log's viewer maps the row's
+phase onto the view's container column and its logger onto the node column, and names the
+facets accordingly (``facetTitles``).
 
-**A log panel is a tail, and both ends of it are bounded.** A campaign's assembled
-infrastructure log reaches tens of megabytes, while the pane it is read through is a few
-hundred pixels tall — so the stream serves an over-long frame from its end
-(``_sse_log_frame_cap`` in ``service/app.py``, which leaves a note naming ``vast campaign
-log`` for the whole thing), and the panel keeps only a bounded tail of what it has received
-(``trimHead``). The second bound is not about memory: the body is rebuilt from the whole
-buffer on every delta, so an unbounded one re-renders a span per line of the entire log
-twice a second. Dropping the head costs the offset protocol nothing — ``next_offset`` is
-where the *log* continues, not how much was sent — so a resumed connection still resumes at
-the right byte.
+**A log panel is a tail, and both ends of it are bounded.** The service log's ring is
+bounded on the server, and the pane it is read through is a few hundred pixels tall — so
+the stream serves an over-long frame from its end (``_sse_log_frame_cap`` in
+``service/app.py``, which leaves a note naming ``vast service log`` for the whole thing),
+and the panel keeps only a bounded tail of what it has received (``trimHead``). The second
+bound is not about memory: the body is rebuilt from the whole buffer on every delta, so an
+unbounded one re-renders a span per line of the entire log twice a second. Dropping the
+head costs the offset protocol nothing — ``next_offset`` is where the *log* continues, not
+how much was sent — so a resumed connection still resumes at the right byte. The row
+viewers bound themselves the other way: they keep the newest ``MAX_LIVE_ROWS`` and say how
+many older rows they dropped.
 
 An open stream with nothing in it is ambiguous, and the panel must not resolve it by
 guessing: these servers flush the response headers before their first pull, and that pull is
@@ -2220,10 +2308,10 @@ is the app-wide way to state a passing fact — mounted once in ``main.tsx``, us
 question and blocks on the answer, this one states a fact and gets out of the way. Three rules
 travel with it.
 
-*Failures do not go through it.* The ``Severity`` union in ``lib/toasts.ts`` has no ``error``
-member, which is the rule expressed as a type: a refusal or an error carries backend text worth
-reading twice and keeps its inline ``Alert`` with ``ErrorText``. Only successes and dispatches
-become transient.
+*A failure stays longer.* The ``Severity`` union in ``lib/toasts.ts`` has an ``error`` member
+held for ``ERROR_DURATION_MS`` rather than the passing notice's clock, because a refusal or an
+error carries backend text worth reading twice; hovering holds it for as long as the reader
+needs.
 
 *It is not a notifier.* The provider draws a rectangle and nothing else. A caller that also
 wants an OS-level notification — the campaign lifecycle watcher in ``CampaignStreamProvider``,
@@ -2291,14 +2379,12 @@ test-<subtree>``, e.g. ``make test-service``, to re-run only what you are editin
 ``make test`` too, so the command a developer runs and the one that gates a merge cannot
 drift apart.
 
-The Python suite needs a Postgres, because campaign results live in one, and it provides its
-own rather than asking you for one: a container named ``robovast-test-pg`` (see
-``tests/pg_provision``), started on the first run that finds it absent and left running
-afterwards so later runs cost a ``CREATE DATABASE`` instead of a container start. Each
-session works in its own database inside it, so two suites can run at once, and drops it on
-the way out. ``export ROBOVAST_TEST_PG_DSN=...`` to use a server you already have instead,
-and ``docker rm -f robovast-test-pg`` to take the suite's back. Without a Docker daemon and
-without that variable, the tests that need a database skip and say so in their reason.
+The Python suite needs no database server. SQL is answered in-process by DuckDB over a
+campaign directory, so a test that queries builds one under its temporary directory — a
+``campaign.db`` written with the store's own schema and the recordings of the
+``tests/robovast_decode/fixtures/nav_run`` fixture (``make_campaign`` in
+``tests/robovast_decode/conftest.py``, ``write_store`` in ``tests/robovast_data/conftest.py``)
+— and its tables are built into that directory's ``.cache/`` like any campaign's.
 
 **One colour scheme.** Every colour the UI paints that is not a one-off comes from
 ``frontend/ui/src/colors.ts``. A ``Style`` object holds them; ``buildTheme(style)`` in
@@ -2388,6 +2474,15 @@ every client reaches them; ``ServiceBase`` wraps ``validate_project_file`` /
 ``robovast.variation_types`` entry points, and ``validate_project`` swallows unexpected errors into
 a structured problem so the editor's live validation never 500s on in-progress YAML.
 
+**Config names for the launcher.** ``preview_configurations(wait=False)`` is the same
+preview without the wait: ``ServiceBase`` composes the ``.vast`` on a thread of its own, keyed
+by workspace, path and ``max_configs``, and each call answers ``composing`` (with a
+``StepProgress``), ``ready`` (the preview) or ``failed`` at once; a landed result is served
+until the ``.vast``'s mtime moves. Both it and a campaign's ``variation`` phase read their step
+counter from the composition progress line through ``config_generation.parse_composition_step``,
+which a campaign publishes as ``Status.variation``. The launcher checks its filter against the names with
+``frontend/ui/src/lib/configFilter.ts``, which matches as ``filter_configs_by_name`` does.
+
 **Per-variation previews.** ``preview_configurations`` returns, per configuration, a ``previews``
 list (``{variation_type, params, remote}``) read from the config's declared ``variations``. The
 editor (``frontend/ui/src/preview/``) renders **built-in** variation types host-native — ``builtins.tsx``
@@ -2402,22 +2497,23 @@ Built-ins ship no assets; a type with neither shows just the resolved parameters
 
 **Results viewer** (``frontend/ui/src/pages/results/``): pick a
 campaign, browse its results schema, run read-only SQL, and chart the result with
-**Vega-Lite** (``frontend/ui/src/preview/VegaLiteChart.tsx`` — rows bound in as ``data.values``).
-The two data-query ops — ``describe_campaign_data`` / ``query_campaign_data_sql`` — were
-**promoted onto** ``RobovastInterface``; the actual SQL lives in one shared, directory-based
-helper, :mod:`robovast.results_processing.data_query` (``mode=ro`` + a ``sqlite3`` authorizer,
-``campaign.db`` attached as schema ``campaign``). Both callers reuse it: the service methods
-resolve the campaign dir the same way (``campaign_dir`` under the results root), and the
-MCP ``run_data`` plugin resolves it via
-``results_resolver`` **or delegates to a configured service** — so CLI, MCP, and the web UI query
-results identically, local or cluster. User-declared plots (``visualization.results.data_browser.plots`` in the ``.vast``,
+**Vega-Lite** (``frontend/ui/src/components/VegaLiteChart.tsx`` — rows bound in as ``data.values``).
+The two data-query ops — ``describe_campaign_data`` / ``query_campaign_data_sql`` — are
+``RobovastInterface`` operations; the SQL goes through one shared, directory-based helper,
+:mod:`robovast.results_processing.data_query`, which hands it to the DuckDB engine of
+``robovast-data`` (:mod:`robovast_data.engine`): a single ``SELECT``, the campaign's record as
+schema ``campaign``, file access confined to the campaign's ``.cache/tables/``, and the tables
+the statement names built first for the runs it narrows to. Every caller reuses it: the service
+methods resolve the campaign dir the same way (``campaign_dir`` under the results root), and
+the MCP tools reach it through the service — so CLI, MCP, and the web UI query results
+identically, and while a campaign is still running. User-declared plots (``visualization.results.data_browser.plots`` in the ``.vast``
 :class:`robovast.common.config.PlotSpec`) are surfaced by ``list_campaign_plots`` and rendered by
 the same Vega-Lite component.
 
-**Run view panel framework** (``frontend/ui/src/lib/dashboard/``) — the Run view (user guide:
-:ref:`web_ui`) is a small plugin framework with three deliberate seams, all designed so a
-future **live view** (watching a running system instead of replaying a rosbag) slots in
-without touching any panel:
+**Run view panel framework** (``frontend/ui/src/lib/panels/``) — the Run view (user guide:
+:ref:`web_ui`) is a small plugin framework with three deliberate seams, all designed so the
+**live view** (watching a running system instead of replaying a rosbag) slots in without
+touching any panel:
 
 * **Panels** are plugins with **two delivery mechanisms behind one contract**. A
   ``PanelPlugin`` = manifest (type name + layout defaults) + React component implementing
@@ -2473,19 +2569,19 @@ without touching any panel:
   nearest-sample lookups, a **generic run-scoped** ``fetchRun(endpoint, params)`` (GET a
   campaign endpoint with ``config_name``+``run_id`` applied — how a panel reaches a
   specialized endpoint without the generic seam knowing about it, e.g. the costmap panel's
-  nav grids), and ``runFileUrl`` for per-run artifact files — today implemented over the
-  read-only data-query endpoints (``dbDataProvider``); a live implementation would wrap a
-  rosbridge buffer. ``timeSeries.ts`` wraps one table as a time-indexed ``TimeSeriesSource``
+  nav grids), and ``runFileUrl`` for per-run artifact files. ``dbDataProvider`` implements it
+  over the read-only data-query endpoints and returns the host's ``LiveDataProvider``, whose
+  ``subscribeLive`` follows a run that is still recording (``liveFeed.ts``). ``timeSeries.ts`` wraps one table as a time-indexed ``TimeSeriesSource``
   (``at(t)``/``upTo(t)``).
-* **Time** comes only from the shared ``PlaybackClock`` (``clock.ts``), an external store
+* **Time** comes only from the shared ``PlaybackClock`` (``frontend/panel-kit/src/clock.ts``), an external store
   (not React state) so display-rate updates don't re-render the tree; canvas panels
   subscribe imperatively via ``useCanvasClock``.
 
 **Package-provided & user-authored panels (Module Federation).** A remote panel is loaded
-at runtime by exactly the seam the variation-preview path uses (above) — the two now share
+at runtime by exactly the seam the variation-preview path uses (above) — the two share
 their machinery. Server side, ``_resolve_plugin_asset(group, name, rel, asset_attr)`` (in
 ``service/app.py``) and ``_plugin_remotes(group, asset_attr, url_builder, module_attr)`` (in
-``service/client.py``) are the generalized forms of the old variation-only helpers;
+``service/service_base.py``) are the generalized forms of the variation-only helpers;
 ``_variation_remotes`` and ``_panel_remotes`` are thin wrappers. A **package panel** is a
 class in the ``robovast.panel_types`` entry-point group declaring ``WEB_PANEL`` (its built
 bundle dir, shipped as package data) + ``PANEL_MODULE``; the service serves it at
@@ -2512,9 +2608,9 @@ samples too large to preload) are in-tree source that both the host and each rem
 their own bundle. Resolve it with a ``tsconfig`` ``paths`` entry plus a matching vite
 ``resolve.alias`` — see ``src/robovast_nav/web`` for the two lines. Do **not** add it to the MF
 ``shared`` map: bundling a private copy is what keeps a version skew between an installed package
-and a newer host UI an ordinary build rather than a remote-load failure. The earlier arrangement — a
-hand-maintained ``contract.ts`` mirror plus a re-implementation of the host's canvas/clock
-scaffolding — is what let a fetch-staleness bug exist in the costmap panel and nowhere else.
+and a newer host UI an ordinary build rather than a remote-load failure. A hand-maintained
+mirror of the contract, or a re-implementation of the host's canvas/clock scaffolding, would
+let a bug exist in one panel and nowhere else.
 
 A panel type may also declare an optional ``REMOTE_NAME`` — the Module-Federation *container*
 name, defaulting to the entry-point name (one container per type). Panels that share a single
@@ -2527,12 +2623,13 @@ type keeps its own asset URL (``/panel_types/<name>/assets/...`` all resolve to 
 tree is shown in the run view, and ``robovast_nav`` contributes none of the rendering. nav2's
 ``/behavior_tree_log`` is the only generic, always-on source of BT state, but it is
 **topology-free** — a flat stream of status transitions keyed by ``node_name``. The data half
-splits across the two extension seams the same way costmap's does: the core rosbag handler
-``nav2_bt_to_csv`` (``rosbags_process.py``; core because ``HANDLER_REGISTRY`` isn't
-plugin-extensible and it needs the in-container ``rosbags_process`` step) writes the raw
-``nav2_behavior_tree`` transitions table, and ``robovast_nav``'s ``nav2_bt_tree`` postprocessing
-plugin (a ``robovast.postprocessing_commands`` entry point) reconstructs structure from the BT
-**XML** nav2 ran and joins it into a ``nav2_behaviors`` table.
+splits across the two extension seams the same way costmap's does: the decoder's
+``Nav2BtLog`` handler (:mod:`robovast_decode.handlers`; in the decoder because its handler set
+is fixed by :mod:`robovast_decode.registry`, not a plugin group) builds the raw
+``nav2_behavior_tree`` transitions table from the recording, and ``robovast_nav``'s
+``nav2_bt_tree`` postprocessing plugin (a ``robovast.postprocessing_commands`` entry point)
+reads that table, reconstructs structure from the BT **XML** nav2 ran and writes each run's
+``nav2_behaviors.csv`` — the ``nav2_behaviors`` table.
 
 That table uses the **same schema as scenario_execution's** ``behaviors`` table, and that is the
 whole point: the built-in ``scenario_tree`` panel renders *any* tree expressible in it. So
@@ -2560,14 +2657,14 @@ table in an existing schema still gets a type of its own, but derives the panel.
 :mod:`robovast.service.endpoint_plugin`) — an installed package contributes a run-scoped data
 endpoint served at ``GET /campaigns/{id}/<name>?config_name=…&run_id=…&…`` → JSON, with **no core
 edit and no frontend change** (the run view already reaches any such endpoint via
-``data.fetchRun(name, params)``, ``frontend/ui/src/lib/dashboard/dataProvider.ts``). This closes the last
-core-coupling for a self-contained analysis package: it ships a **postprocessing** plugin (writes an
-index table), a **service endpoint** (serves it), and a **panel** (renders it) — all via entry
-points. The mechanism mirrors the MCP-plugin loader: a ``ServiceEndpoint`` ``Protocol``
+``data.fetchRun(name, params)``, ``frontend/ui/src/lib/panels/dataProvider.ts``). This closes the last
+core-coupling for a self-contained analysis package: it ships a **postprocessing** plugin (writes a
+run-level data file, which is a table), a **service endpoint** (serves it), and a **panel**
+(renders it) — all via entry points; a table the decoder already builds needs only the last two. The mechanism mirrors the MCP-plugin loader: a ``ServiceEndpoint`` ``Protocol``
 (``name`` + ``handle(ctx)``) and ``load_service_endpoints()``; ``build_app`` registers one route per
 plugin (before the SPA mount) and dispatches to ``handle`` with a **``RunDataContext``** facade —
-``ctx.open_db()`` (a read-only connection to the central index, from the public
-``data_query.open_data_db``),
+``ctx.open_db()`` (a read-only connection to this campaign's tables, from the public
+``data_query.open_data_db``, which builds what a statement names),
 ``ctx.run_dir(config, run)``, ``ctx.params``. Handlers raise ``KeyError``/``ValueError``/
 ``DataQueryError`` → 404/400 via the shared ``_guard``. **Cluster-transparent** because dispatch
 resolves the campaign dir through the public ``impl.campaign_dir(campaign_id)`` seam, which is
@@ -2577,13 +2674,12 @@ collisions; core route names are reserved (``RESERVED_CAMPAIGN_ENDPOINTS``). **S
 GET→JSON only — *binary/large per-run artifacts* are already served by the file address space,
 ``GET /results/<campaign>/<config>/<run>/<path>`` (``DataProvider.runFileUrl``), and
 *producing* data is a postprocessing plugin's job. **Reference:** ``robovast_nav``'s
-``CostmapEndpoint`` (``robovast_nav/service_endpoints.py``), relocated verbatim from core's old
-``read_costmap_frame`` — it reads the ``costmaps`` table via ``ctx.open_db()`` and returns the frame
-dict the costmap panel decodes.
+``CostmapEndpoint`` (``robovast_nav/service_endpoints.py``) — it reads the ``costmaps`` table the
+decoder builds via ``ctx.open_db()`` and returns the frame dict the costmap panel decodes.
 
 **3D scene viewer core** (``frontend/ui/src/lib/scene3d/``) — renders the browser scene
 descriptor (``scene.json``/``scene.bin``), which a simulator backend's exporter produces;
-the format is RoboVAST's, see :doc:`run_capture`. ``sceneLoader.ts``
+the format is RoboVAST's, see :ref:`scene-descriptor`. ``sceneLoader.ts``
 builds a three.js ``Group`` and returns an imperative animation API (``jointMap`` /
 ``basePose``); ``viewport.ts`` is a plain-three viewport (renderer/camera/lights/grid/orbit
 controls + the Z-up wrapper). The wheel is the viewport's own, not the orbit controller's
@@ -2592,141 +2688,243 @@ series converging on that pivot, so a notch moves millimeters once you are close
 never be passed through — flying the eye *and* the pivot along the cursor ray keeps the radius, and
 with it the step size, constant. The same change makes a fixed far plane visible, so ``viewport.ts``
 sizes the frustum each frame to enclose the world's bounding sphere — measured from the *scene*, not
-from the pivot, which the wheel now carries along and which is therefore constant by design.
+from the pivot, which the wheel carries along and which is therefore constant by design.
 **Extractability rule: files in this directory import only
 ``three`` — never ``@/…``** (see its README) — it is shared-candidate code, so all
-robovast-specific wiring lives in the consumer, ``frontend/ui/src/panels/Scene3DPanel.tsx``, which
-binds the vast spec, fetches the descriptor via ``DataProvider.runFileUrl``
-(``GET /results/<campaign>/<config>/<run>/<path>`` — the address is the run's real
-directory, so the loader's *relative* sibling fetches, ``scene.bin``/textures, stay in
-it), and drives ``basePose`` from the clock.
+robovast-specific wiring lives in the two consumers, ``frontend/ui/src/panels/run_view/Scene3DPanel.tsx``
+and ``frontend/ui/src/panels/config/Scene3DPanel.tsx``. Both resolve the descriptor through
+``useSceneGeometry.ts``: the service compiles it on demand in the campaign's image and caches it
+per world (``GET /campaigns/{id}/scene`` asks, one ``POST .../scene/run`` builds; the config view
+uses the workspace's ``/workspaces/{id}/scene``). The run view's panel drives ``jointMap`` and
+``basePose`` from the run's ``sim_poses`` and ``joint_states`` rows on the clock; the config
+view's has no clock and draws what the variations placed as markers.
 
 Deferred: a bundle code-split (Monaco + Plotly + Vega + Module Federation make the SPA large).
 
 .. _cluster-postprocessing:
 
-Analysis postprocessing: local vs cluster
------------------------------------------
+Analysis postprocessing and the campaign's tables
+-------------------------------------------------
 
-The rows ``query_campaign_data_sql`` reads are produced by *analysis* postprocessing. It splits
-along a natural seam: **only the batched ``rosbags_*`` → CSV step needs ROS2**; everything after it
-(the index ingest, metadata) is plain Python.
+The rows ``query_campaign_data_sql`` reads are **tables built from the campaign's records**, and
+the campaign directory is the database. What a campaign recorded — its bags, its jobs'
+infrastructure recordings, logs and resource samples, each run's ``test.xml`` and data files, and
+``campaign.db`` — is the source of truth. A table is a set of parquet files under
+``<campaign>/.cache/``, built for a run the first time something names it and kept; the cache is
+disposable, and deleting it loses only the time to build it again. Nothing is converted into an
+intermediate format and nothing is ingested anywhere, so SQL works the same over a running
+campaign, a finished one and one imported from an archive.
 
-**What the index ingest reads.** One table per data file, discovered per run directory:
-``*.csv``, and ``*.jsonl`` for producers that need more than a flat table can express. A JSONL
-file declares its layout in the ``format`` key of its **first record**, and ``_JSONL_READERS``
-maps that to the function turning its records into rows — dispatch on the file's own declaration
-rather than on its name, so adding a producer does not mean hardcoding a filename in the ingest.
-Rows are then typed and inserted through exactly the same path as a CSV's, which is why column
-types are inferred per column and a JSONL file whose records have differing keys still gets a
-column for each (the column list is the union over rows, not the first row's keys).
+Three distributions share the work, along the dependency direction the design rests on
+(:ref:`architecture-distributions`):
 
-The one such producer today is ``behaviors.jsonl``, written by ``scenario_execution``'s
-``--bt-log``, on for every run. Because the runner writes the file itself — rather than the table
-being converted from a recorded ``/scenario_execution/snapshots`` topic, which only works for ROS
-runs and would leave ``mode: base`` campaigns with no behaviour-tree data at all — both kinds of
-run produce the ``behaviors`` table by the same path, and the snapshots topic need not be in the
-bag. Its first seven columns are the ones ``nav2_behaviors`` (see above) shares, so the same panel
-renders both; to them it adds what the JSONL carries: ``child_index``, ``type``,
-``additional_detail``, ``feedback_message``, ``is_active``, ``tip_id``, ``osc_file``,
-``osc_line``, ``osc_column`` and ``removed``. The numeric ``status`` column is re-derived in the
-reader from the status name, because those 1–4 codes come from ``py_trees_ros_interfaces`` — plain
-py_trees ``Status`` values are strings.
+* ``robovast-decode`` (:mod:`robovast_decode`) builds tables from records. It is plain Python —
+  mcap, ``rosbags`` and pyarrow — with no ROS install, no execution image and no Docker.
+* ``robovast-data`` (:mod:`robovast_data`) answers SQL and pandas reads over a campaign
+  directory, building what a query names first.
+* ``robovast`` (:mod:`robovast.results_processing.postprocessing`,
+  :mod:`robovast.results_processing.campaign_tables`) runs what ends a campaign and writes the
+  decoder's configuration.
 
-Both backends run the rosbag conversion **in the campaign's own execution image** — the
-system-under-test's image, recorded in ``<campaign>/_execution/execution.yaml`` — because rosbags
-carry the SUT's *custom ROS2 message types* and only deserialize there. On the cluster backend the
-image is **pinned to the immutable digest the run pods used** (captured from the pods and stored as
-``image_revision``; ``campaign_execution_image`` prefers it), so a re-postprocess months later
-deserializes against the exact image the runs recorded the bags with — not whatever a floating
-``:latest`` resolves to then.
+.. _results-tables-build:
 
-**Local.** ``run_postprocessing`` reads that ``image:`` and passes it to
-``docker_exec.sh --image``, which bind-mounts the campaign dir (``-v $INPUT_DIR:/input``) — so the
-container writes CSVs **in place**. Nothing to sync. The **scripts** are bind-mounted from the
-driver's own package (``-v $SCRIPT_DIR:/scripts:ro``, ``$SCRIPT_DIR`` =
-``robovast.results_processing.data``), so the script version always matches the driver.
+How the decoder builds a table
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-**Cluster.** A pod cannot bind-mount the caller's filesystem, so **all** of postprocessing runs
-as one Job (:mod:`robovast.execution.cluster_execution.postprocess_job`), with one copy of the
-campaign in it. A ``campaign`` ``emptyDir`` mounted at ``/campaign`` in every container carries
-the tree, and Kubernetes alone orders the containers — initContainers run sequentially to
-completion in declaration order:
+:func:`robovast_decode.build.build` takes a campaign directory, the tables wanted (every one the
+records can give, for ``None``) and the runs (``config/run`` keys). For every run it finds two
+recordings: the run's scenario recording, ``<config>/<run>/rosbag2/`` (the last attempt, when a
+recorder that restarted left several), and its job's wall-time infrastructure recording,
+``_jobs/.../job-N/logs/rosout_bag/``, the job found through ``_transient/job_links.yaml`` — which
+is written before a job starts, so a running campaign's runs find their job too.
 
-* ``stage`` (initContainer, sidecar image) fetches the campaign as **one tar stream** from
-  the service's data plane — ``curl | tar`` of ``GET /data/campaigns/<id>/archive``, narrowed
-  by :func:`~robovast.execution.campaign_archive.stage_include` — and lands it on that mount.
-  Nothing of ours sits between the socket and the disk, so its memory is the pipe. Calibration
-  probes and the log this Job will write are never staged, and where no conversion is
-  configured neither are the rosbags — nothing else in the pod opens one.
-* ``convert`` (initContainer, the campaign's execution image) runs every step that needs that
-  image — the ``rosbags_*`` → CSV conversion and any other
-  :class:`~robovast.results_processing.postprocessing_plugins.ExecutionImagePlugin` — in order,
-  each as its plugin's own ``image_command``, against the same mount. It touches a marker beside
-  the campaign first; every file changed after it is this container's output. It exists only where
-  the campaign has such a step. It **exits 0 whatever its steps returned** and hands their status
-  to ``host`` in a file beside the marker: a failed initContainer starts nothing after it, so a
-  step that refused a few bags would otherwise take every converted one down with the pod. ``host``
-  then runs, delivers, and fails the Job with its own exit code ``3``, which the failure reason
-  names as the conversion's.
-* ``host`` (container, controller image,
-  :mod:`~robovast.execution.cluster_execution.postprocess_host`) runs everything else — the other
-  plugins, the index ingest and metadata — and is what delivers: one tar of what the Job
-  derived, ``PUT`` to the data plane, which writes it into the campaign's directory on the
-  results volume. It is the only container given the campaign's token.
+**Which tables a recording gives** is :mod:`robovast_decode.registry`'s answer, from the topics
+the recording actually carries: every recorded topic is a table unless there is a reason it is
+not. ``/tf`` and ``/tf_static`` give ``poses``, ``/behavior_tree_log`` gives
+``nav2_behavior_tree``, every ``nav_msgs/msg/OccupancyGrid`` topic gives ``costmaps``, every
+action's feedback and status give ``action_<name>_feedback`` / ``_status``, every other topic
+gives ``<bag>_<topic>`` with one row per message, and in the infrastructure recording
+``/rosout`` gives ``rosout`` and ``/clock`` gives ``clock_map``. A campaign's configuration
+refines these defaults: a configured handler replaces the default for its topics (``tf_to_csv``
+with ``require`` asserts the frames an analysis depends on) and the rest of the recording keeps
+its defaults. A camera image or a point cloud is read from the recording itself and never copied
+into rows; what is recorded and not tabulated is said per topic, with the reason.
 
-The conversion container holds **no** credentials of any kind — not the campaign's data-plane
-token, not the index DSN: it is an arbitrary user image and reads and writes the shared mount
-only. Further:
+**What fills a table** is a handler (:mod:`robovast_decode.handlers`): ``TfPoses``,
+``TopicTable``, ``Nav2BtLog``, ``ActionTopics``, ``Rosout``, ``Clock``, ``Costmaps`` and
+``Videos`` (a declared ``rosbags_to_webm`` encodes each configured ``CompressedImage`` topic to a
+WebM file with ``ffmpeg``, which must be installed where the table is built). A handler names
+the topics it reads; :func:`robovast_decode.decode.decode_bag` reads every mcap segment of a
+recording once, in order, and deserializes only a message some handler reads — once, however
+many read it. A segment still being written, or one a killed recorder left without its summary,
+is read up to its last complete record (:mod:`robovast_decode.framing`). Every table is joinable
+on ``timestamp``, the bag's receive time, and carries ``campaign_id``, ``config_name`` and
+``run_id`` in its own rows.
 
-* **image** = the campaign's execution image (never a default — a missing ``image:`` is an error,
-  not a silent wrong-image conversion);
-* the conversion scripts, and the files each image step ships, are delivered as a per-campaign
-  **ConfigMap** built from the driver's own ``robovast.results_processing.data`` and mounted
-  read-only at ``/scripts`` — the K8s analog of the local ``-v $SCRIPT_DIR:/scripts:ro`` bind-mount. This is deliberate: sourcing the scripts from the
-  *driver* rather than from a separately-versioned controller image guarantees the in-cluster
-  scripts match the driver that generates the conversion command, so an off-cluster/dev driver
-  running ahead of a published image cannot skew them (a skew surfaces as a spurious
-  ``--output-root`` error). The scripts are self-contained (stdlib + ROS2 libs, no
-  ``robovast`` import) and small; nothing is ever baked into the user's image;
-* each image step runs over the shared campaign tree itself, so every output lands at its
-  campaign-relative path and goes to its canonical key with no mapping step.
+**Message definitions travel with the recording** (:mod:`robovast_decode.definitions`): first
+the definitions rosbag2 writes into the mcap schema records — which is what decodes a stack's
+own custom messages where they were never installed — then the definitions sidecar the run's
+container writes beside the bag for the types rosbag2 leaves empty (every action-derived type),
+then the distro's standard types as ``rosbags`` ships them. A type none of the three covers is
+not skipped quietly: it is a row in the run's ``_recording`` table naming the topic, the type
+and the reason, beside every recorded topic's message count and bytes.
 
-The host stage is pure Python and reuses the normal pipeline with the image steps skipped
-(``run_host_postprocessing``), so there is no second copy of the postprocessing sequence — the
-same function ``vast results postprocess`` calls, run beside the data instead of fetching it.
+**Derived tables** (:mod:`robovast_decode.derived`) come from a job's records rather than a
+single recording. A job runs one run, so :func:`~robovast_decode.derived.derive_job` builds them
+for that run, on its clock and marked against its trial window
+(:mod:`robovast_decode.run_slices`). A campaign whose job-link manifest points several runs at
+one job is refused (:class:`~robovast_decode.build.SharedJobError`): its job's records cannot be
+divided between them:
 
-Two entry points share that one implementation (``postprocess_campaign``):
+* ``run_log`` — every container's stdout joined with ``/rosout``, one row per event, on the run's
+  clock, with ``sim_time`` and ``in_window`` (:mod:`robovast_decode.run_log`);
+* ``scenario_timestamps`` — the run's verdict line on both clocks
+  (:mod:`robovast_decode.scenario_markers`);
+* ``resource_usage`` and ``system_usage`` — the job's ``resource_usage_<container>.csv`` and
+  ``system_usage_<container>.csv`` samples, per container and process
+  (:mod:`robovast_decode.resource_usage`, :mod:`robovast_decode.system_usage`);
+* ``run_clock`` — what relates the run's wall stamps to sim time, and how well
+  (:mod:`robovast_decode.clock_map`).
+
+They read the job's ``rosout`` and ``clock_map`` tables, which are built first. The decoder
+configuration's ``containers`` names the containers a campaign ran, which is how one that
+recorded nothing is reported rather than silently absent.
+
+**A run's own data files are tables** (:mod:`robovast_decode.authored`): any ``*.csv`` or
+``*.jsonl`` below a run directory, named after its stem, column types inferred from its values.
+A ``#`` preamble before a CSV's header is skipped; two files in one run claiming one table are
+refused for that table, naming both. A JSONL file declares its layout in the ``format`` key of
+its **first record**, and ``JSONL_READERS`` maps that to the layout: the tables the file gives,
+as suffixes on its name, and the function turning its records into their rows — dispatch on the
+file's own declaration rather than on its name, so adding a producer does not mean hardcoding a
+filename. The one such producer is ``behaviors.jsonl``, written by ``scenario_execution``'s
+``--bt-log``, on for every run; its metadata record is the one-row table ``behaviors_meta``
+beside ``behaviors`` (``scenario``, ``clock``, ``started_at``, ``tick_period``, ...), which is
+what ``get_job_state`` folds the running tree's clock and origin from. Because the runner writes the file
+itself — rather than the table being decoded from a recorded ``/scenario_execution/snapshots``
+topic, which only works for ROS runs and would leave ``mode: base`` campaigns with no
+behaviour-tree data at all — both kinds of run produce the ``behaviors`` table by the same path,
+and the snapshots topic need not be in the bag. Its first seven columns are the ones
+``nav2_behaviors`` (see above) shares, so the same panel renders both; to them it adds what the
+JSONL carries: ``child_index``, ``type``, ``additional_detail``, ``feedback_message``,
+``is_active``, ``tip_id``, ``osc_file``, ``osc_line``, ``osc_column`` and ``removed``. The
+numeric ``status`` column is derived in the reader from the status name, because those 1–4
+codes come from ``py_trees_ros_interfaces`` — plain py_trees ``Status`` values are strings.
+
+**The manifest is the catalogue** (:mod:`robovast_decode.tables`). A table is accumulated
+column-wise and written as ``.cache/tables/<table>/<config>/<run>.parquet``; ``.cache/MANIFEST.json``
+names, per table and run, exactly the files that make up that table, their schema, the source
+they were built from, the decoder version that wrote them, and — for a run with no rows, or
+only part of them — the reason. Files are written first and the manifest is replaced in one
+``rename`` under a lock, so a reader that arrives mid-rebuild sees the old set or the new one,
+never a mixture. A table already built for a run from the same source bytes by the same decoder
+version is left alone; a run that has grown since, a table not yet asked for, or anything another
+decoder version wrote is built again. A recording's source bytes include its definitions
+sidecar, and a query checks a final entry that carries a reason, and the recording report,
+against them once more (:func:`~robovast_decode.build.settled`): the sidecar is written after the
+run's verdict. ``robovast-decode build <campaign_dir>`` and
+``robovast-decode tables <campaign_dir>`` do the same from a shell, offline.
+
+**The decoder's configuration** is the campaign's ``rosbags_*`` postprocessing entries (frames
+to resolve, topics to tabulate, ``require``, cameras to encode) and the containers it runs,
+written by :func:`~robovast.results_processing.campaign_tables.write_decoder_config` to
+``_execution/tables.yaml`` (``{groups, containers}``) when the campaign's config is frozen at
+launch and again when its postprocessing runs — so a copy of the campaign builds the same tables
+anywhere. These entries do not run a step: ``campaign_postprocessing_commands`` leaves them out
+of the list it runs.
+
+How a query builds what it reads
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:class:`robovast_data.engine.Engine` answers SQL over one or more campaign scopes with an
+in-process DuckDB connection that lives for one query. :mod:`robovast_data.statement` parses the
+statement with DuckDB itself: it must be a single ``SELECT``; the relations it names are the
+tables to build; and an equality or ``IN`` on ``config_name`` or ``run_id`` in the top-level
+``WHERE``, attributable to one table, narrows that table to those runs, so a query about one run
+builds that run's table and no other. Anything less plain narrows nothing, and the whole scope
+is built — the answer is the same, only the work differs. Before the query runs,
+:meth:`~robovast_data.engine.Engine.ensure` builds what is missing for the runs in scope; a
+finished run's entry is final, a run still going is looked at again, and what could not be built
+is reported with the answer by table and run, never dropped.
+
+The connection then sees every table as a view over the parquet files the manifest names for
+the runs in scope — never a directory listing — plus ``runs`` (computed from ``campaign.db``,
+:mod:`robovast_decode.runs`), the ``campaign`` schema (:mod:`robovast_data.record`) and the views
+over them (``run_view``, ``config_view``, ``container_failure_view``, ``run_validity_view``,
+``pose_track_view``; :mod:`robovast_data.views`). A view declares the tables it reads, so a query
+naming one builds what the view needs. The connection may read the campaigns' ``.cache/tables/``
+files and nothing else: external access is off, the configuration is locked, and a query that
+runs past its time is interrupted. A query sees one campaign unless further campaigns are passed
+explicitly, and then each view is the union of theirs, with ``campaign_id`` in every row.
+
+What ends a campaign
+^^^^^^^^^^^^^^^^^^^^
+
+:func:`~robovast.results_processing.postprocessing.run_postprocessing` runs in the service process
+— no Kubernetes Job, no execution image, no containers of its own — beside the
+campaign on the results volume:
+
+1. the campaign's own ``results_processing.postprocessing`` steps, in order (plugins by
+   entry-point name or ``./path.py:Class``; :ref:`extending-postprocessing`), after writing the
+   decoder's configuration; with ``force``, the campaign's built tables are cleared first
+   (:func:`~robovast.results_processing.campaign_tables.clear_tables`), so everything declared is
+   built again from the records;
+2. the campaign-end pass (:mod:`robovast.results_processing.campaign_tables`):
+   :func:`~robovast.results_processing.campaign_tables.declared_tables` — the derived tables every
+   run view reads, the tables the campaign's declared plots query, and ``videos`` when a
+   ``rosbags_to_webm`` entry asks for it — are built for every run
+   (:func:`~robovast.results_processing.campaign_tables.build_tables`); then ``run_health`` (its
+   health checks, each ``check(conn, campaign_id)`` given a read-only DuckDB connection to the
+   campaign's tables) and ``postprocessing_steps`` (one row per step's output, one per decoded
+   table) are written as campaign-level tables. A table that could not be built for a run fails
+   postprocessing rather than being skipped;
+3. the provenance record ``_transient/postprocessing.yaml``, written last among the derived data,
+   because its presence is what ``Status.postprocessed`` reads;
+4. the campaign's metadata.
+
+Everything the campaign does not declare is built when first asked for. Building ahead is never
+needed for an answer, but a campaign about to be analyzed at length can pay for it now: "Build
+all tables" in a finished campaign's menu in the web UI, ``vast campaign tables build <id>
+[--table …]``, the MCP ``build_campaign_tables`` tool, and ``POST /campaigns/{id}/tables/build``
+build in the background and write progress to the campaign log's TABLES section
+(``_execution/tables.log``). ``vast campaign tables clear <id>``, ``clear_campaign_tables`` and
+``DELETE /campaigns/{id}/tables`` remove a campaign's tables to free storage; both are refused
+while the campaign is running or its tables are being built. The admin page's service cache
+panel has a **table cache** entry summing every campaign's ``.cache/tables/``, and clearing it
+keeps a campaign whose tables are being built.
+
+Two entry points share one implementation:
 
 * **auto-chain** — the campaign driver, when ``create_campaign(postprocess=True)`` sets
   ``RunOptions.postprocess`` (an option, not a process-global env var, so concurrent campaigns in the
-  one service process stay distinct). It runs **after ``store.close()``** (``campaign.db`` must be
-  flushed — the index's ``runs`` table is built from it) and **before ``_finalize``**, so the results ride
-  the campaign's existing upload rather than needing one of their own.
-* **explicit re-run** — :class:`~robovast.execution.cluster_execution.cluster_service.ClusterService.run_postprocessing`,
-  the cluster's body for the interface operation: the service has no ROS runtime, so it
-  submits the Job, whose pod is what holds the campaign, and
-  materialises only the few small status objects it edits and publishes back — before and again
-  after the pod, since the pod is what wrote the provenance the reconstruction reads. This backs the web **Retrigger postprocessing** dialog, the MCP
-  ``run_postprocessing`` tool, and the CLI. It reads the campaign's own ``_config/<name>.vast`` (which
-  the edit dialog overwrites in place — the single source of truth resolved by
-  ``common.results_utils.campaign_vast``), refreshes the durable outcome (clearing/setting
+  one service process stay distinct). The builder chains it (``_chain_postprocessing``) **after
+  ``store.close()``** (``campaign.db`` must be flushed — the ``runs`` table reads it) and **before
+  ``_finalize``**.
+* **explicit re-run** — ``ServiceBase.run_postprocessing``. It backs the web **Retrigger
+  postprocessing** dialog, the MCP ``run_postprocessing`` tool, and ``vast campaign postprocess``.
+  It reads the campaign's own ``_config/<name>.vast`` (which the edit dialog overwrites in place
+  — the single source of truth resolved by ``common.results_utils.campaign_vast``), writes its
+  narrative to ``_execution/postprocessing.log``, refreshes the durable outcome (clearing/setting
   ``postprocessing_error``), and is **dispatched in the background** via
   ``ServiceBase._dispatch_background``, which registers a tracked campaign entry set to the
-  ``postprocessing`` phase (busy-guarded against a second concurrent op) and returns at once, so the
-  campaign view shows it live. A minutes-to-hours re-run therefore never blocks the caller.
+  ``postprocessing`` phase (busy-guarded against a second concurrent op) and returns at once, so
+  the campaign view shows it live. A minutes-to-hours re-run therefore never blocks the caller.
 
 The **upload-to-share** step mirrors this: a failure records ``share_error`` (durable) instead of
-being swallowed, and :meth:`~robovast.execution.cluster_execution.cluster_service.ClusterService.run_share` re-triggers it
-(web *Retrigger upload-to-share*, MCP ``run_share``, ``POST /campaigns/{id}/share/run``) — also via
-``_dispatch_background`` (``sharing`` phase). Both re-triggers need no live in-memory campaign entry,
-so they work after a service restart.
+being swallowed, and :meth:`~robovast.service.service_base.ServiceBase.run_share` re-triggers it (web *Retrigger upload-to-share*,
+MCP ``run_share``, ``POST /campaigns/{id}/share/run``) — also via ``_dispatch_background``
+(``sharing`` phase). Both re-triggers need no live in-memory campaign entry, so they work after a
+service restart. A share archive carries the campaign's records and never ``.cache/``; a download
+(``vast campaign download``, the web UI's) carries its built tables too, unless ``--raw``.
+Wherever either lands, a table not written by that decoder the same way is built from the
+records on first use.
 
 A post-run step failure is deliberately **not** a campaign failure: the phase stays ``finished`` and
-the reason lives on ``postprocessing_error`` / ``share_error``. After a restart the cluster service
+the reason lives on ``postprocessing_error`` / ``share_error``. After a restart the service
 reconstructs a campaign's status from the ``_execution/outcome.json`` in its directory, falling
-back to the on-disk run artifacts (``reconstruct_status_from_disk``) when no outcome was recorded — so a
-finished campaign reads as ``finished``, never a bare ``unknown``.
+back to the on-disk run artifacts
+(:func:`~robovast.execution.status_recovery.reconstruct_status_from_disk`) when no outcome was
+recorded — so a finished campaign reads as ``finished``, never a bare ``unknown``.
 
 Querying RoboVAST campaigns
 ---------------------------
@@ -2741,7 +2939,7 @@ Load the metadata graph
   from rdflib import Graph
 
   g = Graph()
-  g.parse("metadata.prov.json)
+  g.parse("metadata.prov.json")
 
 
 

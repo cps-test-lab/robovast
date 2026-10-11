@@ -25,9 +25,12 @@ import subprocess
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from importlib.resources import files
+from pathlib import Path
 from pprint import pformat
 
 import yaml
+
+from robovast.client.safe_path import UnsafePathError, check_segment, is_inside, safe_join
 
 
 # The node label is computed IN THE CONTAINER by ``execution/data/collect_sysinfo.py``,
@@ -40,8 +43,9 @@ from robovast.execution.data.collect_sysinfo import node_label  # noqa: F401
 from robovast.execution.campaign_archive import JOB_DOCUMENT_SUFFIXES
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
-from .config import SIMULATION_CONTAINER
-from .config_identifier import compute_config_identifier, hash_file_content, hash_run_files
+from .config import SIMULATION_CONTAINER, Ros2RecordingConfig, recording_config
+from .config_identifier import (compute_config_identifier, hash_file_content, hash_run_files,
+                                variation_refs)
 from .sut_channel import SUT_CONFIG_FILE
 from .sut_channel import source_paths as sut_source_paths
 from .errors import CampaignConfigError, missing_input_error
@@ -67,11 +71,11 @@ from .simulators import SIM_CONFIG_FILE, SIM_OVERRIDES_MOUNT
 # dropped, or this replaces a safe refusal with a broken run. Equality was wrong for the use
 # case, but it was wrong in the safe direction. configs/examples/camera_smoke is the cheap
 # way to keep the claim true -- it runs a container and produces an artifact in seconds.
-COMPAT_VERSION = 2
+COMPAT_VERSION = 3
 
 #: The oldest image protocol this host still knows how to drive. Equal to
 #: :data:`COMPAT_VERSION` means "only the current one", which is where equality left us.
-MIN_IMAGE_COMPAT = 2
+MIN_IMAGE_COMPAT = 3
 
 #: Image label carrying the protocol version -- the only marker there is.
 #:
@@ -81,7 +85,7 @@ MIN_IMAGE_COMPAT = 2
 #: the image a year-old campaign recorded, asked from a machine that does not have it.
 #:
 #: An image built before this label existed reports nothing, and `check_image_compat` refuses
-#: rather than guessing. Those images predate protocol 2, which is also `MIN_IMAGE_COMPAT`, so a
+#: rather than guessing. Those images predate protocol 2, below `MIN_IMAGE_COMPAT`, so a
 #: refusal is the right answer for them anyway -- but the message has to say what to do about it,
 #: not merely that it cannot tell.
 COMPAT_VERSION_LABEL = "org.robovast.compat-version"
@@ -166,21 +170,23 @@ DEFAULT_IMAGE_PROJECT = "ghcr.io/cps-test-lab"
 #: A floating tag, so resolving to it warns -- see :func:`default_image_tag`.
 FLOATING_IMAGE_TAG = "latest"
 
-#: The branch CI publishes the family under on every push to it: ``image.yml`` builds pushes
-#: to this branch alone and tags them ``type=ref,event=branch``, so the tag is its name.
-DEFAULT_BRANCH_IMAGE_TAG = "main"
+#: The branches CI publishes the family under on every push to them: ``image.yml`` builds
+#: pushes to these alone and tags them ``type=ref,event=branch``, so each tag is its branch's
+#: name. ``main`` carries the released line, ``next`` the next minor release.
+BRANCH_IMAGE_TAGS = ("main", "next")
 
 #: What ``type=ref,event=pr`` publishes for a pull request, moved by every push to it.
 _PULL_REQUEST_IMAGE_TAG = re.compile(r"pr-\d+")
 
 
 def is_floating_image_tag(reference: str) -> bool:
-    """Whether CI moves this tag: ``latest``, the default branch's, or a pull request's.
+    """Whether CI moves this tag: ``latest``, a branch's in :data:`BRANCH_IMAGE_TAGS`, or a
+    pull request's.
 
     Any other reference -- a release version, a date, a digest -- was chosen for the
     deployment that names it, and pulling it again is meant to land on the same bytes.
     """
-    return (reference in (FLOATING_IMAGE_TAG, DEFAULT_BRANCH_IMAGE_TAG)
+    return (reference == FLOATING_IMAGE_TAG or reference in BRANCH_IMAGE_TAGS
             or _PULL_REQUEST_IMAGE_TAG.fullmatch(reference) is not None)
 
 
@@ -363,8 +369,9 @@ def resolve_family_image(image: str, *, project: str | None = None,
     which run concurrently with campaigns configured differently.
     """
     member = family_member(image)
-    resolved = f"{project or default_image_project()}/{member}:{tag or default_image_tag()}"
-    if warn and resolved.endswith(f":{FLOATING_IMAGE_TAG}"):
+    tag = tag or default_image_tag()
+    resolved = f"{project or default_image_project()}/{member}:{tag}"
+    if warn and is_floating_image_tag(tag):
         # A run whose image is a floating tag is not reproducible, and the person who has
         # to know that is the one starting it. Not an error -- a floating tag is the right
         # answer for a dev loop and for an editable install, which has no release tag to
@@ -379,13 +386,15 @@ def resolve_family_image(image: str, *, project: str | None = None,
         # one `cluster setup`, all derived from the same `default_image_tag()`.
         logger.warning(
             "%s resolved to %r, a floating tag: what this runs against is whatever was "
-            "last pushed there. Set ROBOVAST_PROJECT_TAG to pin it.", role, resolved)
+            "last pushed there. Set ROBOVAST_PROJECT_TAG to a release version to pin it.",
+            role, resolved)
     return resolved
 
 
 def resolve_family_images_in_containers(containers: dict | None, *,
                                         project: str | None = None,
-                                        tag: str | None = None) -> dict | None:
+                                        tag: str | None = None,
+                                        pins: dict | None = None) -> dict | None:
     """Resolve every ``family:`` ref in an ``execution.containers`` mapping, in place.
 
     Called once per campaign, right after a simulator backend has filled its container
@@ -397,13 +406,31 @@ def resolve_family_images_in_containers(containers: dict | None, *,
     Only ``family:`` refs are touched. A ref the ``.vast`` states is left byte-identical,
     digest and all: that field names the campaign's own image, and rewriting it would run
     something the author did not ask for.
+
+    *pins* is the ``{container or role: digest}`` of a launch record the campaign replays.
+    Given, a ``family:`` ref resolves to the digest recorded for its container and never to
+    *project* and *tag*: a replay runs the bytes its source ran, whatever the family's tags
+    point at now. A family container the record fixes no digest for is refused, naming every
+    such container, rather than resolved from the environment.
     """
+    unpinned = []
     for name, block in (containers or {}).items():
         if not isinstance(block, dict) or not is_family_image_ref(block.get("image")):
+            continue
+        if pins is not None:
+            if pins.get(name):
+                block["image"] = pins[name]
+            else:
+                unpinned.append(f"{name} ({block['image']})")
             continue
         block["image"] = resolve_family_image(
             block["image"], project=project, tag=tag,
             role=f"image for container '{name}'")
+    if unpinned:
+        raise CampaignConfigError(
+            f"the launch record this campaign replays fixes no digest for "
+            f"{', '.join(sorted(unpinned))}, and a replay runs only recorded digests -- "
+            f"resolving the family ref now could run bytes the source campaign never ran.")
     return containers
 
 
@@ -516,16 +543,20 @@ def resolve_controller_image(explicit: str | None = None,
 GIT_TOKEN_SECRET_ID = "git_token"
 
 
-def resolve_sidecar_image(explicit: str | None = None) -> str:
+def resolve_sidecar_image(explicit: str | None = None, *, project: str | None = None,
+                          tag: str | None = None) -> str:
     """Resolve the robovast-sidecar image: the data-plane transfers of every pod.
 
-    Resolved *inside* the service (a campaign Job's ``fetch-inputs`` and ``uploader``
-    containers, an aux pod's transfer container, the postprocessing Job's ``stage``, and
-    the image-build Job's context fetch all call this from there), so the project it uses
-    is the one carried into the service pod's environment — see
-    :func:`~...service_deploy.service_manifests`.
+    Resolved *inside* the service: a campaign Job's ``fetch-inputs``, ``uploader`` and
+    ``agent`` containers, an aux pod's transfer container, a held exec pod's fetch and the
+    image-build Job's context fetch all call this from there. *project* and *tag* are a
+    campaign's own (``--image-project``), for the pods of that campaign; without them the
+    project is the one carried into the service pod's environment -- see
+    :func:`~...service_deploy.service_manifests`. A campaign fixes the result to a digest
+    once, before any of its pods exists, and every one of its pods runs that digest.
     """
-    return _resolve_image(MEMBER_SIDECAR, explicit=explicit, role="sidecar image")
+    return _resolve_image(MEMBER_SIDECAR, explicit=explicit, project=project, tag=tag,
+                          role="sidecar image")
 
 
 #: Env var carrying the revision this code was built from, set into the image at build
@@ -1018,8 +1049,8 @@ def scenario_env(campaign_data):
     Deliberately *not* here:
 
     - **Path-valued vars** (``SCENARIO_PARAMETER_FILE``, ``OUTPUT_DIR``,
-      ``SCENARIO_OUTPUT_DIR``). Those depend on the mount layout and job packing — the
-      caller owns them.
+      ``SCENARIO_OUTPUT_DIR``). Those depend on the mount layout — the caller owns
+      them.
     - **``SCENARIO_EXECUTION_PARAMETERS``**. The Kubernetes backend derives it from
       ``log_tree``.
     """
@@ -1051,15 +1082,29 @@ def scenario_env(campaign_data):
     # produces no behaviors.jsonl.
     env['BT_LOG'] = 'true'
 
-    # What the entrypoint's own (wall-time) recorder captures, in WALL time and for the
-    # whole container's life -- distinct from the scenario's ``bag_record``, which is
-    # sim-time and starts mid-run. Exactly what the ``run_log`` table needs and no more:
-    # ``/rosout`` for the lines, ``/clock`` to put a wall-stamped line on the playback
-    # clock. Stated for the same reason BT_LOG is.
-    #
-    # Not configurable from ``execution:``. What a run records *beyond* this is the
-    # scenario's ``bag_record`` to say, where it sits beside the behaviour that produces it.
+    # What the entrypoint's infrastructure recorder captures, in WALL time and for the
+    # whole container's life -- distinct from the run's own bag below, which is sim-time
+    # when the campaign says so and spans the scenario. Exactly what the ``run_log`` table
+    # needs and no more: ``/rosout`` for the lines, ``/clock`` to put a wall-stamped line
+    # on the playback clock. Stated for the same reason BT_LOG is, and not configurable:
+    # what a run records beyond this is the ``recording:`` block's to say.
     env['LOG_TOPICS'] = '/rosout /clock'
+
+    # The run's own bag (``<run>/rosbag2``), which the entrypoint records for a single-run
+    # job from before the scenario starts. Derived from the ``.vast``'s ``recording.ros2``
+    # block and always stated, defaults included, so the compose file / pod spec says
+    # outright what the run recorded: an absent block records every topic.
+    #
+    # One variable per ``ros2 bag record`` option. Topics are space-separated because a
+    # topic name carries no whitespace (the model refuses one that does) and the shell
+    # splits them back for free; the excludes are joined into one regex because that is the
+    # one argument ``--exclude-regex`` takes.
+    recording = recording_config(campaign_data.get("recording"))
+    ros2 = (recording.ros2 if recording is not None else None) or Ros2RecordingConfig()
+    env['RECORD_TOPICS'] = 'all' if ros2.topics == 'all' else ' '.join(ros2.topics)
+    env['RECORD_EXCLUDE'] = '|'.join(ros2.exclude)
+    env['RECORD_EXCLUDE_TYPES'] = ' '.join(ros2.exclude_types)
+    env['RECORD_USE_SIM_TIME'] = 'true' if ros2.use_sim_time else 'false'
 
     # A simulator backend's environment, resolved *here* rather than by each emitter, so
     # every emitter applies one rule: the campaign's own execution.env wins, because a
@@ -1086,11 +1131,15 @@ def sidecar_backend_env(execution: dict, container_name: str) -> dict:
     right in the stepped shape: there the simulator runs in the scenario's own process, so
     the main container IS the simulator. In the ROS shape the simulator is a sidecar, and
     the same variables have to arrive there instead -- otherwise the simulator never sees
-    them. That is not hypothetical: roqsim's ``ROQSIM_RECORD`` /
-    ``ROQSIM_CAPTURE_EXPORT_DIR`` went only to the scenario container, so a ROS campaign
-    produced no ``run.npz`` and no ``capture/`` while ``produces_run_capture()`` still
-    reported True and validation happily accepted a ``scene3d`` panel with nothing to
-    replay. The stepped shape hid it, because there the two containers are one.
+    them. That is not hypothetical: roqsim's ``ROQSIM_RECORD`` went only to the scenario
+    container, so a ROS campaign produced no simulator recording at all while
+    ``records_scene_state()`` still reported True and validation happily accepted a
+    ``scene3d`` panel with nothing to replay. The stepped shape hid it, because there the
+    two containers are one.
+
+    The ``recording:`` block's knobs arrive by the same route: :func:`apply_backend` hands
+    the block to the backend's ``env`` hook, so what is stored on ``execution`` already
+    says what the simulator was asked to record.
 
     Only the ``simulation`` container: a backend describes its own simulator, and handing
     ``ROQSIM_*`` to a vanilla nav2 SUT would be noise that reads like configuration.
@@ -1199,7 +1248,7 @@ _RUN_ENV_NOTE_FN = "_robovast_env_note"
 # The log helper both entrypoints share, substituted into ``# @@LOG_BLOCK@@``.
 #
 # One definition because the two scripts must emit the *same* line format: the merged run log
-# parses one grammar (``robovast.common.log_summary._STAMP``), and a sidecar whose format drifted
+# parses one grammar (``robovast_decode.log_summary._STAMP``), and a sidecar whose format drifted
 # from the main container's would not error -- it would silently lose its timestamps and fall back
 # to inheriting a neighbour's. Duplicated shell is how that drift happens.
 #
@@ -1241,6 +1290,19 @@ log() {
     echo "[${level}] [$(_now)] [entrypoint]: ${msg}"
 }"""
 
+#: The script the scenario container runs at the end of a run to write each bag's message
+#: definitions beside it (:mod:`robovast.execution.data.dump_message_definitions`).
+DEFINITIONS_SCRIPT = "dump_message_definitions.py"
+
+#: The script a cluster pod's file agent container runs: it ships the growth of the run's
+#: line files and bags while the run runs (:mod:`robovast.execution.data.file_agent`).
+FILE_AGENT_SCRIPT = "file_agent.py"
+
+#: The rosbag2 storage preset both recorders of a run are started with: ``noChunking``, so
+#: each message reaches the bag file as it is written and a bag is readable while it records.
+#: Shipped in ``_transient/`` with the scripts above and mounted at ``/config``.
+MCAP_STORAGE_CONFIG = "mcap_writethrough.yaml"
+
 #: The emptyDir every container of a cluster pod shares, mounted at this path in each of
 #: them: the sockets the scenario drives its sidecars over, and the done markers below.
 IPC_DIR = "/ipc"
@@ -1262,19 +1324,30 @@ def done_marker(container: str) -> str:
 
 
 _LOCAL_POST_RUN_BLOCK = """\
-    # Build built-in cleanup script (stop rosbag and resource monitor gracefully)
+    # Build built-in cleanup script (stop the recorders and resource monitor gracefully)
     BUILTIN_CLEANUP_SCRIPT="/tmp/robovast_cleanup.sh"
     cat > "${BUILTIN_CLEANUP_SCRIPT}" << 'CLEANUP_EOF'
 #!/bin/bash
-if [ -f /tmp/rosbag.pid ]; then
-    if start-stop-daemon --stop --signal INT --pidfile /tmp/rosbag.pid >/dev/null 2>&1; then
-        _t=0
-        while kill -0 $(cat /tmp/rosbag.pid) 2>/dev/null && [ $_t -lt 50 ]; do
-            sleep 0.1; _t=$((_t + 1))
-        done
-        kill -KILL $(cat /tmp/rosbag.pid) 2>/dev/null || true
+# A recorder closes its bag on INT and on nothing else, and a bag it never closed has no
+# metadata.yaml: so INT, a bounded wait for the close, and KILL only then.
+_stop_recorder() {
+    local _name="$1" _pidfile="$2"
+    if [ -f "${_pidfile}" ]; then
+        if start-stop-daemon --stop --signal INT --pidfile "${_pidfile}" >/dev/null 2>&1; then
+            _t=0
+            while kill -0 $(cat "${_pidfile}") 2>/dev/null && [ $_t -lt 300 ]; do
+                sleep 0.1; _t=$((_t + 1))
+            done
+            kill -KILL $(cat "${_pidfile}") 2>/dev/null || true
+        fi
+        echo "ROS bag process stopped (${_name})."
     fi
-    echo "ROS bag process stopped."
+}
+_stop_recorder "scenario_bag" /tmp/scenario_bag.pid
+_stop_recorder "rosbag" /tmp/rosbag.pid
+# The recordings' message definitions, beside each bag, while the types are installed here.
+if [ -f /config/dump_message_definitions.py ]; then
+    python3 /config/dump_message_definitions.py "${1:-${SCENARIO_OUTPUT_DIR:-/out}}" || true
 fi
 if [ -f /tmp/monitor.pid ]; then
     if kill -TERM $(cat /tmp/monitor.pid) 2>/dev/null; then
@@ -1358,7 +1431,14 @@ _stop_daemon() {
     fi
 }
 
+# Both recorders close their bag on INT and on nothing else; the definitions are dumped once
+# both are closed.
+_stop_daemon "scenario_bag" "/tmp/scenario_bag.pid" "INT" "INT/30/KILL/5"
 _stop_daemon "rosbag" "/tmp/rosbag.pid" "INT" "INT/30/KILL/5"
+# The recordings' message definitions, beside each bag, while the types are installed here.
+if [ -f /config/dump_message_definitions.py ]; then
+    python3 /config/dump_message_definitions.py "${1:-${SCENARIO_OUTPUT_DIR:-/out}}" || true
+fi
 _stop_daemon "monitor" "/tmp/monitor.pid" "TERM" "TERM/10/KILL/5"
 echo "[cleanup] Cleanup finished."
 CLEANUP_EOF
@@ -1669,11 +1749,20 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     monitor_src = str(files('robovast.execution.data').joinpath('monitor_resources.py'))
     shutil.copy2(monitor_src, os.path.join(campaign_transient_dir, 'monitor_resources.py'))
 
-    # Copy rosbag processing scripts into _transient/ for host-side post-run processing
-    for script_name in ('rosbags_process.py', 'rosbags_common.py', 'ros2_exec.sh'):
-        src = str(files('robovast.results_processing.data').joinpath(script_name))
-        shutil.copy2(src, os.path.join(campaign_transient_dir, script_name))
-    os.chmod(os.path.join(campaign_transient_dir, 'ros2_exec.sh'), 0o755)
+    # The file agent of a cluster pod (see its module docstring): mounted at /config like
+    # the monitor, from where the pod's agent container runs it.
+    agent_src = str(files('robovast.execution.data').joinpath(FILE_AGENT_SCRIPT))
+    shutil.copy2(agent_src, os.path.join(campaign_transient_dir, FILE_AGENT_SCRIPT))
+
+    # The definitions writer the scenario container runs at the end of a run, beside each bag
+    # (see its module docstring): mounted at /config like the monitor.
+    definitions_src = str(files('robovast.execution.data').joinpath(DEFINITIONS_SCRIPT))
+    shutil.copy2(definitions_src, os.path.join(campaign_transient_dir, DEFINITIONS_SCRIPT))
+
+    # The storage preset both recorders read (see MCAP_STORAGE_CONFIG): mounted at /config
+    # like the scripts above.
+    storage_src = str(files('robovast.execution.data').joinpath(MCAP_STORAGE_CONFIG))
+    shutil.copy2(storage_src, os.path.join(campaign_transient_dir, MCAP_STORAGE_CONFIG))
 
     vast_file_path = os.path.dirname(campaign_data["vast"])
 
@@ -1683,6 +1772,7 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     campaign_data_for_dump.pop("_output_dir", None)
     for c in campaign_data_for_dump.get("configs", []):
         c.pop("_config_block", None)
+        c.pop("_read_files", None)
 
     # Save scenario variations as YAML in _transient subdirectory
     scenario_variations_path = os.path.join(campaign_transient_dir, "configurations.yaml")
@@ -1727,7 +1817,13 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
     # A campaign extending nothing takes the same path and copies one file, byte for byte,
     # comments and anchors intact.
     vast_src = campaign_data["vast"]
-    _archive_vast_sources(vast_src, campaign_config_dir)
+    own_vast = _archive_vast_sources(vast_src, campaign_config_dir)
+
+    # How the campaign's records become tables, recorded with the frozen config so the tables
+    # of a running campaign, and of any copy of it, are built the way its .vast says.
+    from robovast.results_processing.campaign_tables import \
+        write_decoder_config  # pylint: disable=import-outside-toplevel
+    write_decoder_config(out_dir, own_vast)
 
     # What the declared plugin specs resolved to. Recorded HERE because this is where the
     # .vast directory -- and so its .robovast_plugins/ install dir -- is in hand; the
@@ -1790,17 +1886,15 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
         run_config_dir = os.path.join(out_dir, config_data.get("name"), "_config")
 
         # Compute and write config identifier for merge-campaigns
-        config_block = config_data.get("_config_block", {})
-        variation_type_names = [
-            v["name"] for v in config_data.get("_variations", [])
-        ]
+        config_block = config_data["_config_block"]
         config_identifier, sub_identifier = compute_config_identifier(
             vast_file_path,
             config_block,
             run_files_hash,
             scenario_file_hash,
-            variation_type_names,
+            variation_refs(config_block),
             sut_sources_hash,
+            read_files=config_data["_read_files"],
         )
         config_yaml_path = os.path.join(run_config_dir, "config.yaml")
         os.makedirs(run_config_dir, exist_ok=True)
@@ -1891,12 +1985,11 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
 
 
 def build_job_parameter_documents(job, scenario_name):
-    """Build scenario-parameter override documents for a packed job.
+    """Build the scenario-parameter override document for a job.
 
-    Produces one YAML document per work item in the job. Each document
-    overrides ``scenario_name``'s parameters for that config and sets the special
-    ``_output_dir`` key to ``<config-name>/<run_number>`` so scenario_execution
-    writes the item's results into robovast's per-config/run layout.
+    The document overrides ``scenario_name``'s parameters for the job's configuration and
+    sets the special ``_output_dir`` key to ``<config-name>/<run_number>`` so
+    scenario_execution writes the run's results into robovast's per-config/run layout.
 
     A file-valued parameter is carried **as the campaign wrote it**. It needs no
     rewriting: a scenario resolves a file parameter against its own directory, which is
@@ -1904,26 +1997,21 @@ def build_job_parameter_documents(job, scenario_name):
     the campaign's -- so the path the campaign wrote already names the cell's file.
 
     Args:
-        job: A :class:`~robovast.execution.packer.JobSpec`.
+        job: A :class:`~robovast.execution.jobs.Job`.
         scenario_name: The scenario name to override (top-level key, matching
             the single-config ``scenario.config`` wrapping).
 
     Returns:
-        list[dict]: One override document per work item, ready to dump as a
-        multi-document YAML for ``--scenario-parameter-file``.
+        list[dict]: The override document, ready to dump as the multi-document YAML
+        ``--scenario-parameter-file`` reads.
     """
-    documents = []
-    for item in job.items:
-        config_data = item.config
-        config_name = config_data.get("name", "")
-        config = config_data.get("config") or {}
-        config_dict = convert_dataclasses_to_dict(copy.deepcopy(config))
+    config = job.config.get("config") or {}
+    config_dict = convert_dataclasses_to_dict(copy.deepcopy(config))
 
-        # _output_dir is consumed by scenario_execution to place this item's
-        # results; relative paths resolve under -o/--output-dir.
-        config_dict["_output_dir"] = f"{config_name}/{item.run_number}"
-        documents.append({scenario_name: config_dict})
-    return documents
+    # _output_dir is consumed by scenario_execution to place this run's
+    # results; relative paths resolve under -o/--output-dir.
+    config_dict["_output_dir"] = f"{job.config_name}/{job.run_number}"
+    return [{scenario_name: config_dict}]
 
 
 def dump_multi_document_yaml(documents) -> str:
@@ -1950,8 +2038,8 @@ JOB_LINKS_MANIFEST = "job_links.yaml"
 #: beside the code that writes it so the two cannot drift.
 RESERVED_CONFIG_MOUNT_NAMES = frozenset({
     "entrypoint.sh", "secondary_entrypoint.sh",
-    "collect_sysinfo.py", "monitor_resources.py",
-    "rosbags_process.py", "rosbags_common.py", "ros2_exec.sh",
+    "collect_sysinfo.py", "monitor_resources.py", DEFINITIONS_SCRIPT, FILE_AGENT_SCRIPT,
+    MCAP_STORAGE_CONFIG,
     "configurations.yaml", JOB_LINKS_MANIFEST,
     "scenario.config", "scenario.params.yaml",
     os.path.basename(SIM_OVERRIDES_MOUNT),
@@ -1973,16 +2061,16 @@ def job_artifact_rel(index, job_prefix="") -> str:
 
 
 def build_job_links(jobs, job_prefix="") -> dict:
-    """Map each work item's ``job`` link to its job's artifact directory.
+    """Map each run's ``job`` link to its job's artifact directory.
 
-    For a packed job ``N`` running config ``C`` at run ``R``, the work item's
-    result dir is ``C/R`` and the job-level artifacts (sysinfo, logs, resource
-    monitor) live in ``_jobs[/<prefix>]/job-N``. This returns a ``{link: target}``
+    For job ``N`` running config ``C`` at run ``R``, the run's result dir is ``C/R``
+    and the job-level artifacts (sysinfo, logs, resource monitor) live in
+    ``_jobs[/<prefix>]/job-N``. This returns a ``{link: target}``
     mapping where the link is ``C/R/job`` and the target is that dir relative to the
     link's directory, so a user can ``cd C/R/job`` to reach the job's artifacts.
 
     Args:
-        jobs: An iterable of :class:`~robovast.execution.packer.JobSpec`.
+        jobs: An iterable of :class:`~robovast.execution.jobs.Job`.
         job_prefix: Batch namespace (e.g. ``"batch-3"``) when runs are executed in
             batches; empty for the flat single-batch layout. Must match the prefix the
             runner actually writes under, or the manifest points at a dir that
@@ -1993,9 +2081,8 @@ def build_job_links(jobs, job_prefix="") -> dict:
     """
     links = {}
     for job in jobs:
-        target = f"../../_jobs/{job_artifact_rel(job.index, job_prefix)}"
-        for item in job.items:
-            links[f"{item.config_name}/{item.run_number}/job"] = target
+        links[f"{job.config_name}/{job.run_number}/job"] = \
+            f"../../_jobs/{job_artifact_rel(job.index, job_prefix)}"
     return links
 
 
@@ -2014,8 +2101,8 @@ def write_job_links_manifest(transient_dir, jobs, job_prefix="", *, base=None) -
 
     It is accumulated **only when** *job_prefix* namespaces the target, and that is not a
     detail. Unprefixed, a target is ``_jobs/job-<idx>``, an index meaningful only within the
-    call that assigned it: re-running a campaign, or packing it differently, moves ``cfg/1``
-    from ``job-1`` to ``job-0``, and keeping the older entry would aim a run at another run's
+    call that assigned it: re-running a campaign with another configuration list moves
+    ``cfg/1`` to another job index, and keeping the older entry would aim a run at another run's
     artifacts. Prefixed (``_jobs/batch-3/job-0``) it is stable for the life of the campaign,
     and accumulating is then not optional but required. So an unprefixed write replaces,
     which is also what a single-batch campaign — one call, the default — has always done.
@@ -2121,12 +2208,25 @@ def create_job_links(campaign_dir) -> int:
     Idempotent: an existing ``job`` entry is replaced. Missing manifest is a
     no-op (single-config campaigns have none). Returns the number of links
     created.
+
+    Every link and its target must stay inside the campaign; the manifest is checked whole
+    before anything is removed or linked, and ``UnsafePathError`` names an entry that leads
+    out.
     """
-    links = read_job_links(campaign_dir)
+    root = Path(campaign_dir).resolve()
+    placed = []
+    for link_rel, target in read_job_links(campaign_dir).items():
+        link_dir = safe_join(root, os.path.dirname(link_rel) or ".")
+        link_path = link_dir / check_segment(os.path.basename(link_rel))
+        if (not isinstance(target, str) or os.path.isabs(target)
+                or not is_inside(root, link_dir / target)):
+            raise UnsafePathError(
+                f"{JOB_LINKS_MANIFEST} entry {link_rel!r} points outside the campaign: "
+                f"{target!r}")
+        placed.append((link_path, target))
     created = 0
-    for link_rel, target in links.items():
-        link_path = os.path.join(campaign_dir, link_rel)
-        os.makedirs(os.path.dirname(link_path), exist_ok=True)
+    for link_path, target in placed:
+        os.makedirs(link_path.parent, exist_ok=True)
         # Replace any existing entry so re-runs are idempotent.
         if os.path.islink(link_path) or os.path.exists(link_path):
             try:
@@ -2206,8 +2306,8 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
         image_digest: The immutable ``repo@sha256:…`` the run pods actually used, when
             known (see ``KubernetesBackend._capture_image_digest``). Recorded as
             ``image_revision`` so a floating ``:latest`` is pinned to the exact image the
-            runs ran — and postprocessing reuses it (``campaign_execution_image``). Falls
-            back to the docker daemon's image id (``unknown`` without one) when None.
+            runs ran. Falls back to the docker daemon's image id (``unknown`` without one)
+            when None.
     """
     if execution_params is None:
         execution_params = {}
@@ -2245,7 +2345,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
     # One digest per container, because "the campaign's image" stopped being a single
     # fact. `image_revision` is the scenario container's; anything asking which bytes
     # produced a particular artifact has to name the role. The run view's geometry is the
-    # case in hand: it is compiled from the world the capture names, and that world and
+    # case in hand: it is compiled from the world the recording names, and that world and
     # its exporter live in the SIMULATION image, not the scenario one.
     if image_digests:
         execution_data['image_revisions'] = dict(image_digests)

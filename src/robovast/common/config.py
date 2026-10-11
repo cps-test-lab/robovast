@@ -23,7 +23,8 @@ from typing import Annotated, Any, ClassVar, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from robovast.common.quantity import to_bytes, to_cores
+from robovast.common.migrations.config import SUPPORTED_CONFIG_VERSION
+from robovast_decode.quantity import to_bytes, to_cores
 
 logger = logging.getLogger(__name__)
 
@@ -57,10 +58,6 @@ def collect_var_refs(node: Any) -> set:
         return set().union(*(collect_var_refs(v) for v in node))
     name = match_var_marker(node)
     return {name} if name is not None else set()
-
-
-class GeneralConfig(BaseModel):
-    model_config = ConfigDict(extra='allow')
 
 
 class VariationConfig(BaseModel):
@@ -258,11 +255,7 @@ class ResourcesConfig(BaseModel):
     cpu_limit: Optional[Union[int, float, str,
                               list[dict[str, Union[int, float, str]]]]] = None
     memory_limit: Optional[Union[str, list[dict[str, str]]]] = None
-    #: Whole GPUs for this container. Omit it and the container running the simulator gets
-    #: one wherever the cluster advertises GPUs, so the common case needs nothing here;
-    #: ``0`` opts out on a cluster that has them. A real field rather than an undeclared key
-    #: because pydantic's default ``extra='ignore'`` was dropping it from the model, so the
-    #: documented option only worked where the raw mapping happened to be read.
+    #: Whole GPUs for this container. Omitted, it gets none, whatever the cluster advertises.
     gpu: Optional[Union[int, list[dict[str, int]]]] = None
 
     @field_validator('cpu', 'cpu_limit')
@@ -290,6 +283,37 @@ class ResourcesConfig(BaseModel):
             check(v)
         return v
 
+    @field_validator('memory', 'memory_limit')
+    @classmethod
+    def validate_memory_quantity(cls, v):
+        """The annotation accepts any string; a spelling Kubernetes does not read (``"4GB"``)
+        would otherwise be refused by the API server for every Job of the batch."""
+        def check(value):
+            if to_bytes(value) is None:
+                raise ValueError(
+                    f'memory {value!r} is not a memory quantity: use bytes with a binary '
+                    '("16Gi", "512Mi") or decimal ("4G") unit')
+
+        if v is None:
+            return v
+        if isinstance(v, list):
+            for entry in v:
+                for value in entry.values():
+                    check(value)
+        else:
+            check(v)
+        return v
+
+    @field_validator('gpu')
+    @classmethod
+    def validate_gpu_count(cls, v):
+        values = [value for entry in v for value in entry.values()] if isinstance(v, list) \
+            else [v]
+        for value in values:
+            if value is not None and value < 0:
+                raise ValueError(f'gpu {value!r} is not a GPU count: use 0 or more')
+        return v
+
     @model_validator(mode="after")
     def validate_limits_are_not_below_requests(self):
         """A ceiling under its own reservation is refused here rather than by the cluster.
@@ -315,125 +339,6 @@ class ResourcesConfig(BaseModel):
                 f"ceiling and cannot be under the reservation. Either raise {name}_limit "
                 f"or lower {name}.")
         return self
-
-
-class PostprocessResourcesConfig(BaseModel):
-    """What the postprocessing pod's conversion step may have.
-
-    Sizes the step that deserializes a campaign's rosbags -- the only expensive one -- and,
-    from the same figure, how many bags it converts at once::
-
-        results_processing:
-          resources:
-            cpu: 8
-            memory: 16Gi
-
-    Per-cluster lists work as they do in :class:`ResourcesConfig` (``cpu: [{ctx: 4}, …]``).
-
-    **The reservation is the ceiling: there is no ``cpu_limit``/``memory_limit`` here.** The
-    reason is not efficiency but comparability. This pod runs on the nodes that run trials,
-    so a conversion allowed past its reservation takes cores from a run whose own request was
-    honest -- and that run's timing then depends on which campaign happened to be
-    postprocessing beside it, which is exactly the hidden variable the CPU governor exists to
-    remove. Equality costs density, because admission packs by requests, and buys a
-    postprocessing step that cannot perturb a measurement.
-
-    **What it sizes is the pod, not one step.** A campaign's ``results_processing`` block is
-    mostly not rosbag conversion -- its own metric plugins, ``metadata_processing``,
-    ``publication``, ``health_checks`` -- and all of that runs in the pod's host step, beside
-    the index ingest. Those are the steps whose appetite RoboVAST cannot know, so this figure
-    raises them too. Sizing only the conversion would leave a campaign's own analysis code
-    pinned at a figure it could not change, and the symptom would be an OOM kill of a step
-    whose declared allocation said it had room.
-
-    Kubernetes charges a pod the *maximum* over its steps rather than their sum here (staging
-    and conversion are initContainers), so one figure serving several steps costs nothing.
-
-    **It raises; it does not lower.** The steps that run our own code keep their floors
-    whatever a ``.vast`` says. A campaign knows when its analysis needs more than the
-    default; it cannot know that the index ingest still fits in less, and being wrong in that
-    direction is an OOM kill of the step that publishes the results rather than a slow step.
-    So ``cpu: 1`` still yields a pod reserving the floor -- the conversion container itself is
-    held to the smaller figure, and its fan-out follows it, but the pod's reservation does not
-    fall below what the fixed steps need.
-
-    Staging is the one step this does not touch at all. Its footprint is set by how it is
-    written -- one object at a time -- so its small memory bound is a guard rather than a
-    reservation, and a limit that grew with whatever a campaign asked for is exactly the one
-    that would absorb a regression in that streaming instead of failing on it.
-
-    """
-    model_config = ConfigDict(extra='forbid')
-
-    @model_validator(mode="before")
-    @classmethod
-    def refuse_split_limits(cls, data):
-        """Name the reason when a ``.vast`` tries to split request from limit.
-
-        ``extra='forbid'`` already refuses these keys, but its message ("extra inputs are not
-        permitted") reads as though the field were misspelled -- and someone writing
-        ``cpu_limit`` here has copied a block that is correct one section up, where splitting
-        is deliberate. Runs ``before`` because the forbid check would otherwise raise first.
-        """
-        if not isinstance(data, dict):
-            return data
-        split = sorted(k for k in ("cpu_limit", "memory_limit") if k in data)
-        if split:
-            raise ValueError(
-                f"{', '.join(split)} cannot be set for postprocessing: here the reservation "
-                "is the ceiling. This pod shares nodes with trials, so a conversion allowed "
-                "past its request perturbs a run that reserved honestly. Set cpu/memory to "
-                "the figure you want the step held to.")
-        return data
-
-    #: Cores for the conversion, as request and as limit. Also the worker count: the step
-    #: converts one bag per process, and it is this figure -- not what the node happens to
-    #: have -- that decides how many run at once.
-    cpu: Optional[Union[int, float, str, list[dict[str, Union[int, float, str]]]]] = None
-    #: Memory for the conversion, as request and as limit.
-    memory: Optional[Union[str, list[dict[str, str]]]] = None
-
-    @field_validator('cpu')
-    @classmethod
-    def validate_cpu_quantity(cls, v):
-        """Reject a cpu value that is not a CPU quantity -- see
-        :meth:`ResourcesConfig.validate_cpu_quantity`, which this mirrors for the same
-        reason: a bad quantity here surfaces as a pod that never schedules."""
-        def check(value):
-            if to_cores(value) is None:
-                raise ValueError(
-                    f'cpu {value!r} is not a CPU quantity: use cores (4, 0.5) '
-                    'or millicores ("500m")')
-
-        if v is None:
-            return v
-        if isinstance(v, list):
-            for entry in v:
-                for value in entry.values():
-                    check(value)
-        else:
-            check(v)
-        return v
-
-    @field_validator('memory')
-    @classmethod
-    def validate_memory_quantity(cls, v):
-        """Reject a memory value that is not a memory quantity."""
-        def check(value):
-            if to_bytes(value) is None:
-                raise ValueError(
-                    f'memory {value!r} is not a memory quantity: use a Kubernetes '
-                    'quantity ("4Gi", "512Mi")')
-
-        if v is None:
-            return v
-        if isinstance(v, list):
-            for entry in v:
-                for value in entry.values():
-                    check(value)
-        else:
-            check(v)
-        return v
 
 
 #: The container that runs scenario-execution. Always present; when a simulator backend
@@ -898,6 +803,8 @@ RESERVED_ENV_NAMES = frozenset({
     'PRE_COMMAND', 'POST_COMMAND',
     # logging derived from the .vast
     'BT_LOG', 'LOG_TOPICS',
+    # what the run's ROS bag holds, derived from the .vast's recording: block
+    'RECORD_TOPICS', 'RECORD_EXCLUDE', 'RECORD_EXCLUDE_TYPES', 'RECORD_USE_SIM_TIME',
     # what the container is allowed to use
     'AVAILABLE_CPUS', 'AVAILABLE_MEM',
     # how the pod reaches the service's data plane
@@ -1049,6 +956,9 @@ def _drop_archived_kubernetes_keys(config: dict) -> dict:
 
 
 class ExecutionConfig(BaseModel):
+    # A key this block does not declare is refused: the backend reads the raw block, so a
+    # misspelled one would run the campaign as if it had not been written.
+    model_config = ConfigDict(extra='forbid')
     #: Settings for the Kubernetes backend. See :class:`KubernetesConfig`.
     kubernetes: Optional[KubernetesConfig] = None
     #: Every container this campaign runs, keyed by name -- the one namespace shared by
@@ -1090,10 +1000,8 @@ class ExecutionConfig(BaseModel):
     #: bind-mounted into the run exactly like a hand-written input. See
     #: :mod:`robovast.common.input_generation`.
     generate: Optional[list[Union[dict[str, Any], str]]] = None
-    # Maximum wall-clock time in seconds for one JOB -- one unit of work, which is one run
-    # unless ``runs_per_job`` packs several. A job is the granularity the cluster can
-    # actually enforce at (a Job's activeDeadlineSeconds), so the number is
-    # used as declared rather than reconstructed from a per-run figure.
+    # Maximum wall-clock time in seconds for one run. A run is one job, the granularity the
+    # cluster can enforce at (a Job's activeDeadlineSeconds).
     timeout: Optional[int] = None
     # Simulation backend passed to scenario_execution as ``--simulation <module:Class>``.
     # Required by scenarios using wait_for_simulation_end() (e.g. MagBotSim).
@@ -1105,20 +1013,6 @@ class ExecutionConfig(BaseModel):
     # ticks the SimulationInterface in its spin loop). ``base`` forces the non-ROS CLI
     # (scenario_execution) even when ros2 is on PATH -- for pure non-ROS scenarios (e.g. growth_sim).
     mode: str = "auto"
-    # Job packing. ``runs_per_job`` is how many runs (a run = one configuration
-    # at one run-number) are packed into a single job:
-    #   1 (default): each job runs exactly one run. Right for simulators where
-    #     setup dominates the execution time, one job == one scenario (e.g. Gazebo).
-    #   >1: up to N runs are packed into one job and run sequentially inside a
-    #     single simulator setup (the simulator is reset between them), amortising
-    #     setup for simulators with cheap per-run cost. Runs are
-    #     packed config-major, so a config's repeated runs stay together in a job.
-    # An upper bound, not a promise: a job holds one compiled world and one
-    # configuration's files, so runs of configurations that disagree about either are
-    # never packed together and the value is reached only within a group that agrees.
-    # Results stay keyed by configuration name / run number regardless, so packing
-    # is invisible to downstream processing.
-    runs_per_job: int = 1
     # Size of the pod's shared ``/dev/shm``. One tmpfs is mounted into every container of
     # the run, which is what lets ROS 2's default Fast DDS use its shared-memory transport
     # across the scenario / sut / simulation boundary.
@@ -1134,6 +1028,12 @@ class ExecutionConfig(BaseModel):
     # this default exists to avoid. A campaign that needs more says a bigger number, and
     # ``get_campaign_summary`` reports the measured peak to size it from.
     shm_size: str = DEFAULT_SHM_SIZE
+    #: UID the run's containers run as; the backend uses ``1000`` when it is unset.
+    run_as_user: Optional[int] = None
+    #: Script sourced (``source <pre_command>``) before each run, in the scenario container.
+    pre_command: Optional[str] = None
+    #: Executable run after the scenario, passed to scenario-execution as ``--post-run``.
+    post_command: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod
@@ -1268,13 +1168,6 @@ class ExecutionConfig(BaseModel):
 
         return v
 
-    @field_validator('runs_per_job')
-    @classmethod
-    def validate_runs_per_job(cls, v: int) -> int:
-        if v < 1:
-            raise ValueError(f"execution.runs_per_job must be >= 1, got {v}")
-        return v
-
     @field_validator('mode')
     @classmethod
     def validate_mode(cls, v: str) -> str:
@@ -1347,26 +1240,10 @@ DEFAULT_RUN_DEADLINE_SECONDS = 60 * 60
 
 
 def declared_job_seconds(execution_params: dict) -> Optional[int]:
-    """``execution.timeout`` as declared: the budget for one **job**, or ``None``.
+    """``execution.timeout`` as declared: the budget for one run, or ``None``.
 
-    A job is what the cluster can actually bound -- it sets ``activeDeadlineSeconds`` on the
-    Job -- so this is the number it uses unchanged. It is deliberately not scaled by
-    ``runs_per_job``: a packed job's budget is the budget its author stated, not a per-run
-    figure multiplied back up.
-    """
-    timeout = (execution_params or {}).get("timeout")
-    return int(timeout) if timeout else None
-
-
-def declared_per_run_seconds(execution_params: dict) -> Optional[int]:
-    """The per-run share of the declared job budget, or ``None``.
-
-    Reporting needs a per-run figure even though nothing can enforce one: ``stalled`` is a
-    verdict about a run. With runs packed, the honest per-run share is the job's budget
-    divided by how many runs are in it.
-
-    Distinct from :func:`job_deadline_seconds`, and the distinction matters because the two
-    answer different questions:
+    The **reporting** figure, distinct from :func:`job_deadline_seconds`, and the distinction
+    matters because the two answer different questions:
 
     * *Enforcement* ("never let a campaign hang forever") may fall back to a
       backstop, because killing a wedged run an hour late still beats never.
@@ -1376,11 +1253,8 @@ def declared_per_run_seconds(execution_params: dict) -> Optional[int]:
       than saying nothing. With no declared budget there is no honest threshold, so
       this returns ``None`` and the reader must decline to give a verdict.
     """
-    declared = declared_job_seconds(execution_params)
-    if declared is None:
-        return None
-    runs_per_job = (execution_params or {}).get("runs_per_job") or 1
-    return max(1, declared // int(runs_per_job))
+    timeout = (execution_params or {}).get("timeout")
+    return int(timeout) if timeout else None
 
 
 def job_deadline_seconds(execution_params: dict) -> int:
@@ -1388,31 +1262,17 @@ def job_deadline_seconds(execution_params: dict) -> int:
 
     The **enforcement** figure: the cluster backend sets it as a Job
     ``activeDeadlineSeconds`` so a scenario that never shuts itself down cannot hang
-    the campaign forever. Falls back to a backstop, which is why it must not be used to
-    *report* health -- see :func:`declared_per_run_seconds`.
-
-    The backstop is per-run and scaled, where a declaration is not. That asymmetry is
-    deliberate: :data:`DEFAULT_RUN_DEADLINE_SECONDS` is an hour chosen in ignorance of the
-    campaign, so it has to grow with the number of runs packed behind it or a job of 100
-    runs would be killed after the first few. A declared number is a statement about the
-    job, and is taken at face value.
+    the campaign forever. Falls back to :data:`DEFAULT_RUN_DEADLINE_SECONDS`, which is why
+    it must not be used to *report* health -- see :func:`declared_job_seconds`.
 
     The backstop is the backend's: enforcing a value the author set is a different decision
     from supplying one they did not, and only the backend knows what an unbounded run costs.
     """
     declared = declared_job_seconds(execution_params)
-    if declared is not None:
-        return declared
-    runs_per_job = (execution_params or {}).get("runs_per_job") or 1
-    return DEFAULT_RUN_DEADLINE_SECONDS * int(runs_per_job)
+    return declared if declared is not None else DEFAULT_RUN_DEADLINE_SECONDS
 
 
 class ResultsConfig(BaseModel):
-    #: What the postprocessing pod's conversion step may have, and how many bags it converts
-    #: at once. Omitted, the step takes its built-in reservation -- see
-    #: :class:`PostprocessResourcesConfig`, which documents why only this one step is
-    #: settable and why the figure is a reservation rather than a ceiling.
-    resources: Optional[PostprocessResourcesConfig] = None
     postprocessing: Optional[list[str | dict[str, Any]]] = None
     metadata_processing: Optional[list[str | dict[str, Any]]] = None
     publication: Optional[list[str | dict[str, Any]]] = None
@@ -1421,10 +1281,8 @@ class ResultsConfig(BaseModel):
     #: local ``./path.py:Class`` ref, which is how a system under test ships a check without
     #: packaging it.
     #:
-    #: A check is called ``check(conn, campaign_id)`` against the central index and must
-    #: scope every statement it issues to that campaign -- one set of tables holds the whole
-    #: corpus. The argument is required, so a check written for the old ``check(conn)``
-    #: signature is refused rather than left to grade every campaign at once.
+    #: A check is called ``check(conn, campaign_id)`` with a read-only connection to the
+    #: campaign's tables (:mod:`robovast.results_processing.run_health`).
     #:
     #: **Nothing runs undeclared.** A check that ran everywhere would grade campaigns it
     #: knows nothing about: nav2's control-loop check finds no misses in a MoveIt 2 campaign
@@ -1435,11 +1293,125 @@ class ResultsConfig(BaseModel):
     health_checks: Optional[list[str | dict[str, Any]]] = None
 
 
+def _entries(value, what, *, forbid=" \t\n\r"):
+    """A list of non-empty strings none of which carries a character *forbid* names.
+
+    The lists below travel to the run as one environment variable each, joined on a
+    separator, so an entry containing the separator would read as two -- and a topic name
+    or a path pattern never legitimately contains whitespace or a comma anyway.
+    """
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{what} must be 'all' or a non-empty list of strings")
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ValueError(f"every {what} entry must be a non-empty string; got {entry!r}")
+        if any(c in entry for c in forbid):
+            raise ValueError(f"{what} entry {entry!r} must not contain whitespace or a separator")
+    return value
+
+
+class Ros2RecordingConfig(BaseModel):
+    """What the run's ROS bag (``<run>/rosbag2``) holds.
+
+    RoboVAST's entrypoint starts the recorder for a single-run job before the scenario, and
+    stops it after; what it captures is decided here and nowhere in the scenario. Every
+    field maps onto one ``ros2 bag record`` option, spelled the way rosbag2 spells it.
+    """
+    model_config = ConfigDict(extra='forbid')
+    #: ``all`` (``-a``), or a list of topic names (``--topics``) and regular expressions
+    #: (``-e``); an entry is a regex when it starts with ``^``.
+    topics: Union[Literal['all'], list[str]] = 'all'
+    #: Regular expressions over the topic name (``--exclude-regex``). An exclude wins over
+    #: ``topics``, as it does in rosbag2.
+    exclude: list[str] = Field(default_factory=list)
+    #: Message types left out wholesale (``--exclude-topic-types``), such as
+    #: ``sensor_msgs/msg/Image`` for a campaign that keeps the compressed stream only.
+    exclude_types: list[str] = Field(default_factory=list)
+    #: Stamp each message with the simulator's clock rather than the recorder's wall clock
+    #: (``--use-sim-time``). The right choice for every campaign that reads its tables in
+    #: sim seconds; ``false`` is rosbag2's own default and stays it here.
+    use_sim_time: bool = False
+
+    @field_validator('topics')
+    @classmethod
+    def _topics(cls, v):
+        return v if v == 'all' else _entries(v, 'recording.ros2.topics')
+
+    @field_validator('exclude')
+    @classmethod
+    def _exclude(cls, v):
+        return _entries(v, 'recording.ros2.exclude') if v else v
+
+    @field_validator('exclude_types')
+    @classmethod
+    def _exclude_types(cls, v):
+        return _entries(v, 'recording.ros2.exclude_types') if v else v
+
+
+def _track_patterns(value, what):
+    """Path patterns over ``<entity>/<body-or-joint>``: ``**`` is all of an entity, ``*`` one
+    segment. A pattern without a ``/`` names no track, so it is refused here rather than
+    matching nothing at run time."""
+    for entry in _entries(value, what, forbid=" \t\n\r,"):
+        if '/' not in entry:
+            raise ValueError(
+                f"{what} entry {entry!r} must be an <entity>/<body-or-joint> pattern "
+                "('robot/**' for all of an entity, 'robot/*' for its direct children)")
+    return value
+
+
+class RoqsimRecordingConfig(BaseModel):
+    """What the simulator's own recording (``<run>/roqsim_bag``) holds, for a roqsim campaign."""
+    model_config = ConfigDict(extra='forbid')
+    #: The capture rate in Hz. Absent, the simulator records at its own default.
+    rate_hz: Optional[float] = Field(default=None, gt=0)
+    #: ``all``, or path patterns over ``<entity>/<body-or-joint>``.
+    tracks: Union[Literal['all'], list[str]] = 'all'
+    #: Patterns of the same shape that are left out; an exclude wins.
+    exclude: list[str] = Field(default_factory=list)
+
+    @field_validator('tracks')
+    @classmethod
+    def _tracks(cls, v):
+        return v if v == 'all' else _track_patterns(v, 'recording.roqsim.tracks')
+
+    @field_validator('exclude')
+    @classmethod
+    def _exclude(cls, v):
+        return _track_patterns(v, 'recording.roqsim.exclude') if v else v
+
+
+class RecordingConfig(BaseModel):
+    """What every run records, per recorder. Absent altogether, both record everything.
+
+    Top level rather than under ``execution:`` because it describes the run's *record*,
+    which the results side reads, not how the run is dispatched.
+    """
+    model_config = ConfigDict(extra='forbid')
+    ros2: Optional[Ros2RecordingConfig] = None
+    roqsim: Optional[RoqsimRecordingConfig] = None
+
+
+def recording_config(raw) -> Optional[RecordingConfig]:
+    """The ``recording:`` block as its model, or ``None`` for an absent block.
+
+    One place to go from the raw mapping campaign data carries to the model the run
+    environment is derived from, so an emitter and a backend read the same defaults.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, RecordingConfig):
+        return raw
+    if not isinstance(raw, dict):
+        raise ValueError(f"'recording' must be a mapping; got {type(raw).__name__}")
+    return RecordingConfig.model_validate(raw)
+
+
 class PlotSpec(BaseModel):
     """A user-declared eval plot: a read-only SQL query + a Vega-Lite encoding.
 
-    The query runs over the campaign's rows in the results index (``runs`` + metric tables,
-    ``campaign.db`` attached); its result rows are bound into the Vega-Lite spec as
+    The query runs over the campaign's tables (``runs`` + metric tables, the campaign's
+    record as the ``campaign`` schema); its result rows are bound into the Vega-Lite spec as
     ``data.values`` by the web eval viewer, so the spec declares only
     ``mark``/``encoding`` and its ``field`` names are the query's column aliases
     (no ``data`` block is authored).
@@ -2227,8 +2199,8 @@ class RepetitionsConfig(BaseModel):
     ``execution.runs`` gives every cell the same number of repetitions. That is the
     right default and the wrong one in the same campaign: a cell whose runs all agree
     was decided by the first one, while a cell on a failure boundary is exactly where
-    more samples buy something. Measured on a quadrotor search: 3 of 32 configurations
-    produced a mixed outcome over 5 repetitions, so 145 of 160 runs bought one bit each.
+    more samples buy something. Typically few cells are on a boundary, so most of a
+    fixed count buys one bit per cell.
 
     This is a **policy layer, not a strategy**: it is applied between ``ask()`` and
     composition, so it composes with every strategy instead of being one of them. A
@@ -2270,17 +2242,16 @@ class RepetitionsConfig(BaseModel):
                 f"repetitions max ({self.max}) must be >= min ({self.min})")
         if self.seed_parameter is not None or self.paired:
             # Refused rather than accepted-and-ignored. Pairing needs repetition i of every cell
-            # to draw the same noise, and neither channel available today delivers that:
+            # to draw the same noise, and neither available channel delivers that:
             #
             #   - a simulator override document is written per CONFIG, so every repetition of a
-            #     cell would read one seed and stop varying -- strictly worse than the present
-            #     behaviour, where an unseeded run draws its own;
-            #   - the simulator's own episode counter cannot stand in for it, because jobs are
-            #     packed by simulator settings rather than by configuration (see
-            #     execution/packer.py: FixedK groups on WorkItem.sim_key), so one process's
-            #     episodes run across several cells and "episode i" is not "repetition i".
+            #     cell would read one seed and stop varying -- worse than an unseeded run,
+            #     which draws its own;
+            #   - the simulator's own episode counter cannot stand in for it: every run is its
+            #     own job and its own simulator process, so each one counts from the first
+            #     episode and "episode i" is not "repetition i".
             #
-            # What it needs is a per-run seed on the execution backend. Until that exists, saying
+            # What it needs is a per-run seed on the execution backend. Without one, saying
             # 'paired' would claim a comparison the data cannot support.
             raise ValueError(
                 "repetitions 'paired'/'seed_parameter' need a per-run seed, which no execution "
@@ -2547,7 +2518,12 @@ class SearchConfig(BaseModel):
 
 class ConfigV1(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    version: int = 1
+    version: int = Field(
+        default=SUPPORTED_CONFIG_VERSION,
+        description=(
+            "The config version this file is written against. Authoring accepts only the "
+            "current one, which is this field's default; an older file is brought forward "
+            "with 'vast configuration upgrade'."))
     extends: Optional[str] = Field(
         default=None,
         description=(
@@ -2558,7 +2534,6 @@ class ConfigV1(BaseModel):
             "Declared here only so the key is discoverable and a raw file validates; the "
             "loader resolves and removes it, so nothing downstream ever sees it."))
     metadata: Optional[dict[str, Any]] = None
-    general: Optional[GeneralConfig] = None
     plugins: Optional[list[str]] = Field(
         default=None,
         description=(
@@ -2586,6 +2561,9 @@ class ConfigV1(BaseModel):
     execution: ExecutionConfig
     search: Optional[SearchConfig] = None
     results_processing: Optional[ResultsConfig] = None
+    #: What every run records, per recorder (:class:`RecordingConfig`). Absent, both the
+    #: ROS bag and the simulator's recording hold everything.
+    recording: Optional[RecordingConfig] = None
     #: Everything the web UI draws, shaped like the UI (see :class:`VisualizationConfig`):
     #: ``config.panels``, ``results.run_view``, ``results.explorer``, ``results.data_browser``.
     visualization: Optional[VisualizationConfig] = None
@@ -2675,13 +2653,35 @@ def _drop_unknown_configuration_keys(config: dict) -> dict:
     return {**config, "configuration": cleaned}
 
 
+def _drop_unknown_execution_keys(config: dict) -> dict:
+    """A copy of *config* with keys ``execution`` does not declare removed, each logged.
+
+    Serves :func:`validate_config`'s lenient mode only, for the reason
+    :func:`_drop_unknown_configuration_keys` gives: an archived campaign ran with such a key
+    ignored. ``local`` is left for :func:`_drop_archived_local`, which names it.
+    """
+    execution = config.get("execution")
+    if not isinstance(execution, dict):
+        return config
+    known = set(ExecutionConfig.model_fields) | {"local"}
+    extra = [k for k in execution if k not in known]
+    if not extra:
+        return config
+    logger.warning(
+        "execution declares %s, which is not an execution key; the campaign ran with it "
+        "ignored and it is dropped here too. Valid keys: %s",
+        ", ".join(repr(k) for k in extra), ", ".join(sorted(ExecutionConfig.model_fields)))
+    return {**config, "execution": {k: v for k, v in execution.items() if k not in extra}}
+
+
 def validate_config(config: dict, strict: bool = True):
     """
     Validate the configuration settings.
 
     Args:
         config: The settings dictionary to validate
-        strict: Refuse a ``configuration`` entry carrying a key the schema does not declare.
+        strict: Refuse a ``configuration`` entry or an ``execution`` block carrying a key the
+            schema does not declare.
             True for authoring and launching, where such a key is a misspelling whose cost is
             a campaign configured differently than its file reads. False for reading an
             *archived* campaign, which already ran: the key changed nothing then, and refusing
@@ -2689,8 +2689,11 @@ def validate_config(config: dict, strict: bool = True):
     Raises:
         ValueError: If required sections are missing
     """
+    # Read at call time: the version the ladder declares now, not at this module's import.
+    from robovast.common import migrations  # pylint: disable=import-outside-toplevel
     from robovast.common.migrations import (  # pylint: disable=import-outside-toplevel
-        BASELINE_CONFIG_VERSION, SUPPORTED_CONFIG_VERSION, find_migration_markers)
+        BASELINE_CONFIG_VERSION, find_migration_markers)
+    supported = migrations.SUPPORTED_CONFIG_VERSION
 
     logger.debug("Validating configuration")
     version = config.get("version", None)
@@ -2698,17 +2701,17 @@ def validate_config(config: dict, strict: bool = True):
     # not silently accept an old version. Reading an *archived* campaign goes through
     # ``load_config(upgrade=True)`` instead, which ladders it in memory. The refusal below
     # therefore names that path rather than being a dead end -- see migrations/README.md.
-    if isinstance(version, int) and BASELINE_CONFIG_VERSION <= version < SUPPORTED_CONFIG_VERSION:
+    if isinstance(version, int) and BASELINE_CONFIG_VERSION <= version < supported:
         raise ValueError(
             f"config version {version} is not the current version "
-            f"({SUPPORTED_CONFIG_VERSION}), and authoring requires the current one.\n"
+            f"({supported}), and authoring requires the current one.\n"
             "\n"
             "  Upgrade the file:   vast configuration upgrade\n"
             "\n"
             "An archived campaign is migrated automatically when read, so this refusal "
             "only ever applies to a file you are authoring or launching from.\n"
             "\n" + _V1_MIGRATION)
-    if version != SUPPORTED_CONFIG_VERSION:
+    if version != supported:
         # Raised, not logged-and-raised: every caller reports the failure it catches,
         # so logging the same text here printed it twice.
         raise ValueError(f"Unsupported config version: {version}")
@@ -2728,6 +2731,7 @@ def validate_config(config: dict, strict: bool = True):
     logger.debug(f"Config version {version} is supported")
     if not strict:
         config = _drop_unknown_configuration_keys(config)
+        config = _drop_unknown_execution_keys(config)
         config = _drop_archived_kubernetes_keys(config)
         config = _drop_archived_local(config)
     return get_validated_config(config, ConfigV1)

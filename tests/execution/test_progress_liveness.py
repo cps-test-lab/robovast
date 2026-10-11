@@ -11,7 +11,7 @@ progress at all, and nothing recorded when progress last changed.
 from pathlib import Path
 
 from robovast.common.config import (DEFAULT_RUN_DEADLINE_SECONDS, declared_job_seconds,
-                                    declared_per_run_seconds, job_deadline_seconds)
+                                    job_deadline_seconds)
 from robovast.execution.backends import ExecutionBackend
 from robovast.execution.cluster_execution.kubernetes_backend import KubernetesBackend
 from robovast.execution.control_server import ControllerState
@@ -144,9 +144,8 @@ def test_resetting_the_same_phase_does_not_restart_the_clock():
 # -- what the controller publishes -------------------------------------------
 
 
-def test_the_controller_publishes_a_progress_deadline_scaled_by_packing(tmp_path):
-    """Packed runs can publish results in one burst per job, so the unpacked per-run
-    figure would accuse a healthy packed campaign of stalling."""
+def test_the_controller_publishes_the_declared_progress_deadline(tmp_path):
+    """The declared budget of one run, and nothing when none is declared."""
     from robovast.common.store import STORE_FILENAME, CampaignStore
     from robovast.execution.backends import RunOptions
     from robovast.execution.controller import CampaignController
@@ -159,9 +158,6 @@ def test_the_controller_publishes_a_progress_deadline_scaled_by_packing(tmp_path
             campaign_config_dump={"execution": execution}, vast_dir=str(tmp_path))
 
     assert _controller({"timeout": 120})._progress_deadline() == 120
-    # The declared budget is the JOB's, so packing does not stretch it: 120s covers the
-    # whole job whether it holds one run or four.
-    assert _controller({"timeout": 120, "runs_per_job": 4})._progress_deadline() == 120
     # No declared timeout: publish nothing rather than the enforcement backstop, so
     # readers return "cannot judge" instead of a false clean bill of health.
     assert _controller({})._progress_deadline() is None
@@ -180,30 +176,10 @@ def test_the_job_budget_has_exactly_one_definition():
     assert job_deadline_seconds({"timeout": 45}) == declared_job_seconds({"timeout": 45}) == 45
 
 
-def test_a_declared_budget_is_the_jobs_and_is_not_scaled():
-    """v3 semantics. The deadline is enforced at job granularity -- a Job's
-    activeDeadlineSeconds -- so the declared number is used as written."""
-    packed = {"timeout": 600, "runs_per_job": 100}
-    assert declared_job_seconds(packed) == job_deadline_seconds(packed) == 600
-
-
-def test_the_backstop_is_per_run_and_therefore_scales():
-    """Undeclared, the fallback is an hour PER RUN, which has to grow with packing.
-
-    Asymmetric with a declaration on purpose: the backstop is a number chosen in ignorance
-    of the campaign, so a job of 100 runs must not be killed after the first few. A
-    declaration is a statement about the job and is taken at face value.
-    """
+def test_undeclared_the_backstop_enforces_and_nothing_reports():
+    """The backstop is a number chosen in ignorance of the campaign: fine for killing a run
+    that would otherwise hang forever, never a threshold to call a run healthy against."""
     assert job_deadline_seconds({}) == DEFAULT_RUN_DEADLINE_SECONDS
     assert job_deadline_seconds({"timeout": None}) == DEFAULT_RUN_DEADLINE_SECONDS
-    assert job_deadline_seconds({"runs_per_job": 100}) == DEFAULT_RUN_DEADLINE_SECONDS * 100
     assert declared_job_seconds({}) is None
     assert declared_job_seconds({"timeout": None}) is None
-
-
-def test_the_per_run_share_is_derived_for_reporting_only():
-    """`stalled` is a verdict about a run, so reporting still needs a per-run figure --
-    now derived as the job's budget divided by what is packed into it."""
-    assert declared_per_run_seconds({"timeout": 600, "runs_per_job": 100}) == 6
-    assert declared_per_run_seconds({"timeout": 300}) == 300
-    assert declared_per_run_seconds({}) is None

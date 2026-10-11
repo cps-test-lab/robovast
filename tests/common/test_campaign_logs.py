@@ -14,160 +14,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the unified campaign infrastructure-log assembler."""
+"""The campaign infrastructure log's layout: which phases there are, and their order."""
 
-import logging
-
-
-from robovast.client.logging_config import add_campaign_log_handler, remove_campaign_log_handler
-from robovast.common.campaign_logs import (INFRA_PHASES, assemble_log, assemble_log_from_dir,
-                                           phase_banner)
-
-#: Every phase file, so a test can populate a source that is complete by construction —
-#: adding a phase must not quietly turn a "consulted nothing further" assertion green.
-_ALL_PHASE_FILES = INFRA_PHASES
+from robovast.common.campaign_logs import HEAD_PHASES, INFRA_PHASES, REPEATABLE_PHASES
 
 
-def _store_reader(store):
-    return lambda name: store.get(name)
+def test_the_import_is_the_first_phase_and_the_build_the_second():
+    """An import precedes everything else a campaign does, and a campaign that failed
+    before it ever ran explains itself in its build."""
+    assert [name for name, _ in INFRA_PHASES[:2]] == ["IMPORT", "BUILD"]
 
 
-def test_missing_phases_yield_empty_stream():
-    text, next_offset, eof = assemble_log(_store_reader({}), offset=0, eof=True)
-    assert text == ""
-    assert next_offset == 0
-    assert eof is True
+def test_every_phase_file_is_named_once():
+    files = [filename for _, filename in INFRA_PHASES]
+    assert len(files) == len(set(files))
 
 
-def test_single_phase_has_banner_and_content():
-    store = {"variation.log": b"gen A\ngen B\n"}
-    text, next_offset, _ = assemble_log(_store_reader(store), offset=0)
-    assert text == phase_banner("VARIATION") + "gen A\ngen B\n"
-    assert next_offset == len(text.encode("utf-8"))
-
-
-def test_phases_are_ordered_variation_run_postprocessing():
-    store = {
-        "postprocessing.log": b"db built\n",
-        "controller.log": b"batch 1\n",
-        "variation.log": b"gen\n",
-    }
-    text, _, _ = assemble_log(_store_reader(store), offset=0, eof=True)
-    assert text.index("VARIATION") < text.index("RUN") < text.index("POSTPROCESSING")
-
-
-def test_offset_resume_is_stable_and_append_only():
-    store = {"variation.log": b"gen A\ngen B\n"}
-    reader = _store_reader(store)
-
-    first, off, _ = assemble_log(reader, offset=0)
-    # Re-polling from the returned offset with no new bytes yields an empty, stable tail.
-    tail, off2, _ = assemble_log(reader, offset=off)
-    assert tail == ""
-    assert off2 == off
-
-    # A later phase appends without disturbing the already-consumed prefix.
-    store["controller.log"] = b"batch 1\n"
-    appended, off3, _ = assemble_log(reader, offset=off)
-    assert appended == phase_banner("RUN") + "batch 1\n"
-    assert off3 == off + len(appended.encode("utf-8"))
-    # The full stream from 0 equals prefix + appended (append-only invariant).
-    full, _, _ = assemble_log(reader, offset=0)
-    assert full == first + appended
-
-
-def test_offset_past_end_does_not_move_backwards():
-    store = {"variation.log": b"x\n"}
-    _, end, _ = assemble_log(_store_reader(store), offset=0)
-    tail, off, _ = assemble_log(_store_reader(store), offset=end + 100)
-    assert tail == ""
-    assert off == end + 100
-
-
-def test_written_line_is_live_before_handler_close(tmp_path):
-    """Liveness invariant that the SSE stream depends on: a record written through
-    the real controller-log handler is observable by the assembler *immediately* —
-    without closing the handler — because the ``FileHandler`` flushes per record. If
-    a change ever buffered these writes, the web UI's live log would go dark and this
-    test would fail."""
-    log_path = tmp_path / "_execution" / "controller.log"
-    robovast_logger = logging.getLogger("robovast")
-    prev_level = robovast_logger.level
-    robovast_logger.setLevel(logging.INFO)  # runtime configures this; a bare test doesn't
-    handler = add_campaign_log_handler(str(log_path))
-    try:
-        logging.getLogger("robovast.execution.controller").info("live line one")
-        text, _, _ = assemble_log_from_dir(tmp_path, offset=0)
-        assert "live line one" in text
-        # A second record appends and is visible on the next poll — still no close.
-        logging.getLogger("robovast.execution.controller").info("live line two")
-        text2, _, _ = assemble_log_from_dir(tmp_path, offset=0)
-        assert "live line two" in text2
-        assert text2.index("live line one") < text2.index("live line two")
-    finally:
-        remove_campaign_log_handler(handler)
-        robovast_logger.setLevel(prev_level)
-
-
-def test_assemble_from_dir_reads_execution_files(tmp_path):
-    exec_dir = tmp_path / "_execution"
-    exec_dir.mkdir()
-    (exec_dir / "variation.log").write_text("composed\n")
-    (exec_dir / "controller.log").write_text("ran\n")
-    text, _, eof = assemble_log_from_dir(tmp_path, offset=0, eof=True)
-    assert "composed" in text and "ran" in text
-    assert text.index("VARIATION") < text.index("RUN")
-    assert "POSTPROCESSING" not in text  # absent phase file → no section
-    assert eof is True
-
-
-# -- splitting the assembled stream back into phases ------------------------
-#
-# A reader that wants one phase (the BUILD aside, say) slices the assembled stream. The
-# sections must tile it exactly, or a filtered read would renumber the lines of the parts
-# it kept and report a different total than an unfiltered one.
-
-def test_sections_tile_the_stream_exactly():
-    from robovast.common.campaign_logs import split_phases
-    store = {"build.log": b"layer 1\nlayer 2\n",
-             "variation.log": b"gen A\n",
-             "controller.log": b"batch 0\nrun 0\n"}
-    text, _, _ = assemble_log(_store_reader(store), offset=0)
-
-    sections = split_phases(text)
-    assert [name for name, _ in sections] == ["BUILD", "VARIATION", "RUN"]
-    assert "".join(body for _, body in sections) == text
-
-
-def test_selecting_a_subset_splices_without_shifting_lines():
-    from robovast.common.campaign_logs import split_phases
-    store = {"build.log": b"layer 1\n", "controller.log": b"batch 0\n"}
-    with_build, _, _ = assemble_log(_store_reader(store), offset=0)
-    without, _, _ = assemble_log(
-        _store_reader({"controller.log": b"batch 0\n"}), offset=0)
-
-    kept = "".join(body for name, body in split_phases(with_build) if name != "BUILD")
-    assert kept == without
-
-
-def test_a_log_line_shaped_like_a_banner_does_not_invent_a_phase():
-    from robovast.common.campaign_logs import split_phases
-    store = {"controller.log": b"===== NOT A PHASE =====\nbatch 0\n"}
-    text, _, _ = assemble_log(_store_reader(store), offset=0)
-
-    assert [name for name, _ in split_phases(text)] == ["RUN"]
-
-
-def test_content_before_the_first_divider_is_not_dropped():
-    from robovast.common.campaign_logs import split_phases
-    text = "stray prologue\n" + phase_banner("RUN") + "batch 0\n"
-    sections = split_phases(text)
-    assert sections[0][0] == ""
-    assert "".join(body for _, body in sections) == text
-
-
-def test_build_is_the_first_phase():
-    """First because it happens first — and because appending it last would insert bytes
-    *ahead of* later phases as they appear, shifting every byte offset a poller holds.
-    """
-    assert INFRA_PHASES[0][0] == "BUILD"
+def test_the_head_phases_run_once_and_the_rest_can_repeat():
+    """Every phase is one or the other, and the repeatable ones are the tail of the list,
+    since the head is what a campaign is and the tail is what can be asked for again."""
+    head = [filename for _, filename in HEAD_PHASES]
+    assert head == [filename for _, filename in INFRA_PHASES if filename not in REPEATABLE_PHASES]
+    assert [filename for _, filename in INFRA_PHASES[len(HEAD_PHASES):]] == list(REPEATABLE_PHASES)

@@ -38,6 +38,46 @@ def test_a_page_with_no_match_is_absent(corpus):
     assert {r["page"] for r in result["results"]} == {"clustered", "scattered"}
 
 
+def test_an_excerpt_is_a_line_holding_every_word(monkeypatch):
+    """Two ordinary words are each on many lines, and a line holding one of them rarely
+    answers a question about both."""
+    pages = {"guide": "\n".join(["campaign one", "wait here",
+                                   "use vast campaign wait <id>", "campaign two"])}
+    monkeypatch.setattr(docs, "_doc_files", {name: name for name in pages})
+    monkeypatch.setattr(docs, "_doc_content", pages)
+    monkeypatch.setattr(docs, "_doc_meta", {name: name.title() for name in pages})
+    monkeypatch.setattr(docs, "_upstream_pages", lambda address="": ({}, "", ""))
+    monkeypatch.setattr(docs, "_indexes", {})  # the ranking index is built per corpus key
+    page = docs.search_docs(query="campaign wait", limit=0)["results"][0]
+    assert page["matching_lines"] == 1
+    assert page["matches"][0]["line"] == 3
+
+
+def test_a_page_holding_the_words_apart_is_named_not_dropped(monkeypatch):
+    pages = {"apart": "campaign here\n\n\n\n\n\nwait there", "together": "campaign wait"}
+    monkeypatch.setattr(docs, "_doc_files", {name: name for name in pages})
+    monkeypatch.setattr(docs, "_doc_content", pages)
+    monkeypatch.setattr(docs, "_doc_meta", {name: name.title() for name in pages})
+    monkeypatch.setattr(docs, "_upstream_pages", lambda address="": ({}, "", ""))
+    monkeypatch.setattr(docs, "_indexes", {})
+    result = docs.search_docs(query="campaign wait")
+    assert [r["page"] for r in result["results"]] == ["together"]
+    assert result["pages_without_a_matching_line"] == ["apart"]
+
+
+def test_campaign_wait_is_answered_with_excerpts_from_the_real_docs(monkeypatch):
+    """Two common words over the whole corpus still fit the reply with excerpts, rather than
+    falling back to a digest of page names."""
+    if not docs._doc_files:
+        pytest.skip("no documentation directory in this checkout")
+    monkeypatch.setattr(docs, "_indexes", {})
+    monkeypatch.setattr(docs, "_upstream_pages", lambda address="": ({}, "", ""))
+    result = docs.search_docs(query="campaign wait")
+    assert "digest" not in result
+    assert any("campaign wait" in m["excerpt"]
+               for r in result["results"] for m in r["matches"])
+
+
 def test_adjacent_matches_share_one_excerpt(corpus):
     """Six consecutive matching lines are one place in the document, not six. Returning
     a five-line window per match repeats the same lines and makes a page's reply grow
@@ -306,3 +346,44 @@ def test_a_listing_carries_the_title_of_an_image_s_page(monkeypatch):
 
     assert row["title"] == "World YAML"
     assert row["source"] == "roqsim"
+
+
+def test_the_mcp_page_shows_the_layout_list_files_carries():
+    """The page includes the tool's layout rather than restating it, so the two cannot
+    describe different trees -- and the page an agent reads through this tool must show
+    that text, not the directive that names it."""
+    import textwrap
+
+    from robovast.mcp_server.plugins import files
+    if "mcp" not in docs._doc_files:
+        pytest.skip("no documentation directory in this checkout")
+    page = docs.search_docs(page="mcp")["content"]
+    assert "literalinclude" not in page
+    assert textwrap.dedent(files._LAYOUT).strip() in page
+
+
+def test_a_literalinclude_is_cut_where_its_markers_say(tmp_path):
+    (tmp_path / "src.py").write_text('x = 1\nTEXT = """\n    one\n      two\n"""\ny = 2\n')
+    out = docs._render_literalinclude(
+        "src.py", {"start-after": 'TEXT = """', "end-before": '"""', "dedent": "4"}, tmp_path)
+    assert out.splitlines()[1:-1] == ["one", "  two"]
+    with pytest.raises(docs.DirectiveUnresolved, match="no line holds 'nowhere'"):
+        docs._render_literalinclude("src.py", {"start-after": "nowhere"}, tmp_path)
+
+
+def test_a_directive_that_cannot_be_resolved_raises_rather_than_becoming_page_text(tmp_path):
+    """A placeholder in the page would read as its content, with the cause in a debug log."""
+    with pytest.raises(docs.DirectiveUnresolved, match="robovast.no_such_module") as exc:
+        docs._resolve_directives(".. autofunction:: robovast.no_such_module.f\n", tmp_path)
+    assert "ModuleNotFoundError" in str(exc.value)
+
+
+def test_a_page_that_did_not_resolve_is_refused_by_name_and_listed(corpus, monkeypatch):
+    monkeypatch.setattr(docs, "_doc_unresolved",
+                        {"quiet": ".. autoclass:: x.Y could not be resolved: ImportError: x"})
+    read = docs.search_docs(page="quiet")
+    assert set(read) == {"error"}
+    assert "'quiet'" in read["error"] and "x.Y could not be resolved" in read["error"]
+    assert docs.search_docs()["unresolved"] == docs._doc_unresolved
+    assert docs.search_docs(query="needle")["unresolved"] == docs._doc_unresolved
+    assert "content" in docs.search_docs(page="clustered")

@@ -4,7 +4,7 @@
 """Deciding WHEN a campaign's jobs are created, so that the cluster is never handed more
 than it can run.
 
-A typical campaign's plan is upwards of a thousand Jobs (``runs_per_job`` defaults to 1),
+A typical campaign's plan is upwards of a thousand Jobs (one per run),
 and creating them in one loop overwhelms both the cluster and the kubelets pulling their
 images. The property this module exists to hold: **a job is created only when there is room
 for it**, so nothing ever reaches the scheduler that the scheduler cannot place.
@@ -52,8 +52,7 @@ CREATED = "created"
 BUDGET_TTL_S = 3.0
 
 #: How a refusal for want of disk space begins, so a reader -- the batch loop putting it on
-#: the campaign's status, a postprocess explaining its timeout -- can tell it from a wait for
-#: a node. The rest is the reserve's own sentence (:mod:`robovast.common.disk_reserve`).
+#: the campaign's status -- can tell it from a wait for a node. The rest is the reserve's own sentence (:mod:`robovast.common.disk_reserve`).
 DISK_WAIT = "waiting for disk space: "
 
 #: How many jobs may be outstanding **unpinned** at once on a cluster that can grow.
@@ -443,6 +442,10 @@ class AdmissionController:
         #: campaign's item happened to be next -- and campaign B would have read campaign A's
         #: job sizes as the reason for its own wait.
         self._refusals: "Dict[str, str]" = {}
+        #: ``owner -> {key: cause}`` for items a drain gave up creating (``CREATE_ATTEMPT_LIMIT``).
+        #: Kept until the owner is cancelled: a dropped item leaves ``states`` and would
+        #: otherwise read as "nothing planned", which is what a finished batch looks like.
+        self._given_up: "Dict[str, Dict[str, str]]" = {}
 
     # -- queue -------------------------------------------------------------------------
 
@@ -464,7 +467,7 @@ class AdmissionController:
         its own runs.
 
         *priority* stays what it has always been: the ordering WITHIN a campaign, which puts
-        a probe ahead of the work it gates and postprocessing ahead of both. The campaign's
+        a probe ahead of the work it gates. The campaign's
         own rank (:meth:`set_scheduling`) is the more significant key, so setting one never
         disturbs the other.
 
@@ -685,6 +688,7 @@ class AdmissionController:
                     item.last_error = f"{exc.__class__.__name__}: {exc}"
                     if item.attempts >= CREATE_ATTEMPT_LIMIT:
                         failed.append(item)
+                        self._given_up.setdefault(item.owner, {})[item.key] = item.last_error
                         self._refusals[item.owner] = (
                             f"could not create {item.key} after {item.attempts} attempts: "
                             f"{item.last_error}")
@@ -722,8 +726,8 @@ class AdmissionController:
                 created += 1
             for item in failed:
                 # Dropped from the queue, not left to be retried by every later drain of every
-                # other campaign. The owner learns why through ``refusal``; its progress count
-                # then falls, which is what ends its wait.
+                # other campaign. The owner reads each Job's cause through ``given_up``, and its
+                # runner fails the batch with them.
                 self._items.pop(item.key, None)
         return created
 
@@ -755,6 +759,7 @@ class AdmissionController:
         :meth:`forget_calibration` is what ends it, at the end of the campaign.
         """
         with self._lock:
+            self._given_up.pop(owner, None)
             keys = [k for k, i in self._items.items() if i.owner == owner]
             planned = sum(1 for k in keys if self._items[k].state == PLANNED)
             for key in keys:
@@ -998,6 +1003,16 @@ class AdmissionController:
         with self._lock:
             return self._space_short
 
+    def given_up(self, owner: str) -> "Dict[str, str]":
+        """``key -> cause`` for *owner*'s items no drain will try to create again.
+
+        The owner's verdict, not a wait: an item here was dropped from the queue after
+        ``CREATE_ATTEMPT_LIMIT`` consecutive failures, so its Job will never exist. Kept
+        until :meth:`cancel`, because the drop also removes it from :meth:`states`.
+        """
+        with self._lock:
+            return dict(self._given_up.get(owner, {}))
+
     def refusal(self, owner: str) -> str:
         """Why nothing was created for *owner* last time, for its campaign's log.
 
@@ -1066,10 +1081,10 @@ class AdmissionController:
         """Priority first, then campaign rank, then oldest campaign, then submission order.
 
         ``priority`` leads, and it has to. It is not a preference but a campaign's own
-        sequence: a calibration probe measures the node its work will be sized from, and
-        postprocessing turns a finished campaign's runs into its results. Both are bounded --
-        a few per campaign, short -- and both are *preconditions*, so ranking ordinary work
-        ahead of them does not make the queue fairer, it makes the campaign behind them fail.
+        sequence: a calibration probe measures the node its work will be sized from. Probes
+        are bounded -- a few per campaign, short -- and they are *preconditions*, so ranking
+        ordinary work ahead of them does not make the queue fairer, it makes the campaign
+        behind them fail.
         A demoted campaign whose probe keeps losing its node is refused outright after
         ``UNMEASURED_BATCH_LIMIT`` batches, so a rank that reached its probes would turn
         "let other campaigns past" into "end this campaign", which is not what anyone setting

@@ -19,6 +19,7 @@ from click.testing import CliRunner
 
 from robovast.client import campaign_cli
 from robovast.client.status import Phase, Status
+from robovast.execution.wait_exit import CampaignWaitExit
 
 
 @pytest.fixture
@@ -51,7 +52,7 @@ def _run(campaign="c1", *args):  # pylint: disable=keyword-arg-before-vararg
 def test_a_finished_campaign_exits_zero(service):
     service([Phase.RUNNING, Phase.FINISHING, Phase.FINISHED])
     result = _run()
-    assert result.exit_code == 0
+    assert result.exit_code == CampaignWaitExit.FINISHED
     assert "finished" in result.output
 
 
@@ -59,20 +60,20 @@ def test_it_waits_through_finishing(service):
     """``finishing`` is the window where share and postprocessing still run. Exiting
     there would report a campaign as over before its metrics exist — the original bug."""
     seen = service([Phase.FINISHING, Phase.FINISHING, Phase.FINISHED])
-    assert _run().exit_code == 0
+    assert _run().exit_code == CampaignWaitExit.FINISHED
     assert len(seen) >= 3  # it kept polling rather than stopping at `finishing`
 
 
 def test_a_failed_campaign_exits_one(service):
     service([Phase.FAILED], error="image build failed")
     result = _run()
-    assert result.exit_code == 1
+    assert result.exit_code == CampaignWaitExit.FAILED
     assert "image build failed" in result.output
 
 
 def test_a_stopped_campaign_exits_one(service):
     service([Phase.STOPPED])
-    assert _run().exit_code == 1
+    assert _run().exit_code == CampaignWaitExit.FAILED
 
 
 def test_a_timeout_is_its_own_exit_code(service):
@@ -80,7 +81,7 @@ def test_a_timeout_is_its_own_exit_code(service):
     Collapsing the two would make a caller treat a live campaign as a dead one."""
     service([Phase.RUNNING])
     result = _run("c1", "--timeout", "0.05")
-    assert result.exit_code == 2
+    assert result.exit_code == CampaignWaitExit.STOPPED_WAITING
 
 
 def test_a_finished_campaign_whose_postprocessing_failed_says_so(service):
@@ -89,7 +90,7 @@ def test_a_finished_campaign_whose_postprocessing_failed_says_so(service):
     """
     service([Phase.FINISHED], postprocessing_error="conversion died")
     result = _run()
-    assert result.exit_code == 0
+    assert result.exit_code == CampaignWaitExit.FINISHED
     assert "postprocessing failed" in result.output
 
 
@@ -103,7 +104,7 @@ def test_no_phase_at_all_is_its_own_exit_code(service):
     """
     service([Phase.UNKNOWN])
     result = _run()
-    assert result.exit_code == 3
+    assert result.exit_code == CampaignWaitExit.NO_PHASE
     assert "knows no phase" in result.output
 
 
@@ -160,7 +161,7 @@ def test_a_stall_ends_the_wait_with_its_own_code(statuses):
     statuses([_stalled_status("c1", 10), _stalled_status("c1", 10),
               _stalled_status("c1", 999)])
     result = _run("c1", "--timeout", "5")
-    assert result.exit_code == 4
+    assert result.exit_code == CampaignWaitExit.STALLED
     assert "no progress for" in result.output
     # "the waiter returned" must not read as "the run ended".
     assert "STILL RUNNING" in result.output
@@ -173,17 +174,17 @@ def test_a_stall_that_was_already_true_is_not_news(statuses):
     no way to resume waiting on the very state it reports."""
     statuses([_stalled_status("c1", 999)])
     result = _run("c1", "--timeout", "0.2")
-    # 2 == "stopped waiting" (--timeout), i.e. it kept waiting rather than exiting on it.
-    assert result.exit_code == 2
+    # --timeout ended it, i.e. it kept waiting rather than exiting on the stall.
+    assert result.exit_code == CampaignWaitExit.STOPPED_WAITING
 
 
-def test_a_campaign_with_no_declared_timeout_never_exits_four(statuses):
+def test_a_campaign_with_no_declared_timeout_never_exits_stalled(statuses):
     """``stalled`` is ``None`` without ``execution.timeout``, and None is not a verdict.
     Treating it as one would exit on every campaign that declared no budget."""
     statuses([_stalled_status("c1", 10, deadline=None),
               _stalled_status("c1", 99999, deadline=None)])
     result = _run("c1", "--timeout", "0.2")
-    assert result.exit_code == 2
+    assert result.exit_code == CampaignWaitExit.STOPPED_WAITING
 
 
 # -- exit 5: the run's own simulator said something is wrong ---------------------------------
@@ -211,7 +212,7 @@ def test_a_fresh_error_finding_ends_the_wait_with_its_own_code(statuses):
     verdict to fall back on."""
     statuses([_finding_status("c1", []), _finding_status("c1", [_finding()])])
     result = _run("c1", "--timeout", "5")
-    assert result.exit_code == 5
+    assert result.exit_code == CampaignWaitExit.HEALTH_FINDING
     assert "sim-time-rate" in result.output and "sim advanced 3.1s" in result.output
     # Three things the message must say, and each was got wrong by a draft of it.
     assert "NOT touched" in result.output, "a waiter stopping must not read as a run stopping"
@@ -225,7 +226,7 @@ def test_a_finding_exit_says_what_to_do_next_from_what_the_finding_already_told_
     question the finding has just answered."""
     statuses([_finding_status("c1", []), _finding_status("c1", [_finding()])])
     result = _run("c1", "--timeout", "5")
-    assert result.exit_code == 5
+    assert result.exit_code == CampaignWaitExit.HEALTH_FINDING
     assert "next:" in result.output
     assert "get_job_state" in result.output
     assert "simulator's documentation" in result.output, \
@@ -244,7 +245,7 @@ def test_a_finding_exit_reports_the_checks_that_did_not_run(statuses):
                         skipped=["nav-1/1: check 1 (robot-motion): no rows in sim_poses.csv"]),
     ])
     result = _run("c1", "--timeout", "5")
-    assert result.exit_code == 5
+    assert result.exit_code == CampaignWaitExit.HEALTH_FINDING
     assert "check did not run" in result.output
     assert "robot-motion" in result.output
 
@@ -254,7 +255,7 @@ def test_a_finding_already_present_is_not_news(statuses):
     re-run this command after diagnosing, so a fresh waiter must not exit on what it inherits."""
     statuses([_finding_status("c1", [_finding()])])
     result = _run("c1", "--timeout", "0.2")
-    assert result.exit_code == 2  # kept waiting, then hit --timeout
+    assert result.exit_code == CampaignWaitExit.STOPPED_WAITING  # kept waiting, then hit --timeout
 
 
 def test_a_second_finding_from_a_new_check_still_exits(statuses):
@@ -263,7 +264,7 @@ def test_a_second_finding_from_a_new_check_still_exits(statuses):
     statuses([_finding_status("c1", [_finding(check="robot-motion")]),
               _finding_status("c1", [_finding(check="robot-motion"), _finding()])])
     result = _run("c1", "--timeout", "5")
-    assert result.exit_code == 5
+    assert result.exit_code == CampaignWaitExit.HEALTH_FINDING
     assert "sim-time-rate" in result.output
 
 
@@ -272,7 +273,7 @@ def test_the_same_check_firing_again_does_not_exit(statuses):
     statuses([_finding_status("c1", [_finding()]), _finding_status("c1", [_finding()]),
               _finding_status("c1", [_finding()])])
     result = _run("c1", "--timeout", "0.2")
-    assert result.exit_code == 2
+    assert result.exit_code == CampaignWaitExit.STOPPED_WAITING
 
 
 def test_a_warning_never_ends_the_wait(statuses):
@@ -281,7 +282,7 @@ def test_a_warning_never_ends_the_wait(statuses):
     statuses([_finding_status("c1", []),
               _finding_status("c1", [_finding(check="robot-motion", level="warn")])])
     result = _run("c1", "--timeout", "0.2")
-    assert result.exit_code == 2
+    assert result.exit_code == CampaignWaitExit.STOPPED_WAITING
 
 
 def test_a_terminal_campaign_with_findings_exits_on_its_phase(statuses):
@@ -291,7 +292,7 @@ def test_a_terminal_campaign_with_findings_exits_on_its_phase(statuses):
     statuses([_finding_status("c1", []),
               Status(phase=Phase.FINISHED, campaign_id="c1", health=[_finding()])])
     result = _run("c1", "--timeout", "5")
-    assert result.exit_code == 0
+    assert result.exit_code == CampaignWaitExit.FINISHED
 
 
 def test_a_stall_and_a_finding_together_report_the_finding(statuses):
@@ -301,5 +302,5 @@ def test_a_stall_and_a_finding_together_report_the_finding(statuses):
                      progress_since=time.time() - 999, health=[_finding()])
     statuses([_finding_status("c1", []), stalled])
     result = _run("c1", "--timeout", "5")
-    assert result.exit_code == 5
+    assert result.exit_code == CampaignWaitExit.HEALTH_FINDING
     assert "NOT touched" in result.output

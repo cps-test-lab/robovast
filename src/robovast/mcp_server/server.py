@@ -34,7 +34,7 @@ import time
 from fastmcp import FastMCP
 from mcp.types import Icon
 
-from . import tool_stats
+from . import service_access, tool_stats
 from .lacks import arguments_it_lacks, why_it_takes_none
 from .registry import load_plugins, registered_tools
 
@@ -294,11 +294,12 @@ def _install_tool_stats(mcp: FastMCP) -> None:
     it keeps is :mod:`robovast.mcp_server.tool_stats`; the admin page reads it back.
 
     The recording is in a ``finally`` and cannot fail the call -- a failed call is the one
-    most worth having in the log, so the failure path records and re-raises.
+    most worth having in the log, so the failure path records and re-raises. A call that
+    answered with the error document is recorded as failed too.
 
-    It runs on a worker thread: a record may flush the buffer to the index, and that
-    connect-and-``COPY`` on the event loop would stall every request the service is serving
-    for as long as the index takes to answer.
+    It runs on a worker thread: a record is a write to the call log's SQLite file, and that
+    write on the event loop would stall every request the service is serving for as long as
+    the disk takes to answer.
     """
     import functools  # pylint: disable=import-outside-toplevel
 
@@ -313,14 +314,17 @@ def _install_tool_stats(mcp: FastMCP) -> None:
             # Read before the call: a middleware further in may close the request context,
             # and the finally below runs on a worker thread where it is gone either way.
             actor, session = _caller(context)
+            errors: list[str] = []
+            token = service_access.ERRORS_ANSWERED.set(errors)
             try:
                 result = await call_next(context)
-                answer, ok = tool_stats.render(_extract_result(result)), True
+                answer, ok = tool_stats.render(_extract_result(result)), not errors
                 return result
             except Exception as exc:
                 answer = f"{type(exc).__name__}: {exc}"
                 raise
             finally:
+                service_access.ERRORS_ANSWERED.reset(token)
                 await anyio.to_thread.run_sync(functools.partial(
                     tool_stats.LOG.record,
                     context.message.name,

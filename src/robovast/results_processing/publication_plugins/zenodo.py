@@ -35,16 +35,16 @@ Configuration example:
            ask: true
            record_id: 1234567
 
-Credentials are read from the ``.env`` file adjacent to the ``.vast`` file
-(or the project root)::
+The access token is the ``ZENODO_ACCESS_TOKEN`` environment variable, which ``vast``
+reads from the ``.env`` of the directory it runs in::
 
     ZENODO_ACCESS_TOKEN=your_access_token_here
 
 Set ``sandbox: true`` to test against ``sandbox.zenodo.org`` instead of the
 production instance.
 
-See ``docs/zenodo.rst`` for instructions on creating an access token with the
-``deposit:write`` scope.
+The token needs the ``deposit:write`` scope; ``docs/configuration.rst`` lists the plugin
+beside ``zip`` under the publication plugins.
 """
 
 import json
@@ -56,7 +56,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-import yaml
 
 from robovast.common.progress import make_transfer_progress_callback
 from robovast.results_processing.publication_plugins.base import BasePublicationPlugin
@@ -202,13 +201,11 @@ def _upload_file(base: str, record_id: int, filename: str, file_path: Path, toke
 
 
 def _load_vast_data(vast_path: str) -> Dict[str, Any]:
-    """Return the parsed .vast file as a dict, or empty dict on failure."""
-    try:
-        with open(vast_path, "r", encoding="utf-8") as fh:
-            data = yaml.safe_load(fh)
-        return data if isinstance(data, dict) else {}
-    except Exception:  # pylint: disable=broad-except
-        return {}
+    """The campaign's .vast as the config loader reads an archived one: bases merged,
+    migrated in memory to the current version. Raises when it cannot be read -- a record
+    published without the metadata it was configured with is not a successful upload."""
+    from robovast.common.common import load_config  # pylint: disable=import-outside-toplevel
+    return load_config(vast_path, upgrade=True)
 
 
 def _create_deposition(base: str, token: str) -> dict:
@@ -544,8 +541,7 @@ class Zenodo(BasePublicationPlugin):
 
         ZENODO_ACCESS_TOKEN=your_access_token_here
 
-    See ``docs/zenodo.rst`` for step-by-step instructions on creating a Zenodo
-    access token restricted to the ``deposit:write`` scope.
+    The token needs the ``deposit:write`` scope.
     """
 
     plugin_type = "upload"
@@ -596,8 +592,8 @@ class Zenodo(BasePublicationPlugin):
         if not token:
             return (
                 False,
-                "ZENODO_ACCESS_TOKEN is not set.  Add it to your .env file.\n"
-                "See docs/zenodo.rst for instructions.",
+                "ZENODO_ACCESS_TOKEN is not set. Add a Zenodo access token with the "
+                "deposit:write scope to the .env of the directory vast runs in.",
                 [],
             )
 
@@ -605,6 +601,9 @@ class Zenodo(BasePublicationPlugin):
             return True, "No artifacts to upload.", []
 
         base = _base_url(sandbox)
+        # Read before anything is created or uploaded, so an unreadable .vast stops the
+        # publication rather than leaving a deposition behind without its metadata.
+        vast_data = _load_vast_data(_vast_file) if _vast_file else None
 
         # ------------------------------------------------------------------ #
         # Resolve record_id: config → project file → create new
@@ -729,9 +728,8 @@ class Zenodo(BasePublicationPlugin):
         # Update Zenodo metadata from .vast file
         # ------------------------------------------------------------------ #
         meta_msg = ""
-        if _vast_file and os.path.isfile(_vast_file):
+        if vast_data is not None:
             try:
-                vast_data = _load_vast_data(_vast_file)
                 updated_fields = _update_zenodo_metadata(
                     base, record_id, token, vast_data, deposition, overwrite
                 )

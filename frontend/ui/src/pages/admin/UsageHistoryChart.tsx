@@ -68,8 +68,8 @@ export function UsageHistoryChart() {
     retry: false,
   })
   // Only for `metrics_unavailable`, and only to explain a missing fill. `['usage']` and a
-  // 15s interval on purpose: that is the key and cadence the sidebar meter and the Monitor
-  // cards already poll (Sidebar.tsx `ConnectionStatus`), so this shares their one poll
+  // 15s interval on purpose: that is the key and cadence the sidebar meter and the Campaigns
+  // page's cards already poll (Sidebar.tsx `ConnectionStatus`), so this shares their one poll
   // instead of adding a second — a different key or interval would silently split it.
   const usage = useQuery({
     queryKey: ['usage'],

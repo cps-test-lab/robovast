@@ -130,7 +130,8 @@ class NodeCalibration:
     benchmark suite.
     """
 
-    #: node_id -> {container_name: {"sustained": cores, "peak": cores}}, headroom applied
+    #: node_id -> {container_name: {"sustained": cores, "peak": cores, ...}}, as measured:
+    #: the headroom is applied where a figure becomes a size (``calibrated_resources``)
     _by_node: dict = field(default_factory=dict)
     #: node_id -> the probe key currently measuring that node
     _probes: dict = field(default_factory=dict)
@@ -145,6 +146,10 @@ class NodeCalibration:
     #: rather than on the runner because a runner is per batch and this counts batches: a
     #: search builds a fresh one every round, so a tally kept there would read 1 forever.
     _unmeasured_batches: dict = field(default_factory=dict)
+    #: node_id -> ``{"rule": ..., "allocated": ...}``: how that node's figures were turned into
+    #: each container's resources, and what they came to. Noted by the runner that rendered
+    #: them (:meth:`note_allocation`), kept for the record of the campaign (:meth:`provenance`).
+    _allocated: dict = field(default_factory=dict)
     enabled: bool = True
     #: Whether calibration applies to this CAMPAIGN, decided once and kept.
     #:
@@ -162,6 +167,26 @@ class NodeCalibration:
     def calibrated(self, node_id) -> "dict | None":
         """That node's per-container cores, or ``None`` while it is still unknown."""
         return self._by_node.get(node_id)
+
+    def note_allocation(self, node_id, *, rule: dict, allocated: dict) -> None:
+        """Keep how *node_id*'s figures sized each container (*rule*: the per-container
+        calibration settings) and what they came to (*allocated*: each container's requests
+        and limits), for :meth:`provenance`. Only for a node that has figures."""
+        if node_id in self._by_node:
+            self._allocated[node_id] = {"rule": rule, "allocated": allocated}
+
+    def provenance(self, node_id) -> "dict | None":
+        """What *node_id*'s calibration was, for the campaign's record; ``None`` for a node
+        this campaign did not calibrate.
+
+        ``{"measured": {container: figures before headroom}, "rule": {container: settings},
+        "allocated": {container: {"requests": ..., "limits": ...}}}`` -- what the probe
+        measured, how that became a size, and the size every run on the node had.
+        """
+        figures = self._by_node.get(node_id)
+        if figures is None:
+            return None
+        return {"measured": figures, **self._allocated.get(node_id, {})}
 
     def outcome(self) -> dict:
         """``{"calibrated": [...], "refused": {node: reason}, "skipped": {node: reason}}``."""
@@ -640,7 +665,7 @@ def bootstrap_sizing(role: "str | None" = None) -> "tuple[float, int]":
 #:
 #: Zero is the wrong threshold: a container is briefly throttled during bring-up on any
 #: machine, and refusing every probe for that would leave a cluster permanently uncalibrated.
-#: This matches ``advice.THROTTLE_WARN_RATIO``, which was calibrated against a sweep in which
+#: This matches ``robovast_data.views.THROTTLE_WARN_RATIO``, calibrated against a sweep in which
 #: the stack's own miss count was counted at each level, and carries the same caveat -- it is
 #: derived from a 20 Hz control loop, so a slower one tolerates proportionally more.
 PROBE_THROTTLE_REFUSE_RATIO = 0.005
@@ -830,11 +855,11 @@ def read_probe_measurement(read, prefix: str, containers, limits=None,
     without one. *containers* maps a container name to the file the monitor wrote for it
     (``main`` for the pod's main container, the role name for each sidecar).
 
-    **Read directly, never through postprocessing.** The file the monitor writes IS the
-    measurement -- postprocessing only lifts it into the results index, and does so at the end of a
-    campaign or a batch, which is far too late to size the job that comes next. It is also
-    why the probe's directory being skipped by postprocessing costs nothing: there was never
-    anything to gain from it going through.
+    **Read directly, never through the campaign's tables.** The file the monitor writes IS the
+    measurement -- a table only lifts it into a queryable form, which is too late and too
+    indirect to size the job that comes next. It is also why the probe's directory being
+    skipped by postprocessing costs nothing: there was never anything to gain from it going
+    through.
 
     A container whose file is missing or unreadable is simply absent from the result, which
     the caller must read as "not measured" -- and, because a partial pod cannot be sized

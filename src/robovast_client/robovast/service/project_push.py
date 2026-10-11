@@ -37,6 +37,7 @@ import os
 from pathlib import Path
 
 from robovast.client.file_address import SOURCES, format_address
+from robovast.client.safe_path import UnsafePathError, check_segment, safe_join
 from robovast.client.workspaces import is_campaign_results_dir
 from robovast.client.workspaces import is_skipped as _should_skip
 
@@ -154,6 +155,17 @@ def push_campaign_archive(client, path: Path) -> str:
     return str(path)
 
 
+class NoSuchWorkspace(ValueError):
+    """A workspace reference that names nothing, or names more than one.
+
+    A ``ValueError``, so every caller that treats a bad reference as bad input keeps
+    doing so; ``include_traceback = False`` because the message is the whole report --
+    the frames would show the lookup, not the typo.
+    """
+
+    include_traceback = False
+
+
 def _resolve_workspace_id(client, ref: str) -> str:
     """Resolve a workspace id-or-name to a concrete ``workspace_id``.
 
@@ -165,9 +177,9 @@ def _resolve_workspace_id(client, ref: str) -> str:
         return ref
     matches = [w for w in client.list_workspaces().workspaces if w.name == ref]
     if not matches:
-        raise ValueError(f"no workspace named {ref!r}")
+        raise NoSuchWorkspace(f"no workspace named {ref!r}")
     if len(matches) > 1:
-        raise ValueError(
+        raise NoSuchWorkspace(
             f"workspace name {ref!r} is ambiguous ({len(matches)} matches); "
             "use the ws-… id")
     return matches[0].workspace_id
@@ -233,13 +245,14 @@ def pull_workspace_to_directory(client, workspace_id: str, directory, *,
 def _safe_target(root: Path, rel: str) -> Path:
     """*rel* resolved under *root*, or a ``ValueError`` when it would leave it.
 
-    An archive is the one input here that came from another machine, so a member naming
-    ``..`` or an absolute path is refused rather than written.
+    An archive is the one input here that came from another machine, so a member that
+    leaves *root* is refused rather than written.
     """
-    target = (root / rel).resolve()
-    if not str(target).startswith(str(root.resolve())):
-        raise ValueError(f"{rel!r} would be written outside {root}, so the archive is refused")
-    return target
+    try:
+        return safe_join(root, rel)
+    except UnsafePathError as e:
+        raise ValueError(
+            f"{rel!r} would be written outside {root}, so the archive is refused") from e
 
 
 class _ChunkReader:
@@ -462,15 +475,15 @@ def _served_filename(disposition) -> str:
         key, _, value = part.strip().partition("=")
         if key.strip().lower() != "filename":
             continue
-        name = value.strip().strip('"')
-        if not name or name in (".", "..") or "/" in name or "\\" in name:
+        try:
+            return check_segment(value.strip().strip('"'))
+        except UnsafePathError:
             return ""
-        return name
     return ""
 
 
 def download_campaign_archive(client, campaign_id: str, dest_path: str,
-                              progress_callback=None) -> str:
+                              progress_callback=None, raw: bool = False) -> str:
     """Stream the campaign's ``tar.gz`` through *client* into *dest_path*; return it.
 
     A file lands, and that is all that happens. Stream-*extracting* off the socket would
@@ -478,30 +491,138 @@ def download_campaign_archive(client, campaign_id: str, dest_path: str,
     jobs, and the second one nobody asked for. Unpacking is ``tar``'s, and putting a
     campaign back into a service is ``vast campaign import``.
 
-    Written through a ``.part`` sibling and renamed on success, so an interrupted
-    transfer cannot leave a truncated archive sitting under the real name looking
-    complete. There is no resume: this is a service on your own network, and a
-    half-finished HTTP GET is cheaper to repeat than to reason about.
+    There is no resume: this is a service on your own network, and a half-finished HTTP
+    GET is cheaper to repeat than to reason about (:func:`download_to_file`).
 
     The **service** names the file, not *dest_path*: a campaign that was still running when
     it was archived comes back as ``<id>.incomplete.tar.gz``, and only the service knows
     that. *dest_path* supplies the directory and the fallback name; the returned path is
     where the archive actually landed, which is the one a caller must report.
+
+    The archive carries the campaign's built tables, or with *raw* its records alone
+    (``<id>.raw.tar.gz``).
+    """
+    from robovast.service.interface import (  # pylint: disable=import-outside-toplevel
+        Routes, campaign_archive_query)
+
+    logger.info("Downloading %s%s from robovast-service ...", campaign_id,
+                " (raw)" if raw else "")
+    return download_to_file(client, Routes.campaign_archive(campaign_id), dest_path,
+                            progress_callback=progress_callback,
+                            params=campaign_archive_query(raw))
+
+
+def extract_campaign_archive(client, campaign_id: str, out_dir: str,
+                             progress_callback=None, raw: bool = False) -> str:
+    """Stream the campaign's archive through *client* and extract it under *out_dir*;
+    return the campaign directory it made.
+
+    What :func:`download_campaign_archive` leaves to ``tar``, done off the socket because
+    the caller asked for a directory (``--extract``): the transfer and the unpacking
+    overlap, and no archive is kept beside the tree. The archive's one top-level directory
+    is the campaign's, named by the service (``<id>.incomplete`` for one still running), so
+    the tree lands at ``<out_dir>/<that name>``; it is extracted into a sibling
+    ``.<name>.incoming`` and moved into place when the last member is read, so a cut transfer
+    leaves no half campaign under the real name.
+    """
+    import shutil  # pylint: disable=import-outside-toplevel
+    import tarfile  # pylint: disable=import-outside-toplevel
+
+    from robovast.service.interface import (  # pylint: disable=import-outside-toplevel
+        Routes, campaign_archive_query)
+
+    logger.info("Downloading and extracting %s from robovast-service ...", campaign_id)
+    url = f"{client.base_url}{Routes.campaign_archive(campaign_id)}"
+    os.makedirs(out_dir, exist_ok=True)
+    incoming = None
+    try:
+        with client.session.get(url, params=campaign_archive_query(raw) or None,
+                                timeout=600, stream=True) as resp:
+            client.raise_for_status(resp)
+            served = _served_filename(resp.headers.get("Content-Disposition")) or f"{campaign_id}.tar.gz"
+            name = served[:-len(".tar.gz")] if served.endswith(".tar.gz") else served
+            try:
+                check_segment(name)
+            except UnsafePathError as err:
+                raise RuntimeError(f"the archive of {campaign_id} is named {served!r}, which "
+                                   "names no directory to extract it into") from err
+            incoming = os.path.join(out_dir, f".{name}.incoming")
+            shutil.rmtree(incoming, ignore_errors=True)
+            os.makedirs(incoming)
+            stream = _Counting(resp.raw, progress_callback)
+            with tarfile.open(fileobj=stream, mode="r|gz") as tar:
+                tar.extractall(incoming, filter="data")
+        entries = os.listdir(incoming)
+        if len(entries) != 1:
+            raise RuntimeError(f"the archive of {campaign_id} holds {len(entries)} top-level "
+                               "entries, not the one campaign directory")
+        target = os.path.join(out_dir, name)
+        if os.path.exists(target):
+            shutil.rmtree(target)
+        os.replace(os.path.join(incoming, entries[0]), target)
+        os.rmdir(incoming)
+        return target
+    except BaseException:
+        if incoming:
+            shutil.rmtree(incoming, ignore_errors=True)
+        raise
+
+
+class _Counting:
+    """A read-only wrapper over a response's raw stream that reports the bytes read."""
+
+    def __init__(self, raw, progress_callback):
+        self._raw = raw
+        self._callback = progress_callback
+        self._received = 0
+        raw.decode_content = False        # the tar reader undoes the gzip itself
+
+    def read(self, size=-1):
+        chunk = self._raw.read(size) if size is not None and size >= 0 else self._raw.read()
+        self._received += len(chunk)
+        if self._callback is not None:
+            self._callback(self._received, 0)
+        return chunk
+
+
+def download_campaign_export(client, campaign_id: str, export_id: str, dest_path: str,
+                             progress_callback=None) -> str:
+    """Stream a finished export's ``tar.gz`` through *client* into *dest_path*; return it.
+
+    The same transfer as :func:`download_campaign_archive` -- a ``.part`` sibling, renamed
+    on success, named by the service -- for the file ``vast campaign export`` fetches once
+    the export is done.
     """
     from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
 
-    say = logger.info
-    url = f"{client.base_url}{Routes.campaign_archive(campaign_id)}"
-    say("Downloading %s from robovast-service ...", campaign_id)
+    logger.info("Downloading export %s of %s from robovast-service ...", export_id, campaign_id)
+    # The caller names the file: an export's served name carries nothing the caller does
+    # not already know, so ``-o`` is honoured to the letter.
+    return download_to_file(client, Routes.campaign_export_download(campaign_id, export_id),
+                            dest_path, progress_callback=progress_callback, served_name=False)
+
+
+def download_to_file(client, route: str, dest_path: str, progress_callback=None, *,
+                     served_name: bool = True, params: "dict | None" = None) -> str:
+    """Stream the data-plane *route* through *client* into *dest_path*; return where it landed.
+
+    Written through a ``.part`` sibling and renamed on success, so an interrupted transfer
+    cannot leave a truncated file under the real name looking complete. With *served_name*
+    the service names the file through ``Content-Disposition`` and *dest_path* supplies the
+    directory and the fallback name; without it the file lands at *dest_path* exactly. The
+    returned path is where the file actually landed. *params* is the route's query.
+    """
+    url = f"{client.base_url}{route}"
     os.makedirs(os.path.dirname(os.path.abspath(dest_path)) or ".", exist_ok=True)
     tmp_path = f"{dest_path}.part"
     try:
-        with client.session.get(url, timeout=600, stream=True) as resp:
+        with client.session.get(url, params=params or None, timeout=600, stream=True) as resp:
             # The client's helper, not requests' own: that one reports the status line and
             # the URL and throws the body away, which is where this service writes the
             # actionable sentence ("no campaign 'x' on this service").
             client.raise_for_status(resp)
-            served = _served_filename(resp.headers.get("Content-Disposition"))
+            served = _served_filename(resp.headers.get("Content-Disposition")) \
+                if served_name else ""
             if served:
                 dest_path = os.path.join(os.path.dirname(os.path.abspath(dest_path)), served)
             # Absent for a campaign archive: the service tars it on the fly, so there is

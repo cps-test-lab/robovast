@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 #: The campaign's runs -- what a stop meant when a campaign had one stoppable thing.
 STOP_RUNS = "runs"
-#: Analysis postprocessing: the rosbag conversions, the metrics, the index ingest.
+#: Analysis postprocessing: the campaign's own steps and the building of its tables.
 STOP_POSTPROCESSING = "postprocessing"
 #: The upload-to-share, which streams a whole campaign to somebody else's storage.
 STOP_SHARE = "share"
@@ -408,13 +408,13 @@ def stop_checker(state, scope: str = STOP_POSTPROCESSING):
     driving -- so a caller never has to ask which case it is in.
 
     A predicate rather than the state object itself, because everything below this layer
-    (the postprocessing pipeline, its plugins, the cluster's conversion Job) then needs to
+    (the postprocessing pipeline and its plugins) then needs to
     know only "is this still wanted", not what a campaign or a phase is. That is also what
     makes those layers testable without one.
 
     Defaults to the **postprocessing** scope, not the runs, because that is what the
     postprocessing pipeline asks: a stop aimed at the runs leaves the analysis of the
-    batches that did finish to complete, which is what puts their results in the index;
+    batches that did finish to complete, which is what builds their tables;
     only a stop aimed at the analysis ends it there. The scope is a parameter because the
     same predicate shape is what the pre-run steps and a search's per-batch conversion
     need over the **runs** scope -- one function, so a caller cannot build a predicate

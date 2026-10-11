@@ -20,7 +20,7 @@ import { type ConfigEditor } from './useConfigEditor'
 // other files live in the Files tab. Fills its container height so it reads as a full-height editor.
 export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
   const { selected, setSelected, vastFiles, content, saving, onChange, validation, createVast,
-    readOnly } = editor
+    readOnly, writable, loadError, saveError } = editor
 
   const instance = useRef<monacoEditor.IStandaloneCodeEditor | null>(null)
   // Read inside the listener rather than captured: the editor is mounted once and kept alive
@@ -93,6 +93,7 @@ export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
               <Chip
                 size="small"
                 variant="outlined"
+                title={saving === 'error' && saveError ? saveError : undefined}
                 label={
                   saving === 'saving' ? 'saving…'
                     : saving === 'saved' ? 'saved'
@@ -111,6 +112,13 @@ export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
           )}
         </Stack>
       )}
+      {/* What stops the file from being shown, and edited: nothing of it is in the buffer. */}
+      {loadError ? (
+        <Alert severity="error">could not read {selected}: {loadError}</Alert>
+      ) : null}
+      {!readOnly && saving === 'error' && saveError ? (
+        <Alert severity="error">save failed: {saveError}</Alert>
+      ) : null}
       <Paper
         sx={{
           flexGrow: 1,
@@ -133,7 +141,8 @@ export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
             minimap: { enabled: false },
             fontSize: 13,
             scrollBeyondLastLine: false,
-            readOnly: readOnly || !selected,
+            // Not writable until the selected file's own text is in the buffer.
+            readOnly: readOnly || !selected || !writable,
             domReadOnly: readOnly,
           }}
         />

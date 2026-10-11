@@ -241,10 +241,11 @@ def test_a_service_being_rolled_is_retried(tmp_path):
 # -- termination ------------------------------------------------------------------------
 
 def test_a_term_before_the_markers_uploads_what_is_there(tmp_path):
-    """A pod torn down mid-run still lands its evidence: one upload, and the streams still
-    being written left out of it."""
+    """A pod torn down mid-run still lands its evidence: one upload of everything there,
+    a recording cut short included -- it is readable up to its last complete chunk."""
     pod = _Pod(tmp_path, "ok")
-    (pod.out / "cfg" / "0" / "run.npz.part").write_bytes(b"\0" * 16)
+    (pod.out / "cfg" / "0" / "roqsim_bag").mkdir()
+    (pod.out / "cfg" / "0" / "roqsim_bag" / "roqsim.mcap").write_bytes(b"\0" * 16)
     proc = pod.start(uploader_script("c-1", ["simulation"], grace_s=60,
                                      attempts=1, backoff_s=0))
     time.sleep(0.5)
@@ -255,21 +256,7 @@ def test_a_term_before_the_markers_uploads_what_is_there(tmp_path):
     assert "terminated before the result was delivered" in out
     members = pod.members(1)
     assert "./cfg/0/test.xml" in members
-    assert not any(m.endswith(pod_upload.IN_PROGRESS_SUFFIX) for m in members)
-    assert f"--exclude='*{pod_upload.IN_PROGRESS_SUFFIX}'" in pod.args(1) or \
-        pod_upload.IN_PROGRESS_SUFFIX not in pod.args(1)  # the exclude is tar's, not curl's
-
-
-def test_the_ordinary_upload_excludes_nothing(tmp_path):
-    """Once every marker exists nothing is still being written, so a leftover stream is
-    forensics and travels with the rest."""
-    pod = _Pod(tmp_path, "ok")
-    (pod.out / "cfg" / "0" / "run.npz.part").write_bytes(b"\0" * 16)
-    proc = pod.start(uploader_script("c-1", [], grace_s=1, attempts=1, backoff_s=0))
-    pod.mark("main")
-    rc, out = _finish(proc)
-    assert rc == 0, out
-    assert "./cfg/0/run.npz.part" in pod.members(1)
+    assert "./cfg/0/roqsim_bag/roqsim.mcap" in members
 
 
 def test_a_term_during_the_retry_sleep_ends_the_attempts(tmp_path):

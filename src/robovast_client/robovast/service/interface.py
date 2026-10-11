@@ -50,7 +50,7 @@ from robovast.client import file_address
 # ``CommandResult`` RPC envelopes are gone: the controller runs in-process now, so
 # ``stop`` is a direct call rather than an HTTP command to a controller pod.)
 from robovast.client.scene_markers import ConfigViewContribution, SceneMarker  # noqa: F401  # pylint: disable=unused-import
-from robovast.client.status import (Phase, Status, StatusResponse,  # noqa: F401  # pylint: disable=unused-import
+from robovast.client.status import (Phase, Status, StatusResponse, StepProgress,  # noqa: F401  # pylint: disable=unused-import
                                     status_response)
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ class CreateCampaignRequest(BaseModel):
 
     workspace_id: str
     config_path: str = ""            # which .vast to run (workspace-relative); "" = the one .vast
-    config_filter: str = ""          # optional glob to run only matching configs
+    config_filter: str = ""          # optional comma-separated globs; run only matching configs
     campaign_name: str = ""          # override the campaign name (id = <name>-<timestamp>); "" = metadata.name
     # Free text about *this* launch ("pilot: 5 reps, DWB vs MPPI"), recorded in the
     # campaign's store and shown in listings. Capped so it stays a listing-sized label
@@ -186,8 +186,8 @@ class ImageBuildError(BaseModel):
     registry-qualified ref (see the zero-registry-knowledge invariant).
     """
 
-    #: base-pull | base-image | apt | pip | source-build | push | resource | validate |
-    #: builder-pod
+    #: base-pull | base-image | apt | pip | source-build | build | push | resource |
+    #: builder | builder-pod
     #:
     #: ``base-image`` is distinct from ``base-pull``: the image was fetched fine, it
     #: simply does not contain something the project's own packages depend on.
@@ -240,6 +240,13 @@ class ImageBuildStatus(BaseModel):
     #: looks exactly like one that is slow for no reason. Zero/empty means "not reported".
     context_bytes: int = 0
     cache_ref: str = ""
+
+
+#: The :attr:`ImageBuildStatus.phase` values meaning the image exists: built by this build,
+#: or found already built for the same inputs. Every other terminal phase is a failure. One
+#: definition, so the wait, the launch that depends on the build and the refusal that names
+#: it cannot list it differently.
+IMAGE_BUILT_PHASES: frozenset[str] = frozenset({"succeeded", "cached"})
 
 
 class ExecRequest(BaseModel):
@@ -571,25 +578,24 @@ class JobState(BaseModel):
     status: str = "running"
     #: Which run every section below describes, as ``<config>/<run>``.
     #:
-    #: A job may **pack** several runs, run one after another -- so a packed job has exactly
-    #: one live run at a time, and this names it. Present
-    #: because without it a caller could not tell which of a job's runs it had been told about, and
-    #: the sections were free to disagree with each other about that.
+    #: Present because a cluster Job's name is not a run key: without it a caller could not tell
+    #: which run it had been told about, and the sections were free to disagree about that.
     #:
-    #: ``None`` for a job whose run cannot be named, which is an unpacked cluster Job: its single
-    #: run is what the readers find under ``/out``, and the Job's name is not a run key.
+    #: ``None`` for a job whose run cannot be named yet -- between starting and its first
+    #: record -- when the readers are pointed at ``/out``.
     run: Optional[str] = None
     #: Whatever the campaign's simulator reports about itself: findings, and the last poses
     #: and clock. Shape belongs to the simulator (see
     #: :meth:`~robovast.common.simulators.SimulatorBackend.health_command`), so RoboVAST
     #: passes it through rather than reshaping it into a vocabulary of its own.
     simulator: Optional[dict] = None
-    #: Where the scenario has got to: the action executing and the state of every node, as
-    #: scenario-execution reports it from the log its own behaviour tree wrote. Passed through
-    #: for the same reason ``simulator`` is -- the shape belongs to whoever owns the record.
+    #: Where the scenario has got to: the action executing and the state of every node, in the
+    #: shape scenario-execution's own ``tree_state`` reader gives for the log its behaviour tree
+    #: writes -- folded by the service from the run's ``behaviors`` and ``behaviors_meta``
+    #: tables, so the tree shown here is the one a query of the run sees.
     #:
     #: The expensive half of this call, and deliberately so: the log holds one line per status
-    #: change, so the current tree is a fold over the whole file rather than a tail read. That is
+    #: change, so the current tree is a fold over every row rather than a tail read. That is
     #: why it is here, asked for when someone wants it, and not in whatever the service polls.
     scenario: Optional[dict] = None
     #: ``{container: {"at": <wall ts>, "processes": [{name, cpu_percent, memory_rss_bytes}]}}`` --
@@ -622,12 +628,6 @@ class JobKind(StrEnum):
 
     RUN = "run"                  # one of the campaign's own trials
     CALIBRATION = "calibration"  # a node-sizing probe
-    #: The campaign's own postprocessing work, running as a job of its own: the rosbag
-    #: conversion, which runs in the execution image its runs were recorded with. Listed for the same reason
-    #: a probe is -- it is real work holding real capacity, and it is the only thing a
-    #: campaign in its ``postprocessing`` phase is doing -- and, like a probe, it carries no
-    #: run.
-    POSTPROCESSING = "postprocessing"
 
 
 class JobUsage(BaseModel):
@@ -660,7 +660,7 @@ class JobSummary(BaseModel):
     """One execution unit of a campaign's current batch.
 
     A "job" is whatever the backend fans a batch out into: a **Kubernetes Job** on the
-    cluster backend, which may pack several runs. ``job_name`` is the id
+    cluster backend, running one run. ``job_name`` is the id
     :meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional
     human-friendly label (batch/job-index on the cluster).
     """
@@ -672,7 +672,7 @@ class JobSummary(BaseModel):
     #: batch *is* a run, so the default is a true statement and
     #: no construction site has to restate it. It is also what a client sees from a service
     #: older than this field -- which is why a reader must test for the kinds it cares about
-    #: (``== "calibration"``, ``== "postprocessing"``) and never for ``!= "run"``.
+    #: (``== "calibration"``) and never for ``!= "run"``.
     kind: str = JobKind.RUN
     # running | pending | waiting | completed | failed | killed | blocked
     status: str = "pending"
@@ -742,17 +742,7 @@ class JobCounts(BaseModel):
     # run meter, the ``done/total`` label and the ETA's divisor. Counted in, one failed probe
     # reports a campaign run that never existed as finished.
     calibration: int = 0
-    # The campaign's postprocessing job in the same listing, on the same terms as
-    # ``calibration`` and for the same reason: a conversion is not a trial, so counting it
-    # among the runs would put a job that never carried a scenario into the run meter, the
-    # ``done/total`` label and the ETA's divisor.
-    #
-    # Not a progress figure. It is 1 while a conversion is in flight and 0 otherwise, so what
-    # it says is "there is postprocessing to look at in the jobs list", not how far along it
-    # is -- the conversion reports its own progress in the campaign log.
-    postprocessing: int = 0
-    #: The campaign's own runs. See :attr:`calibration` and :attr:`postprocessing` for what
-    #: is deliberately not in it.
+    #: The campaign's own runs. See :attr:`calibration` for what is deliberately not in it.
     total: int = 0
 
 
@@ -789,6 +779,9 @@ class BatchObjective(BaseModel):
     max: Optional[float] = None
     mean: Optional[float] = None
     best_so_far: Optional[float] = None
+    #: False while the batch is running, or when it was interrupted and not yet resumed: its
+    #: counts are what it has recorded so far.
+    complete: bool = False
 
 
 class SearchHistory(BaseModel):
@@ -891,9 +884,86 @@ class UpdatePostprocessingSourceRequest(BaseModel):
     content: str
 
 
+class BuildCampaignTablesRequest(BaseModel):
+    """Build a finished campaign's tables now rather than when each is first named.
+
+    Not needed for any answer: a table is built the first time a query, a panel or an
+    export names it. This only moves that cost to now, for a campaign about to be analyzed
+    at length. ``tables`` names the ones to build; empty builds every table its records can
+    give.
+    """
+    campaign_id: str
+    tables: list[str] = Field(default_factory=list)
+
+
+class CampaignTablesCleared(BaseModel):
+    """What clearing one campaign's built tables removed. Each is built again on use."""
+    campaign_id: str
+    freed_bytes: int = 0
+
+
+class ExportRequest(BaseModel):
+    """What an export of a campaign carries: its tables as files, its bags, its records.
+
+    An export is what a laptop analysis or a hand-off wants: the campaign's logical tables
+    written one file per table, in a format pandas or DuckDB opens directly, with the
+    records that produced them and, if asked, the recordings. The archive
+    (``GET /data/campaigns/{id}/archive``) is the campaign as the service holds it, its
+    tables in the decoder's own cache; an export is plain files, built for the request and
+    disposable.
+    """
+
+    #: The tables to write, by their query names (``describe_campaign_data`` lists them).
+    #: ``None`` writes every table the campaign's records can give; ``runs`` is always
+    #: written. A name the catalog does not have is refused before anything is built.
+    tables: Optional[list[str]] = None
+    #: How each table is written: one parquet file (zstd) or one CSV file per table.
+    format: Literal["parquet", "csv"] = "parquet"
+    #: Which recordings ship. ``mcap`` copies each run's ``rosbag2/`` and ``roqsim_bag/``
+    #: and each job's ``logs/rosout_bag/`` as recorded; ``sqlite3`` rewrites each rosbag2
+    #: bag in rosbag2's sqlite3 storage for a ROS 2 install without the mcap plugin (roqsim's
+    #: recording is not a rosbag2 and is copied as mcap); ``none`` ships no recording.
+    bags: Literal["none", "mcap", "sqlite3"] = "none"
+    #: Whether the campaign's records ship: ``campaign.db``, ``_config/``, ``_execution/``,
+    #: the metadata documents and every run's own files -- everything the archive carries
+    #: except the recordings and the table cache.
+    records: bool = True
+
+
+class ExportRef(BaseModel):
+    """A started export: its id, and where its file will be once it is done."""
+
+    export_id: str
+    #: The data-plane route the finished file is downloaded from; a 404 until it is done.
+    url: str
+
+
+class ExportStatus(BaseModel):
+    """Where one export has got to (poll like an image build's :class:`ImageBuildStatus`)."""
+
+    export_id: str
+    done: bool = False
+    #: Why it failed, when it did; ``""`` otherwise. A failed export is ``done``.
+    error: str = ""
+    #: The finished file's size; 0 until it is done.
+    bytes: int = 0
+    #: Rows written per table, filled as the tables are written.
+    tables: dict[str, int] = Field(default_factory=dict)
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+
+
 class RunPostprocessingRequest(BaseModel):
+    """(Re)run one campaign's postprocessing.
+
+    ``force`` clears the campaign's built tables first, so what it declares is built again
+    and its steps run with ``force``; ``replay`` clears them and builds every table the
+    records can give, for every run, before the campaign-end pass -- the rows a live watcher
+    wrote as the runs went, built again from the records.
+    """
     campaign_id: str
     force: bool = False
+    replay: bool = False
     skip: list[str] = Field(default_factory=list)
 
 
@@ -902,16 +972,113 @@ class RunShareRequest(BaseModel):
 
 
 class LogChunk(BaseModel):
-    """An incremental slice of a campaign's ``controller.log``.
+    """An incremental slice of a byte-addressed log: the service's own, an image build's.
 
-    The controller runs in the driving process, so its log is a local file there
-    (the service). Clients poll from a byte
-    *offset* and append — ``next_offset`` is where to resume; ``eof`` is True once
-    the campaign has reached a terminal phase and no more will be written.
+    Clients poll from a byte *offset* and append — ``next_offset`` is where to resume;
+    ``eof`` is True once nothing more will be written.
     """
     text: str = ""
     next_offset: int = 0
     eof: bool = False
+
+
+class CampaignLogRow(BaseModel):
+    """One record of a campaign's infrastructure log.
+
+    A stamped line of a phase file (``<date> <level> <logger>: <message>``, or the
+    ``[<level>] [<t>] [<node>]:`` form a run's containers relay into ``controller.log``)
+    with the unstamped lines under it joined into ``message``; an unstamped line with no
+    record above it is its own row at level ``NOTE`` -- build and pip output, mostly.
+    """
+    #: The phase whose file holds the row: ``IMPORT``, ``BUILD``, ``PLUGIN INSTALL``,
+    #: ``VARIATION``, ``RUN``, ``POSTPROCESSING``, ``SHARE`` or ``TABLES``.
+    phase: str = ""
+    #: The row's position in the whole campaign log: phase order, then file order.
+    seq: int = 0
+    #: Epoch seconds from the line's own stamp; ``None`` for a ``NOTE`` row.
+    wall_ts: Optional[float] = None
+    #: The level as written (``INFO``, ``WARNING``, ...), ``NOTE`` for an unstamped line.
+    level: str = "NOTE"
+    #: The Python logger or the relaying node that wrote it; empty for a ``NOTE`` row.
+    logger: str = ""
+    #: The line's text; continuation lines are joined with ``\n``.
+    message: str = ""
+
+
+class CampaignLogChunk(BaseModel):
+    """The rows of a campaign's infrastructure log that arrived after *cursor*.
+
+    Read from the phase files under the campaign's ``_execution/`` (the archived runs of a
+    repeatable phase under ``sections/`` included), which grow while the campaign runs,
+    so a running campaign and a finished one answer alike. The filters a
+    read was given are applied while reading, so ``rows`` is what they kept and the
+    cursor still advances over what they skipped.
+    """
+    rows: list[CampaignLogRow] = Field(default_factory=list)
+    #: Opaque: pass it back to continue after these rows.
+    cursor: str = ""
+    #: The campaign's log is complete; nothing more will arrive.
+    eof: bool = False
+    #: Every phase the campaign's log has, in log order, whatever the filters kept -- so a
+    #: read narrowed to one phase still says which others exist.
+    phases: list[str] = Field(default_factory=list)
+
+
+class JobLogRow(BaseModel):
+    """One record of a job's log: a stamped line and the unstamped lines that follow it."""
+    #: Epoch seconds from the line's own stamp; ``None`` for a line written without one.
+    wall_ts: Optional[float] = None
+    #: ``stamp`` when :attr:`wall_ts` is the line's own, ``none`` when it has none.
+    time_source: str = "none"
+    #: The container that wrote it: ``robovast`` for the scenario's ``system.log``, else the
+    #: sidecar's name from ``system_<name>.log``.
+    container: str = ""
+    node: str = ""
+    #: The level as written (``INFO``, ``WARN``, ...); empty when the line carries none.
+    level: str = ""
+    #: The one severity classification every log surface uses (``log_summary.severity_of``).
+    severity: str = ""
+    #: The line's text; continuation lines are joined with ``\n``.
+    message: str = ""
+
+
+class JobLogChunk(BaseModel):
+    """The rows of a job's log that arrived after *cursor*.
+
+    Read from the job's ``logs/system*.log`` files in the campaign directory, which grow
+    while the job runs, so a running job and a finished one answer alike.
+    Rows within a chunk are in stamp order; across chunks, in the order they arrived. The
+    finished, deduplicated record of a run's log is the ``run_log`` table.
+    """
+    rows: list[JobLogRow] = Field(default_factory=list)
+    #: Opaque: pass it back to continue after these rows.
+    cursor: str = ""
+    #: The job's logs are complete; nothing more will arrive.
+    eof: bool = False
+
+
+#: Longest a tap on a live job may run, in seconds. A tap holds an exec open in the run's
+#: simulation container and a request open on the service, so it is bounded by construction;
+#: a reader who wants longer opens another, which is recorded as another probe.
+TAP_MAX_S = 120
+
+
+class TapRow(BaseModel):
+    """One line a tap relayed from a live job's simulation container, as it was printed."""
+    #: Epoch seconds when the service received the line.
+    t_wall: float
+    line: str = ""
+
+
+class TapEnd(BaseModel):
+    """How a tap ended: the last item its stream yields.
+
+    ``exit_code`` is the tap command's, ``124`` with ``timed_out`` when its bound cut it, and
+    ``None`` when the reader closed the tap before the command ended -- there is no status to
+    report for a process that was cut off rather than waited for.
+    """
+    exit_code: Optional[int] = None
+    timed_out: bool = False
 
 
 class VersionInfo(BaseModel):
@@ -1112,7 +1279,7 @@ class ServiceSetting(BaseModel):
     #: Why THIS caller got no value though the setting is set: ``"secret"`` (a credential;
     #: never shown to anyone, in any form), ``"server_only"`` (registry details, which do
     #: not cross this interface -- see ``RegistryConfig``), ``"host_path"`` (shown to a
-    #: loopback caller only, as ``VersionInfo.results_root`` is), or ``"unclassified"``.
+    #: loopback caller only), or ``"unclassified"``.
     #: ``None`` when :attr:`value` stands, and when the setting is simply unset.
     withheld: Optional[str] = None
 
@@ -1436,16 +1603,9 @@ class McpCall(BaseModel):
 
 
 class McpToolStats(BaseModel):
-    """The ranking, plus what the record covers.
-
-    :attr:`status` distinguishes the two ways this can be empty, which a bare list cannot:
-    no tool has been called yet, or the index that holds the log is unreachable and the
-    answer is unknown. A reader that drew the second as the first would be inventing a fact.
-    """
+    """The ranking, plus what the record covers."""
 
     tools: list[McpToolStat] = Field(default_factory=list)
-    status: str = "ok"
-    detail: str = ""
     #: The retained window, so a reader is never told a month when a burst left a day.
     max_age_s: float = 0.0
     max_rows: int = 0
@@ -1461,8 +1621,6 @@ class McpCalls(BaseModel):
     """
 
     calls: list[McpCall] = Field(default_factory=list)
-    status: str = "ok"
-    detail: str = ""
     #: How many rows matched, ignoring the page bound.
     total: int = 0
     #: True when rows matched beyond this page -- ask again with a larger :attr:`offset`.
@@ -1627,39 +1785,17 @@ class StagedArchive(BaseModel):
     size: int = 0
 
 
-class ArchiveSelection(BaseModel):
-    """Which part of a campaign an archive carries.
-
-    The default is the whole campaign, minus staging. A postprocessing pod asks for what its
-    conversion reads: ``stage`` drops the calibration probes, the log this pod will write
-    and the archived log sections; ``skip_bags`` drops the rosbags when the conversion
-    does not read them; ``batch_jobs`` narrows ``_jobs/`` to one batch; ``part`` to the runs
-    a split postprocess gave one of its Jobs. The selection is
-    made where the bytes are, not where they land: what the pod is never given it cannot
-    convert, cannot fail on and does not pay to download.
-
-    ``uncompressed`` asks for a plain tar rather than a ``tar.gz``: right for a reader in
-    the cluster, where gzip costs a core per stream and saves almost nothing on run
-    output, and wrong for a download that crosses a slow link.
-    """
-
-    stage: bool = False
-    skip_bags: bool = False
-    batch_jobs: str = ""
-    uncompressed: bool = False
-    #: A part of a split postprocess: only its runs and their jobs, and everything that is
-    #: neither (see ``campaign_archive.part_include``).
-    part: str = ""
-
-
 class OutputsIngested(BaseModel):
     """What a streamed tar of outputs left in a campaign or a staged slot."""
 
     files: int = 0
     bytes: int = 0
     #: Members refused rather than written -- a path leaving the tree, a hard link, a
-    #: file only the driver writes. Named, so a pod whose output vanished can read why.
+    #: path only the service writes. Named, so a pod whose output vanished can read why.
     refused: list[str] = Field(default_factory=list)
+    #: Files whose delivered range did not start where the file ends here; the sender
+    #: sends each of them whole next time.
+    resync: list[str] = Field(default_factory=list)
 
 
 class ImportCampaignRequest(BaseModel):
@@ -1958,8 +2094,18 @@ class PreviewConfiguration(BaseModel):
 
 
 class PreviewResponse(BaseModel):
-    """Result of :meth:`RobovastInterface.preview_configurations`."""
+    """Result of :meth:`RobovastInterface.preview_configurations`.
 
+    ``state`` is ``ready`` for a preview that waited for the expansion (the default). A
+    preview asked for with ``wait=False`` answers ``composing`` while the expansion runs in
+    the background (``progress`` then counts its steps once the first is counted), ``ready``
+    once every other field holds, and ``failed`` when the expansion raised, with ``error``
+    saying why; the counts and ``configurations`` are empty in every state but ``ready``.
+    """
+
+    state: Literal["composing", "ready", "failed"] = "ready"
+    progress: Optional[StepProgress] = None
+    error: str = ""
     configs: int = 0
     runs_per_config: int = 0
     total_trials: int = 0
@@ -2055,13 +2201,23 @@ class VariationTypesResponse(BaseModel):
 class DataTable(BaseModel):
     """One queryable table, as :meth:`describe_campaign_data` reports it."""
 
-    #: The index schema the table is in. Spelled ``schema_`` because the bare name is a
-    #: pydantic attribute, and serialised as ``schema`` -- which is the key every client
-    #: path hands on, so a reader looking it up finds it.
+    #: The schema the table is in: ``main`` for views and tables, ``campaign`` for the
+    #: campaign's record. Spelled ``schema_`` because the bare name is a pydantic attribute,
+    #: and serialised as ``schema`` -- which is the key every client path hands on, so a
+    #: reader looking it up finds it.
     schema_: str = Field("", alias="schema")
     table: str = ""
+    #: ``name TYPE`` per column; empty until the table is built for some run.
     columns: list[str] = Field(default_factory=list)
     rows: Optional[int] = None
+    #: ``view``, ``table`` (built per run on first use) or ``record`` (the campaign schema).
+    kind: str = ""
+    #: For a built-per-run table: how many runs it covers, and for how many it is built.
+    runs: Optional[int] = None
+    built: Optional[int] = None
+    #: Runs the table has no rows for, or only the rows from before a topic stopped decoding
+    #: (counted in ``built``), keyed by run, with the reason (at most a sample of them).
+    failed: dict[str, str] = Field(default_factory=dict)
     description: str = ""
     column_notes: dict = Field(default_factory=dict)
 
@@ -2069,7 +2225,7 @@ class DataTable(BaseModel):
 
 
 class DataDescribe(BaseModel):
-    """Schema of a campaign's tables in the index (+ the ``campaign`` schema).
+    """Schema of a campaign's tables, views and ``campaign`` record.
 
     Each ``tables`` entry is a :class:`DataTable`, whose schema is the key ``schema`` in
     every dump it appears in.
@@ -2109,6 +2265,19 @@ class TrackDeviation(BaseModel):
     efficiency: Optional[float] = None
 
 
+class ArrowQueryRequest(BaseModel):
+    """A read-only ``SELECT`` answered as an Arrow IPC stream (``POST /campaigns/{id}/query.arrow``).
+
+    The typed twin of ``query.csv``: a ``LIST`` column arrives as a list and every column in
+    its type, with no row cap. What ``robovast-data`` reads a service's tables through.
+    """
+
+    sql: str
+    #: The caller's own relations the query may name beside the campaign's tables: each an
+    #: Arrow IPC stream, base64-encoded, registered under its name for this query alone.
+    tables: Optional[dict[str, str]] = None
+
+
 class DataQueryResult(BaseModel):
     """Rows from a read-only ``query_campaign_data_sql``."""
 
@@ -2117,9 +2286,9 @@ class DataQueryResult(BaseModel):
     rows: list[dict] = Field(default_factory=list)
     row_count: int = 0
     truncated: bool = False
-    # Present when 0 rows matched: distinguishes "genuinely empty" from a likely
-    # filter/JOIN-key mismatch (see ``data_query._empty_result_note``). Carried on
-    # the model so the hint survives the HTTP path, not just the in-process one.
+    # Present when the reply was cut at its size ceiling, or leaves out runs a table could
+    # not be built for (see ``data_query.query_data_db``). Carried on the model so the
+    # hint survives the HTTP path, not just the in-process one.
     note: Optional[str] = None
 
 
@@ -2176,7 +2345,7 @@ class SceneStatus(BaseModel):
     url: str = ""
     #: The world identity this run needs, for display and for diagnosis when geometry looks wrong.
     world: str = ""
-    #: False when the run's capture predates override recording: geometry is compiled from the *bare*
+    #: False when the run's recording carries no overrides: geometry is compiled from the *bare*
     #: world, which is wrong for a run that varied it. Surfaced rather than silently assumed.
     overrides_known: bool = True
     #: Set when geometry cannot be produced at all, naming the reason.
@@ -2217,7 +2386,7 @@ class CampaignPanelsResponse(BaseModel):
     """The run-view panels for a campaign: the ones its snapshot ``.vast``
     declares under ``visualization.results.run_view.panels``, plus the
     contributed ones no ``.vast`` has to write (the ``playback`` transport
-    always, a ``scene3d`` for a simulator that records a capture). Each entry
+    always, a ``scene3d`` for a simulator that records its scene state). Each entry
     is the flattened panel dict (``type`` + ``position`` + panel-specific data
     bindings), rendered by the web run-view against the campaign's results tables.
     ``timeline`` (optional, ``visualization.results.run_view.timeline``) names
@@ -2230,8 +2399,8 @@ class CampaignPanelsResponse(BaseModel):
     #: Whether the served list holds nothing but the always-on transport -- i.e. this run view has
     #: nothing to look at, and the web UI says so and points at **Edit visualization**. The served
     #: list is never empty, so "bare" cannot be its length; and which panels a campaign gets
-    #: without asking is settled here, where they are merged in (a simulator that records a capture
-    #: contributes its own ``scene3d``, which *is* content), rather than in the web UI, which would
+    #: without asking is settled here, where they are merged in (a simulator that records its scene
+    #: state contributes its own ``scene3d``, which *is* content), rather than in the web UI, which would
     #: then have to spell the contributed types a second time.
     transport_only: bool = False
 
@@ -2290,14 +2459,39 @@ class ServiceError(OSError):
 
     include_traceback = False
 
-    def __init__(self, status: int, detail: str, url: str = "", code: str = ""):
+    def __init__(self, status: int, detail: str, url: str = "", code: str = "",
+                 next_step: str = ""):
         self.status = status
         self.detail = detail
         self.url = url
         #: The refusal's class, from :data:`ERROR_CODE_HEADER`; ``""`` when the service
         #: named none. What a caller branches on, the detail being what it prints.
         self.code = code
+        #: The command that moves the caller forward, from :data:`NEXT_STEP_HEADER`;
+        #: ``""`` when there is none.
+        self.next_step = next_step
         super().__init__(detail)
+
+
+class ServiceUnreachable(OSError):
+    """No robovast-service answered at the URL a client was given.
+
+    Not a refusal: nothing answered, so there is no status and no ``detail``. What a
+    caller needs is the address it tried and the socket-level reason, in one sentence --
+    ``requests`` wraps that reason in two layers of pool and retry bookkeeping, and the
+    resulting paragraph, printed with the frames it was raised through, read as a crash
+    in the client rather than as a service that is down.
+
+    ``include_traceback = False``, as for :class:`ServiceError`: the frames are the HTTP
+    transport's and name nothing the reader can act on.
+    """
+
+    include_traceback = False
+
+    def __init__(self, url: str, reason: str):
+        self.url = url
+        self.reason = reason
+        super().__init__(f"no robovast-service answered at {url}: {reason}")
 
 
 #: Header naming the CLASS of a refusal, for the few whose class a caller must act on
@@ -2310,6 +2504,10 @@ class ServiceError(OSError):
 #: every refusal the service composes, and one shape for all of them is worth more than a
 #: second shape for the handful that carry a code.
 ERROR_CODE_HEADER = "x-robovast-error"
+
+#: Header carrying an :class:`~robovast.common.errors.ActionableError`'s ``next_step``: the
+#: literal command that moves the caller forward. Absent when the refusal has none.
+NEXT_STEP_HEADER = "x-robovast-next-step"
 
 #: No command can be run in a container on this deployment --
 #: :class:`~robovast.common.errors.ExecPathUnavailable` crossing HTTP. Every code is a fact
@@ -2357,6 +2555,32 @@ class UnsupportedOperation(ServiceError):
                          code=UNSUPPORTED_OPERATION)
 
 
+#: A text read of a binary file -- :class:`BinaryFile` crossing HTTP.
+BINARY_FILE = "binary_file"
+
+
+class BinaryFile(ServiceError, ValueError):
+    """A text read refused because the file is binary.
+
+    ``url`` is the route that serves the file's bytes, relative to the service's origin. A
+    ``ValueError`` like any refused input, so the app answers ``400``, with
+    :data:`BINARY_FILE` in :data:`ERROR_CODE_HEADER`; the HTTP transport raises this class
+    again from that code, so a caller catches one type wherever the service runs.
+    """
+
+    STATUS = 400
+
+    def __init__(self, address: str, detail: str = ""):
+        name = address.rstrip("/").rsplit("/", 1)[-1]
+        super().__init__(
+            self.STATUS,
+            detail or (f"{name} is a binary file — read it as bytes (GET the address "
+                       "without 'as=text', or 'vast files get'), or download the "
+                       "campaign archive."),
+            url=Routes.file(address), code=BINARY_FILE)
+        self.address = address
+
+
 API_VERSION = "0"
 
 #: The port a robovast-service listens on unless told otherwise, and the one every
@@ -2371,6 +2595,13 @@ DEFAULT_PORT = 8800
 #: server enforces it and the client sizes its read timeout by it, so a client install --
 #: which has no server -- still has to know the number.
 COMMAND_LIMIT_S = 300
+
+
+def campaign_archive_query(raw: bool) -> dict:
+    """The query of :meth:`Routes.campaign_archive`: the campaign with its built tables, or
+    with ``raw=true`` its records alone. One spelling for the transport, the CLI helpers and
+    the MCP's link."""
+    return {"raw": "true"} if raw else {}
 
 
 class Routes:
@@ -2565,6 +2796,12 @@ class Routes:
         return f"{Routes.DATA}/campaigns/{campaign_id}/archive"
 
     @staticmethod
+    def campaign_export_download(campaign_id: str, export_id: str) -> str:
+        # A finished export's file. On the data plane like the archive: it is a campaign's
+        # bytes leaving the service, and a ``campaign:<id>`` token may fetch it.
+        return f"{Routes.DATA}/campaigns/{campaign_id}/exports/{export_id}"
+
+    @staticmethod
     def campaign_inputs(campaign_id: str) -> str:
         # What a job pod is given: the campaign's `_config/` and `_transient/`, flattened,
         # with only the named jobs' own documents from the latter.
@@ -2577,6 +2814,43 @@ class Routes:
         return f"{Routes.DATA}/campaigns/{campaign_id}/outputs"
 
     @staticmethod
+    def campaign_live(campaign_id: str) -> str:
+        """A run's tables as it records, as server-sent events.
+
+        ``?run=<config>/<run_id>&tables=a,b``. On the data plane because it is answered
+        by the process the pods' deliveries land in, which is where the decoder can follow
+        a recording as it is appended to; a finished run's rows are the SQL's.
+        """
+        return f"{Routes.DATA}/campaigns/{campaign_id}/live"
+
+    @staticmethod
+    def campaign_frame(campaign_id: str) -> str:
+        """One camera frame of a run as JPEG: ``?run=<config>/<run_id>&topic=<topic>[&t=<s>]``.
+
+        The nearest frame at or before ``t`` (the newest without it), its stamp in the
+        ``X-Frame-Time`` header. On the data plane beside ``live``: a running run's frame
+        comes from the watcher following its recording there.
+        """
+        return f"{Routes.DATA}/campaigns/{campaign_id}/frame"
+
+    @staticmethod
+    def campaign_frame_index(campaign_id: str) -> str:
+        """The stamps of every frame of a run's image topic: ``?run=<config>/<run_id>&topic=``."""
+        return f"{Routes.DATA}/campaigns/{campaign_id}/frame-index"
+
+    @staticmethod
+    def campaign_points(campaign_id: str) -> str:
+        """One point cloud of a run as an Arrow IPC stream, one column per field:
+        ``?run=<config>/<run_id>&topic=<topic>[&t=<s>][&after=1]``.
+
+        The cloud at or before ``t`` (the last without it), or with ``after`` the first one
+        strictly after ``t`` (the first of the run without it), which is how a reader steps
+        through a topic. Its stamp is the ``X-Frame-Time`` header. Beside ``frame`` on the
+        data plane: the bytes come from the recording.
+        """
+        return f"{Routes.DATA}/campaigns/{campaign_id}/points"
+
+    @staticmethod
     def staged(slot: str) -> str:
         # A scratch tree the control plane stages for one pod, by its slot name.
         return f"{Routes.DATA}/staged/{slot}"
@@ -2587,9 +2861,10 @@ class Routes:
 
     @staticmethod
     def campaign_logs_stream(campaign_id: str) -> str:
-        # SSE transport over the same assembly seam as ``campaign_logs``: the browser
-        # streams live, resuming from the byte offset it carries in ``Last-Event-ID``.
-        # The pull endpoint above stays the authoritative read for MCP / the CLI.
+        # SSE transport over ``campaign_logs``: the same ``cursor``, ``phase``,
+        # ``min_level`` and ``grep`` query parameters, rows pushed as the phase files
+        # change, resumed from the cursor a client carries in ``Last-Event-ID``. The pull
+        # endpoint above stays the authoritative read for MCP.
         return f"/campaigns/{campaign_id}/logs/stream"
 
     @staticmethod
@@ -2620,8 +2895,15 @@ class Routes:
 
     @staticmethod
     def job_log_stream(campaign_id: str) -> str:
-        # SSE transport over ``job_log`` (same ``job_name`` query param + offset seam).
+        # SSE transport over ``job_log``: the same ``job_name`` query param, resumed by cursor.
         return f"/campaigns/{campaign_id}/job-log/stream"
+
+    @staticmethod
+    def job_tap(campaign_id: str) -> str:
+        # SSE only, never a pull: a tap is a bounded live relay, not a record to page through.
+        # ``?job_name=&selection=a,b&max_seconds=``, the job as a query param for the same
+        # reason as ``job_log``. Not resumable: what a tap printed before a reconnect is gone.
+        return f"/campaigns/{campaign_id}/job-tap"
 
     #: Object-store bucket cleanup (server-side; not campaign-scoped in the path
     #: because it also serves the "all campaigns" case).
@@ -2695,6 +2977,25 @@ class Routes:
         return f"/campaigns/{campaign_id}/postprocessing"
 
     @staticmethod
+    def campaign_tables(campaign_id: str) -> str:
+        # DELETE clears the campaign's built tables; its sibling below builds them.
+        return f"/campaigns/{campaign_id}/tables"
+
+    @staticmethod
+    def campaign_tables_build(campaign_id: str) -> str:
+        return f"/campaigns/{campaign_id}/tables/build"
+
+    @staticmethod
+    def campaign_exports(campaign_id: str) -> str:
+        # POST starts an export; the file itself is fetched on the data plane
+        # (``campaign_export_download``), where every route that moves a campaign's bytes is.
+        return f"/campaigns/{campaign_id}/exports"
+
+    @staticmethod
+    def campaign_export(campaign_id: str, export_id: str) -> str:
+        return f"/campaigns/{campaign_id}/exports/{export_id}"
+
+    @staticmethod
     def campaign_postprocessing_run(campaign_id: str) -> str:
         return f"/campaigns/{campaign_id}/postprocessing/run"
 
@@ -2719,6 +3020,12 @@ class Routes:
         # The uncapped, streamed twin of ``campaign_query``. A GET (not the POST the JSON
         # query uses) so the whole thing is one URL a browser or curl can follow.
         return f"/campaigns/{campaign_id}/query.csv"
+
+    @staticmethod
+    def campaign_query_arrow(campaign_id: str) -> str:
+        # The typed twin of ``campaign_query_csv``: an Arrow IPC stream, so a LIST column
+        # arrives as a list. A POST, so the caller's own tables travel with the query.
+        return f"/campaigns/{campaign_id}/query.arrow"
 
     @staticmethod
     def campaign_plots(campaign_id: str) -> str:
@@ -2803,13 +3110,13 @@ class RobovastInterface(ABC):
         """Roll this service onto the newest image at its resolved tag.
 
         Returns once the roll has been *asked for* -- **not** once the new pod is serving.
-        With one replica and the default RollingUpdate strategy Kubernetes starts the new
-        pod before stopping the old, so the pod answering this call is still up when it
-        answers; a caller learns the handover happened by watching
-        ``upgrade_info().running_digest`` change, never from this return value.
+        The Deployment's strategy is ``Recreate``: the pod answering this call stops before
+        its replacement starts, so the API is away for a few seconds; a caller learns the
+        handover happened by watching ``upgrade_info().running_digest`` change, never from
+        this return value.
 
-        Refuses while campaigns are live, because the controller driving them runs in the
-        pod being replaced. ``force`` overrides that refusal and nothing else -- in
+        Refuses while a live campaign could not be picked up again by the replacement,
+        because the controller driving it runs in the pod being replaced. ``force`` overrides that refusal and nothing else -- in
         particular it does not make an unsupported deployment supported, nor roll a deployment
         pinned to a fixed version, which ``upgrade_info`` reports as unsupported.
         """
@@ -2873,8 +3180,8 @@ class RobovastInterface(ABC):
         Line-based paging happens **server-side**, so a caller reading 100 lines of a
         log on the cluster transfers 100 lines, not the file.
 
-        Raises ``ValueError`` on a malformed address or a binary file (→ 400) and
-        ``KeyError`` when the file does not exist (→ 404).
+        Raises :class:`BinaryFile` on a binary file and ``ValueError`` on a malformed
+        address (both → 400), and ``KeyError`` when the file does not exist (→ 404).
         """
 
     @abstractmethod
@@ -2950,12 +3257,15 @@ class RobovastInterface(ABC):
         written to; this produces a separate campaign with its own timestamped id, so it
         works whatever state the source ended in.
 
-        Reproduces the configuration and **pins the image the source recorded** — a
-        campaign's build context is not archived in its results, so the image cannot be
-        rebuilt from them and a campaign that never recorded one is refused rather than
-        rebuilt from a guess. The recorded ``_execution/launch.yaml`` replays the
-        ``config_filter`` and requested ``runs``, so re-running a one-config pilot stays a
-        one-config pilot.
+        Reproduces the configuration and **runs exactly the image digests the source's launch
+        record holds** — every container, the sidecar and every auxiliary helper image — and
+        resolves none of them again, whatever the image project, its tags or the composition
+        cache say now. A source whose record lacks a digest for anything it runs is refused,
+        naming each one, whatever ``force`` says: there is nothing to replay, and
+        :meth:`materialize_retrigger_workspace` / ``create_workspace(from_campaign=...)``
+        rebuild its project for a fresh launch instead. The recorded
+        ``_execution/launch.yaml`` also replays the ``config_filter`` and requested ``runs``,
+        so re-running a one-config pilot stays a one-config pilot.
 
         Everything downstream of the configuration is **re-expanded**: ``execution.generate``
         generators re-run (their cache is not archived), so a stochastic generator draws new
@@ -3017,12 +3327,24 @@ class RobovastInterface(ABC):
         """
 
     @abstractmethod
-    def get_campaign_logs(self, campaign_id: str, offset: int = 0) -> LogChunk:
-        """Return the campaign's ``controller.log`` from byte *offset* onward.
+    def get_campaign_logs(self, campaign_id: str, cursor: str = "", *,
+                          phase: Optional[str] = None, min_level: Optional[str] = None,
+                          grep: Optional[str] = None) -> CampaignLogChunk:
+        """Return the campaign's infrastructure log rows after *cursor*, running or finished.
 
-        For streaming: poll from ``0``, append :attr:`LogChunk.text`, then poll
-        again from the returned :attr:`LogChunk.next_offset`. Serves the live file
-        while the campaign runs and the durable copy afterwards.
+        Read from the phase files under the campaign's ``_execution/`` (one per phase, the
+        archived runs of a repeatable phase under ``sections/``), which grow while the
+        campaign runs. Resume with :attr:`CampaignLogChunk.cursor`; stop at
+        :attr:`CampaignLogChunk.eof`.
+
+        The filters are applied while reading and a read still advances the cursor over
+        the rows they skipped: *phase* keeps one phase (its name, case-insensitively;
+        ``"all"`` and ``None`` keep every phase), *min_level* keeps rows at least that
+        severe (``DEBUG``, ``INFO``, ``WARNING``, ``ERROR``, ``CRITICAL`` -- ``WARN``,
+        ``warn`` and ``error`` are accepted spellings; a ``NOTE`` row ranks by the shared
+        keyword classifier), *grep* keeps rows whose message or logger matches that
+        case-insensitive regex. A filter value the service does not know raises
+        ``ValueError``; so does a cursor it did not issue.
         """
 
     @abstractmethod
@@ -3039,18 +3361,16 @@ class RobovastInterface(ABC):
         """
 
     @abstractmethod
-    def get_job_log(self, campaign_id: str, job_name: str,
-                    offset: int = 0) -> LogChunk:
-        """Return a **running** job's live log from byte *offset* onward.
+    def get_job_log(self, campaign_id: str, job_name: str, cursor: str = "") -> JobLogChunk:
+        """Return a job's log rows after *cursor*, running or finished.
 
-        Same streaming protocol as :meth:`get_campaign_logs` (poll, append
-        :attr:`LogChunk.text`, resume from :attr:`LogChunk.next_offset`). Live source
-        only — the running pod on the cluster. Raises if the job's log source is gone.
+        Read from the job's ``logs/system*.log`` files in the campaign directory, which grow
+        while it runs. Resume with :attr:`JobLogChunk.cursor`; stop at
+        :attr:`JobLogChunk.eof`. Raises ``KeyError`` for a job the campaign does not have.
 
-        **Every** container the job runs, merged into one stream: a job is not one
-        container (the ROS shape gives the simulator and the system under test their
-        own), and their output only explains a failure when read together. Each line is
-        tagged ``[<container>]`` when there is more than one.
+        **Every** container the job runs, in one stream: a job is not one container (the
+        ROS shape gives the simulator and the system under test their own), and their
+        output only explains a failure when read together. Each row names its container.
         """
 
     def get_job_state(self, campaign_id: str, job_name: str) -> "JobState":
@@ -3094,7 +3414,7 @@ class RobovastInterface(ABC):
         :func:`~robovast.common.campaign_data.record_intervention` records it *before* the command
         runs -- the same ordering :meth:`stop_job` uses, and for the same reason: a crash in
         between must not leave perturbed data with no explanation. Every run the job covers is
-        marked, which surfaces as ``runs.probed`` in the results index.
+        marked, which surfaces as ``runs.probed`` in the campaign's tables.
 
         That is the whole line between this and :meth:`get_job_state`: there the service chooses a
         fixed read, so nothing arbitrary can ride in and nothing needs recording. Here the *caller*
@@ -3116,6 +3436,32 @@ class RobovastInterface(ABC):
         """
         del campaign_id, job_name, command, container, source
         raise UnsupportedOperation("exec_in_job", self.IMPLEMENTATION)
+
+    def tap_job(self, campaign_id: str, job_name: str, selection: Optional[list] = None, *,
+                max_seconds: int = TAP_MAX_S, source: str = "api"):
+        """Follow what a **running** job's simulator is publishing *now*, for a bounded time.
+
+        The stream form of :meth:`get_job_state`: that is a fixed read, this starts the
+        backend's own following command in the job's simulation container
+        (:meth:`~robovast.common.simulators.SimulatorBackend.tap_command`) and relays its
+        stdout line by line. Yields :class:`TapRow` per line and one :class:`TapEnd` last.
+
+        *selection* is what the backend's command takes -- topic names in the ROS shape,
+        where an empty selection lists the topics once so a caller learns what to select.
+        *max_seconds* is capped at :data:`TAP_MAX_S`; closing the iterator ends the tap.
+
+        **A tap is a probe and is recorded** as one, before it starts, exactly as
+        :meth:`exec_in_job` is: a process the service started is running in the simulator's
+        container for as long as the tap lasts, and a run that carried one is marked
+        ``probed``. Refused when the job is not running (``KeyError`` / ``RuntimeError``),
+        when the backend has no tap (``ValueError`` naming it), and while another tap is open
+        on the same job (``RuntimeError``, one relay per job at a time).
+
+        Not abstract, for the reason :meth:`get_job_state` is not: a transport that cannot do
+        this inherits a refusal rather than being made to write one.
+        """
+        del campaign_id, job_name, selection, max_seconds, source
+        raise UnsupportedOperation("tap_job", self.IMPLEMENTATION)
 
     @abstractmethod
     def stop(self, campaign_id: str) -> ActionResult:
@@ -3219,8 +3565,7 @@ class RobovastInterface(ABC):
     @abstractmethod
     def delete_campaign(self, campaign_id: str) -> ActionResult:
         """Permanently delete **one** campaign wholesale: its directory under the results
-        root, a share copy an import staged and kept, its rows in the central index, plus
-        any
+        root, a share copy an import staged and kept, plus any
         leftover Jobs and its token Secret.
 
         Refuses a campaign that is still running (raises so it surfaces as a 409);
@@ -3249,15 +3594,15 @@ class RobovastInterface(ABC):
     # control plane; the HTTP client reaches them under ``Routes.DATA``.
 
     @abstractmethod
-    def campaign_tar_stream(self, campaign_id: str,
-                            selection: "ArchiveSelection | None" = None):
+    def campaign_tar_stream(self, campaign_id: str, raw: bool = False):
         """Yield the campaign as a ``tar.gz``, in chunks, for ``GET .../archive``.
 
-        What comes out is the campaign as this service holds it -- postprocessed, if it
-        has been -- minus the internal ``_postproc/`` staging, so what lands is the clean
-        campaign layout. *selection* narrows it (:class:`ArchiveSelection`); ``None`` is
-        the whole campaign. Streamed, never buffered: the tree is tarred into the
-        response as it is read.
+        What comes out is the campaign as this service holds it: its records, what
+        postprocessing derived from them, and its built tables (``.cache/MANIFEST.json`` and
+        ``.cache/tables``), so it opens in a notebook without building anything. *raw* is
+        the records alone: no table cache and nothing postprocessing recorded producing, so
+        an import postprocesses it afresh. Streamed, never buffered: the tree is tarred
+        into the response as it is read.
         """
 
     @abstractmethod
@@ -3310,10 +3655,10 @@ class RobovastInterface(ABC):
 
         The last writer wins, member by member: the containers of one pod share an
         output tree and each contributes its own files to it. Refused with a
-        ``KeyError`` for a campaign that is not here and a ``ValueError`` for one that has
-        ended -- outputs arriving after the verdict would change a record nothing reads
-        again. What a pod never writes -- the campaign's own store, the driver's logs --
-        is refused per member and reported, never written.
+        ``KeyError`` for a campaign that is not here; one that has ended still takes it, since
+        a stop tears pods down while they flush. What a pod never writes -- the campaign's
+        own store, its ``_config/``, ``_transient/`` and ``_execution/`` -- is refused per
+        member and reported, never written.
         """
 
     @abstractmethod
@@ -3328,20 +3673,30 @@ class RobovastInterface(ABC):
     def ingest_staged(self, slot: str, stream) -> OutputsIngested:
         """Extract a tar *stream* into the staged slot *slot*, creating it."""
 
-    def campaign_archive_name(self, campaign_id: str) -> str:
+    @abstractmethod
+    def export_tar_stream(self, campaign_id: str, export_id: str):
+        """Yield a finished export's ``tar.gz`` in chunks, for ``GET .../exports/{id}``.
+
+        Read from the file the export wrote, so the data plane answers it from the tree
+        alone. ``KeyError`` for an export that is not here or not finished yet, and
+        ``RuntimeError`` naming the reason for one that failed.
+        """
+
+    def campaign_archive_name(self, campaign_id: str, raw: bool = False) -> str:
         """The file name :meth:`campaign_tar_stream`'s bytes should be offered under.
 
-        ``<campaign-id>.tar.gz`` for a campaign that is over, and that is what this default
-        answers. An implementation that can tell a **running** campaign apart overrides it
-        to say so in the name (``<campaign-id>.incomplete.tar.gz``): a mid-run snapshot has
-        the shape of a finished campaign, so once the file is sitting in a downloads
-        directory its name is the only thing that still distinguishes it.
+        ``<campaign-id>.tar.gz`` for a campaign that is over (``<campaign-id>.raw.tar.gz``
+        for its *raw* records), and that is what this default answers. An implementation
+        that can tell a **running** campaign apart overrides it to say so in the name
+        (``<campaign-id>.incomplete.tar.gz``): a mid-run snapshot has the shape of a
+        finished campaign, so once the file is sitting in a downloads directory its name is
+        the only thing that still distinguishes it.
 
         Concrete rather than abstract because an implementation with no notion of liveness
         -- a client transport, a fake -- has a correct answer available, and forcing it to
         write one out would be inviting a wrong one.
         """
-        return f"{campaign_id}.tar.gz"
+        return f"{campaign_id}.raw.tar.gz" if raw else f"{campaign_id}.tar.gz"
 
     @abstractmethod
     def list_share_archives(self) -> ShareListing:
@@ -3528,6 +3883,45 @@ class RobovastInterface(ABC):
         """(Re)run analysis postprocessing for one campaign with the effective config."""
 
     @abstractmethod
+    def build_campaign_tables(self, request: BuildCampaignTablesRequest) -> ActionResult:
+        """Build a finished campaign's tables now, in the background; returns at once.
+
+        Progress goes to the campaign log's TABLES section, and ``describe_campaign_data``
+        reports each table as built for M of M runs when it is done. Never needed for an
+        answer: every table is built the first time something names it.
+        """
+
+    @abstractmethod
+    def clear_campaign_tables(self, campaign_id: str) -> CampaignTablesCleared:
+        """Remove one campaign's built tables to free storage; each is built again on use.
+
+        Refused while the campaign runs or its tables are being built."""
+
+    @abstractmethod
+    def create_export(self, campaign_id: str, request: ExportRequest) -> ExportRef:
+        """Start building an export of *campaign_id* as *request* describes; returns at once.
+
+        The export is a ``tar.gz`` built on the service under the campaign's ``.cache/``,
+        from its records and its tables -- built first for every run, for the tables the
+        request names -- and fetched from the data plane once :meth:`get_export_status`
+        says it is done. Several exports of one campaign may build at once; while one does,
+        the campaign's tables are in use and a clear keeps them.
+
+        Raises ``KeyError`` for a campaign that is not here, ``ValueError`` for a table the
+        campaign's catalog does not have -- checked before anything is built -- and
+        ``RuntimeError`` while the campaign still runs.
+        """
+
+    @abstractmethod
+    def get_export_status(self, campaign_id: str, export_id: str) -> ExportStatus:
+        """Where an export has got to. ``KeyError`` for an id this campaign never had.
+
+        Answered from the export's own record on disk once it is finished, so a status read
+        after a service restart still answers; one that was building when the service
+        stopped reads as failed.
+        """
+
+    @abstractmethod
     def run_share(self, request: RunShareRequest) -> ActionResult:
         """(Re)trigger the upload-to-share of one finished campaign's raw archive.
 
@@ -3567,13 +3961,21 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def preview_configurations(
-        self, workspace_id: str, max_configs: int = 0, path: str = ""
+        self, workspace_id: str, max_configs: int = 0, path: str = "", wait: bool = True
     ) -> PreviewResponse:
         """Expand a workspace ``.vast`` into resolved configurations (no run).
 
         Wraps ``config_generation.generate_scenario_variations(output_dir=None)``;
         nothing is executed or written. ``path`` selects which ``.vast`` (empty =
         the sole one); ``max_configs`` caps the returned list.
+
+        With ``wait=False`` the call never waits on the expansion: the first call starts
+        it in the background and answers at once in state ``composing``; the caller polls
+        the same call until it is ``ready`` or ``failed``. A landed answer is served until
+        the ``.vast`` changes, and the next call after that composes again. That is how the
+        launcher learns the names its filter selects from without blocking on a helper
+        container. A search ``.vast`` draws its configurations while it runs, so it is
+        refused in that mode (``ValueError``); waiting for it previews a sample as before.
         """
 
     @abstractmethod
@@ -3613,7 +4015,7 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def describe_campaign_data(self, campaign_id: str) -> DataDescribe:
-        """Describe a campaign's tables in the index (+ the ``campaign`` schema).
+        """Describe a campaign's tables, views and ``campaign`` record.
 
         The dir is resolved per transport (local disk / object-store fetch); the
         query logic is shared with the MCP ``run_data`` plugin
@@ -3628,13 +4030,12 @@ class RobovastInterface(ABC):
         """Run a read-only ``SELECT`` over a campaign's data.
 
         The campaign record is reachable in the same query as schema ``campaign``. The
-        session is **confined to** *campaign_id*: the rows of every campaign live in one
-        index, so a query that omits ``WHERE campaign_id = ...`` would otherwise answer
-        with the corpus, in the same columns and with nothing to say it had.
+        query sees **only** *campaign_id*'s files, so ``WHERE campaign_id = ...`` is never
+        needed to keep another campaign's rows out.
 
-        A query may still span campaigns -- that is what one index is for -- by naming
-        them in *campaigns*. Deliberate rather than default, because spanning them by
-        accident and on purpose look identical in the reply.
+        A query may span campaigns by naming them in *campaigns*. Deliberate rather than
+        default, because spanning them by accident and on purpose look identical in the
+        reply.
 
         The reply is bounded on two axes: ``max_rows`` (clamped at 5000) and its serialized
         size. The size ceiling defaults to a *context* budget, because the caller that
@@ -3653,13 +4054,22 @@ class RobovastInterface(ABC):
         """
 
     @abstractmethod
+    def campaign_frame(self, campaign_id: str, run: str, topic: str,
+                       t: "float | None" = None) -> "tuple[float, bytes]":
+        """``(stamp, JPEG)`` of the camera frame of *topic* of *run* (``<config>/<run_id>``)
+        at or before *t* seconds, the newest without *t*: what ``GET /data/…/frame`` serves.
+
+        ``KeyError`` for a run without the topic or with no frame of it yet.
+        """
+
+    @abstractmethod
     def campaign_scene_status(
         self, campaign_id: str, config_name: str, run_id: str
     ) -> SceneStatus:
         """Is this run's 3D geometry ready, and if not, what is happening about it.
 
-        **Pure**: it reads the run's capture manifest and the campaign's image identity, and never
-        starts a build. That is :meth:`run_campaign_scene`, because a ``GET`` that launches a 2 GB
+        **Pure**: it reads the run's ``sim_recording`` row and the campaign's image identity, and
+        never starts a build. That is :meth:`run_campaign_scene`, because a ``GET`` that launches a 2 GB
         image pull would fire on a browser prefetch.
         """
 
@@ -3679,7 +4089,7 @@ class RobovastInterface(ABC):
         """Is this project's world compiled, and if not, what is happening about it.
 
         The config view's counterpart of :meth:`campaign_scene_status`, and pure for the same
-        reason. The world comes from the ``.vast`` rather than from a run's capture, so this
+        reason. The world comes from the ``.vast`` rather than from a run's recording, so this
         answers before the project has ever been run.
         """
 

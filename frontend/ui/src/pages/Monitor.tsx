@@ -29,6 +29,7 @@ import ReplayRoundedIcon from '@mui/icons-material/ReplayRounded'
 // derive-statistics-from-data icon; the replay arrow goes to the entry that actually runs
 // the campaign again.
 import QueryStatsRoundedIcon from '@mui/icons-material/QueryStatsRounded'
+import TableChartRoundedIcon from '@mui/icons-material/TableChartRounded'
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded'
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded'
 import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRounded'
@@ -45,9 +46,7 @@ import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import {
   robovast,
-  hasRecordedRuns,
   hasResults,
-  isPreviewable,
   isTerminalPhase,
   PRE_RUN_PHASES,
   type CampaignSummary,
@@ -70,6 +69,7 @@ import { ShareImportDialog } from './ShareImportDialog'
 import { campaignLink, openCampaignConfig, openResultsView } from '@/lib/nav'
 import { preferredArchive } from '@/lib/shareArchives'
 import { offersQueueControls, priorityInputError, priorityLabel } from '@/lib/queueStanding'
+import { BUILD_TABLES_MESSAGE, BUILD_TABLES_TITLE, offersBuildTables } from '@/lib/campaignTables'
 import {
   NO_CAMPAIGN_FILTER,
   campaignFilterIsEmpty,
@@ -82,7 +82,6 @@ import { campaignEtaSeconds } from '@/lib/eta'
 import { runsFromSummary } from '@/lib/runMeter'
 import { useActiveView } from '@/lib/activeView'
 import { ErrorText, MiniRunMeter, StatusView } from '@/components/StatusView'
-import { declaresScene3d } from '@/lib/previewRuns'
 import { CampaignOrigin } from '@/components/CampaignOrigin'
 import { HoverFacts } from '@/components/HoverFacts'
 import { LaunchedBy } from '@/components/LaunchedBy'
@@ -98,6 +97,8 @@ import { isSelectable, pruneSelection } from '@/lib/campaignSelection'
 // sessions never click. Mounted only once opened, so the chunk is fetched on first use.
 const PostprocessingDialog = lazyView('Postprocessing settings',
   () => import('./PostprocessingDialog').then((m) => ({ default: m.PostprocessingDialog })))
+const ExportDialog = lazyView('Export',
+  () => import('./ExportDialog').then((m) => ({ default: m.ExportDialog })))
 
 // The campaign id's column, fixed so a page of collapsed cards reads down its columns instead of
 // zig-zagging. Sized against the ids campaigns actually get, measured rather than guessed: the
@@ -115,7 +116,7 @@ const ID_COLUMN = 360
 // row.
 //
 // Sized for the WIDEST set (four small icon buttons and the three gaps between them: a running
-// campaign that can be previewed has all four), not the common one. A minimum that the busiest
+// campaign with recorded runs has all four), not the common one. A minimum that the busiest
 // row exceeds is not a reserved column at all: the stack then sizes to its content, and anything
 // that comes and goes inside it moves the whole flexible span to its left — a per-poll spinner
 // appearing and vanishing beside a running card walks the age back and forth every poll.
@@ -308,14 +309,14 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   }, [terminal, id, qc])
 
   // Declared above the mutations because their onError/onSuccess handlers report through it.
-  const { confirm, prompt } = useDialogs()
+  const { choose, confirm, prompt } = useDialogs()
   const { notify } = useToasts()
 
-  // Every action below reports its own outcome. A failure goes to a STICKY toast rather than an
-  // Alert on this card: the card's Alert had nothing that ever cleared it -- no mutation is
-  // reset and the card does not unmount -- so a refusal sat there until the tab was reloaded,
-  // outliving the thing it was about. A sticky toast still waits for the reader; it just does
-  // not become part of the campaign.
+  // Every action below reports its own outcome. A failure goes to an error toast (held for
+  // ERROR_DURATION_MS, longer under the pointer) rather than an Alert on this card: an Alert
+  // here has nothing that ever clears it -- no mutation is reset and the card does not
+  // unmount -- so a refusal would sit there until the tab was reloaded, outliving the thing it
+  // was about. A toast waits long enough to be read; it does not become part of the campaign.
   const failed = (what: string, key: string) => (e: unknown) => notify({
     severity: 'error', key, message: what, note: (e as Error).message,
   })
@@ -326,8 +327,8 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
     onSuccess: (res) => {
       qc.invalidateQueries({ queryKey: ['status', id] })
       qc.invalidateQueries({ queryKey: ['campaigns'] })
-      // A refusal the service returns rather than raises (the busy guard, mostly). Kept a
-      // warning, as it was on the card: it is an expected answer, not a fault.
+      // A refusal the service returns rather than raises (the busy guard, mostly). A warning:
+      // it is an expected answer, not a fault.
       if (res && !res.ok) {
         notify({ severity: 'warning', key: `stop:${id}`, message: 'Stop had no effect.',
                  note: res.message || undefined })
@@ -341,10 +342,9 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   const stopJob = useMutation({
     mutationFn: ({ jobName, reason }: { jobName: string; reason?: string }) =>
       robovast.stopJob(id, jobName, reason),
-    // A warning, not an error, and therefore not sticky: this refusal is the EXPECTED outcome
-    // when the job finished between the poll that drew the button and the click, and the
-    // server's message (which names the phase) is the whole explanation. That judgement was
-    // already in the card it is replacing; only the place it appears has changed.
+    // A warning, not an error, and therefore on the shorter clock: this refusal is the EXPECTED
+    // outcome when the job finished between the poll that drew the button and the click, and the
+    // server's message (which names the phase) is the whole explanation.
     onError: (e: unknown) => notify({
       severity: 'warning', key: `stopjob:${id}`, message: 'Could not stop that job.',
       note: (e as Error).message,
@@ -466,6 +466,7 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
     fn()
   }
   const [ppOpen, setPpOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
 
   const del = useMutation({
     mutationFn: () => robovast.deleteCampaign(id),
@@ -528,6 +529,21 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
     } catch {
       blocking = []
     }
+    if (blocking.includes('images')) {
+      // Not offered as an override: a re-run runs only the digests its source recorded, and the
+      // service refuses one with a digest missing whatever `force` says -- there is nothing to
+      // replay. The detail names the way to a fresh launch instead.
+      await choose({
+        title: 'This campaign cannot be re-run',
+        message: (
+          <>
+            {axes.images?.detail} <code>{id}</code> is untouched.
+          </>
+        ),
+        choices: [{ label: 'Close', value: 'close', primary: true }],
+      })
+      return
+    }
     if (blocking.length) {
       const ok = await confirm({
         title: 'This campaign cannot be re-run as recorded',
@@ -572,6 +588,30 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   const onShare = () => {
     closeMenu()
     share.mutate()
+  }
+
+  // Optional by design: every table is built the first time something names it, so this only
+  // moves that cost forward. Its progress is the campaign log's, so accepting it is not toasted.
+  const buildTables = useMutation({
+    mutationFn: () => robovast.buildCampaignTables(id),
+    onError: failed('Building the tables failed.', `tables:${id}`),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ['describe', id] })
+      if (res && !res.ok) {
+        notify({ severity: 'warning', key: `tables:${id}`,
+                 message: 'The tables were not built.', note: res.message || undefined })
+      }
+    },
+  })
+
+  const onBuildTables = async () => {
+    closeMenu()
+    const ok = await confirm({
+      title: BUILD_TABLES_TITLE,
+      message: BUILD_TABLES_MESSAGE,
+      confirmLabel: 'Build',
+    })
+    if (ok) buildTables.mutate()
   }
 
   const onDelete = async () => {
@@ -626,6 +666,11 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   const nodesSkipped = Object.entries(status.data?.nodes_skipped ?? {})
     .map(([node, why]) => [node, String(why)] as const)
     .sort(([a], [b]) => a.localeCompare(b))
+  // What a running job's simulator reports about itself, at the level the CLI's wait acts
+  // on. Sorted by job so the hover lists the same rows in the same order on every poll.
+  const healthErrors = (status.data?.health ?? [])
+    .filter((f) => f.level === 'error')
+    .sort((a, b) => a.job_name.localeCompare(b.job_name) || a.check.localeCompare(b.check))
   const progressAgeS = status.data?.progress_age_s ?? null
   const progressDeadline = status.data?.progress_deadline_s
   // The live step marker, for the phases that have no progress bar of their own. Postprocessing
@@ -660,8 +705,8 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   const archiveStage = running
     ? 'incomplete'
     : summary.postprocessed
-      ? 'postprocessed'
-      : 'raw'
+      ? 'with tables'
+      : 'not postprocessed'
 
   // One listing for the whole page: every card asks under the same react-query key, so
   // they collapse into a single request, and the share answers for itself rather than
@@ -701,34 +746,13 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   // button can never open a view that would greet the reader with an empty state. The summary
   // arrives over the same stream as everything else here, so they appear by themselves.
   //
-  // The Explorer still needs a finished, postprocessed campaign: its notebooks and its rows are
-  // what postprocessing produces. The Run view also takes a campaign that is still RUNNING, where
-  // it previews the runs that have already finished — which is the only way to reach one at all,
-  // since the jobs list below is live-only and a run leaves it the moment it completes.
+  // Both take a campaign that has recorded runs, running or not: `run_view` answers while the
+  // campaign runs, and the Run view reads a run still recording live — which is the only way to
+  // reach one at all, since the jobs list below is live-only and a run leaves it the moment it
+  // completes.
   const canExplore = hasResults(summary)
-  // A preview replays a run's 3D recording and shows nothing else, so it is offered only where
-  // there is a scene to replay — asked of the campaign's served panel list, and only for a campaign
-  // that could be previewed at all. The same question the Run view's picker asks, under the same
-  // key, so the two cannot offer different campaigns.
-  //
-  // Deliberately not also gated on `hasRecordedRuns`: that counts `campaign.db`'s run rows, which
-  // are written only once a batch has finished, so it is 0 for the whole life of a batch-mode
-  // campaign — see `isPreviewable`.
-  const mightPreview = isPreviewable(summary)
-  const previewPanels = useQuery({
-    queryKey: ['panels', id],
-    queryFn: () => robovast.listCampaignPanels(id),
-    enabled: active && mightPreview,
-    retry: false,
-    staleTime: 60_000,
-  })
-  const previewing = mightPreview && declaresScene3d(previewPanels.data?.panels) === true
-  // A finished campaign still has to have recorded runs; a previewed one must not be asked, for
-  // the reason above.
-  const canReplay = (canExplore && hasRecordedRuns(summary)) || previewing
-  // Named a preview wherever it is offered, so neither the button nor the menu promises the
-  // finished article and then hands over one panel.
-  const runViewLabel = previewing ? 'Open in Run View (preview)' : 'Open in Run View'
+  const canReplay = canExplore
+  const runViewLabel = 'Open in Run View'
 
   // Folded shut, the card is its header row: the run meter shrinks into that row and the jobs
   // list, the Details panel and the log are not mounted at all. A page of finished campaigns is
@@ -825,9 +849,33 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
           <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
           {/* The label states which of the three things the archive can be: a running campaign's
               snapshot is missing the runs that have not finished, and a finished campaign's
-              results are raw until postprocessing has produced its tables and plots. */}
+              archive carries its tables once postprocessing has built them. */}
           <ListItemText primary={`Download (${archiveStage})`} />
         </MenuItem>,
+        // The records alone: no tables and nothing postprocessing produced, which an import
+        // postprocesses afresh. Offered once the campaign is over; a running campaign's
+        // snapshot is the item above.
+        running ? null : (
+          <MenuItem
+            key="download-raw"
+            component="a"
+            href={robovast.archiveUrl(id, true)}
+            download={`${id}.raw.tar.gz`}
+            onClick={closeMenu}
+          >
+            <ListItemIcon><DownloadRoundedIcon fontSize="small" /></ListItemIcon>
+            <ListItemText primary="Download records only (raw)" />
+          </MenuItem>
+        ),
+        // The other way out: the tables as files, built for the request, with the records
+        // beside them. Not offered while the campaign runs, since the export refuses a tree
+        // that is still changing -- the snapshot above is what a running campaign offers.
+        running ? null : (
+          <MenuItem key="export" onClick={() => { closeMenu(); setExportOpen(true) }}>
+            <ListItemIcon><TableChartRoundedIcon fontSize="small" /></ListItemIcon>
+            <ListItemText>Export…</ListItemText>
+          </MenuItem>
+        ),
         // Omitted where the provider has no openable link -- sftp never has one, and a webdav
         // URL often needs credentials the recipient lacks.
         shareCopy?.url ? (
@@ -896,6 +944,14 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
           <ListItemIcon><QueryStatsRoundedIcon fontSize="small" /></ListItemIcon>
           <ListItemText>Retrigger postprocessing</ListItemText>
         </MenuItem>,
+        ...(offersBuildTables(phase)
+          ? [
+              <MenuItem key="tables" onClick={onBuildTables} disabled={buildTables.isPending}>
+                <ListItemIcon><TableChartRoundedIcon fontSize="small" /></ListItemIcon>
+                <ListItemText>Build all tables</ListItemText>
+              </MenuItem>,
+            ]
+          : []),
         // Named, because which variant lands is not a choice here and never was:
         // `campaign_variant` reads it off the campaign directory, and once postprocessing has
         // written into that tree the raw campaign no longer exists to export. Saying which one
@@ -1008,6 +1064,26 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
               }
             >
               {nodesSkipped.length} node(s) left out
+            </Typography>
+          ) : null}
+          {/* A simulator saying "sim time is not advancing" is true within a minute, where a stall
+              shows only once a run is past its budget: the earlier warning, on which `vast campaign
+              wait` exits too. Nothing acts on it; the hover carries which job and check, and what
+              the simulator said, which is what decides whether to stop the job. */}
+          {healthErrors.length ? (
+            <Typography
+              variant="caption"
+              color="error.main"
+              noWrap
+              title={
+                `A running job's simulator reported something wrong about itself:\n` +
+                healthErrors.map((f) => `${f.job_name}: ${f.check} — ${f.detail}`).join('\n') +
+                (status.data?.health_skipped?.length
+                  ? `\n\nChecks that did not run:\n${status.data.health_skipped.join('\n')}`
+                  : '')
+              }
+            >
+              {healthErrors.length} health error(s)
             </Typography>
           ) : null}
           {/* A fixed column while FOLDED, a shrink-to-fit label while open: campaign ids carry a
@@ -1204,7 +1280,7 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
         {/* Leftmost, so the controls every card shares keep their place whether or not it is
             there. The one open-something entry that is also a button: replaying a run is what a
             reader of a finished campaign most often came for, and it is offered only where there
-            is a run (or a preview) to replay — the same `canReplay` gate as its menu entry, which
+            is a run to replay — the same `canReplay` gate as its menu entry, which
             stays so the menu still lists everything that can be opened. */}
         {canReplay ? (
           <Tooltip title={runViewLabel}>
@@ -1368,6 +1444,7 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
             status={status.data}
             campaignId={id}
             jobs={jobs.data}
+            jobsError={jobs.error ? (jobs.error as Error).message : null}
             liveOnly
             newest={newest}
             quotaCpu={usage.data?.cpu_capacity ?? null}
@@ -1395,6 +1472,9 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
 
       {ppOpen && (
         <PostprocessingDialog campaignId={id} open onClose={() => setPpOpen(false)} />
+      )}
+      {exportOpen && (
+        <ExportDialog campaignId={id} open onClose={() => setExportOpen(false)} />
       )}
     </Paper>
   )
@@ -1685,7 +1765,7 @@ export function Monitor({
         <CircularProgress size={24} />
       ) : !data.campaigns.length ? (
         <Alert severity="info" variant="outlined">
-          No campaigns yet — start one from the Launcher.
+          No campaigns yet — start one with the launcher above.
         </Alert>
       ) : !shown.length ? (
         // An empty list under a filter is not an empty deployment, and has to say which it is.

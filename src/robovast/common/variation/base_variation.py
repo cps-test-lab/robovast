@@ -499,7 +499,6 @@ class Variation():
     #: ``({config}) => JSX``. ``None`` = no web preview (the editor renders the
     #: resolved config, or a host-native preview for built-in types).
     WEB_PREVIEW = None
-    CACHE_ID = None  # Subclasses set to enable caching (e.g. "robovast_mt_generation_")
 
     @classmethod
     def config_view_data(cls, config: dict, base_path: str):
@@ -529,7 +528,7 @@ class Variation():
             ConfigViewContribution  # pylint: disable=import-outside-toplevel
         return ConfigViewContribution()
 
-    def __init__(self, base_path, parameters, general_parameters, progress_update_callback,
+    def __init__(self, base_path, parameters, progress_update_callback,
                  scenario_file, output_dir, container_runner=None):
         # Reset shared config index for each new Variation instance so
         # generated short names start from 1 for this variation run.
@@ -546,7 +545,6 @@ class Variation():
                 raise VariationConfigError(str(exc)) from exc
         else:
             self.parameters = parameters
-        self.general_parameters = general_parameters
         self.progress_update_callback = progress_update_callback
         self.scenario_file = scenario_file
         self.output_dir = output_dir
@@ -664,10 +662,6 @@ class Variation():
         """
         return None
 
-    def get_cache_input_files(self, in_configs):
-        """Return file paths that affect variation output. Override when using CACHE_ID."""
-        return []
-
     def get_input_files(self):
         """Return relative file paths (relative to base_path) required as input.
 
@@ -677,6 +671,19 @@ class Variation():
 
         Returns:
             list[str]: Relative file paths (relative to ``self.base_path``).
+        """
+        return []
+
+    def get_read_files(self):
+        """Absolute paths of files :meth:`variation` read that its parameters do not name.
+
+        A file another file names -- the image a map YAML points at -- is invisible to the
+        composition cache key and the configuration's identity, which see only the paths
+        written in the ``.vast``. Report such files here: a cached composition is not reused
+        once one changes, and the identity of each configuration composed from it covers its
+        content.
+
+        Must be called after :meth:`variation` has been executed.
         """
         return []
 
