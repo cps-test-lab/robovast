@@ -254,8 +254,8 @@ class NavExtract(Extractor):
                 f"{config_dir}: {len(runs)} run(s) produced a verdict but no "
                 f"'{metrics_file}' row (runs {', '.join(unmeasured)}), so there is no "
                 f"crossing to score. NavMetrics skips a run whose ground-truth pose track "
-                f"is missing -- check that the robot's _gt frame is recorded and that the "
-                f"tf->CSV conversion ran for this batch.")
+                f"is missing -- check that the run has a ground_truth_poses table "
+                f"(describe_campaign_data names why a run has none).")
         if unmeasured:
             # Some runs measured, some not. The measured ones still score the cell; saying
             # so keeps the sample count honest, because `n_samples` counts completed runs
