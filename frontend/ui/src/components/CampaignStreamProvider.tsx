@@ -22,12 +22,11 @@ import { useToasts } from './ToastProvider'
 // independent of which page is on screen while still opening exactly one EventSource: the hook
 // below runs once, in the provider, and readers take its value from context.
 //
-// The server pushes the full list on connect and on every change
-// (a server-side loop over list_campaigns), so this is the single source for the list -- no
-// polling. useLiveStream owns the recovery: a dropped connection, a stream the browser gave up
-// on, and a socket that died silently while the tab was in the background all end in a fresh
-// EventSource, which re-sends the whole list. `reconnect` is the same path on demand (the
-// Refresh button).
+// The server pushes the full list on connect and on every change (a server-side loop over
+// list_campaigns), so this is the single source for the list -- no polling. useLiveStream owns
+// the recovery: a dropped connection, a stream the browser gave up on, and a socket that died
+// silently while the tab was in the background all end in a fresh EventSource, which re-sends
+// the whole list. `reconnect` is the same path on demand (the Refresh button).
 
 export interface CampaignStream {
   /** The most recent full list, or null before the first frame arrives. */

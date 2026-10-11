@@ -976,9 +976,8 @@ function JobsSection({
   campaignId: string
   jobs: JobSummary[]
   // Owned by StatusView, not here, because this section unmounts underneath the reader
-  // whenever the tab is switched away. It is what
-  // makes a job's own log survive a trip to the Log tab and back, which is the whole answer to
-  // the tab bar costing the side-by-side view.
+  // whenever the tab is switched away. It is what makes a job's own log survive a trip to the
+  // Log tab and back, which is the whole answer to the tab bar costing the side-by-side view.
   expanded: Set<string>
   onToggle: (jobName: string) => void
   onStopJob?: (job: JobSummary) => void

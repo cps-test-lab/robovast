@@ -11,8 +11,9 @@
 // one click however long the list is, and it can afford a search box, which a share holding
 // hundreds of archives needs.
 //
-// Everything IS listed, including campaigns already here. That is for the deep link's sake: somebody handed a link to a campaign they already have must
-// be told so, not shown an empty dialog.
+// Everything IS listed, including campaigns already here. That is for the deep link's sake:
+// somebody handed a link to a campaign they already have must be told so, not shown an empty
+// dialog.
 
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
