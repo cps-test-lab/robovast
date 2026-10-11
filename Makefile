@@ -326,9 +326,9 @@ publish-client-test-venv:
 # `if`, not `grep && { exit 1; }`. The latter returns GREP's status, so an absence loop
 # whose last verb is correctly absent exits 1 and fails the target on the passing path.
 #
-# `wait`, `service-log` and `exec` are absent because they MOVED, not because they need the
-# core: `campaign wait`, `service log`, `container exec`. Asserting their absence is what
-# stops a stale alias creeping back in.
+# `wait`, `service-log` and `exec` are absent because they live in a group, not because they
+# need the core: `campaign wait`, `service log`, `container exec`. Asserting their absence
+# keeps a top-level alias from appearing beside them.
 	@for verb in serve init config results ui import-results wait service-log exec; do \
 		if grep -qx "$$verb" /tmp/robovast-client-verbs.txt; then \
 			echo "❌ '$$verb' present in a client-only install"; exit 1; fi; \
@@ -372,7 +372,7 @@ publish-client-test-venv:
 		if grep -qx "$$verb" /tmp/robovast-client-service-verbs.txt; then \
 			echo "❌ 'service $$verb' present without robovast-cluster"; exit 1; fi; \
 	done
-# Launching moved out of every old path; nothing may answer to it there.
+# The launch verb is `workspace run`; no other group answers to `run`.
 	@for group in cluster service container; do \
 		if /tmp/robovast-client-test-venv/bin/vast $$group run --help > /dev/null 2>&1; then \
 			echo "❌ '$$group run' still resolves; the launch verb is 'workspace run'"; exit 1; fi; \
