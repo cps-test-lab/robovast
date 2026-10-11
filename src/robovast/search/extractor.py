@@ -63,8 +63,8 @@ class NoSampleError(RuntimeError):
     Raise this instead of scoring a fallback value. A fabricated ``0.0`` is
     indistinguishable from a cell that genuinely scored zero, which is how an objective
     goes structurally dead while the campaign looks healthy. Raising a bare
-    ``RuntimeError`` instead is the other failure: it aborted a 50-batch campaign over
-    one cell's container bringup, discarding every completed batch with it.
+    ``RuntimeError`` instead is the other failure: it aborts the whole campaign over one
+    cell's container bringup, discarding every completed batch with it.
 
     ``config_name`` is filled in by the caller that knows it, so a reporting layer can
     name the cell in a structured field rather than only inside the message.
@@ -108,7 +108,7 @@ def completed_run_dirs(config_dir: Path) -> list[Path]:
 
     Costs one ``is_file`` miss per config for every campaign nobody intervened in, which is
     nearly all of them. A config directory copied out of its campaign has no ledger beside
-    it and gets the old behaviour; that is the honest degradation.
+    it and has every run with a ``test.xml`` counted; that is the honest degradation.
     """
     invalid = _invalidated_runs(config_dir)
     return [d for d in run_dirs(config_dir)

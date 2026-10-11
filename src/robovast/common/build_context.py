@@ -62,11 +62,10 @@ def is_campaign_output(path) -> bool:
     Answered by **structure** -- it holds an ``_execution/`` child -- rather than by a name
     pattern. A campaign directory is named after its campaign id, so there is no fixed name
     to list, and the pattern that would match one is the pattern a project happens to use
-    for its campaigns today. ``results/`` was ignored and this was not, so a
-    ``--wait-and-download`` that lands its output beside the sources (rather than under
-    ``results/``) put the whole campaign -- rosbags included -- into every build context
-    from then on. One project was staging 592 MB of them around a 15 MB tree, on every
-    build of every container, and nothing said so.
+    for its campaigns today. A ``--wait-and-download`` that lands its output beside the
+    sources (rather than under ``results/``) would otherwise put the whole campaign --
+    rosbags included -- into every build context from then on, typically far larger than
+    the sources around it, on every build of every container, and nothing would say so.
 
     Structure also means this cannot go stale: a campaign directory is recognised whatever
     it is called, in a project nobody thought about when this was written.

@@ -48,29 +48,20 @@ from robovast_decode.runs import RUNLESS_UNIT_STATUSES
 #: reporting. Not zero: a handful of throttled periods during bring-up is normal, and saying so
 #: every time would train a reader to ignore the finding.
 #:
-#: **Calibrated, not guessed** -- an earlier 1% was chosen by intuition and would have stayed
-#: silent on a configuration that lost 6 runs of 50. A CFS period is 100 ms and a nav2 control
-#: loop runs at 20 Hz, so ONE throttled period is two missed deadlines: the scale that matters
-#: is far below a percent. Measured across a five-point sweep of the same campaign, varying
-#: only the SUT's limit:
+#: **The scale that matters is far below a percent.** A CFS period is 100 ms and a nav2
+#: control loop runs at 20 Hz, so ONE throttled period is two missed deadlines; a threshold of
+#: a percent stays silent on an allocation that already costs runs. Across a sweep of the
+#: SUT's limit, the step from a healthy stack to a broken one falls within a fraction of a
+#: percent of throttled periods.
 #:
-#: ===============  ======  ========  =======
-#: throttled         misses  failures  verdict
-#: ===============  ======  ========  =======
-#: 0.018%                1         0  fine
-#: 0.385%                0         1  fine
-#: 0.580%                5         2  marginal
-#: 0.629%                2         0  marginal
-#: 0.790%               58         6  broken
-#: ===============  ======  ========  =======
+#: The relation is **not monotone**: the stack's own miss count can vary by an order of
+#: magnitude while the throttle ratio barely moves, and a slightly higher ratio can do less
+#: damage than a lower one. This counter is a blunt screen, not a predictor -- which is
+#: exactly why the finding it raises says "inconclusive, go and look at the stack's own
+#: health". To see the relation on a campaign of your own, put ``throttle_ratio`` from this
+#: view beside the stack's own health checks per configuration.
 #:
-#: Note it is **not monotone**: throttling varies 1.4x across that range while the stack's own
-#: miss count varies 12x, and 0.580% did more damage than 0.629%. This counter is a blunt
-#: screen, not a predictor -- which is exactly why the finding it raises says "inconclusive,
-#: go and look at the stack's own health". 0.5% sits below the cliff and above the two
-#: configurations that were demonstrably fine.
-#:
-#: Calibrated for a 20 Hz control loop. A stack with a slower loop tolerates proportionally
+#: Set for a 20 Hz control loop. A stack with a slower loop tolerates proportionally
 #: more, so this is a default rather than a law.
 THROTTLE_WARN_RATIO = 0.005
 

@@ -115,8 +115,8 @@ def pose_time_base(df: pd.DataFrame) -> str:
     ``timestamp`` is arrival time. It is the right join key -- every bag-derived table shares it --
     but it is quantized to the simulator's ``/clock`` grid and jittered by delivery, and neither of
     those is the interval the robot moved over. Differencing it therefore reports the transport:
-    measured on one campaign, a ground-truth pose published every 18 ms onto a 10 ms grid arrived
-    20/20/20/20/10, and the constant 0.24 m/s it was driving at read as an alternating 0.21/0.43.
+    a pose published at a period that is not a multiple of the clock grid arrives at uneven
+    multiples of it, and a constant speed reads as one that alternates.
 
     ``stamp`` is the publisher's own header stamp -- when the pose was true -- so it is what a
     derivative must use. Absent, ``timestamp`` is all there is, and saying so in ``time_base`` is

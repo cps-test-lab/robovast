@@ -974,9 +974,8 @@ class CampaignController:
         not merely wasteful but unrecordable -- the result directory is addressed by
         ``ParamSet.id``, so a second evaluation of one cell writes into the first's
         directory, over its runs, and the campaign dies on the conflicting job link that
-        guards exactly that ("one run's artifacts cannot live in two jobs"). Measured on a
-        four-cell space: batch 0 scored three cells, batch 1 re-proposed one of them and the
-        campaign ended there, on batch 1 of 2.
+        guards exactly that ("one run's artifacts cannot live in two jobs"). On a small space
+        that happens as early as the second batch.
 
         So a cell is measured once per campaign. The recalled evaluation is the one that
         cell produced -- not a substitute for it -- and re-running would spend a batch's
@@ -1808,10 +1807,10 @@ class UploadProgress:
     def _publish(self, *, force: bool = False, final: bool = False) -> None:
         now = time.time()
         pct = self._percent()
-        # Throttle on whichever signal exists. The previous rule ANDed a
-        # `sent < total` clause in, which on the streamed path (total always 0)
-        # is false for every sample -- so nothing was ever throttled and a large
-        # campaign published a status update per 256 KiB chunk.
+        # Throttle on whichever signal exists. A `sent < total` condition would be
+        # false for every sample on the streamed path (total always 0), so nothing
+        # would be throttled and a large campaign would publish a status update per
+        # chunk.
         # Landing on 100% is never throttled: the bar's last frame is the one a reader
         # is most likely to be looking at, and a transfer that stops at 97% reads as one
         # that stopped.
@@ -1832,9 +1831,8 @@ class UploadProgress:
             self._last_pct = pct
         self._state.update(extra={"upload": {
             "sent": self._sent,
-            # A back-compat alias for `source_total`: this key predates the two-counter
-            # record and meant "the denominator", which is what it still is. New readers
-            # want the explicit pair below.
+            # The same value as `source_total`, for a reader that takes one denominator.
+            # The explicit pair below says what it counts.
             "total": self._source_total,
             "source_done": self._source_done,
             "source_total": self._source_total,

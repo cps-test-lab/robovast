@@ -889,8 +889,8 @@ def _requirement_name_for_lock(text: str) -> str:
     """The distribution name in *text*, or ``""`` when it must not be rewritten from a lock.
 
     A **loose constraint is the case this exists for**: ``numpy<=1.13`` is precisely the spec whose
-    re-resolution a year later yields something else. An earlier version matched only bare names
-    and therefore left every loose spec unpinned -- doing nothing while appearing to work.
+    re-resolution a year later yields something else. Matching only bare names would leave every
+    loose spec unpinned -- doing nothing while appearing to work.
 
     Returns ``""`` for anything a lock has no business rewriting:
 

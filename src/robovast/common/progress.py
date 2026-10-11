@@ -15,15 +15,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Re-export of the progress helpers, which now live in robovast-client.
+"""Re-export of the progress helpers, which live in robovast-client.
 
-They moved there with ``vast campaign import``: a verb that uploads an archive over HTTP
-should not need the core installed to format a byte count. Core depends on the client and
-never the reverse, so the import direction here is the allowed one.
+They live there because ``vast campaign import`` uploads an archive over HTTP and should
+not need the core installed to format a byte count. Core depends on the client and never
+the reverse, so the import direction here is the allowed one.
 
-Re-exported rather than relocated-and-updated so the callers across core and
-robovast-cluster keep working -- the same treatment ``robovast.execution.control_server``
-gives ``robovast.client.status``.
+Re-exported so callers across core and robovast-cluster import them from core -- the same
+treatment ``robovast.execution.control_server`` gives ``robovast.client.status``.
 """
 
 from robovast.client.progress import (  # noqa: F401  # pylint: disable=unused-import; Re-exported on purpose: see this module's docstring. flake8 needs the noqa,; pylint needs the disable, and neither implies the other.

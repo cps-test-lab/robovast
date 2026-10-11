@@ -25,9 +25,9 @@ each container printed. Everything a run is *analyzed* on is sim seconds — the
 receive time under ``use_sim_time``, which is what the run view's playback bar scrubs.
 Relating the two is this module's whole job.
 
-**A single offset is wrong.** Sim time does not run at wall rate: measured on one
-recorded run, ``dt/dw = 1.369`` — the simulator ran 1.37× faster than the wall clock, so
-an offset taken at the start is ~8 s out by the end of a 29 s run. It can also pause. So
+**A single offset is wrong.** Sim time does not run at wall rate: a simulator that is not
+realtime-paced runs faster or slower than the wall clock, so an offset taken at the start
+drifts by the rate difference times the run's length. It can also pause. So
 the relation is carried as *samples* and interpolated piecewise-linearly between them.
 
 **Outside the sampled range there is no answer, and none is invented.** The samples come
