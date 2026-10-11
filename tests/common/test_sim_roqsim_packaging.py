@@ -178,3 +178,19 @@ def test_the_recording_block_becomes_the_simulators_knobs():
     # A block with no roqsim section says nothing to roqsim.
     ros_only = apply_backend(dict(execution), recording=recording_config({"ros2": {"use_sim_time": True}}))
     assert "ROQSIM_CAPTURE_FPS" not in ros_only["_backend_env"]
+
+
+def test_a_ros_campaign_runs_its_scenario_on_roqsims_clock():
+    """roqsim's ROS 2 bridge publishes /clock, so the ROS shape starts the runner on it; the
+    stepped shape runs on scenario-execution's step clock and passes nothing."""
+    from robovast.common.execution import scenario_env
+    from robovast.common.simulators import apply_backend
+
+    def clock(mode, **extra):
+        execution = {"mode": mode, **extra,
+                     "containers": {"simulation": {"backend": "roqsim", "config": "pkg:world"}}}
+        return scenario_env({"execution": apply_backend(execution)})["SCENARIO_USE_SIM_TIME"]
+
+    assert clock("ros2") == "true"
+    assert clock("ros2", use_sim_time=False) == "false"
+    assert clock("base") == "false"

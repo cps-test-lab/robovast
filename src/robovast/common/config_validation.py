@@ -329,6 +329,29 @@ def _config_name_from_loc(raw, loc):
     return None
 
 
+def _scenario_clock_problems(raw, vast_dir):
+    """Which clock the scenario runs on must be decidable before any compute is spent.
+
+    The same rule the run applies (:func:`~robovast.common.simulators.scenario_use_sim_time`),
+    asked here so a ROS campaign whose simulator cannot say whether it publishes ``/clock``
+    is refused at validation rather than at its first job.
+    """
+    from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
+        apply_backend, scenario_use_sim_time)
+    execution = raw.get("execution") or {}
+    if not isinstance(execution, dict):
+        return []
+    try:
+        applied = apply_backend(dict(execution), vast_dir)
+    except Exception:  # noqa: BLE001 - an unresolvable backend is reported by the schema
+        return []
+    try:
+        scenario_use_sim_time(applied)
+    except ValueError as exc:
+        return [_problem("execution", str(exc), field="execution.use_sim_time")]
+    return []
+
+
 def _schema_problems(raw):
     """Run the pydantic schema and return structured field problems (collect-all)."""
     from robovast.common.config import ConfigV1  # pylint: disable=import-outside-toplevel
@@ -1490,6 +1513,7 @@ def validate_project_file(config_path):
     # a run_files pattern — otherwise the panel 404s only once someone opens the run.
     problems.extend(_scene_descriptor_problems(raw, vast_dir))
     problems.extend(_scene3d_problems(raw))
+    problems.extend(_scenario_clock_problems(raw, vast_dir))
     problems.extend(_image_provenance_problems(raw))
     problems.extend(_unresolvable_image_problems(raw))
     problems.extend(_migration_marker_problems(raw))

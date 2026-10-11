@@ -262,6 +262,14 @@ class RoqsimBackend(SimulatorBackend):
                 env["ROQSIM_WORLD_OVERRIDES"] = SIM_OVERRIDES_MOUNT
         return env
 
+    def publishes_clock(self, cfg, execution: dict) -> bool:
+        """``True``: in the ROS shape a world speaks ROS through roqsim's ROS 2 bridge, which
+        publishes ``/clock`` unless the world sets ``clock_rate_hz: 0``. Such a world states
+        ``execution.use_sim_time: false``; left unstated, scenario-execution fails the run
+        for want of a ``/clock`` rather than measuring against the wrong timeline."""
+        del cfg, execution
+        return True
+
     def sim_document(self, cfg, execution: dict):
         """The overrides, which is the half of the config that is a *document*.
 

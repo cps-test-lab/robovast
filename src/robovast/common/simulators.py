@@ -266,6 +266,20 @@ class SimulatorBackend:
         """
         return False
 
+    def publishes_clock(self, cfg, execution: dict) -> Optional[bool]:
+        """Whether the simulator publishes ``/clock`` in the ROS shape.
+
+        It decides the scenario's clock: ``True`` starts scenario-execution with
+        ``use_sim_time``, so a scenario's durations run on the simulator's timeline rather
+        than on wall time. Asked in the ROS shape only.
+
+        ``None`` -- the default -- means the backend cannot say, and a campaign using it
+        must state ``execution.use_sim_time`` itself: the wrong guess either measures a
+        scenario against wall time while the simulator runs at another rate, or waits for
+        a ``/clock`` that never comes.
+        """
+        return None
+
     def default_panels(self, cfg, execution: dict) -> list:
         """Run-view panels this backend contributes, as ``{<type>: <props>}`` entries.
 
@@ -679,7 +693,38 @@ def apply_backend(execution: dict, base_dir: str = "",
     contributed = backend.env(cfg, execution, recording)
     if contributed:
         result["_backend_env"] = contributed
+    if shape == SHAPE_ROS:
+        result["_publishes_clock"] = backend.publishes_clock(cfg, execution)
     return result
+
+
+def scenario_use_sim_time(execution: dict) -> bool:
+    """Whether scenario-execution runs with ``use_sim_time``, for an applied *execution*.
+
+    Only the ROS shape has a choice. There the campaign's ``execution.use_sim_time`` wins,
+    then the backend's :meth:`SimulatorBackend.publishes_clock`; where neither answers, this
+    refuses rather than guessing. Outside it a ``use_sim_time`` would be ignored -- the stepped
+    shape's scenario clock is the simulation's step count -- so it is refused instead.
+    """
+    authored = execution.get("use_sim_time")
+    if shape_for(execution.get("mode", "auto")) != SHAPE_ROS:
+        if authored is not None:
+            raise ValueError(
+                "execution.use_sim_time applies to the ROS shape (mode: ros2) only, not to "
+                f"mode '{execution.get('mode', 'auto')}'. Remove it, or set mode: ros2.")
+        return False
+    if authored is not None:
+        return bool(authored)
+    answer = execution.get("_publishes_clock")
+    if answer is not None:
+        return bool(answer)
+    name = backend_name(execution)
+    who = (f"simulator backend '{name}' does not say" if name
+           else "no simulator backend is declared to say")
+    raise ValueError(
+        f"execution.use_sim_time is required: {who} whether the simulator publishes /clock. "
+        "Set true to run the scenario's durations on the simulator's clock, or false to run "
+        "them on wall time (for instance when the scenario starts the simulator itself).")
 
 
 class ContainerQuery:
