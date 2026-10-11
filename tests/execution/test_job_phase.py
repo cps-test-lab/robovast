@@ -26,7 +26,9 @@ from robovast.execution.cluster_execution.cluster_execution import (blocked_and_
                                                                     pod_restarted_containers,
                                                                     pod_termination_reason,
                                                                     restarted_job_reasons,
-                                                                    running_scenario_job_names)
+                                                                    running_scenario_job_names,
+                                                                    scenario_done_marker_written,
+                                                                    scenario_ended_job_forensics)
 
 
 def _job(name, *, succeeded=0, active=0, failed=0, suspend=False):
@@ -626,6 +628,116 @@ def test_an_oom_killed_scenario_container_in_an_ended_or_deleted_pod_is_not_acte
     containers itself; neither is a trial left running without its scenario."""
     assert pod_container_failures(_scenario_killed(phase="Failed")) == []
     assert pod_container_failures(_scenario_killed(deleting=True)) == []
+
+
+def _scenario_ended(phase="Running", reason="Error", exit_code=1, deleting=False,
+                    witnesses=("uploader", "agent"), scenario_running=False):
+    """A pod whose scenario container has ended while its uploader and file agent -- the
+    regular containers waiting for the scenario's done marker -- still run."""
+    pod = _pod("j", phase=phase)
+    pod.metadata.deletion_timestamp = "2026-01-01T00:00:00Z" if deleting else None
+    term = None if scenario_running else types.SimpleNamespace(
+        reason=reason, exit_code=exit_code, signal=None, message=None,
+        started_at=None, finished_at=None)
+    running = types.SimpleNamespace(started_at=None)
+    pod.status.container_statuses = [
+        types.SimpleNamespace(
+            name="robovast", image="an-image", image_id="an-image@sha256:abc",
+            restart_count=0, last_state=None,
+            state=types.SimpleNamespace(waiting=None, terminated=term,
+                                        running=running if scenario_running else None)),
+    ] + [types.SimpleNamespace(
+        name=name, image="sidecar-image", image_id="sidecar-image@sha256:def",
+        restart_count=0, last_state=None,
+        state=types.SimpleNamespace(waiting=None, terminated=None,
+                                    running=running if name in witnesses else None))
+        for name in ("uploader", "agent")]
+    return pod
+
+
+def test_a_scenario_container_that_ended_in_a_running_pod_is_a_candidate():
+    """The entrypoint writes the done marker from its post-run block alone, so a step before
+    it that fails ends the container with no marker while the uploader waits on."""
+    entry = scenario_ended_job_forensics(_Core([_scenario_ended()]), "ns", "sel")["j"]
+    record, = entry["containers"]
+    assert entry["pod_name"] == "j-pod"
+    assert entry["witness"] == "uploader"
+    assert record["container"] == "robovast" and record["role"] == "scenario"
+    assert record["exit_code"] == 1 and record["log"] == "current"
+    assert record["invalidating"] is True
+    assert entry["detail"] == ("NoDoneMarker: container robovast ended (Error, exit 1) "
+                               "without writing its done marker")
+
+
+def test_a_scenario_container_that_exited_zero_without_its_marker_is_still_a_candidate():
+    """What condemns the trial is the missing marker, not the exit code."""
+    entry = scenario_ended_job_forensics(
+        _Core([_scenario_ended(reason="Completed", exit_code=0)]), "ns", "sel")["j"]
+    assert entry["containers"][0]["invalidating"] is True
+
+
+def test_a_candidate_is_scoped_to_the_jobs_asked_about():
+    assert scenario_ended_job_forensics(_Core([_scenario_ended()]), "ns", "sel",
+                                        job_names=["other"]) == {}
+
+
+def test_the_agent_answers_for_the_marker_once_the_uploader_has_ended():
+    entry = scenario_ended_job_forensics(
+        _Core([_scenario_ended(witnesses=("agent",))]), "ns", "sel")["j"]
+    assert entry["witness"] == "agent"
+
+
+def test_no_candidate_where_the_scenario_runs_the_pod_ends_or_nothing_waits():
+    """A running scenario has not ended; an ended or deleted pod is not held; a pod whose
+    uploader and agent have both ended is on its way out by itself; an OOM kill is the
+    restart path's, which needs no marker question."""
+    for pod in (_scenario_ended(scenario_running=True),
+                _scenario_ended(phase="Failed"),
+                _scenario_ended(deleting=True),
+                _scenario_ended(witnesses=()),
+                _scenario_ended(reason="OOMKilled", exit_code=137)):
+        assert scenario_ended_job_forensics(_Core([pod]), "ns", "sel") == {}
+
+
+def test_an_ended_scenario_container_is_not_a_restart_by_itself():
+    """The display paths read restarts without asking for the marker, so a pod uploading a
+    finished run's result must not show there as a lost container."""
+    assert pod_container_failures(_scenario_ended()) == []
+
+
+def _exec_answers(monkeypatch, *, code=0, timed_out=False, raises=None):
+    calls = []
+
+    def fake(pod, namespace, container, command, *, limit_s, **kwargs):
+        calls.append((pod, namespace, container, command))
+        if raises is not None:
+            raise raises
+        return code, "", "an error" if code not in (0, 1) else "", timed_out
+
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kube_client.exec_stream", fake)
+    return calls
+
+
+def test_the_marker_check_reads_test_s_answer(monkeypatch):
+    calls = _exec_answers(monkeypatch, code=0)
+    assert scenario_done_marker_written("ns", "j-pod", "uploader") is True
+    pod, namespace, container, command = calls[0]
+    assert (pod, namespace, container) == ("j-pod", "ns", "uploader")
+    assert command[-1] == "/ipc/done.main"
+    _exec_answers(monkeypatch, code=1)
+    assert scenario_done_marker_written("ns", "j-pod", "uploader") is False
+
+
+def test_a_marker_check_that_could_not_be_answered_is_not_an_absent_marker(monkeypatch):
+    """An exec that did not open, timed out or ended in anything but ``test``'s 0 or 1 says
+    nothing about the marker; reading it as absent would discard a delivering trial."""
+    _exec_answers(monkeypatch, code=126)
+    assert scenario_done_marker_written("ns", "j-pod", "uploader") is None
+    _exec_answers(monkeypatch, code=124, timed_out=True)
+    assert scenario_done_marker_written("ns", "j-pod", "uploader") is None
+    _exec_answers(monkeypatch, raises=RuntimeError("could not open an exec stream"))
+    assert scenario_done_marker_written("ns", "j-pod", "uploader") is None
 
 
 def test_a_restart_surfaces_in_the_listing_even_though_the_job_looks_healthy():
