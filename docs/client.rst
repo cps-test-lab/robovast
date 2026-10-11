@@ -329,8 +329,9 @@ When something is wrong
    vast doctor
 
 On a client install it checks what a client has: a stored login, that the service answers,
-and that ``vast`` resolves in a fresh login shell. A capability you have not installed is reported once, as advisory — you get
-``cluster support: not installed``, and not the ``kubectl`` and ``helm`` that only
+and that ``vast`` resolves in a fresh login shell. A capability you have not installed is
+reported once, as advisory — you get ``cluster support: not installed``, and not the
+``kubectl`` and ``helm`` that only
 ``vast cluster setup`` shells out to, because there is no ``setup`` here to run them.
 A client install lacking them is not a broken one, so they cannot fail the command.
 
