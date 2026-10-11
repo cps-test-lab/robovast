@@ -62,7 +62,7 @@ export type LogFooter = { text: string; kind: 'busy' | 'error' | 'note' } | null
  *
  * "(no output yet)" is still the right answer once it *is* a fact — a job whose containers
  * have not started writing has an open stream and no bytes, and PodLogTail swallows the
- * API's 400 for a container with no log — so it is kept, just no longer said blind.
+ * API's 400 for a container with no log — so it is said, but only once it is known.
  */
 export function logFooter(o: {
   end: LogEnd
