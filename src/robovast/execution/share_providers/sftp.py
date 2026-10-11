@@ -36,11 +36,11 @@ def _paramiko():
 
     Deferred rather than imported at module scope, like the GCS provider's
     ``google-auth``: this module *is* the ``sftp`` entry point, so a top-level import
-    made ``load_share_provider_plugins`` -- which loads every registered provider,
+    would make ``load_share_provider_plugins`` -- which loads every registered provider,
     on every share operation and on every campaign import -- fail this one and warn
     about it in any install without the optional extra. Nobody using a WebDAV share
     needs to hear about paramiko. The dependency is still required to *use* SFTP, and
-    that is where it is now reported.
+    that is where it is reported.
     """
     try:
         import paramiko  # pylint: disable=import-outside-toplevel
@@ -159,8 +159,8 @@ class SftpShareProvider(BaseShareProvider):
         port = int(os.environ.get("ROBOVAST_SFTP_PORT", "") or DEFAULT_SFTP_PORT)
         user = os.environ["ROBOVAST_SFTP_USER"]
         password = os.environ.get("ROBOVAST_SFTP_PASSWORD", "") or None
-        # Host-side uses a key *file*; inside the controller pod the launcher
-        # injects the key as inline PEM (ROBOVAST_SFTP_KEY_PEM) via build_pod_env.
+        # Host-side uses a key *file*; inside the service pod the key arrives as
+        # inline PEM (ROBOVAST_SFTP_KEY_PEM), resolved by build_pod_env at deploy.
         key_file = os.environ.get("ROBOVAST_SFTP_KEY_FILE", "") or None
         key_pem = os.environ.get("ROBOVAST_SFTP_KEY_PEM", "") or None
 

@@ -335,7 +335,7 @@ reported once, as advisory — you get ``cluster support: not installed``, and n
 ``vast cluster setup`` shells out to, because there is no ``setup`` here to run them.
 A client install lacking them is not a broken one, so they cannot fail the command.
 
-When the failure is the *service's* and not yours, its own log is now readable:
+When the failure is the *service's* and not yours, its own log is readable:
 
 .. code-block:: bash
 

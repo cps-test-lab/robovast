@@ -315,7 +315,7 @@ def test_the_pod_mounts_no_results_volume(tmp_path):
 
 
 def test_the_pod_carries_no_configmap_volume(tmp_path):
-    """The ConfigMap route is gone; a leftover volume would mean it half-survived."""
+    """The workspace does not travel in a ConfigMap, so the pod mounts none."""
     manifest = _manifest(_spec(tmp_path, workspace=True))
     for volume in manifest["spec"]["volumes"]:
         assert "configMap" not in volume

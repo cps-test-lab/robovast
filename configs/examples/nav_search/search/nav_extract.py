@@ -286,13 +286,11 @@ class NavExtract(Extractor):
         return ExtractResult(
             objectives={
                 # The optimized quantity, and the only one: `objectives` means the objectives
-                # the .vast declared. Reporting the unoptimized values here too used to look
-                # free -- they were persisted to objectives_json either way -- but it made a
+                # the .vast declared. Reporting the unoptimized values here too would make a
                 # single-objective search look multi-objective to everything downstream, and
-                # the scalar `unit.objective` that run_view, runs and the campaign card's
-                # trajectory all read was silently left NULL for the whole campaign. They are
-                # measurements; they belong below. An adversarial search minimizes this; a
-                # boundary search traces its zero.
+                # leave NULL the scalar `unit.objective` that run_view, runs and the campaign
+                # card's trajectory all read. They are measurements; they belong below. An
+                # adversarial search minimizes this; a boundary search traces its zero.
                 'robustness': aggregate(robustness, how=how, higher_is_safer=True),
             },
             measures={

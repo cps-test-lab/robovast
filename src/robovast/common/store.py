@@ -17,8 +17,8 @@
 """Persistent sqlite store for campaigns (search and batch).
 
 A single writer records the campaign, so its scientific data is live-queryable
-while it runs and the schema is the seam an in-cluster controller / web UI can
-later read. This store is the source of truth for the campaign's **results data**
+while it runs and the schema is the seam the service and web UI read it
+through. This store is the source of truth for the campaign's **results data**
 (the params/objectives/measures/results the GUI reads), *not* for its live
 execution status: the run's phase/error/progress live in the controller's
 :class:`~robovast.execution.control_server.Status` while a process drives it, and

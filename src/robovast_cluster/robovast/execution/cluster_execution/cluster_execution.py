@@ -18,10 +18,10 @@
 """Shared cluster-job utilities.
 
 Helpers used across the cluster CLI (``monitor``, ``jobs-cleanup``,
-``upload-to-share``), the controller launcher's orphan reaping, and cluster
+``upload-to-share``), the service's orphan reaping, and cluster
 teardown — independent of how scenario Jobs are produced. The job-manifest
 toolkit that actually builds/submits Jobs lives in
-:mod:`.kubernetes_backend` (the in-cluster controller is the sole executor).
+:mod:`.kubernetes_backend` (the service's in-process driver is the sole executor).
 """
 
 import logging
@@ -1316,9 +1316,8 @@ def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, cont
     4. Force-clear finalizers on stuck Pods.
 
     If campaign is given, removes only resources for that run (label
-    ``jobgroup=scenario-runs,campaign-id=<campaign>``) plus that campaign's
-    controller pod. Otherwise removes all resources with label
-    ``jobgroup=scenario-runs`` and every controller pod.
+    ``jobgroup=scenario-runs,campaign-id=<campaign>``). Otherwise removes all
+    resources with label ``jobgroup=scenario-runs``.
 
     Args:
         namespace: Kubernetes namespace.

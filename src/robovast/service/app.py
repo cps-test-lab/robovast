@@ -676,8 +676,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     from fastapi.responses import StreamingResponse  # pylint: disable=import-outside-toplevel
 
     #: Poll cadence of the server-side tail loop. Sub-second, so lines reach the
-    #: browser far faster than the old 1.5 s client poll, without N clients issuing
-    #: their own HTTP round-trips.
+    #: browser promptly, without N clients issuing their own HTTP round-trips.
     _sse_poll_s = 0.5
     #: Disable proxy/CDN buffering so events are delivered as they are produced.
     _sse_headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}

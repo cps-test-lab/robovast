@@ -341,8 +341,8 @@ Using it: search an identifier, not a word
 
 The search is a case-insensitive substring match over lines, and results are grouped by page
 in **name order, not relevance order** — so the first page returned is not the best one. That
-makes the query the thing that decides whether a reply is useful. Measured against the corpus
-as it stands, 50 pages:
+makes the query the thing that decides whether a reply is useful. How many pages a query
+matches, for a few kinds of term:
 
 .. list-table::
    :header-rows: 1
@@ -352,19 +352,19 @@ as it stands, 50 pages:
      - pages
      - 
    * - ``world``
-     - 31
+     - most
      - a prose word matches most of the corpus
    * - ``osc``
-     - 25
+     - about half
      - so does a short token that occurs inside other words
    * - ``spawn_robot``
-     - 8
+     - a few
      - an identifier narrows to the pages that define and use it
    * - ``sensor_coverage_probe``
-     - 2
+     - two
      - the more exact the spelling, the closer to one answer
    * - ``Config::``
-     - 1
+     - one
      - punctuation included, and it lands on the page that defines it
 
 **Search for the thing as a file spells it.** A plugin name, a YAML key with its colon, a
@@ -1323,9 +1323,8 @@ only there is it refused, because resolving a world's ``extends`` chain needs th
 
 Two halves, at the two costs they actually have. ``components`` names each component under the
 address an override names it by, with the dotted paths that already exist — cheap, no model
-built. (It was ``plugins`` until the world document's own key was renamed to ``components``;
-the payload lagged that, and a ``.vast``'s unrelated top-level ``plugins:`` made the old name a
-collision as well as a mismatch.)
+built. The name matches the world document's own ``components`` key, and keeps clear of a
+``.vast``'s unrelated top-level ``plugins:``.
 ``overridable`` says which **model values a run may change while it is running** (the
 ``model_override`` plugin: friction, contact masks, actuator force limits, mass); its ``fields``
 half is a property of the simulator rather than of the world and so is always there, while

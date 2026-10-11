@@ -668,7 +668,7 @@ def manifest_build_lock(image_ref: str, *, dockerconfigjson: str = "", insecure:
 
     The lock answers what a digest cannot: *if this image is gone, would a rebuild install the
     same software?* It is written into the image, so the usual way to read it is to look inside
-    a local copy -- which needs a container runtime. The controller pod has none.
+    a local copy -- which needs a container runtime. The service has none.
 
     This reads it straight out of the registry instead: the manifest, then the trailing layer
     blobs, extracting the manifest directory from the first one that carries it. No pull, and

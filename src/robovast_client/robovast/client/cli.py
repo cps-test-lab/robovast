@@ -1216,10 +1216,10 @@ def run_startup_hooks():
     **A missing hook is checked for, not assumed absent.** Entry points are baked into a
     distribution's installed metadata, so adding one to `pyproject.toml` does nothing
     until the package is reinstalled -- and an editable checkout looks completely normal
-    in the meantime. That silence cost real damage once: with the core installed but its
-    hook unregistered, no `.env` was read, and `vast service upgrade` concluded the
-    registry and git credentials "configuration is gone" and deleted both Secrets. So if
-    the core is installed and contributed nothing, say so instead of running on.
+    in the meantime. With the core installed but its hook unregistered, no `.env` is
+    read, and ``vast service upgrade``, which reconciles Secrets from the environment,
+    would take the registry and git credentials for removed and delete both Secrets. So
+    if the core is installed and contributed nothing, say so instead of running on.
     """
     hooks = list(entry_points(group=STARTUP_HOOK_GROUP))
     if not hooks and _core_installed():
@@ -1255,9 +1255,8 @@ def load_plugins() -> dict[str, str]:
     starts, and returned as ``{entry point name: reason}`` so a caller answering from the
     command tree can refuse rather than answer from part of it.
     """
-    # Map of long plugin names to their short aliases. `execution`/`exec` is gone with the
-    # group: every group is now named after what it acts on, and none of those names is
-    # long enough to want a short form.
+    # Map of long plugin names to their short aliases. Every other group is named after
+    # what it acts on, and none of those names is long enough to want a short form.
     aliases = {
         'configuration': 'config',
     }

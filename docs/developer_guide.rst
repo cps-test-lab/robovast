@@ -1653,7 +1653,7 @@ Campaign Store
 Every campaign — batch or search — is described by a single sqlite store,
 ``campaign.db`` (``robovast.common.store.STORE_FILENAME``), written at the
 root of the campaign directory. It is the **single source of truth** the results
-GUI reads, and the seam an in-cluster controller or web UI can later read/stream.
+GUI reads, and the seam the service and web UI read and stream it through.
 
 A campaign runs one or more **batches**: a batch-mode campaign (no ``search:``
 block) has exactly one batch of the enumerated configs; a search campaign has one

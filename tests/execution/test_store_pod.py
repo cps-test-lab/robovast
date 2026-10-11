@@ -75,9 +75,9 @@ def test_a_published_registry_authenticates_and_still_probes(caplog):
     """The registry shares its hostname with the token-gated UI and has no gate of its own,
     so publishing without this serves an anonymous push/pull registry on a public name.
 
-    The probe is half the change: it used to read ``/v2/``, which answers 401 once auth is
-    on, and an httpGet probe counts that as a failure -- the container would never become
-    Ready and nothing in the message would mention authentication.
+    The probe must not read ``/v2/``: that answers 401 once auth is on, an httpGet probe
+    counts it as a failure, and the container would never become Ready with nothing in the
+    message mentioning authentication.
     """
     docs = store_pod.attach_infrastructure([], "robotics", registry_authenticated=True)
     pod = {"spec": store_pod.store_pod_spec(docs)}

@@ -71,11 +71,10 @@ def cpu_stat_probe():
     and a container that was never throttled are different facts, and zeros would make the
     first indistinguishable from the second in every aggregate.
 
-    **Both cgroup versions**, v2 first. v1 was skipped when this was written, on the reasoning
-    that it is old; the cost turned out to be node-shaped rather than small (see
-    :data:`CPU_STAT_PATH_V1`). The two are read into the *same* column names and the same
-    units, so a campaign spanning both kinds of node stays comparable -- which is the whole
-    point, since the interesting question is per-node.
+    **Both cgroup versions**, v2 first. v1 is old, but skipping it costs whole nodes rather
+    than a little (see :data:`CPU_STAT_PATH_V1`). The two are read into the *same* column
+    names and the same units, so a campaign spanning both kinds of node stays comparable --
+    which is the whole point, since the interesting question is per-node.
     """
     for path, usec_field in ((CPU_STAT_PATH, "throttled_usec"),
                              (CPU_STAT_PATH_V1, CPU_STAT_V1_USEC_FIELD)):

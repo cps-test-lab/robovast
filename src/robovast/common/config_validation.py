@@ -33,7 +33,7 @@ variation types, the ``results_processing``/``search`` postprocessing commands,
 and the search ``strategy`` and ``extract.plugin`` — whether they are installed
 entry-point names or local ``./path.py:Class`` file refs. Those non-variation
 plugins are otherwise only resolved when a campaign runs, so a broken local
-plugin would surface as a cryptic controller-pod log; here it is caught up front.
+plugin would surface as a cryptic error in the campaign log; here it is caught up front.
 This function is the shared core behind both the ``validate_config`` MCP tool
 and the ``vast configuration validate`` CLI command.
 """
@@ -1078,8 +1078,8 @@ def _postprocessing_problems(entries, vast_dir, field_prefix):
 
     Uses the same resolver the runtime uses (``resolve_postprocessing_plugin``),
     so a broken local ``./path.py:Class`` — unknown name, import error, missing
-    class, not a ``BasePostprocessingPlugin`` — is caught here instead of in a
-    controller-pod log after launch. Collect-all: never raises.
+    class, not a ``BasePostprocessingPlugin`` — is caught here instead of in the
+    campaign log after launch. Collect-all: never raises.
 
     The decoder entries (``rosbags_*``, ``rosbags_process``) configure how the campaign's
     tables are built rather than naming a plugin, so they are checked as that configuration:
