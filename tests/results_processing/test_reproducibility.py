@@ -272,12 +272,12 @@ def _image_class(root, role="sut"):
 
 
 def test_a_complete_recipe_and_lock_is_reproducible_without_a_digest(tmp_path):
-    """The case this gate used to refuse, and the reason the recipe is recorded at all.
+    """The case this gate must not refuse, and the reason the recipe is recorded at all.
 
     A digest is reproducible for exactly as long as the registry keeps the manifest. After that
     the recipe is what still answers -- the base it was built from, the dated archives it
-    installed from, and the resolved versions beside them. Reading only the digest fields called
-    such a campaign opaque and refused to publish it, which is the opposite of the truth.
+    installed from, and the resolved versions beside them. Reading only the digest fields would
+    call such a campaign opaque and refuse to publish it, which is the opposite of the truth.
     """
     root = _with_lock(_campaign(tmp_path, {
         "images": {"sut": "reg.example/sut:latest"},

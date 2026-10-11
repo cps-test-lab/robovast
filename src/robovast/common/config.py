@@ -215,7 +215,7 @@ class ResourcesConfig(BaseModel):
     (``"500m"``), not only whole cores. On the cluster a campaign's throughput is
     ``quota // pod_request``, so rounding a measured 0.3-core sidecar up to a whole core is
     paid on **every job of the sweep** — and the Kubernetes manifest takes ``str(cpu)``, so
-    the integer-only annotation was the only thing rejecting a fractional value.
+    the type annotation alone decides whether a fractional value is accepted.
     """
     # ``int`` first so a whole-core declaration stays an int: the manifest renders it with
     # ``str()``, and coercing 4 to 4.0 would rewrite every existing campaign's manifest from

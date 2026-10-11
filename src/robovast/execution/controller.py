@@ -32,8 +32,8 @@ in the store, not a directory level, so batch and search share the flat layout.
 **Where this runs:** always *in the driving process*, against the backend for
 that deployment — the ``robovast-service`` with a ``KubernetesBackend`` (one
 worker thread per campaign). This module is a **library**, not an entrypoint:
-the per-campaign controller *pod* (and its in-pod ``main()`` / control server)
-is gone, so cluster and local now share the same driver-hosting shape.
+there is no per-campaign controller pod, in-pod ``main()`` or control server, so
+cluster and local share the same driver-hosting shape.
 """
 
 import logging
@@ -1666,8 +1666,8 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
         state.update(share_error=None)
     if notifier is not None:
         # The resolved provider isn't in scope here; the configured share type is what
-        # the service was handed via env (ROBOVAST_SHARE_TYPE), matching the old
-        # controller's ``provider.SHARE_TYPE``.
+        # the service was handed via env (ROBOVAST_SHARE_TYPE), the same name as the
+        # provider's ``SHARE_TYPE``.
         notifier.uploaded(os.environ.get("ROBOVAST_SHARE_TYPE") or "share")
 
 

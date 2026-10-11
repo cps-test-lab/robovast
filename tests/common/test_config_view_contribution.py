@@ -109,7 +109,7 @@ def test_path_contribution_draws_the_path_and_its_endpoints():
 
 def test_goals_are_read_from_the_parameter_the_campaign_named():
     # The campaign chooses what its goal parameter is called and the variation records the
-    # resolved name; guessing a fixed one drew nothing the moment an author picked a third.
+    # resolved name; a view guessing a fixed one draws nothing for a campaign that picks another.
     config = _nav_config()
     config["config"]["waypoints"] = config["config"].pop("goal_poses")
     config["_slot_bindings"]["goal"] = "waypoints"
@@ -120,7 +120,7 @@ def test_goals_are_read_from_the_parameter_the_campaign_named():
 def test_the_endpoints_are_drawn_from_what_a_path_variation_actually_records():
     # Fed from the variation's own update_slots rather than a hand-built fixture, so the key
     # the view reads is the one a variation writes. With a campaign naming its parameters
-    # `robot_start` and `waypoints`, a view reading any other record drew the path alone.
+    # `robot_start` and `waypoints`, a view reading any other record draws the path alone.
     from robovast_nav.variation.path_variation import (PathVariationRandom,
                                                        PathVariationRandomConfig)
 

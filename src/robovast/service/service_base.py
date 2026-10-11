@@ -1758,14 +1758,13 @@ class ServiceBase(RobovastInterface):
         the campaign's own ``_config/<name>.vast``. ``output_callback`` is what puts the
         step-by-step narrative ("[2/4] Executing: …", "✓ …") into whichever campaign log
         handler the caller opened. Without it those lines default to ``print`` and land on
-        the service's stdout, so the phase file held only what modules logged themselves --
-        the campaign log looked empty for the run you had just asked for.
+        the service's stdout, and the campaign log holds only what modules log themselves.
 
         With *state*, those same lines also become the live ``stage`` marker -- see
         :func:`~robovast.execution.control_server.stage_output_callback`. Both callers have
         one, and both are watched from the campaign view, so a re-run narrates itself there
-        exactly as an auto-chained run does; without it a retrigger was the case where the
-        view showed ``postprocessing`` and nothing else for the whole run.
+        exactly as an auto-chained run does rather than showing ``postprocessing`` alone for
+        the whole run.
         """
         from robovast.execution.control_server import \
             stage_output_callback  # pylint: disable=import-outside-toplevel
@@ -5007,10 +5006,10 @@ class ServiceBase(RobovastInterface):
         block = campaign_sim_block(execution)
         started = time.monotonic()
         # Through the exec runner's held query container, never a `docker run` on the
-        # service host: in a controller pod that would run on whatever host the service
-        # happens to sit on -- a different image cache, or no docker at all -- with nothing
-        # in the reply to say the answer did not come from the cluster. Outside a campaign's
-        # composition the cluster has no other runner.
+        # service host: that would run on whatever host the service happens to sit on --
+        # a different image cache, or no docker at all -- with nothing in the reply to say
+        # the answer did not come from the cluster. Outside a campaign's composition the
+        # cluster has no other runner.
         from robovast.common.config_generation import set_container_runner_factory
         from robovast.service.world_query import ExecSlotContainerRunner, _reset_factory
         runner = ExecSlotContainerRunner(

@@ -169,7 +169,7 @@ def test_the_job_budget_has_exactly_one_definition():
     force-killed by Kubernetes while the status still called the run healthy."""
     from robovast.execution.cluster_execution import kubernetes_backend
 
-    # The backend's own former constant is gone, so there is nothing to drift from.
+    # The backend keeps no constant of its own, so there is nothing to drift from.
     assert not hasattr(kubernetes_backend.BatchJobRunner,
                        "DEFAULT_RUN_DEADLINE_SECONDS")
     assert kubernetes_backend.job_deadline_seconds is job_deadline_seconds

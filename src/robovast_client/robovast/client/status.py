@@ -267,10 +267,10 @@ class Status(BaseModel):
     every 1.5 seconds, so anything here is paid for once per campaign on screen, per
     poll, per open tab -- and some of it is computed per read (``health``). What belongs
     here is therefore BOUNDED state and cheap cursors: a phase, a counter, a best-so-far,
-    a batch index. A SERIES does not, however small it looks: ``batch_history`` was one
-    (a row per batch, growing all run long), nothing ever read it, and it was removed in
-    favour of ``GET /campaigns/{id}/search/history`` -- a route fetched only while
-    something is displaying it, keyed on the ``batches_done`` cursor that lives here.
+    a batch index. A SERIES does not, however small it looks: a row per batch grows all
+    run long. The search history is ``GET /campaigns/{id}/search/history`` instead -- a
+    route fetched only while something is displaying it, keyed on the ``batches_done``
+    cursor that lives here.
     The rule, and where a live run view lands, is in ``docs/http_api.rst``.
     """
     # validate_assignment so the controller can assign plain dicts to the typed

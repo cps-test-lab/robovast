@@ -886,8 +886,8 @@ def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False,
 def _plugin_specs_from_vast(vast_path: str) -> list:
     """The ``plugins:`` list (pip requirement specs) from a ``.vast``, or ``[]``.
 
-    Read straight from YAML — not the full validated config — so it also works on an
-    override revision and never fails on an unrelated schema issue.
+    Read straight from YAML — not the full validated config — so it never fails on an
+    unrelated schema issue.
     """
     import yaml  # noqa: PLC0415
     try:
@@ -920,10 +920,10 @@ def ensure_plugins_importable(install_dir: str, vast_path: str | None = None) ->
     service, where ``sys.path`` is process-global and shared by concurrently-running
     campaigns --- see :func:`_add_sys_path`.
 
-    Both in-process consumers must call this. A search extractor did not, which made
-    ``plugins:`` silently useless for one: a local ``./search/x.py:Class`` extractor
-    importing a third-party reader raised ``ModuleNotFoundError`` from the service
-    process no matter what the ``.vast`` declared.
+    Both in-process consumers must call this. One that does not leaves ``plugins:``
+    silently useless to it: a local ``./search/x.py:Class`` extractor importing a
+    third-party reader raises ``ModuleNotFoundError`` from the service process no
+    matter what the ``.vast`` declares.
 
     *vast_path* names the ``.vast`` whose ``plugins:`` to read; when ``None`` the sole
     ``.vast`` directly under *install_dir* is used. Best-effort: a genuinely missing

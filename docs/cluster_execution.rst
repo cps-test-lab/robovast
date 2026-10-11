@@ -1045,15 +1045,15 @@ Caching in-cluster
 ^^^^^^^^^^^^^^^^^^
 
 Builds are solved by **one long-lived BuildKit daemon** (``robovast-buildkitd``), not by a
-BuildKit spawned inside each build pod. The build Job still exists and still stages its own
-context -- it is now a *client* that dials the daemon, which works because ``buildctl --local``
+BuildKit spawned inside each build pod. The build Job stages its own context and is a
+*client* that dials the daemon, which works because ``buildctl --local``
 resolves its paths on the client and streams them over the session.
 
-That daemon keeps its store on a volume, and the store is the point. When every build got a
-fresh BuildKit, two costs were paid every single time and neither looked like anything but a
-slow build: the base image was pulled again (measured at 95-110 s per container, on builds
-where every layer was a cache hit), and ``RUN --mount=type=cache`` was discarded, so a pip
-layer that missed re-downloaded its wheels in full. No registry-side cache can help with
+That daemon keeps its store on a volume, and the store is the point. A fresh BuildKit per
+build pays two costs every time, and neither looks like anything but a slow build: the base
+image is pulled again (on the order of a minute per container, even when every layer is a
+cache hit), and ``RUN --mount=type=cache`` is discarded, so a pip layer that misses
+re-downloads its wheels in full. No registry-side cache can help with
 either -- a cold builder has to materialise the base whatever the registry holds.
 
 Two registry-backed mechanisms sit *above* the daemon's own store:

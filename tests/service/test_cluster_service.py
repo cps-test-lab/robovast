@@ -3,9 +3,8 @@
 """Unit tests for ClusterService's launch behaviour (no cluster needed).
 
 The service drives cluster campaigns **in-process** (one worker thread each) over a
-KubernetesBackend; there is no per-campaign controller pod any more, so these cover
-the launch *hooks* it answers for ServiceBase plus the aux-pod manifest that
-replaced the old controller-pod sidecar.
+KubernetesBackend; there is no per-campaign controller pod, so these cover
+the launch *hooks* it answers for ServiceBase plus the aux-pod manifest.
 """
 
 import datetime
@@ -1257,7 +1256,7 @@ def test_shutdown_leaves_running_campaigns_for_the_successor(cs, monkeypatch):
 
 def test_shutdown_never_shells_out(cs, monkeypatch):
     """Exiting leaves the running campaigns to the successor and touches no container
-    runtime: a teardown by shell would run inside the controller pod, where there is no
+    runtime: a teardown by shell would run inside the service pod, where there is no
     daemon and a container name means nothing. The answer is ClusterService's own hook, not a
     predicate on a shared ``shutdown``.
     """
@@ -1352,7 +1351,7 @@ def test_recording_the_launch_writes_it_into_the_campaign(cs, tmp_path):
     assert (tmp_path / "camp-a" / "_execution" / "launch.yaml").is_file()
 
 
-# -- aux pod (replaces the controller-pod sidecar) --------------------------
+# -- aux pod ---------------------------------------------------------------
 
 def _spec():
     return ContainerSpec(image="ghcr.io/secorolab/scenery_builder:1.2",

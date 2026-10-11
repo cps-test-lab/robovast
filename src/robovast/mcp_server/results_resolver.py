@@ -44,7 +44,7 @@ def resolve_results_dir() -> Path:
 
     Raises:
         ValueError: If that directory does not exist. Not "project not initialized":
-            there is no project to initialize any more — a campaign runs a workspace's
+            there is no project to initialize — a campaign runs a workspace's
             ``.vast`` and results land in the shared root resolved by
             :func:`_campaigns_root`.
     """

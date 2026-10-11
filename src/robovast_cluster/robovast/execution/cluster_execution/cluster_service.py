@@ -2574,8 +2574,7 @@ class ClusterService(ServiceBase):
         **scenario Jobs** running on purpose (see :meth:`_adopts_on_restart`), so this
         must never widen to them. Aux pods are owned by the service pod and thus
         garbage-collected by Kubernetes when it is replaced; this is the backstop for
-        the cases GC misses (e.g. the ownerReference could not be resolved), and the
-        successor to the old launcher-side ``reap_orphaned_runs``. Best-effort.
+        the cases GC misses (e.g. the ownerReference could not be resolved). Best-effort.
         """
         try:
             core = self._k8s()

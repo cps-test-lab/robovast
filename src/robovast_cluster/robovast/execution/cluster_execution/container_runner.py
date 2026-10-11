@@ -204,8 +204,7 @@ def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
     With *campaign* given, deletes only that campaign's aux pods so concurrent
     campaigns are left untouched; otherwise deletes every aux pod. Selected by the
     campaign LABEL rather than by name, so it catches every pod a span created whatever
-    each is called. Backs ``vast cluster jobs-cleanup`` (the successor to the
-    controller-pod reap).
+    each is called. Backs ``vast cluster jobs-cleanup``.
     """
     from kubernetes import client
 
@@ -282,8 +281,7 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
     sidecar are resolved from the service's environment.
 
     *owner_ref* should be the **service pod** so Kubernetes garbage-collects this
-    pod when the service is replaced — the same "dies with its parent" guarantee
-    the old controller-pod sidecar had.
+    pod when the service is replaced: it dies with its parent.
 
     *pull_secret* names an image-pull secret, which a spec naming the *campaign's own*
     image needs: that one points at a private registry, while an aux image may equally be

@@ -2240,8 +2240,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # About to compose (cache miss, or caching disabled). Ensure any variation-plugin
     # packages the .vast declares in ``plugins:`` are installed into the workspace's
     # ``.robovast_plugins/`` dir and on ``sys.path`` before resolving variation types
-    # from entry points. Idempotent: in a controller pod the dir was staged with the
-    # project so this only adjusts ``sys.path``. Skipped when the caller supplies
+    # from entry points. Idempotent: where the dir was staged with the project this
+    # only adjusts ``sys.path``. Skipped when the caller supplies
     # precomputed ``variation_classes``. In the isolated worker this is where the
     # plugin actually gets installed/imported (``_ISOLATED_ENV`` is set, so we reach
     # here rather than re-forking).

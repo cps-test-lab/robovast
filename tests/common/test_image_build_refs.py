@@ -7,7 +7,7 @@ Dockerfile already pins everything a rebuild needs -- the base by digest, both a
 dated snapshot so a rebuild resolves the same versions rather than whatever is current -- but
 those are build ARGs, invisible from outside the build. The labels are what carry them out.
 
-The controller pod that writes execution.yaml ships no docker CLI, so the labels are supplied
+The service that writes execution.yaml ships no docker CLI, so the labels are supplied
 from the registry read the protocol check already makes, rather than from `docker inspect`.
 """
 

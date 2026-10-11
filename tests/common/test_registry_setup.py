@@ -49,10 +49,10 @@ def test_the_build_prefix_is_the_ingress_host():
 
 
 def test_a_configured_prefix_cannot_override_the_in_pod_registry(monkeypatch):
-    """The old escape hatch is gone on purpose.
+    """No configured prefix redirects the in-pod registry, on purpose.
 
-    Pointing builds at an external registry is what required push credentials and made a
-    registry a site prerequisite. The prefix now follows the Ingress, so a stale
+    Pointing builds at an external registry would require push credentials and make a
+    registry a site prerequisite. The prefix follows the Ingress, so a stale
     ``ROBOVAST_REGISTRY_PREFIX`` in someone's .env cannot quietly redirect pushes.
     """
     monkeypatch.setenv("ROBOVAST_REGISTRY_PREFIX", "ghcr.io/someone-else")

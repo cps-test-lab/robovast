@@ -390,7 +390,7 @@ image without pulling it:
    way out of the build — see ``container/pins/``.
 
 All of them reach a campaign's ``_execution/execution.yaml`` as ``image_build_refs``. The
-controller pod that writes the file has no docker CLI, so the block takes the labels the protocol
+service that writes the file has no docker CLI, so the block takes the labels the protocol
 check already read from the registry.
 
 ``org.robovast.roqsim-ref`` is also how a campaign says **which simulator it ran**: the build

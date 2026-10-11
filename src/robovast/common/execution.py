@@ -57,24 +57,23 @@ from .simulators import SIM_CONFIG_FILE, SIM_OVERRIDES_MOUNT, scenario_use_sim_t
 # Dockerfiles as the org.robovast.compat-version label -- one marker, and the CI gate in
 # .github/workflows/image.yml is what keeps it equal to this constant.
 #
-# A **window**, not a single value, and that is the whole point. This was compared with `!=`
-# at every site, so the first bump orphaned every image already published: a campaign whose
-# results pin an image by digest could never be re-run again, even with those exact bytes
-# still sitting in the registry. Since re-running a year-old campaign is a thing robovast is
-# supposed to support, equality was refusing the case it exists for.
+# A **window**, not a single value, and that is the whole point. Compared with `!=`, a bump
+# would orphan every image already published: a campaign whose results pin an image by digest
+# could never be re-run, even with those exact bytes still sitting in the registry. Re-running
+# a year-old campaign is a thing robovast is supposed to support.
 #
-# So the host declares the RANGE it can drive. Bumping the max is now cheap and harmless.
-# Dropping support becomes a separate, deliberate act -- raising the min -- which is also
-# where "we stopped speaking protocol N" gets recorded.
+# So the host declares the RANGE it can drive. Bumping the max is cheap and harmless.
+# Dropping support is a separate, deliberate act -- raising the min -- which is also where
+# "we stopped speaking protocol N" gets recorded.
 #
 # The honesty requirement: the window is a CLAIM. Raise the min when support is genuinely
-# dropped, or this replaces a safe refusal with a broken run. Equality was wrong for the use
-# case, but it was wrong in the safe direction. configs/examples/camera_smoke is the cheap
+# dropped, or this replaces a safe refusal with a broken run. Equality would be wrong for the
+# use case, but wrong in the safe direction. configs/examples/camera_smoke is the cheap
 # way to keep the claim true -- it runs a container and produces an artifact in seconds.
 COMPAT_VERSION = 3
 
 #: The oldest image protocol this host still knows how to drive. Equal to
-#: :data:`COMPAT_VERSION` means "only the current one", which is where equality left us.
+#: :data:`COMPAT_VERSION` means "only the current one".
 MIN_IMAGE_COMPAT = 3
 
 #: Image label carrying the protocol version -- the only marker there is.
@@ -126,7 +125,7 @@ FAMILY_IMAGE_PREFIX = "family:"
 #: retagged, and a rebuild a year from now can read what the original installed and install
 #: exactly that.
 #:
-#: Here rather than beside the build that writes it, because it is now read by two layers that
+#: Here rather than beside the build that writes it, because it is read by two layers that
 #: must not depend on each other -- the service's build code from a local image, and the
 #: cluster's registry client from a layer blob. A second literal in either would be a path that
 #: drifts silently, and the reader would simply find nothing.
@@ -2306,7 +2305,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
         image_labels: ``{role: {label: value}}`` already read for each container's image, when
             the caller has them. The service does -- it reads them from the registry to
             check the container protocol -- and must pass them, because this function runs in
-            the controller pod where the docker probes it would otherwise use cannot work.
+            the service, where the docker probes it would otherwise use cannot work.
         image_digest: The immutable ``repo@sha256:…`` the run pods actually used, when
             known (see ``KubernetesBackend._capture_image_digest``). Recorded as
             ``image_revision`` so a floating ``:latest`` is pinned to the exact image the

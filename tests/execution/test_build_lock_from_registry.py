@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Reading a build lock without a container runtime.
 
-The lock is baked into the image, and the controller pod has no container runtime to inspect a
+The lock is baked into the image, and the service has no container runtime to inspect a
 local copy with. A campaign persists its own copy of the lock, the only one that outlives the
 image, so the lock is read straight out of the registry: the manifest, then the trailing layer
 blobs. No pull, no runtime.

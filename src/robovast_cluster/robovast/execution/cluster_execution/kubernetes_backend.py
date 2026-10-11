@@ -20,8 +20,8 @@
 :class:`~robovast.execution.backends.ExecutionBackend`: it runs **one batch** of a
 campaign as Kubernetes Jobs and leaves results at
 ``<campaign_root>/<config>/<run>/`` so the controller's scoring and store are
-backend-agnostic. It is meant to run **inside the controller pod**
-(a cluster campaign), on the service's own results volume.
+backend-agnostic. It runs **inside the service**, which drives each cluster
+campaign in-process, on the service's own results volume.
 
 The job-manifest toolkit lives here in :class:`BatchJobRunner` (built only via
 :meth:`BatchJobRunner.for_batch`): it composes per-job Kubernetes manifests,
@@ -1521,9 +1521,9 @@ class BatchJobRunner:
         if calibration is None:
             return None
         # One rendering per node and set of figures. The queue asks this for every queued
-        # item on every node on every drain, under its lock, and rendering a manifest per ask
-        # made a pass over a queue of thousands take minutes -- during which no finished run
-        # was replaced and every status read waited. Every job of a batch is the same shape,
+        # item on every node on every drain, under its lock, so rendering a manifest per ask
+        # costs queue length times node count per pass -- during which no finished run is
+        # replaced and every status read waits. Every job of a batch is the same shape,
         # so the answer changes only when the node's figures do; a node's figures are
         # replaced, never mutated, so identity is the test.
         rendered: dict = {}
@@ -3609,7 +3609,7 @@ def _planned_images(runner) -> dict:
 
 
 class KubernetesBackend(ExecutionBackend):
-    """Run batches as Kubernetes Jobs from inside the controller pod.
+    """Run batches as Kubernetes Jobs from inside the service.
 
     Args:
         cluster_config: Reconstructed cluster config (scheduling, host aliases).
@@ -3739,13 +3739,13 @@ class KubernetesBackend(ExecutionBackend):
         """The build lock inside *image*, from what this campaign's runners read. See the base.
 
         A lookup, not a read. The lock has to come from the registry, because the
-        controller pod has no container runtime to inspect a local image with -- but that pod
-        has no Kubernetes client either, so it cannot resolve the pull Secret the registry read
+        service has no container runtime to inspect a local image with -- and this class
+        holds no Kubernetes client, so it cannot resolve the pull Secret the registry read
         needs. A runner can, and does, into the cache this consults.
 
-        Reading it here directly could never work: the client such a read reaches for does not
-        exist on this class, so every call raised and was swallowed into "this image carries no
-        lock" -- indistinguishable from the absence it was meant to fix.
+        A direct read here would fail on every call for want of that client, and a failure
+        swallowed into "this image carries no lock" is indistinguishable from the absence it
+        is meant to report.
         """
         return dict(self._build_lock_cache.get(image) or {})
 

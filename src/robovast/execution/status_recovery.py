@@ -87,9 +87,8 @@ def _runs_from_verdicts(counts: dict, total: int) -> dict:
     ``killed`` — a job an operator stopped by hand — is carried through rather than
     recomputed. It is a subset of ``no_result`` (a killed run delivered nothing, which is
     why it was recorded) and is deliberately **not** in ``failed``: reconstructing a
-    campaign from disk must not turn a human intervention into a trial failure, which is
-    exactly what dropping it did — the live status said ``killed: 1`` and the recovered
-    one said ``0``, for the same campaign.
+    campaign from disk must not turn a human intervention into a trial failure, and the
+    recovered status must report the same ``killed`` count as the live one.
 
     ``invalid`` — a trial the runner threw away after a container restarted under it — is
     carried through on the same terms and kept out of ``failed`` for the same reason. It
