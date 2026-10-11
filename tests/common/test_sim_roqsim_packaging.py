@@ -194,3 +194,18 @@ def test_a_ros_campaign_runs_its_scenario_on_roqsims_clock():
     assert clock("ros2") == "true"
     assert clock("ros2", use_sim_time=False) == "false"
     assert clock("base") == "false"
+
+
+def test_the_control_socket_reaches_the_scenario_and_the_per_job_simulator():
+    """The scenario container is told the same socket as the simulator, and so is a
+    simulator started from a per-job overlay."""
+    from robovast.common.execution import scenario_env
+    from robovast.common.simulators import apply_backend, sim_job_overlay
+    from robovast_sim_roqsim.backend import ROQSIM_CONTROL_URI
+
+    execution = {"mode": "ros2",
+                 "containers": {"simulation": {"backend": "roqsim", "config": "pkg:world"}}}
+    applied = apply_backend(dict(execution))
+    assert scenario_env({"execution": applied})["ROQSIM_CONTROL"] == ROQSIM_CONTROL_URI
+    overlay = sim_job_overlay(execution, execution["containers"]["simulation"])
+    assert overlay["env"]["ROQSIM_CONTROL"] == ROQSIM_CONTROL_URI

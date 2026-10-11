@@ -67,6 +67,14 @@ export interface paths {
          * Get Service Events
          * @description What this service did, from cursor *since* -- durable across restarts.
          *
+         *     ``newest=true`` answers the newest *limit* events instead, in the same order and with
+         *     the same ``next_seq``: what a reader opening the record wants, where a reader holding a
+         *     cursor resumes from it. The two are exclusive, so a request naming both is refused
+         *     rather than having one of them ignored.
+         *
+         *     A log that cannot be read answers 503, never an empty page: an empty record says
+         *     nothing happened, which a broken log cannot know.
+         *
          *     Its own cursor-keyed route rather than a field on a polled payload, per the tiers in
          *     ``docs/http_api.rst``: this grows, and the campaign list is re-sent once a second for
          *     as long as any tab is open.
@@ -1277,6 +1285,9 @@ export interface paths {
          *
          *     Nothing is buffered and no scratch is used: the tree is tarred into the response
          *     as it is read. Decisive for campaigns that run to terabytes.
+         *
+         *     ``part`` (with ``raw=true``) stages one part of a table build for the pod that
+         *     builds it; ``uncompressed=true`` is a plain tar, for a reader inside the cluster.
          */
         get: operations["download_campaign_archive_data_campaigns__campaign_id__archive_get"];
         put?: never;
@@ -4499,7 +4510,8 @@ export interface components {
          * @description A page of the event log, oldest first, with the cursor to resume from.
          *
          *     Oldest first because a caller is resuming a position rather than browsing: it holds
-         *     :attr:`next_seq` and asks for what came after. Presenting newest-first is the reader's job.
+         *     :attr:`next_seq` and asks for what came after. A page asked for with ``newest=true`` is the
+         *     tail of the record in the same order. Presenting newest-first is the reader's job.
          */
         ServiceEvents: {
             /** Events */
@@ -5407,8 +5419,9 @@ export interface operations {
     get_service_events_admin_events_get: {
         parameters: {
             query?: {
-                since?: number;
+                since?: number | null;
                 limit?: number;
+                newest?: boolean;
             };
             header?: never;
             path?: never;
@@ -7406,6 +7419,8 @@ export interface operations {
         parameters: {
             query?: {
                 raw?: boolean;
+                part?: string;
+                uncompressed?: boolean;
             };
             header?: never;
             path: {

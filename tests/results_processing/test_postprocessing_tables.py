@@ -9,6 +9,8 @@ somebody asks a question and gets less than the campaign recorded.
 
 import json
 
+import pytest
+
 from robovast.common.campaign_data import POSTPROCESSING_RECORD
 from robovast.results_processing import postprocessing
 from robovast.results_processing.data_query import query_data_db
@@ -139,3 +141,44 @@ def test_replay_builds_every_table_the_records_can_give(tmp_path):
     assert all(e["files"] for e in entries.values()), "built, not merely looked for"
     assert {"run_health", "postprocessing_steps"} <= set(_manifest(root)["tables"])
     assert (root / POSTPROCESSING_RECORD).is_file()
+
+
+def test_a_record_that_cannot_be_written_fails_postprocessing(tmp_path, monkeypatch):
+    """The record is what says the campaign is postprocessed: a pass that could not write it
+    must not report success while the campaign reads as not postprocessed."""
+    root = _campaign_tree(tmp_path)
+
+    def refuse(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(postprocessing, "_write_postprocessing_provenance_yaml", refuse)
+    ok, message = postprocessing.run_postprocessing(
+        str(tmp_path), campaign=root.name, skip_metadata=True)
+
+    assert ok is False
+    assert "postprocessing record could not be written" in message
+    assert not (root / POSTPROCESSING_RECORD).is_file()
+
+
+def test_the_record_writer_raises_rather_than_skipping(tmp_path):
+    root = tmp_path / "camp"
+    root.mkdir()
+    (root / "_transient").write_text("a file where the directory should be")
+    with pytest.raises(OSError):
+        postprocessing._write_postprocessing_provenance_yaml(str(root), [])  # pylint: disable=protected-access
+
+
+def test_a_write_that_fails_part_way_leaves_no_record(tmp_path, monkeypatch):
+    """A truncated record would read as a finished pass; the record appears whole or not at
+    all."""
+    root = tmp_path / "camp"
+    root.mkdir()
+
+    def fail_part_way(_data, stream, **_kwargs):
+        stream.write("generated_by: robovast\n")
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(postprocessing.yaml, "dump", fail_part_way)
+    with pytest.raises(OSError):
+        postprocessing._write_postprocessing_provenance_yaml(str(root), [])  # pylint: disable=protected-access
+    assert list((root / "_transient").iterdir()) == []

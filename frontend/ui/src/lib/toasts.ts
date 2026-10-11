@@ -10,9 +10,9 @@
 // home of their own -- a campaign's failure reason is on its card, one click from the toast that
 // announced it.
 //
-// The gap this leaves, named because it is real: a REFUSED ACTION ("retrigger refused: ...")
-// exists nowhere but its toast, so when that expires the reason is gone. A durable event log is
-// what closes it; until then, the duration below is the whole of the answer.
+// A REFUSED ACTION ("retrigger refused: ...") has its durable home on the service, not here: the
+// service records every refusal in its event log, which Admin's Service events panel lists. The
+// duration below only carries the reason until someone looks there.
 //
 // Nothing here knows what a campaign is. Callers pass a message; the campaign lifecycle watcher
 // is an ordinary caller with no privileges.

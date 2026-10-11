@@ -3,7 +3,9 @@
 // reopen may have cost rows, `eof` once and to late subscribers too.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { ANY_TABLE, LiveRunFeed, parseBatch, type EventSourceLike, type FeedEvent } from './liveFeed'
+import {
+  ANY_TABLE, LiveRunFeed, parseBatch, streamErrorMessage, type EventSourceLike, type FeedEvent,
+} from './liveFeed'
 
 class FakeSource implements EventSourceLike {
   readyState = 0
@@ -121,8 +123,19 @@ describe('LiveRunFeed', () => {
   it('reports a stream error by its message', () => {
     const poses = heard('sim_poses')
     sockets[0].open()
-    sockets[0].send('streamerror', 'no such run')
+    // JSON-encoded on the wire, as the service sends every frame.
+    sockets[0].send('streamerror', JSON.stringify('no such run'))
     expect(poses).toEqual([{ kind: 'error', message: 'no such run' }])
+  })
+
+  it('reports an unreadable batch to every reader, the whole-run one included', () => {
+    const poses = heard('sim_poses')
+    const any = heard(ANY_TABLE)
+    sockets[0].open()
+    sockets[0].send('batch', '{"rows": []}')
+    expect(poses).toHaveLength(1)
+    expect(poses[0].kind).toBe('error')
+    expect(any).toEqual(poses)
   })
 
   it('replaces a socket that has gone silent', () => {
@@ -144,5 +157,20 @@ describe('LiveRunFeed', () => {
       sockets[0].send('heartbeat', '')
     }
     expect(sockets).toHaveLength(1)
+  })
+})
+
+describe('streamErrorMessage', () => {
+  it('decodes the JSON string the service sends', () => {
+    expect(streamErrorMessage('"the run is not live"')).toBe('the run is not live')
+  })
+
+  it('shows a body that is not a JSON string as it came', () => {
+    expect(streamErrorMessage('no such run')).toBe('no such run')
+    expect(streamErrorMessage('{"detail": "x"}')).toBe('{"detail": "x"}')
+  })
+
+  it('names an empty body rather than showing nothing', () => {
+    expect(streamErrorMessage('')).toBe('the live stream failed')
   })
 })

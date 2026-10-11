@@ -45,20 +45,25 @@ from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any, Mapping, Protocol, runtime_checkable
 
+from robovast.service.interface import Routes
+
 logger = logging.getLogger(__name__)
 
 #: Entry-point group for package-provided service data endpoints.
 ENDPOINT_GROUP = "robovast.service_endpoints"
 
-#: First path segments already owned by core ``/campaigns/{id}/<X>`` routes. A plugin
-#: endpoint whose name starts with one of these is skipped (it would shadow a core route,
-#: which registers first and would win anyway). ``costmap`` is intentionally absent — its
-#: core route was removed, freeing the name for the ``robovast_nav`` plugin.
-RESERVED_CAMPAIGN_ENDPOINTS = frozenset({
-    "status", "stop", "describe", "query", "plots", "panels",
-    "visualizations", "notebook", "archive", "postprocessing", "panel_assets",
-    "scene", "scene_assets",
-})
+
+def core_campaign_segments(routes) -> frozenset:
+    """The first path segments under ``/campaigns/{campaign_id}/`` that *routes* already own.
+
+    Read off the application's own routes rather than kept as a list beside them, so a core
+    route added later is reserved the moment it is registered. A plugin endpoint under one of
+    these segments would be registered after the core route and never reached.
+    """
+    prefix = Routes.campaign("{campaign_id}") + "/"
+    return frozenset(path[len(prefix):].split("/", 1)[0]
+                     for path in (getattr(route, "path", "") for route in routes)
+                     if path.startswith(prefix))
 
 
 @dataclass
@@ -144,12 +149,13 @@ class ServiceEndpoint(Protocol):
         ...
 
 
-def load_service_endpoints() -> "dict[str, ServiceEndpoint]":
+def load_service_endpoints(reserved) -> "dict[str, ServiceEndpoint]":
     """Discover installed ``robovast.service_endpoints`` plugins, keyed by endpoint name.
 
-    Best-effort (a broken plugin is logged and skipped), and it skips any name that would
-    shadow a core route (:data:`RESERVED_CAMPAIGN_ENDPOINTS`) or duplicate an already-loaded
-    endpoint — mirrors :func:`robovast.mcp_server.registry.load_plugins`.
+    Best-effort (a broken plugin is logged and skipped), and it skips any name whose first
+    segment is in *reserved* -- the segments core routes own, :func:`core_campaign_segments`
+    -- or that duplicates an already-loaded endpoint; mirrors
+    :func:`robovast.mcp_server.registry.load_plugins`.
     """
     endpoints: "dict[str, ServiceEndpoint]" = {}
     for ep in entry_points(group=ENDPOINT_GROUP):
@@ -162,7 +168,7 @@ def load_service_endpoints() -> "dict[str, ServiceEndpoint]":
                     ep.name)
                 continue
             name = inst.name
-            if name.split("/", 1)[0] in RESERVED_CAMPAIGN_ENDPOINTS:
+            if name.split("/", 1)[0] in reserved:
                 logger.warning(
                     "service endpoint %r shadows a core campaign route; skipped", name)
                 continue

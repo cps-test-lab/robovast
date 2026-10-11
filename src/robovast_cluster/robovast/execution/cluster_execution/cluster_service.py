@@ -844,6 +844,17 @@ class ClusterService(ServiceBase):
         to order and a rank means something."""
         return True
 
+    def _table_builder(self, campaign_id, campaign_dir, state=None):
+        """Jobs on this cluster, sized from the campaign's record (``table_jobs``)."""
+        from robovast.execution.control_server import stop_checker  # noqa: PLC0415
+
+        from .table_jobs import cluster_pod_builder  # noqa: PLC0415
+        del campaign_id
+        return cluster_pod_builder(
+            str(campaign_dir), namespace=self.namespace, kube_context=self.kube_context,
+            cluster_config=self._cluster_config, admission=self._admission_controller,
+            should_stop=stop_checker(state))
+
     def _admit_scheduling(self, request) -> None:
         """Admit a rank or a hold: see :meth:`_queues_campaigns`."""
         del request

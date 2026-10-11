@@ -90,9 +90,8 @@ def _controller_rbac_manifests(namespace):
 def apply_controller_rbac(namespace="default", kube_context=None):
     """Create/update the service's node-read ClusterRole + binding (idempotent).
 
-    The namespaced permissions moved onto the service's own Role (see
-    :mod:`.service_deploy`) when campaigns stopped running in their own pod; only
-    the cluster-scoped node access is applied here.
+    Only the cluster-scoped node access is applied here; the namespaced permissions are
+    the service's own Role (see :mod:`.service_deploy`).
     """
     from kubernetes import client  # pylint: disable=import-outside-toplevel
     from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
@@ -431,7 +430,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     ensure_nvidia_device_plugin(kube_context=kube_context, gpu_replicas=gpu_replicas,
                                 skip=no_gpu)
 
-    # RBAC for the in-cluster search controller pod (create/monitor jobs).
+    # The service's cluster-scoped node read (see _controller_rbac_manifests).
     apply_controller_rbac(namespace=namespace, kube_context=kube_context)
 
     # Every node's identity, as a schedulable selector, so admission can pin a job to a node
