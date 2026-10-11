@@ -2182,8 +2182,8 @@ def _build_mcp_app(impl: RobovastInterface):
 
     *impl* is handed to the tool layer so a mounted MCP calls the implementation
     **directly** instead of going out over loopback HTTP and back into this same
-    process — which was a wasted round trip per tool call and, once a token was
-    required, a process authenticating to itself.
+    process, which would cost a round trip per tool call and a process authenticating
+    to itself.
     """
     from robovast.mcp_server.server import create_server  # pylint: disable=import-outside-toplevel
     from robovast.mcp_server.service_access import \

@@ -36,9 +36,9 @@ here by what they do:
   will not be done. So when the service says a stopping criterion is about to fire, the cell reads
   **may stop early** instead of a duration — the more useful fact, and the one the duration would
   otherwise misstate — and the ring's arc turns amber beside it. Hovering gives the criterion's own
-  sentence ("not improved for 2 of 3 rounds"). A search bounded only by convergence, which had an
-  empty cell before, now reads **stops on convergence**: no duration is projected, but the
-  mechanism that will end it is named.
+  sentence ("not improved for 2 of 3 rounds"). A search bounded only by convergence reads
+  **stops on convergence**: no duration is projected, but the mechanism that will end it is
+  named.
 
   Only ``no_improvement`` can be "about to fire". It counts rounds, so its distance is real;
   ``target_objective`` and ``metric`` fire on a value that can move any distance in a single round,
@@ -445,10 +445,10 @@ whole reason it exists separately. That log is this process's recent output and 
 pod; these survive a restart, which is when they are most worth having.
 
 What they carry is the two things this app otherwise shows once and forgets. **Refusals**:
-an action the service would not do — a retrigger it could not accept — was composed in the
+an action the service would not do — a retrigger it could not accept — is composed in the
 request that refused it and shown for thirty seconds. And **campaign lifecycle**: the same
-starts, endings and failures the toasts and the OS notifications announce, which until they
-scrolled away were held by nothing. Each row carries the service's own words, the time, the
+starts, endings and failures the toasts and the OS notifications announce, which are gone
+once they scroll away. Each row carries the service's own words, the time, the
 severity, who was refused where they said, and the status the caller got.
 
 Repeats collapse: an identical refusal inside a minute of the last one recorded is counted
@@ -516,10 +516,10 @@ that order alone, and that one is closed while the campaign page is not the one 
 nothing reads it there, and the service orders every campaign it knows about on every tick it
 sends.
 
-The gate is also what stops a hidden page from spending on the service's behalf: before it,
-the Admin page cost a container-registry round trip every minute for as long as the tab was
-open, whichever page you were actually looking at, and each running campaign cost a
-Kubernetes API call every two seconds from a card nobody could see.
+The gate is also what stops a hidden page from spending on the service's behalf: without it,
+the Admin page would cost a container-registry round trip every minute for as long as the tab
+was open, whichever page you were actually looking at, and each running campaign a Kubernetes
+API call every two seconds from a card nobody could see.
 
 **The file open in the config editor is a stronger case than the rest**, because that editor
 autosaves on every keystroke. A buffer holding a file's old contents does not merely show you
@@ -1109,7 +1109,7 @@ The built-in panels:
 
 **Scenario parameters** (``parameters``) — what the trial is given, as YAML, and nothing
 else. Not the ``_``-prefixed keys a variation writes for other readers (``_map_file``,
-``_path``, ``_goal_parameter_name``), and not a preview of each factor's value list with this
+``_path``, ``_slot_bindings``), and not a preview of each factor's value list with this
 configuration's value marked: both would restate in a second notation what the ``.vast`` in
 the next column already says, and the column is too narrow to spend on that.
 

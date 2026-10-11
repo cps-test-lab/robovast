@@ -69,6 +69,19 @@ export function parseBatch(data: string): { table: string; rows: DataRow[] } {
   }
 }
 
+/** A `streamerror` frame's message. The service sends it JSON-encoded, like every other frame; a
+ *  body that is not JSON is shown as it came rather than dropped. */
+export function streamErrorMessage(data: unknown): string {
+  const raw = String(data ?? '')
+  if (!raw) return 'the live stream failed'
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return typeof parsed === 'string' ? parsed : raw
+  } catch {
+    return raw
+  }
+}
+
 export class LiveRunFeed {
   private readonly listeners = new Map<string, Set<FeedListener>>()
   /** Every table some reader ever asked for: what the open socket carries. */
@@ -164,7 +177,7 @@ export class LiveRunFeed {
     })
     es.addEventListener('streamerror', (e) => {
       stamp()
-      this.broadcast({ kind: 'error', message: String(e.data ?? 'the live stream failed') })
+      this.broadcast({ kind: 'error', message: streamErrorMessage(e.data) })
     })
     es.addEventListener('eof', () => {
       this.finished = true
