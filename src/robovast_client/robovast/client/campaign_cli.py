@@ -532,7 +532,7 @@ def wait(campaign, interval, timeout):
         click.echo(
             f"{campaign}: the campaign is STILL RUNNING and nothing is waiting on it now. "
             f"When you are done diagnosing, background `vast campaign wait {campaign}` again, or "
-            f"end it with stop_campaign.", err=True)
+            f"end it with `vast campaign stop {campaign}`.", err=True)
         if finding is not None:
             # A check the simulator says it did NOT run, reported here and only here in the wait:
             # this exit means one check fired, and a reader is entitled to know which others

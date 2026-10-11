@@ -303,7 +303,7 @@ outcomes are numbered above those.
 ``NO_PHASE`` is distinct from ``FAILED`` on purpose: the two send you looking for different
 things. ``STALLED`` and ``HEALTH_FINDING`` end the wait with the campaign still running and the
 run **not** touched; the message says so and names both ways out (re-run this command, or
-``stop_campaign``). A health finding is what a running job's own simulator reported about
+``vast campaign stop``). A health finding is what a running job's own simulator reported about
 itself (:ref:`mcp-health-findings`).
 
 Those two are why this command exists in the form it does. A stalled or wedged campaign never
@@ -329,9 +329,9 @@ When something is wrong
    vast doctor
 
 On a client install it checks what a client has: a stored login, that the service answers,
-that ``vast`` resolves in a fresh login shell, and that the symlink points at a live
-interpreter. A capability you have not installed is reported once, as advisory — you get
-``cluster support: not installed``, and not the ``kubectl`` and ``helm`` that only
+and that ``vast`` resolves in a fresh login shell. A capability you have not installed is
+reported once, as advisory — you get ``cluster support: not installed``, and not the
+``kubectl`` and ``helm`` that only
 ``vast cluster setup`` shells out to, because there is no ``setup`` here to run them.
 A client install lacking them is not a broken one, so they cannot fail the command.
 
