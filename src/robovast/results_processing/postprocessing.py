@@ -517,6 +517,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements,too-many-b
         campaign: Optional[str] = None,
         should_stop=None,
         replay: bool = False,
+        table_builder=None,
 ):
     """Run what ends **one campaign**: its steps, its tables, its provenance, its metadata.
 
@@ -540,6 +541,10 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements,too-many-b
         replay: Clear the campaign's tables and build every table its records can give, for
             every run -- not only the declared ones -- before the campaign-end pass. A
             replay yields the rows a live watcher wrote as the runs went.
+        table_builder: Builds the campaign-end pass's tables elsewhere than in this process
+            -- in parts, on the cluster the runs ran on -- as ``(tables or None for every
+            table) -> compact report``. What it did not build is built in this process, and a
+            failure of it is reported and leaves the building to this process.
 
     Returns:
         ``(success, message)``. A cancelled run returns ``(False, POSTPROCESSING_CANCELLED)``.
@@ -665,6 +670,16 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements,too-many-b
             output(f"  built {done}/{total} run(s)")
 
     problems = []
+    if table_builder is not None:
+        what = "every table" if replay else f"{len(tables)} declared table(s)"
+        output(f"Building {what} in parts on the cluster")
+        try:
+            built = table_builder(None if replay else tables)
+        except Exception as exc:  # pylint: disable=broad-except
+            output(f"✗ the tables could not be built on the cluster, so they are built here: "
+                   f"{exc}")
+        else:
+            output(f"✓ {len(built.compacted)} table(s) built on the cluster, one file each")
     if replay:
         output("Replaying every table the records can give, for every run")
         problems = replay_tables(campaign_dir, progress=_progress)

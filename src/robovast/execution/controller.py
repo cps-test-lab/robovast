@@ -1341,6 +1341,9 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
             output_callback=stage_output_callback(state, logger.info),
             # A stop reaches this phase through the same flag the run loop reads.
             should_stop=stop_checker(state),
+            # Where the runs ran builds the tables, while the campaign still holds its
+            # calibration: a cluster in parts, one Job each.
+            table_builder=backend.table_builder(campaign_root, stop_checker(state)),
         )
         logger.info("Analysis postprocessing: %s", message)
         if state is not None:

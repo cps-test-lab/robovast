@@ -1258,6 +1258,25 @@ Most tables are built when first asked for. The campaign-end pass builds the one
   over a view builds the tables that view reads;
 * ``videos``, when a ``rosbags_to_webm`` entry asks for one.
 
+.. _results-tables-in-parts:
+
+**On a cluster, the runs' tables are built where the runs ran**, in parts, one Job each
+(``cluster_execution.table_jobs``). The runs are split into parts of whole scenario jobs, 100 runs
+each unless ``ROBOVAST_TABLE_PART_RUNS`` says otherwise in the service's environment; each part's
+Job stages only its runs' records from the data plane, builds and compacts its tables, and delivers
+them into the campaign's ``.cache/parts/``, and the service merges the parts into one compacted
+file per table. A part is sized like the campaign's system under test on the node it lands on --
+what the campaign recorded it was given there (``node.calibration_json`` in ``campaign.db``), its
+declaration where the campaign did not calibrate, a campaign's main container where it has no
+system under test -- with as many build workers as it has cores. Read from the record, so a
+postprocessing started later, or after a restart, builds its parts as the campaign-end pass would
+have. A part that runs out of memory takes every part of its size back with it, and what was not
+delivered is built again in parts of half the runs with half the workers, asking for no more CPU
+than those use; memory never grows past the SUT's, and a part of one job's runs with one worker
+that still runs out names that job and ends the attempt. Whatever the Jobs did not build -- a
+failed attempt, or a record that says nothing about how large a part may be -- is built by this
+pass in the service's own process, and the pass says so.
+
 Then it writes two campaign-level tables:
 
 ``run_health``

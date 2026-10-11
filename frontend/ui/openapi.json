@@ -8694,7 +8694,7 @@
     },
     "/data/campaigns/{campaign_id}/archive": {
       "get": {
-        "description": "Stream the campaign as a ``tar.gz``.\n\nBacks ``vast campaign download`` and the web UI's download menu. What comes out is\nthe campaign as this service holds it -- its records, what postprocessing derived,\nand its built tables, so it opens in a notebook without building anything -- or,\nwith ``raw=true``, the records alone, which an import postprocesses afresh.\n\nNothing is buffered and no scratch is used: the tree is tarred into the response\nas it is read. Decisive for campaigns that run to terabytes.",
+        "description": "Stream the campaign as a ``tar.gz``.\n\nBacks ``vast campaign download`` and the web UI's download menu. What comes out is\nthe campaign as this service holds it -- its records, what postprocessing derived,\nand its built tables, so it opens in a notebook without building anything -- or,\nwith ``raw=true``, the records alone, which an import postprocesses afresh.\n\nNothing is buffered and no scratch is used: the tree is tarred into the response\nas it is read. Decisive for campaigns that run to terabytes.\n\n``part`` (with ``raw=true``) stages one part of a table build for the pod that\nbuilds it; ``uncompressed=true`` is a plain tar, for a reader inside the cluster.",
         "operationId": "download_campaign_archive_data_campaigns__campaign_id__archive_get",
         "parameters": [
           {
@@ -8713,6 +8713,26 @@
             "schema": {
               "default": false,
               "title": "Raw",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "part",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Part",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "uncompressed",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Uncompressed",
               "type": "boolean"
             }
           }
