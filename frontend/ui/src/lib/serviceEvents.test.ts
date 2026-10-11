@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { eventTone, hasMore, newestFirst } from './serviceEvents'
+import { eventTone, fetchPanelEvents, hasMore, newestFirst } from './serviceEvents'
 import type { ServiceEvent } from './robovastClient'
 
 const ev = (seq: number): ServiceEvent =>
@@ -42,5 +42,32 @@ describe('eventTone', () => {
     // `kind` is an open vocabulary and severity may widen with it; a panel that threw on an
     // unknown one would black out on the very event somebody upgraded to see.
     expect(eventTone('catastrophe')).toBe('info')
+  })
+})
+
+describe('fetchPanelEvents', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('asks for the newest events rather than the start of the record', async () => {
+    // Read from a cursor at zero, a record longer than one page answers its oldest events,
+    // and the panel would never show what just happened.
+    const fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ events: [], next_seq: 0 }), { status: 200 }))
+    vi.stubGlobal('fetch', fetch)
+    await fetchPanelEvents(50)
+    const [url] = fetch.mock.calls[0] as unknown as [string]
+    const query = new URL(url, 'http://example.invalid').searchParams
+    expect(query.get('newest')).toBe('true')
+    expect(query.get('limit')).toBe('50')
+    expect(query.has('since')).toBe(false)
+  })
+
+  it('rejects with the service\'s sentence when the log cannot be read', async () => {
+    // The panel shows a rejection as an error; an empty page would read "Nothing recorded yet"
+    // over a log that could not be read at all.
+    const detail = 'the event log could not be read: no such table: event'
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ detail }), { status: 503 })))
+    await expect(fetchPanelEvents(50)).rejects.toMatchObject({ status: 503, message: detail })
   })
 })

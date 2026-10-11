@@ -8,8 +8,8 @@ import Chip from '@mui/material/Chip'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 
-import { robovast, type ServiceEvent } from '@/lib/robovastClient'
-import { eventTone, hasMore, newestFirst } from '@/lib/serviceEvents'
+import type { ServiceEvent } from '@/lib/robovastClient'
+import { eventTone, fetchPanelEvents, hasMore, newestFirst } from '@/lib/serviceEvents'
 
 // What the service did, kept where a restart cannot take it.
 //
@@ -23,8 +23,9 @@ import { eventTone, hasMore, newestFirst } from '@/lib/serviceEvents'
 // Rendered by severity and kind rather than by a list of the kinds it knows, so a kind added
 // on the server needs no change here.
 //
-// Newest first here, though the route serves oldest-first from a cursor: a reader resuming a
-// position wants what came after it, and a person opening a panel wants what just happened.
+// The newest events, shown newest first, though the route serves oldest-first from a cursor: a
+// reader resuming a position wants what came after it, and a person opening a panel wants what
+// just happened -- so the panel asks for the tail of the record, not its beginning.
 
 function when(at: number): string {
   return new Date(at * 1000).toLocaleString()
@@ -79,7 +80,7 @@ export function ServiceEventsPanel() {
   const [limit, setLimit] = useState(50)
   const events = useQuery({
     queryKey: ['service-events', limit],
-    queryFn: () => robovast.serviceEvents(0, limit),
+    queryFn: () => fetchPanelEvents(limit),
   })
 
   if (events.isPending) return <CircularProgress size={20} />

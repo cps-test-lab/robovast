@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""``vast exec wait`` — the way a caller waits for a campaign without holding a request.
+"""``vast campaign wait`` — the way a caller waits for a campaign without holding a request.
 
 An agent harness can background a shell command and be notified when it exits; it cannot
 do that with an MCP call, which occupies the conversation for as long as it blocks. For a
@@ -165,6 +165,8 @@ def test_a_stall_ends_the_wait_with_its_own_code(statuses):
     assert "no progress for" in result.output
     # "the waiter returned" must not read as "the run ended".
     assert "STILL RUNNING" in result.output
+    # The way out is a verb this CLI has, not the MCP tool of the same purpose.
+    assert "vast campaign stop c1" in result.output
 
 
 def test_a_stall_that_was_already_true_is_not_news(statuses):

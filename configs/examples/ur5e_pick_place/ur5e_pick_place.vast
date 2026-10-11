@@ -16,53 +16,22 @@ metadata:
              grasping, perception-noise]
 
 configuration:
-# A configuration name may carry no underscores, spaces or periods (schema rule), hence `noise`
-# -- the FACTOR keeps its full name.
-- name: noise
+- name: noise  # a configuration name carries no underscores
   variations:
-  # A `sim:` override, not a scenario parameter: the noise is a property of the WORLD, and the
-  # roqsim backend mounts the campaign's overrides as a document and hands the simulator
-  # `--override`. So the sweep needs no plumbing through the scenario at all.
-  #
-  # The path is `components.<entity>.<plugin>.<key>`. An override matching nothing is refused
-  # outright, which is the good case -- the bad one is a path that is accepted and lands nowhere.
-  #
-  # 0.0 is the control: it isolates how much of a failure is the grasp and the arm rather than the
-  # perception. Only the error component ACROSS the jaws spends the clearance, so the levels run
-  # well past 13 mm -- at 28 mm per axis the across-jaw component exceeds the budget often enough
-  # that failure is systematic rather than incidental.
+  # The noise is a property of the world, so it is a `sim:` override and needs no scenario parameter.
+  # 0.0 is the control; only the across-jaw component spends the clearance, so the levels pass 13 mm.
   - ParameterVariationList:
       sim: components.ur5e.object_detector.position_stddev
       values: [0.0, 0.008, 0.016, 0.028]
 
 execution:
-  # The robot description MoveIt plans against, DERIVED from the world the simulator loads rather
-  # than committed beside it: `roqsim export moveit` writes all six files move_group needs -- the
-  # URDF and its meshes, the SRDF with a sampled collision matrix, and the four YAMLs. The outputs
-  # are appended to `run_files` and content-hashed into the configuration's identity, and the step
-  # is skipped when nothing it reads has changed, so a stale description cannot happen.
-  #
-  # `--root-link base`: the detector reports in the MuJoCo body `base`, and that string is also its
-  # published `frame_id`; the UR arms have no `base_link` body at all. Exported under the default
-  # name, detections and MoveIt's planning frame would name the same frame differently, so every
-  # goal would need a transform that does not exist.
-  #
-  # `--tip-site pinch` ends the arm chain at the gripper's own grasp site instead of the flange, so
-  # a goal for the fingertips is not an offset from the flange with every orientation tolerance
-  # multiplied by that lever arm.
-  #
-  # `image:` is SYMBOLIC, so this names no registry: the deployment decides which project serves
-  # `robovast-roqsim`, the image carrying both roqsim and the exporter.
-  #
-  # `inputs` names the whole `world/` directory rather than the world file alone, because the world
-  # spawns a prop that lives beside it and the generator stages only what it is given. The
-  # reference inside the world resolves against the world's own directory wherever it is staged, so
-  # the same file compiles here and in the simulator.
+  # The MoveIt description is derived from the world the simulator loads, so the two cannot drift.
+  # The detector reports in the body `base`; `pinch` ends the chain at the grasp site, not the flange.
   generate:
   - shell:
       out: moveit/gen
       image: family:robovast-roqsim
-      inputs: ["world"]
+      inputs: ["world"]  # the whole directory: the world spawns a prop that lives beside it
       command: >-
         bash -lc "source /ws/install/setup.bash &&
         roqsim export moveit --world {inputs[0]}/ur5e_pick_place.yaml --out {out}
@@ -70,85 +39,51 @@ execution:
         --manifest {out}/.generated.json --check"
 
   containers:
-  # The simulator, in a container of its own, running roqsim's ordinary CLI -- the same command
-  # that debugs this world by hand.
     simulation:
       backend: roqsim
       config: world/ur5e_pick_place.yaml
-      # Measured over a full sweep, with headroom left above the measurement. An example's
-      # reservations get copied, so they should be the ones a reader ought to copy: over-reserving
-      # costs nothing on an idle cluster and a multiple of the throughput on a busy one, on every job
-      # of every sweep.
       resources:
         cpu: 1
         memory: 1Gi
 
-  # The system under test: move_group and robot_state_publisher.
-  #
-  # `family:robovast-roqsim` rather than the default member, because MoveIt's SERVERS ship in the
-  # roqsim flavour -- what executes a MoveIt trajectory is roqsim's own bridge. SYMBOLIC, so it
-  # still names no registry. Nothing in this file declares `system_packages`: the campaign builds
-  # no image of its own, and the sut runs one the node has already pulled for the simulator.
-    sut:
-      image: family:robovast-roqsim
-      # The most generous of the three: move_group's planning bursts are what this has to absorb.
+    sut:  # move_group and robot_state_publisher
+      image: family:robovast-roqsim  # MoveIt's servers ship in the roqsim member
       resources:
-        cpu: 2
+        cpu: 2  # absorbs move_group's planning bursts
         memory: 1Gi
 
-  # The trial and the measurement, nothing else. The DEFAULT image: `moveit_msgs` is in the base,
-  # and a MoveGroup client needs the messages, not the servers.
-    scenario:
+    scenario:  # the default image: a MoveGroup client needs the messages, not the servers
       resources:
         cpu: 1
         memory: 512Mi
 
   mode: ros2
-  # The outcome is a coin weighted by the noise draw, so the repetitions have to separate rates
-  # rather than confirm an outcome: 3 cannot tell a 30% failure rate from a 60% one. 4 x 5 = 20
-  # runs still finishes in minutes.
-  runs: 5
+  runs: 5  # enough to separate failure rates, not only to confirm an outcome
   scenario_file: scenario.osc
-  # Per-extension globs. NOT `files/*`: that pattern crosses `/` and sweeps `__pycache__/*.pyc`
-  # into the configuration's identity hash, so stale bytecode changes what looks like the same
-  # configuration.
+  # Per-extension globs: `files/*` would sweep `__pycache__` into the configuration's identity.
   run_files:
   - "files/*.py"
   - "moveit/*.py"
   - "world/*.yaml"
   - "world/*.xml"
-  # The generated description. The meshes are named separately because the URDF references them by
-  # path: without them move_group loads a robot with NO collision geometry and plans straight
-  # through the bench, which is a wrong answer rather than a crash.
   - "moveit/gen/*.urdf"
   - "moveit/gen/*.srdf"
   - "moveit/gen/*.yaml"
-  - "moveit/gen/meshes/*.stl"
-  # Generous, and it has to be: a trial is ~30 s of arm motion, but move_group takes the better
-  # part of a minute to come up (planners, kinematics plugin, the planning scene).
-  timeout: 900
+  - "moveit/gen/meshes/*.stl"  # without them move_group plans through the bench
+  timeout: 900  # move_group takes most of a minute to come up
 
-# The box's own trajectory, so a failure can be READ rather than guessed at: `out.csv` says the box
-# never rose, and this says where it was while the arm was busy not lifting it. `out.csv` itself
-# needs no step here -- a CSV in the run directory is a table named after the file.
-#
-# `require:` makes a missing frame a loud failure instead of an empty table. The box is the frame
-# the verdict is built from, so a run that recorded no box pose measured nothing at all.
-# What every run's bag holds. Everything, by default; use_sim_time stamps each message with
-# the simulator's clock, which is the one move_group plans on.
 recording:
   ros2:
-    use_sim_time: true
+    use_sim_time: true  # stamps the bag on the clock move_group plans on
 
+# The box's trajectory, so a failure can be read; a run that recorded no box pose measured nothing.
 results_processing:
   postprocessing:
   - rosbags_tf_to_csv:
       frames: all
       require: [graspable_box]
 
-# Replay one run. Three processes have to be read together to see what happened -- the trial's
-# phase, move_group's planner, and the simulator -- and the merged log is the only place they share
-# a timeline. Without it a failure in any of them looks identical from outside: nothing moved.
+# The trial, move_group and the simulator share a timeline only in the merged log.
 visualization:
   results:
     run_view:

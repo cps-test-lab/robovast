@@ -1131,6 +1131,17 @@ def _no_pod(cs, monkeypatch, tmp_path, files):
         path.write_bytes(blob)
 
 
+def test_a_job_the_admission_queue_plans_is_queued(cs):
+    from robovast.execution.cluster_execution.node_admission import PLANNED
+
+    assert cs._job_is_queued("camp", "camp-batch0-9") is False, "no queue, nothing queued"
+    cs._admission = types.SimpleNamespace(
+        states=lambda owner: {"camp-batch0-9": PLANNED} if owner == "camp" else {})
+    assert cs._job_is_queued("camp", "camp-batch0-9") is True
+    assert cs._job_is_queued("other", "camp-batch0-9") is False
+    assert cs._job_is_queued("camp", "camp-batch0-8") is False
+
+
 # -- stop (terminates in-flight cluster workloads) --------------------------
 
 def _stop_state(flagged, phase=Phase.RUNNING):
