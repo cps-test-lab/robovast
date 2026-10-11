@@ -383,6 +383,10 @@ Where the tables come from
      - ``run_log``, ``scenario_timestamps``, ``resource_usage``, ``system_usage``,
        ``run_clock``
      - a job's container logs, resource samples and infrastructure recording, cut to each run
+   * - Ground truth
+     - ``ground_truth_poses``
+     - the pose table the campaign's simulator names: ``sim_poses`` or ``poses``
+       (:ref:`below <ground-truth-table>`)
    * - **Authored files**
      - one per file stem: ``behaviors``, ``nav2_behaviors``, a scenario's ``out``, …
      - every ``*.csv`` and ``*.jsonl`` below a run directory
@@ -660,6 +664,43 @@ notebooks — all want a heading and none of them should reimplement quaternion 
 JavaScript and pandas separately. It is a projection: correct for a body in the plane, and the
 quaternion is the one to read for a body that has left it.
 
+.. _ground-truth-table:
+
+**Ground truth is one table,** ``ground_truth_poses``: where the robot truly was, in the world
+frame, whichever simulator ran the run. Each simulator has its own producer. One that records
+its own state has every body's world pose from inside the simulation; one that does not
+publishes the true pose on ``/tf`` as a leaf frame beside the localization tree, named
+``<robot>_base_link_gt`` by convention. The table reads the one the campaign's simulator backend
+names (its ``ground_truth`` hook, :ref:`simulators`), so an analysis reads ground truth without
+knowing the simulator:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Source (``ground_truth`` in ``_execution/tables.yaml``)
+     - Rows
+   * - ``{table: sim_poses, entity_kind: robot}`` -- roqsim
+     - the bodies of the entities ``sim_entities`` lists as ``robot``
+   * - ``{table: poses, frame_suffix: _gt}`` -- the default, for a backend that names none or a
+       campaign with no backend (Gazebo started by the scenario)
+     - the ``poses`` frames whose name ends in ``_gt``; the frame must be extracted
+       (``rosbags_tf_to_csv`` ``frames``) and is worth ``require``-ing
+
+The columns are the pose contract's, plus ``source_table`` naming the table the rows came from.
+``timestamp`` is the time the pose was true, in sim seconds -- the simulator's own sample time,
+or the ground-truth transform's ``stamp`` -- so the table carries no ``stamp`` and is safe to
+difference; ``twist.*`` is NULL where the source is ``/tf``. A run whose source has no such frame
+gets no rows and a reason naming the frames its source does have, not an empty table that reads
+as a robot that never moved. ``pose_track_view`` leaves it out: its rows are already tracks there,
+under the table they came from.
+
+.. code-block:: sql
+
+   SELECT config_name, run_id, frame, max(timestamp) - min(timestamp) AS duration_s
+   FROM ground_truth_poses
+   GROUP BY config_name, run_id, frame;
+
 .. _clock-map:
 
 Wall → sim: the clock map
@@ -936,6 +977,10 @@ queryable live and the ``runs`` table and ``run_view`` are built from those
 rows rather than by re-parsing every ``test.xml`` — see
 :ref:`the campaign store schema <campaign-store>`.
 
+A run's status is never read from its Job. On a cluster a failed trial fails its Job too,
+and a Job can fail without a trial having failed; how each way a trial ends maps onto its
+Job and its status is in :ref:`cluster-trial-outcomes`.
+
 .. _stopping-one-job:
 
 A run somebody stopped: ``killed``
@@ -1005,6 +1050,8 @@ A campaign whose archive has no ``_transient`` cannot be checked this way, and s
 the log rather than reporting a complete design it cannot vouch for.
 
 
+.. _results-invalid:
+
 A trial the runner threw away: ``invalid``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -1013,6 +1060,10 @@ The simulator (or the system under test) took the run's state with it; the conta
 kubelet starts in its place runs no workload, and the runner ends the job as soon as it reads
 the restart off the pod. Whatever verdict the scenario reached in between describes a trial
 that had already lost its process.
+
+The scenario container itself is not restarted, but an OOM kill of it is read the same way:
+the kill takes its post-run with it, so the pod's uploader waits for a marker that never
+comes, and the runner ends the job rather than letting it run on to its deadline.
 
 **It is the one status that overrides a written verdict**, and that inverts the rule stated
 for ``killed`` just above. The inversion is the whole reason it is a separate kind rather
@@ -1123,12 +1174,15 @@ tables anywhere:
      - {type: tf_to_csv, frames: all, require: [base_link]}
      - {type: action_to_csv, action: navigate_to_pose}
    containers: [robovast, simulation, sut]
+   ground_truth: {table: sim_poses, entity_kind: robot}
 
 ``groups`` is the entries grouped by recording (``rosbag2`` for the run's own, ``logs/rosout_bag``
 for the job's); ``containers`` names the containers the campaign runs, which is how a container
 that recorded nothing is reported rather than silently absent from ``run_log`` and
-``resource_usage``. A configured handler replaces the default for its topics, and the rest of the
-recording keeps its defaults.
+``resource_usage``; ``ground_truth`` is where the campaign's simulator backend says its
+:ref:`ground truth <ground-truth-table>` comes from, absent for the ``/tf`` convention. A
+configured handler replaces the default for its topics, and the rest of the recording keeps its
+defaults.
 
 .. list-table::
    :header-rows: 1
@@ -1258,6 +1312,25 @@ Most tables are built when first asked for. The campaign-end pass builds the one
   over a view builds the tables that view reads;
 * ``videos``, when a ``rosbags_to_webm`` entry asks for one.
 
+.. _results-tables-in-parts:
+
+**On a cluster, the runs' tables are built where the runs ran**, in parts, one Job each
+(``cluster_execution.table_jobs``). The runs are split into parts of whole scenario jobs, 100 runs
+each unless ``ROBOVAST_TABLE_PART_RUNS`` says otherwise in the service's environment; each part's
+Job stages only its runs' records from the data plane, builds and compacts its tables, and delivers
+them into the campaign's ``.cache/parts/``, and the service merges the parts into one compacted
+file per table. A part is sized like the campaign's system under test on the node it lands on --
+what the campaign recorded it was given there (``node.calibration_json`` in ``campaign.db``), its
+declaration where the campaign did not calibrate, a campaign's main container where it has no
+system under test -- with as many build workers as it has cores. Read from the record, so a
+postprocessing started later, or after a restart, builds its parts as the campaign-end pass would
+have. A part that runs out of memory takes every part of its size back with it, and what was not
+delivered is built again in parts of half the runs with half the workers, asking for no more CPU
+than those use; memory never grows past the SUT's, and a part of one job's runs with one worker
+that still runs out names that job and ends the attempt. Whatever the Jobs did not build -- a
+failed attempt, or a record that says nothing about how large a part may be -- is built by this
+pass in the service's own process, and the pass says so.
+
 Then it writes two campaign-level tables:
 
 ``run_health``
@@ -1277,7 +1350,10 @@ Then it writes two campaign-level tables:
 
 A table that could not be built for some run **fails postprocessing**, naming the table, the run
 and the reason: "postprocessed" means what the campaign declares is there. The records are
-untouched, so running it again builds again.
+untouched, so running it again builds again. The pass ends by writing
+``_transient/postprocessing.yaml``, the record that says the campaign is postprocessed; a record
+that cannot be written fails postprocessing too, rather than leaving a campaign reported as done
+that reads as not postprocessed.
 
 **A failure here does not fail the campaign.** Its runs are the deliverable and remain
 downloadable; the campaign stays ``finished`` and the failure is recorded on its own durable

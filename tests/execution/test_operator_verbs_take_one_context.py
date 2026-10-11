@@ -40,3 +40,23 @@ def test_the_monitor_watches_one_context(args, expected):
         result = CliRunner().invoke(cluster_cli.monitor, ["--once", *args])
     assert result.exit_code == 0, result.output
     assert seen == [expected]
+
+
+def test_cleanup_without_a_usable_kubeconfig_names_why(monkeypatch):
+    """The loader's own refusal reaches the operator. A client built by swallowing it was
+    ``None``, and the access check then reported an attribute error on ``None`` instead of
+    the missing configuration."""
+    from robovast.execution.cluster_execution import kube_client, kubernetes
+
+    def no_config(context=None):
+        raise RuntimeError("no Kubernetes configuration available: not running inside a "
+                           "cluster; and no usable host kubeconfig")
+
+    checked = []
+    monkeypatch.setattr(kube_client, "load_kube_config", no_config)
+    monkeypatch.setattr(kubernetes, "check_kubernetes_access",
+                        lambda *a, **kw: checked.append(a) or (True, ""))
+    result = CliRunner().invoke(cluster_cli.run_cleanup, ["-x", "missing"])
+    assert result.exit_code != 0
+    assert "no Kubernetes configuration available" in result.output
+    assert not checked

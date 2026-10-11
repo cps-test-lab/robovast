@@ -800,3 +800,28 @@ def test_a_ros_shape_leaves_the_main_containers_world_alone(monkeypatch):
     manifest = r.create_job_manifest(job, total_jobs=1)
     main = _env_dict(_main_of(manifest))
     assert main["ROQSIM_WORLD"] == "/config/worlds/default.yaml"
+
+
+def test_the_roqsim_control_socket_reaches_both_containers_on_a_shared_mount(monkeypatch):
+    """The ROS shape runs ``roqsim sim`` in the simulation sidecar and the scenario in the main
+    container; the scenario reaches the simulator over its control socket, so both are told the
+    same URI and both mount the directory it names."""
+    import pytest
+    from importlib.metadata import entry_points
+
+    from robovast.common.execution import IPC_DIR
+    from robovast.common.simulators import SIMULATOR_GROUP, apply_backend
+
+    if "roqsim" not in {ep.name for ep in entry_points().select(group=SIMULATOR_GROUP)}:
+        pytest.skip("the 'roqsim' extra is not installed")
+    execution = apply_backend({"mode": "ros2", "containers": {
+        "scenario": {"image": "img:scenario"},
+        "simulation": {"backend": "roqsim", "config": "pkg:world", "image": "img:sim"}}})
+    r = _runner(monkeypatch, execution=execution,
+                configs=[{"name": "cfgA", "sim": {"config": "pkg:world"}}])
+    manifest = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
+
+    uri = f"ipc://{IPC_DIR}/roqsim-control.sock"
+    for container in (_main_of(manifest), _sidecar(manifest, "simulation")):
+        assert _env_dict(container)["ROQSIM_CONTROL"] == uri
+        assert IPC_DIR in {m["mountPath"] for m in container["volumeMounts"]}

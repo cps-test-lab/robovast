@@ -18,9 +18,9 @@
 
 ``execution.runs`` spends the same number of runs on every cell. On a search that is
 mostly waste: a cell whose runs all agree was decided by its first one, and the runs
-that follow buy nothing. Measured on a quadrotor search campaign — 3 of 32
-configurations produced a mixed outcome across 5 repetitions, so 145 of 160 runs each
-bought a single bit that one run had already established.
+that follow buy nothing. Where most cells produce the same outcome on every
+repetition, most of the runs each buy a single bit that one run had already
+established.
 
 **A policy layer, not a strategy.** It runs between :meth:`SearchStrategy.ask` and
 composition, so every strategy gets it without knowing it exists — the alternative,
@@ -133,8 +133,7 @@ def build_repetition_policy(cfg, search_space: dict,
     """Build the policy for a ``search.repetitions`` block, or ``None`` when absent.
 
     ``None`` is not a degenerate policy but the absence of one: the controller then
-    leaves ``n_reps`` alone and every cell runs ``execution.runs`` times, exactly as
-    before this existed.
+    leaves ``n_reps`` alone and every cell runs ``execution.runs`` times.
     """
     if cfg is None:
         return None

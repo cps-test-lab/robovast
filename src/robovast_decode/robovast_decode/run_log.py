@@ -29,11 +29,10 @@ A run's output arrives twice and in two shapes, and neither alone is the log:
 * the ``rosout`` table -- ``/rosout`` from the job's wall-time recording, structured: level,
   node, and the source location.
 
-**They overlap almost completely.** Measured on a three-container campaign, 473 of 521
-rosout rows are the same event as a line in a ``system*.log``, because a launch container
-forwards its nodes' output to stdout as well. Concatenating the two sources would therefore report most
-of the run twice. So the merge is a *join*, and the join is what makes it a log rather
-than two piles of lines.
+**They overlap almost completely.** Most rosout rows are the same event as a line in a
+``system*.log``, because a launch container forwards its nodes' output to stdout as well.
+Concatenating the two sources would therefore report most of the run twice. So the merge
+is a *join*, and the join is what makes it a log rather than two piles of lines.
 
 The join also supplies something neither source has on its own: ``/rosout`` carries the
 node name but not the container the node ran in, and the container is what a reader filters
@@ -49,7 +48,7 @@ Timestamps are wall throughout -- sim time is added from a
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import log_summary, run_slices
@@ -122,10 +121,10 @@ class LogRecord:
         table:
 
         * The timestamp axis must be the **producer's** stamp on both sides. Keying rosout
-          on the bag's *receive* time instead matched **0 of 521** rows on the campaign this
-          was measured against, because the transport delay (~0.1 ms) puts every pair on
-          different nanoseconds. With the producer's stamp, 473 match exactly — and a
-          proximity window on top of that adds nothing, so there is none.
+          on the bag's *receive* time instead matches essentially nothing, because the
+          transport delay puts every pair on different nanoseconds. With the producer's
+          stamp the twins match exactly — and a proximity window on top of that adds
+          nothing, so there is none.
         * Only the message's **first** line, because the two sources disagree about line
           structure: a multi-line message is one rosout row and N stdout lines.
         """
@@ -151,35 +150,6 @@ class MergeStats:
     node_attributed: int = 0
     rows: int = 0
     containers: List[str] = field(default_factory=list)
-
-    #: Counted per RUN by the caller, from the rows it keeps — so it is the one field
-    #: :meth:`add_job` must not take from a job's stats.
-    _PER_RUN_FIELDS = ("rows",)
-
-    def add_job(self, other: "MergeStats") -> None:
-        """Fold one job's stats into these campaign totals.
-
-        Driven by the dataclass fields rather than a written-out list of additions, because
-        such a list drops a counter added to the class later without saying so — and the
-        summary then reports zero however much the merge did, which is the exact opposite of
-        what these counters exist for.
-        """
-        for spec in fields(self):
-            if spec.name in self._PER_RUN_FIELDS:
-                continue
-            if spec.name == "containers":
-                for name in other.containers:
-                    if name not in self.containers:
-                        self.containers.append(name)
-            else:
-                setattr(self, spec.name, getattr(self, spec.name) + getattr(other, spec.name))
-
-    def summary(self) -> str:
-        return (f"{self.rows} rows "
-                f"({self.rosout_records} rosout, {self.stdout_records} stdout from "
-                f"{self.stdout_lines} lines, {self.matched} matched, "
-                f"{self.node_attributed} by node) "
-                f"across {len(self.containers)} container(s)")
 
 
 def container_of(filename: str) -> Optional[str]:
@@ -296,9 +266,7 @@ def attribute_containers_by_node(records: Sequence[LogRecord],
 
     The node is still named, though, and the *same node's* other lines were placed. A node runs
     in one container, so that is where this line ran too. This is why one line of a node can
-    lack a container while the next one has it — ``rosbag2_recorder`` was attributed 22 times
-    and blank 11 times in a single measured run. Across 21 campaigns the pass resolves 534 of
-    539 blanks.
+    lack a container while the next one has it, and why this pass resolves most such blanks.
 
     Evidence rather than a guess, and the guard is what keeps it so: a node seen in two
     containers is left blank. ``entrypoint`` really does run in every one of them, and a
@@ -420,9 +388,9 @@ def collect_job_records(job_dir: str, rosout_rows: Iterable[dict] = (),
     merged = merge_records(stdout_records, rosout, stats)
 
     # The last resort, for what neither the join nor the node evidence could place. Rows with no
-    # stdout twin are common (614 of 1256 on a measured single-container campaign); most now
-    # learn their container from another line of the same node, and what reaches here is a node
-    # whose output was relayed to no captured stdout *at all*, so nothing places any of it.
+    # stdout twin are common; most learn their container from another line of the same node, and
+    # what reaches here is a node whose output was relayed to no captured stdout *at all*, so
+    # nothing places any of it.
     #
     # Filled in only when the *campaign* declares one container -- see the docstring for why the
     # number of log files is not the same question. The logs found must agree, so a campaign

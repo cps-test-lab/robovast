@@ -27,7 +27,6 @@ import logging
 from fastmcp import FastMCP
 
 from robovast.mcp_server import service_access
-from robovast.mcp_server.service_access import NO_SERVICE
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +114,8 @@ def create_upload(address: str, executable: bool = False) -> dict:
         # side-channel URL in this package (files.py, execution.py, results.py) resolves
         # itself the same way rather than depending on a layer above it.
         grant.url = service_access.web_url(client, Routes.upload(grant.token))
-    return grant.model_dump()
+    # Omitted, not empty, when nobody can name an origin: an empty link reads as one to use.
+    return grant.model_dump(exclude={"url"} if not grant.url else None)
 
 
 #: Shared note for the two tools that take *address*. Written once: the two make the same
@@ -218,8 +218,7 @@ def validate_project(address: str, check_world: bool = True,
     ``search_docs("build fails schema cannot catch")`` first.
 
     **Two checks run a container**, each catching a failure otherwise met per trial, after
-    the pull. Both held: a repeat is ~1.5–2.5 s, a cold one ~2–3 s
-    local / 7–15 s cluster.
+    the pull. Both run in a held container, so a repeat costs less than the first.
 
     - ``check_world``: does the world load and its model compile? ``world`` problems carry
       the simulator's own message.
@@ -392,8 +391,9 @@ def describe_world(address: str, targets: str = "", entities: bool = False) -> d
 
 
 def _resolved_request(address: str):
-    """*address* -> ``(client, ExecRequest)`` with no ``command`` set yet, or raise
-    ``ValueError`` naming why (no address, no service).
+    """*address* -> ``(client, ExecRequest)`` with no ``command`` set yet; raises
+    ``ValueError`` for an address that names no workspace and
+    :class:`~robovast.mcp_server.service_access.NoService` when no service answers.
     """
     from robovast.service.interface import ExecRequest
     from robovast.service.project_push import _resolve_workspace_id
@@ -402,9 +402,7 @@ def _resolved_request(address: str):
         raise ValueError(
             "this needs a workspace address (/sources/<workspace_id>/<path>): the answer "
             "comes from the campaign's own image, which only the service knows how to reach")
-    client = service_access.service_client()
-    if client is None:
-        raise ValueError(NO_SERVICE)
+    client = service_access.require_service()
     workspace_id, rel_path = target
     resolved_id = _resolve_workspace_id(client, workspace_id)
     return client, ExecRequest(workspace_id=resolved_id, config_path=rel_path)
@@ -420,9 +418,8 @@ def _exec_json(client, request, command: str, container: str = "") -> dict:
     Always ``query=True``: these are read-only questions put to an image, so they run in
     the service's query pool. Two reasons. A one-shot exec discards the held container by
     design, so a call here would destroy the container its caller is debugging in. And the
-    pool *holds* the container, so a second
-    question about the same project costs an exec rather than a container start -- measured
-    at ~0.5 s against 6-15 s on the cluster.
+    pool *holds* the container, so a second question about the same project costs an exec
+    rather than a container start.
 
     *container* names which one answers, because they are different images: ``roqsim``
     lives in the simulator's and ``scenario_execution`` in the scenario's.
@@ -449,9 +446,8 @@ def describe_scenario(address: str, scenario_path: str) -> dict:
     container_path = f"/sources/{request.workspace_id}/{scenario_path}"
     payload = _exec_json(
         client, request,
-        # ``python3``: a declared base image has no ``python`` (see image_catalog's
-        # ``_COMMANDS``), so this failed for every project that does not build its
-        # scenario image -- which is most of them.
+        # ``python3``: a declared base image has no ``python`` (as ``CATALOG_COMMANDS`` in
+        # ``robovast.service.image_catalog`` also assumes).
         f"python3 -m scenario_execution.introspection describe {container_path}",
         container="scenario")
     image = client.resolve_image(
@@ -469,14 +465,11 @@ def get_world_body_tree(address: str, world_path: str, pattern: str) -> dict:
     container_path = f"/sources/{request.workspace_id}/{world_path}"
     payload = _exec_json(
         client, request,
-        # No `--json`: `roqsim scenes describe` has no such flag and argparse refuses the whole
-        # command over it (its answer is JSON either way), so this tool could never once have
-        # succeeded against a real image. The stub in its test made the mistake invisible.
+        # No `--json`: `roqsim scenes describe` answers in JSON and has no such flag, which
+        # argparse would refuse.
         f"roqsim scenes describe {container_path} --body-tree {pattern}",
-        # The SIMULATOR's image, which is the only one with roqsim in it. Unqualified,
-        # this resolved to the scenario container -- so on any project whose simulator
-        # comes from the image family it answered "roqsim: command not found", and the
-        # tool had never worked there.
+        # The SIMULATOR's image, which is the only one with roqsim in it; unqualified, this
+        # would resolve to the scenario container.
         container="simulation")
     image = client.resolve_image(
         request.model_copy(update={"container": "simulation"})).image

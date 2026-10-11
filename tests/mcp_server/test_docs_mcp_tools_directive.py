@@ -7,14 +7,12 @@ names nothing -- so a reader of ``search_docs(page="mcp")`` must get the tool li
 directive's text.
 """
 
-from pathlib import Path
-
 from robovast.mcp_server.plugins import docs
 
 
-def test_the_bare_directive_expands_to_the_registered_tools(tmp_path: Path):
-    text = docs._resolve_directives(  # pylint: disable=protected-access
-        "before\n\n.. mcp-tools::\n\nafter\n", tmp_path)
+def test_the_bare_directive_expands_to_the_registered_tools():
+    text = docs._served(  # pylint: disable=protected-access
+        "some-page", "before\n\n.. mcp-tools::\n\nafter\n")
     assert ".. mcp-tools::" not in text
     assert "``list_campaigns``" in text and "``start_campaign``" in text
     assert text.startswith("before") and text.rstrip().endswith("after")

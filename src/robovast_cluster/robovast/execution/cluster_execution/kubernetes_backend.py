@@ -117,12 +117,12 @@ def pull_policy_for(image_ref: str) -> str:
     written out** -- never left to Kubernetes' default, which is the trap this exists to
     close. That default is ``IfNotPresent`` *except* for a ``:latest`` tag, where it
     silently becomes ``Always``; the campaign image is a floating ``:latest`` in the
-    ordinary case, so every container of every scenario pod re-contacted the registry on
-    every start even though the node already had the image.
+    ordinary case, so under that default every container of every scenario pod would
+    re-contact the registry on every start even though the node already has the image.
 
-    A batch of thirty-five pods is then ~140 registry round trips delivered in one
-    instant, against a kubelet whose image-pull limiter is five per second
-    (``registryPullQPS``, burst ten). The pods past the burst come back
+    Every container of every pod in a batch is then one registry round trip, all delivered
+    in one instant, against a kubelet whose image-pull limiter defaults to five per second
+    (``registryPullQPS``, burst ten). The pulls past the burst come back
     ``ErrImagePull: pull QPS exceeded`` -- not a blip but arithmetic, on every batch.
 
     The policy follows the ref rather than being chosen: a digest names the bytes, so
@@ -338,16 +338,15 @@ def calibrated_resources(declared: dict, container_name: str, node_figures, role
 
     **What ``limit: request`` buys is an IDENTICAL budget in every run, not a counter that
     reads zero.** A container sized at its own measurement sits against that measurement, so
-    it throttles -- measured here, the system under test was quota-bound in every run of a
-    150-run campaign, at up to 10.5%, against 2 runs in 45 for a declared figure two to three
-    times larger. That is what a tight, measured ceiling looks like and not evidence of harm:
-    over the same pair, realtime factor was *better* calibrated (0.9994 against 0.9941),
-    errors were zero in both, and the verdict rate did not move.
-    
+    it throttles a little in most runs. That is what a tight, measured ceiling looks like and
+    not by itself evidence of harm: ``run_validity_view`` reports ``quota_bound`` and
+    ``throttle_ratio`` per run, and comparing those runs' realtime factor and verdicts with
+    the rest is how to check whether the throttling changed anything a campaign measures.
+
     The property being protected is that the allocation is the same on every run of a node,
     so it cannot become a hidden variable between them. Sizing for a counter of zero instead
-    would mean padding the largest container by 60-100%, which hands back most of the ~1.6x
-    density that measuring exists to find, in exchange for a harm no signal detects.
+    would mean padding the largest container well beyond its measurement, which hands back
+    much of the density that measuring exists to find.
 
     **A probe is judged far more strictly, and that is the asymmetry to keep in view.** It is
     refused outright for throttling past what its own statistic absorbs (see
@@ -1479,7 +1478,7 @@ class BatchJobRunner:
         that lock held. Going back through the queue therefore deadlocks a non-reentrant
         lock, and the symptom is the worst kind: the batch loop never completes its first
         iteration, so nothing is created, nothing is logged, and the campaign simply sits
-        there until its no-progress deadline calls it stalled. Observed exactly that way.
+        there until its no-progress deadline calls it stalled.
         """
         if not node_id or self._calibration is None:
             return None
@@ -1494,12 +1493,23 @@ class BatchJobRunner:
         """
         if calibration is None:
             return None
+        # One rendering per node and set of figures. The queue asks this for every queued
+        # item on every node on every drain, under its lock, and rendering a manifest per ask
+        # made a pass over a queue of thousands take minutes -- during which no finished run
+        # was replaced and every status read waited. Every job of a batch is the same shape,
+        # so the answer changes only when the node's figures do; a node's figures are
+        # replaced, never mutated, so identity is the test.
+        rendered: dict = {}
 
         def _sizing(node_id):
             figures = self._node_figures(node_id)
             if not figures:
                 return None
-            return self._job_sizing(job, total_jobs, node_figures=figures)
+            cached = rendered.get(node_id)
+            if cached is None or cached[0] is not figures:
+                cached = (figures, self._job_sizing(job, total_jobs, node_figures=figures))
+                rendered[node_id] = cached
+            return cached[1]
 
         return _sizing
 
@@ -2930,9 +2940,9 @@ class BatchJobRunner:
                                               campaign_root) -> None:
         """Record the jobs whose pod ended on a container OOM-killed at a measured figure.
 
-        The restart path sees only a container the pod restarts. The scenario container is
-        not restarted, so its kill ends the pod instead, and is read here. Asked only once
-        some node has figures: before that there is no measured figure to be killed at.
+        The restart path sees a container the pod restarts, and a scenario container killed
+        while its pod runs on. A kill that ended the pod is read here. Asked only once some
+        node has figures: before that there is no measured figure to be killed at.
         """
         calibration = getattr(self, "_calibration", None)
         if calibration is None or not calibration.outcome().get("calibrated"):
@@ -3043,7 +3053,8 @@ class BatchJobRunner:
             log_text, log_status = ("", "unavailable")
             if pod_name:
                 log_text, log_status = previous_container_log(
-                    self.k8s_client, self.namespace, pod_name, record["container"])
+                    self.k8s_client, self.namespace, pod_name, record["container"],
+                    previous=record.get("log") != "current")
             record.update({
                 "job_name": job_name,
                 "job_dir": job_dir,
@@ -3305,10 +3316,10 @@ class BatchJobRunner:
                     #
                     # A cause that blocks only SOME of them is, by that fact alone, not in
                     # the configuration — it is the cluster this batch happened to land in.
-                    # Failing the campaign for it ends a long search mid-flight
-                    # over two jobs of thirty-five, with eight hours of finished work
-                    # behind it. So those jobs are dropped, exactly as a restarted one is,
-                    # and the batch runs on with what is left.
+                    # Failing the campaign for it would end a long search mid-flight over
+                    # a few jobs of one batch, discarding every batch already finished.
+                    # So those jobs are dropped, exactly as a restarted one is, and the batch
+                    # runs on with what is left.
                     if len(blocked) == len(job_names):
                         raise CampaignConfigError(
                             f"none of this batch's {len(job_names)} scenario job(s) could "
@@ -3316,9 +3327,9 @@ class BatchJobRunner:
                             f"runs the same images with the same reservation, so a whole "
                             f"batch blocked points at the campaign rather than at the "
                             f"cluster: an image reason at the execution image reference "
-                            f"and its pull credentials, an Unschedulable one at a "
-                            f"reservation no node can satisfy (the message above names "
-                            f"it).")
+                            f"and its pull credentials, an OOMKilled init container at that "
+                            f"step's memory limit, an Unschedulable one at a reservation no "
+                            f"node can satisfy (the message above names it).")
                     self._drop_blocked_jobs(rnd.expired, blocked, jobs_by_name,
                                             campaign_root)
             # No grace period, deliberately: unlike a blocked pod, a restart has already
@@ -3326,7 +3337,7 @@ class BatchJobRunner:
             # buys a more convincing wrong answer rather than a chance of recovery.
             #
             # What is NOT deliberate is failing the campaign for it: one flaky sidecar in
-            # one job of one batch would end a 50-batch search and orphan the batches that
+            # one job of one batch would end a long search and orphan the batches that
             # had already finished. The trial is what the restart invalidates; the batch
             # around it is fine and the batches after it were never in question. So: drop
             # that job, record why, and keep going.
@@ -3676,6 +3687,8 @@ class KubernetesBackend(ExecutionBackend):
         )
         # Every later batch of the campaign runs the sidecar this one fixed.
         options.sidecar_image = runner._sidecar_image  # noqa: SLF001 - same module
+        # The sidecar a table-building part stages with: the one the campaign ran with.
+        self._sidecar_image = runner._sidecar_image  # noqa: SLF001 - same module
         # Now, and not after the batch: the runner's plan carries the digest every pod will
         # run (``_pin_image_refs``), and this is the earliest moment it is known. A campaign
         # that dies in its first batch still leaves a record naming the exact bytes it was
@@ -3873,6 +3886,21 @@ class KubernetesBackend(ExecutionBackend):
                               image_digests=digests or None,
                               image_labels=image_labels or None,
                               nodes_skipped=runner.skipped_nodes() or None)
+
+    def table_builder(self, campaign_root: str, should_stop=None):
+        """Build the campaign's tables in parts, one Job each (``table_jobs``), with the
+        sidecar the campaign ran with.
+
+        A part is sized from the campaign's own record of what its system under test was
+        given on each node (:func:`~.table_jobs.recorded_sizing`), the record a
+        postprocessing started later reads too. ``None`` when that record says nothing about
+        the size: the tables are built where the campaign is postprocessed.
+        """
+        from .table_jobs import cluster_pod_builder  # noqa: PLC0415
+        return cluster_pod_builder(
+            campaign_root, namespace=self.namespace, kube_context=self.kube_context,
+            cluster_config=lambda: self.cluster_config, admission=lambda: self._admission,
+            sidecar_image=getattr(self, "_sidecar_image", None), should_stop=should_stop)
 
     def finalize_campaign(self, campaign_root: str) -> None:
         """Release what the cluster held for this campaign: its calibration and its rank.

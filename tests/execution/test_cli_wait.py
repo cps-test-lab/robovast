@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""``vast exec wait`` — the way a caller waits for a campaign without holding a request.
+"""``vast campaign wait`` — the way a caller waits for a campaign without holding a request.
 
 An agent harness can background a shell command and be notified when it exits; it cannot
 do that with an MCP call, which occupies the conversation for as long as it blocks. For a
