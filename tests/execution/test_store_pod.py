@@ -146,8 +146,8 @@ def test_no_ingress_class_leaves_a_gke_specific_key_off_every_other_cluster():
 
 def test_the_pod_is_a_deployment_of_one_so_an_evicted_pod_comes_back():
     """A bare pod the kubelet evicted stays Failed, leaving the registry Service without
-    endpoints. One replica, replaced only after the old pod is gone: the registry blobs and
-    the Postgres data directory take one writer each."""
+    endpoints. One replica, replaced only after the old pod is gone: the registry blobs take
+    one writer."""
     docs = store_pod.attach_infrastructure([], "robotics")
     deployment = next(d for d in docs if d["kind"] == "Deployment")
     service = next(d for d in docs if d["kind"] == "Service")
@@ -178,7 +178,7 @@ def _cluster(monkeypatch, deployment=None, pod=None):
 
 
 def test_the_live_store_is_the_deployments_pod_template(monkeypatch):
-    template = _pod("registry", "index")
+    template = _pod("registry")
     _cluster(monkeypatch, deployment=types.SimpleNamespace(
         spec=types.SimpleNamespace(template=template)))
 
@@ -193,8 +193,8 @@ def test_no_deployment_and_no_pod_is_no_live_store(monkeypatch):
 
 def test_a_bare_pod_is_refused_rather_than_joined_by_a_deployment(monkeypatch):
     """Both carry the Service's labels, so a Deployment beside the pod would put two
-    registries and two Postgres servers behind one Service, on the same volumes."""
-    _cluster(monkeypatch, pod=_pod("registry", "index"))
+    registries behind one Service, on the same volume."""
+    _cluster(monkeypatch, pod=_pod("registry"))
 
     with pytest.raises(RuntimeError, match="nothing recreates") as excinfo:
         store_pod.read_live_store("default")
@@ -203,7 +203,7 @@ def test_a_bare_pod_is_refused_rather_than_joined_by_a_deployment(monkeypatch):
 
 
 def test_a_bare_pod_is_refused_by_setup_without_a_placement(monkeypatch):
-    _cluster(monkeypatch, pod=_pod("registry", "index"))
+    _cluster(monkeypatch, pod=_pod("registry"))
 
     with pytest.raises(RuntimeError, match="bare pod"):
         store_pod.refuse_a_pod_on_the_wrong_node("default", None)
