@@ -308,6 +308,10 @@ time over ``AdmittedJobs``::
               -> a Job killed where at_floor(item, g) -> fail, naming its units
               -> any other failure, or a pod that cannot start -> fail, no retry
 
+A pod that cannot start is one ``AdmittedJobs`` reads as blocked past its grace -- among them
+a pod stuck behind a one-shot init container that ended ``OOMKilled``, which the shared
+detector (``pod_block_reason``) reports for every caller, the run loop included.
+
 The caller decides what a level is -- fewer units per Job, fewer workers -- and never more
 memory: a Job larger than what the node was calibrated for is one the queue may not place. A
 level's owner is a sub-scope like ``<campaign>#probes``, so taking a level back is one

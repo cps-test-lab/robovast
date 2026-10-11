@@ -738,14 +738,13 @@ plans rather than about the campaign in front of the assistant, and every tool's
 is injected into the model's context on every request, so the surface is spent on what
 an assistant is actually the right one to decide.
 
-**Image builds wait the same way**, through ``vast image wait <build-id>…``.
-That was once the exception — a blocking ``wait_for_image_build`` tool, on the
-argument that a build is minutes rather than days — and the exception did not
-hold. The tool could block for at most 600s, so a ROS build doing apt + pip +
-colcon returned unfinished and had to be called again, blocking again, in
-exactly the case where blocking cost most. A cap on how long a tool may block
-does not make a long wait tool-shaped; it moves the overrun to the caller. The
-rule that survives: **if a wait can outlive a turn, it is not a tool.**
+**Image builds wait the same way**, through ``vast image wait <build-id>…``,
+although a build is minutes rather than days. A tool may block only for a
+capped time, so a blocking wait would return a ROS build doing apt + pip +
+colcon unfinished and have to be called again, blocking again, in exactly the
+case where blocking costs most. A cap on how long a tool may block does not
+make a long wait tool-shaped; it moves the overrun to the caller. The rule:
+**if a wait can outlive a turn, it is not a tool.**
 
 ``next_step`` is how those commands reach the caller: a literal command with the
 ids already filled in, in band with the answer, because a reply carrying only an
@@ -1253,7 +1252,8 @@ blocked for a minute, which is long enough for a registry blip to clear and shor
 not to be a hang. ``fixable_by`` is ``infra`` and ``error_detail.phase`` is
 ``builder-pod``: nothing about the project's ``build:`` section is involved, and the
 message names which image could not be pulled (the ``robovast-sidecar`` init container, or
-the BuildKit builder) or which resource no node could satisfy. **Neither waiting nor
+the BuildKit builder), which resource no node could satisfy, or that the ``context-fetch``
+init container exceeded its memory limit. **Neither waiting nor
 rebuilding helps** — the two things a caller would otherwise try.
 * ``get_image_build_log`` — the raw builder log for deep dives, while the build exists.
 

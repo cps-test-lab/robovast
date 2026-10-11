@@ -181,6 +181,11 @@ Hooks, all optional except as noted:
    Whether the simulator publishes ``/clock`` in the ROS shape, which starts scenario-execution
    with ``use_sim_time``. ``None`` (the default) means the backend cannot say, and a campaign
    using it must state ``execution.use_sim_time``. roqsim answers ``True``.
+``ground_truth(cfg, execution)``
+   Where a run's :ref:`ground_truth_poses <ground-truth-table>` come from, as the decoder's
+   ``ground_truth`` entry, or ``None`` -- the default -- for a simulator that records nothing
+   of its own, whose ground truth is the ``*_gt`` frame its world publishes on ``/tf``. roqsim
+   answers ``{table: sim_poses, entity_kind: robot}``: the robots' bodies in its recording.
 ``default_panels(cfg, execution)``
    Run-view panels this backend contributes, as ``{<type>: <props>}`` entries — the panel
    that replays a recorded scene state, for a backend that records one; ``[]`` otherwise.
@@ -571,9 +576,9 @@ container is: it is handed the campaign's files at ``/config`` (the command name
 there, not by its path on the host), and its image reference must be one a registry can serve
 -- a ``family:`` ref is resolved for the ``docker run`` fallback ``vast configuration
 generate`` uses, and deliberately left symbolic for the cluster factory, whose aux Pod names
-its containers after the spec's image. Both were once missing here and the query could not
-run at all: it asked for an image called ``family``, and once past that it was given a world
-path relative to a directory the container did not have.
+its containers after the spec's image. Without either, the query cannot run at all: it would
+ask for an image called ``family``, or be given a world path relative to a directory the
+container does not have.
 
 **Transport is the world's, not the campaign's.** RoboVAST passes no middleware flags at
 all: which topics a world speaks, under which namespace (``ros2_bridge``, whose config

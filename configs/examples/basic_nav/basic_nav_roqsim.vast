@@ -6,8 +6,8 @@ metadata:
     A TurtleBot 4 navigates the nav2 Depot world to a per-configuration goal with nav2 + AMCL, in
     roqsim (MuJoCo). The roqsim half of the basic_nav pair: same map, same nav2 params and the same
     measurement half as basic_nav_gazebo.vast, so a difference in results is attributable to the
-    simulator. The bridge publishes the ROS graph Gazebo does, down to the ground-truth
-    turtlebot4_base_link_gt frame.
+    simulator. The bridge publishes the ROS graph nav2 needs, as Gazebo does; ground truth is
+    roqsim's own recording, read as the ground_truth_poses table like the Gazebo half's gt frame.
 
     Three containers, and no image is built. `simulation` is roqsim, started by the backend from
     its own image. `sut` is a vanilla nav2 image: RoboVAST layers scenario_execution_server onto it
@@ -159,12 +159,12 @@ recording:
 results_processing:
   health_checks:
   - nav2_control_loop_rate
-  # Identical to basic_nav_gazebo.vast, so both halves' tables hold the same frames. `require` is
-  # what the analysis reads: a run missing a frame fails rather than yielding an empty table.
+  # As basic_nav_gazebo.vast, less the gt frame: ground truth is the recording. `require` is what
+  # the analysis reads: a run missing a frame fails rather than yielding an empty table.
   postprocessing:
   - rosbags_tf_to_csv:
       frames: all
-      require: [base_link, odom, turtlebot4_base_link_gt]
+      require: [base_link, odom]
   - rosbags_nav2bt_to_csv
   - nav2_bt_tree: {bt_xml: files/nav2_bt.xml}
   - rosbags_costmap_to_csv:

@@ -19,6 +19,10 @@ import pathlib
 import re
 import sys
 
+#: A public PEP 440 version, the shape `poetry version` stamps: anything else -- a flag, an
+#: empty string -- would be written into every requirement and only fail at install time.
+VERSION = re.compile(r"\d+(\.\d+)*((a|b|rc)\d+)?(\.post\d+)?(\.dev\d+)?")
+
 SIBLINGS = ("robovast-client", "robovast-data", "robovast-decode", "robovast-nav",
             "robovast-sim-roqsim")
 
@@ -28,6 +32,9 @@ def main() -> int:
         print(f"usage: {sys.argv[0]} <version>", file=sys.stderr)
         return 2
     version = sys.argv[1]
+    if not VERSION.fullmatch(version):
+        print(f"not a release version: {version!r}", file=sys.stderr)
+        return 2
     manifest = pathlib.Path("pyproject.toml")
     text = manifest.read_text(encoding="utf-8")
 
