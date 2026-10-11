@@ -136,10 +136,8 @@ results_processing:
   health_checks:
   - nav2_control_loop_rate
   postprocessing:
-  # Identical to basic_nav_roqsim.vast, so both halves' `poses` tables hold the same frames. `require`
-  # names what the analysis is measured from -- base_link, odom (places the local costmap in the map
-  # frame) and turtlebot4_base_link_gt (ground truth, shifted +8 m in x in analysis) -- and a run
-  # missing any of them fails loudly.
+  # A run missing a `require`d frame fails loudly: odom places the local costmap in the map frame,
+  # turtlebot4_base_link_gt is this half's ground_truth_poses.
   - rosbags_tf_to_csv:
       frames: all
       require: [base_link, odom, turtlebot4_base_link_gt]

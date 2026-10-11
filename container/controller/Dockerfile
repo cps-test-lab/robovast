@@ -12,13 +12,13 @@
 # It does NOT contain the ROS runtime: scenario execution and rosbag postprocessing
 # run in the ROS robovast image (job pods / a ROS-enabled container), not here.
 #
-# Five distributions are installed at build time: robovast, its robovast-client,
-# robovast-nav and robovast-sim-roqsim path dependencies, and robovast-cluster (the
-# service implementation -- the only one needing its own step, added separately below).
-# robovast-client is not optional and not an extra: it is the layer robovast is built on,
-# so `poetry install` brings it in with the root project. There is no wheel-injection shortcut -- an earlier comment here
-# described one that the launch path no longer does -- so changing any of them
-# means rebuilding this image and rolling the Deployment with `vast service upgrade`.
+# Seven distributions are installed at build time: robovast, its robovast-client,
+# robovast-decode, robovast-data, robovast-nav and robovast-sim-roqsim path dependencies,
+# and robovast-cluster (the service implementation -- the only one needing its own step,
+# added separately below). robovast-client is not optional and not an extra: it is the
+# layer robovast is built on, so `poetry install` brings it in with the root project.
+# There is no wheel-injection shortcut, so changing any of them means rebuilding this
+# image and rolling the Deployment with `vast service upgrade`.
 # The cheaper loop is `mirrord exec` running `vast serve` from an editable checkout
 # inside the cluster's network (see the serve command's help).
 #
@@ -33,12 +33,11 @@
 # service comes up API-only and the browser gets a 404 on `/`.
 
 # -- web UI (frontend/ui/dist), served by `vast serve` from this image -------
-# Digest-pinned, for the reason the alpine/git pin above already gives: an untagged or
-# merely tagged FROM resolves to whatever that tag points at on the day of the build, so two
-# builds of the same commit can start from different bytes. This also freezes the apt state
-# the base image itself baked in, which no amount of pinning *our* apt calls can reach.
-# The tag is kept beside the digest because a bare digest tells a reader nothing about what
-# it is. Refresh both with: make refresh-build-pins
+# Digest-pinned: an untagged or merely tagged FROM resolves to whatever that tag points at
+# on the day of the build, so two builds of the same commit can start from different bytes.
+# This also freezes the apt state the base image itself baked in, which no amount of pinning
+# *our* apt calls can reach. The tag is kept beside the digest because a bare digest tells a
+# reader nothing about what it is. Refresh both with: make refresh-build-pins
 FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS ui-build
 WORKDIR /ui
 # Install deps against the lockfile first so this layer caches across UI edits.
@@ -63,12 +62,7 @@ RUN npm run build          # -> /ui/dist
 # The directory layout is reproduced rather than flattened: the package's vite/tsconfig
 # resolve @robovast/panel-kit at ../../../frontend/panel-kit relative to web/, so the two
 # must sit where that alias points.
-# Digest-pinned, for the reason the alpine/git pin above already gives: an untagged or
-# merely tagged FROM resolves to whatever that tag points at on the day of the build, so two
-# builds of the same commit can start from different bytes. This also freezes the apt state
-# the base image itself baked in, which no amount of pinning *our* apt calls can reach.
-# The tag is kept beside the digest because a bare digest tells a reader nothing about what
-# it is. Refresh both with: make refresh-build-pins
+# Digest-pinned, for the reason given at the first FROM. Refresh with: make refresh-build-pins
 FROM node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS nav-panels-build
 WORKDIR /build/src/robovast_nav/web
 COPY src/robovast_nav/web/package.json src/robovast_nav/web/package-lock.json ./
@@ -77,12 +71,7 @@ COPY frontend/panel-kit/ /build/frontend/panel-kit/
 COPY src/robovast_nav/web/ ./
 RUN npm run build          # -> /build/src/robovast_nav/robovast_nav/web/dist
 
-# Digest-pinned, for the reason the alpine/git pin above already gives: an untagged or
-# merely tagged FROM resolves to whatever that tag points at on the day of the build, so two
-# builds of the same commit can start from different bytes. This also freezes the apt state
-# the base image itself baked in, which no amount of pinning *our* apt calls can reach.
-# The tag is kept beside the digest because a bare digest tells a reader nothing about what
-# it is. Refresh both with: make refresh-build-pins
+# Digest-pinned, for the reason given at the first FROM. Refresh with: make refresh-build-pins
 FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
 
 # A pipe reports the LAST command's status without this, so a checksum piped into a verifier

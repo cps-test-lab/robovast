@@ -89,10 +89,15 @@ def test_an_unrecognised_reason_still_comes_through_short():
     assert api_error_reason(_Odd()) == "something new"
 
 
-#: The same shape with a status that is the API server answering about the one target.
-#: ``500`` is what it says for a container that is no longer running in a pod that is.
-_GONE_REPR = _HANDSHAKE_REPR.replace("Handshake status 200 OK",
-                                     "Handshake status 500 Internal Server Error")
+def _handshake(status_line: str, body: str = "None") -> str:
+    """The handshake repr with another status line and body."""
+    return (_HANDSHAKE_REPR.replace("Handshake status 200 OK", f"Handshake status {status_line}")
+            .removesuffix("-+-+- None") + f"-+-+- {body}")
+
+
+#: ``500`` with the body the kubelet writes for a container its pod is not running, which
+#: the API server's proxy passes through unchanged.
+_GONE_REPR = _handshake("500 Internal Server Error", 'container not found ("aux-img")')
 
 
 class _Gone:
@@ -103,8 +108,8 @@ class _Gone:
 
 def test_a_handshake_the_server_answered_about_says_the_container_was_not_there():
     """A bare status line is not a diagnosis either. ``Handshake status 500`` reads as an
-    internal error in the cluster, when what it states is that the container the stream
-    named is not running -- which is a different thing to go and look at."""
+    internal error in the cluster, when with the kubelet's body it states that the container
+    the stream named is not running -- which is a different thing to go and look at."""
     reason = api_error_reason(_Gone())
     assert "not there to exec into" in reason
     assert "500" in reason
@@ -129,7 +134,7 @@ def _refusing_stream(monkeypatch, reason):
 def test_a_target_that_is_gone_is_its_own_type_and_names_the_target(monkeypatch):
     """The opposite verdict to the one below, and it has to be told apart by class.
 
-    A 4xx or 5xx on the upgrade is the API server answering about the pod and container
+    An upgrade answered that the container is not running is about the pod and container
     that were asked for, so the caller holding that name is the one that can act -- make it
     again and repeat what it was doing. That is why this one DOES name the target, where a
     deployment-wide refusal must not: here it is the subject.
@@ -142,6 +147,41 @@ def test_a_target_that_is_gone_is_its_own_type_and_names_the_target(monkeypatch)
     assert "not there to exec into" in message
     assert not isinstance(raised.value, ExecPathUnavailable), (
         "one target being gone is not the deployment refusing every exec")
+
+
+def test_a_handshake_answered_404_is_a_target_that_is_gone(monkeypatch):
+    """``404`` is the API server's answer for a pod that does not exist, and the kubelet's
+    for one it does not run."""
+    _refusing_stream(monkeypatch, _handshake("404 Not Found",
+                                             '{"kind":"Status","code":404}'))
+    with pytest.raises(ExecTargetGone):
+        exec_stream("aux-pod", "ns", "aux-img", ["true"], limit_s=5)
+
+
+@pytest.mark.parametrize("status_line, body", [
+    ("401 Unauthorized", '{"kind":"Status","code":401}'),
+    ("403 Forbidden", '{"kind":"Status","code":403}'),
+    ("429 Too Many Requests", "None"),
+    ("500 Internal Server Error", "None"),
+    ("500 Internal Server Error", "etcdserver: request timed out"),
+    ("502 Bad Gateway", "None"),
+    ("503 Service Unavailable", "None"),
+    ("504 Gateway Timeout", "None"),
+])
+def test_a_handshake_refused_for_any_other_reason_is_not_a_target_that_is_gone(
+        monkeypatch, status_line, body):
+    """A refused caller, a busy API server or a failure inside it says nothing about the
+    target. Read as "gone", a caller would recreate a container that is still there, or read
+    a busy one as idle -- so it is the ordinary failure of the call, typed as neither verdict.
+    """
+    _refusing_stream(monkeypatch, _handshake(status_line, body))
+    with pytest.raises(RuntimeError) as raised:
+        exec_stream("aux-pod", "ns", "aux-img", ["true"], limit_s=5)
+    assert not isinstance(raised.value, (ExecTargetGone, ExecPathUnavailable))
+    message = str(raised.value)
+    assert "exec stream into aux-pod/aux-img" in message
+    assert status_line.split()[0] in message, "the status is the fact a caller acts on"
+    assert "not there to exec into" not in message
 
 
 def test_a_handshake_failure_is_its_own_type_not_a_bare_runtime_error(monkeypatch):

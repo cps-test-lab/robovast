@@ -21,8 +21,8 @@ describe('isLoadFailure', () => {
   })
 
   it('leaves a real bug on the red branch', () => {
-    // What the swallowed preload error used to surface as. It must NOT be called transient:
-    // retrying a genuine TypeError just reproduces it.
+    // What a default-prevented preload error surfaces as (see main.tsx). It must NOT be called
+    // transient: retrying a genuine TypeError just reproduces it.
     expect(isLoadFailure(new TypeError("can't access property \"ResultsPage\", e is undefined")))
       .toBe(false)
   })

@@ -1591,14 +1591,14 @@ limit only decides when the kernel starts throttling. Which means:
   over-reserving for. ``run_validity_view`` says per run whether it held — ``quota_bound``
   for this ceiling, ``contended`` for other work taking cores it had not reserved.
 - The **simulator and scenario** are not under test and **may** split, once it has been
-  validated at the concurrency the campaign will actually run at — see the two costs below,
-  both of which scale with concurrency rather than showing up in a single run. Measured on the shipped
-  ``basic_nav`` example, the simulator uses **0.34 cores sustained and peaks at 5.98** where
-  the world's geometry compiles — a ratio of ~18, so there is no honest single number.
-  Reserving the peak costs more than an un-tuned campaign did; capping at the sustained figure
-  clips a burst that changes nothing the robot experiences. What makes the soft limit safe is
-  already recorded: realtime pacing normalises what the simulated world looks like, and
-  ``runs.clock_map_*`` says per run whether the simulator kept pace.
+  validated at the concurrency the campaign will actually run at — see the two costs below, both
+  of which scale with concurrency rather than showing up in a single run. A simulator can
+  sustain a fraction of a core and peak at several where the world's geometry compiles — a ratio
+  of an order of magnitude, so there is no honest single number. Reserving the peak costs more
+  than leaving the simulator un-tuned; capping at the sustained figure clips a burst that changes
+  nothing the robot experiences. What makes the soft limit safe is already recorded: realtime
+  pacing normalises what the simulated world looks like, and ``runs.clock_map_*`` says per run
+  whether the simulator kept pace.
 
 .. code-block:: yaml
 
@@ -1609,8 +1609,8 @@ limit only decides when the kernel starts throttling. Which means:
        sut:                                          # under test: do not split
          resources: {cpu: 3, memory: 640Mi}
 
-The size of the win depends on the world: the same simulator peaks at 5.98 cores in
-``basic_nav``'s depot and 0.78 in ``nav_search``'s empty room, so the two examples reserve
+The size of the win depends on the world: the same simulator peaks far higher in
+``basic_nav``'s depot than in ``nav_search``'s empty room, so the two examples reserve
 different figures and gain differently from the split.
 
 **What a split costs, and why it is a mode rather than a default.** Two things follow from
@@ -1637,11 +1637,11 @@ campaign that used it. The counters say per run whether it bit (``quota_bound``,
 ``clock_map_*``); they cannot make two runs' conditions equal after the fact.
 
 **The system under test's ceiling is set from a pilot**, which is the assumption to keep in
-view. Clipping is not proportional — measured here, 0.5% of ticks above the limit cost 22% of
-the runs, because clipped work queues rather than vanishing. A campaign that searches toward
-harder configurations can therefore exceed the peak a pilot measured, and the cells that do so
-are the interesting ones. ``quota_bound`` is what says it happened; do not read the headroom as
-a guarantee.
+view. Clipping is not proportional — a fraction of a percent of ticks above the limit can cost a
+large share of the runs, because clipped work queues rather than vanishing. A campaign that
+searches toward harder configurations can therefore exceed the peak a pilot measured, and the
+cells that do so are the interesting ones. ``quota_bound`` is what says it happened; do not read
+the headroom as a guarantee.
 
 **These figures are declarations, not a permanent shape.** Per-node sizing measures each
 container on the machine it is about to run on and lowers the reservation to what it needs

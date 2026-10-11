@@ -33,8 +33,8 @@ Three properties every caller relies on:
   in-process record is needed and a service restart changes nothing.
 * **Self-collecting**, and ``ttlSecondsAfterFinished`` alone does not achieve that -- see
   :data:`WARM_DEADLINE_SECONDS`.
-* **Never fatal.** A prewarm that fails costs a slow pod later, which is exactly what the
-  situation was before it existed, so callers log and move on.
+* **Never fatal.** A prewarm that fails costs only a slow pod later -- the pull that pod
+  would have paid unwarmed -- so callers log and move on.
 
 **Two shapes, because "warm" means two different things here.** A Job schedules one pod and
 therefore warms exactly one node, which is the right answer for an experiment image: the pod

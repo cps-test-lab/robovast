@@ -335,10 +335,12 @@ class KubeExecRunner:
     def held_workload_running(self, slot: str = SLOT_USER) -> bool:
         """True if anything besides the idle PID 1 runs in the pod.
 
-        Asked through ``pods/exec``, since there is no ``docker top`` here. A failure other than "no such pod" propagates, so an
-        unanswerable probe is never read as "idle".
+        Asked through ``pods/exec``, since there is no ``docker top`` here. A pod or container
+        that is gone answers "nothing running": :func:`~.kube_client.exec_stream` reports that
+        as :class:`~robovast.common.errors.ExecTargetGone`, never as a raw ``ApiException``.
+        Any other failure propagates, so an unanswerable probe is never read as "idle".
         """
-        from kubernetes.client.rest import ApiException
+        from robovast.common.errors import ExecTargetGone
 
         from .kube_client import exec_stream
         pod = _pod_name(slot)
@@ -347,10 +349,8 @@ class KubeExecRunner:
                 pod, self._namespace, HELD_CONTAINER,
                 ["/bin/sh", "-c", self._PROCESS_COUNT_SH],
                 limit_s=_PROBE_TIMEOUT_S)
-        except ApiException as e:
-            if e.status == 404:
-                return False
-            raise
+        except ExecTargetGone:
+            return False
         try:
             count = int((out or "0").strip().splitlines()[-1])
         except (ValueError, IndexError) as exc:

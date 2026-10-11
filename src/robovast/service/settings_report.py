@@ -19,15 +19,14 @@
 :mod:`robovast.common.env_file` loads a ``.env`` on the operator's machine;
 ``vast cluster setup`` / ``vast service upgrade`` then bake those values into the pod as
 container ``env`` and as Secrets pulled in via ``envFrom``. This module answers the
-question nothing answered before: *what is this service actually running with?*
+question: *what is this service actually running with?*
 
 **The environment is the list, not** :data:`KNOWN`. Everything a ``.env`` set arrives here
 as an environment variable, so enumerating ``ROBOVAST_*`` out of :data:`os.environ` is
 exactly — and always — the set of settings in force. :data:`KNOWN` says only how to
 *present* what the environment already reports, plus a courtesy row for a setting that is
-expected and absent. An earlier design inverted this, hand-listing every setting and looking
-each one up; that list is wrong the first time somebody adds a setting, and no amount of
-guard-testing makes a parallel list true.
+expected and absent. A hand-maintained list of settings to look up would be wrong the first
+time somebody adds a setting, and no amount of guard-testing makes a parallel list true.
 
 **Classification fails safe.** A credential cannot be recognised by its name:
 ``ROBOVAST_SHARE_URL`` is one (the Nextcloud provider parses its last path segment as the

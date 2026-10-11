@@ -172,6 +172,19 @@ def test_a_table_a_run_has_nothing_for_is_recorded_so_it_is_not_looked_for_again
     assert entry["known"] is False, "a table this run never had, not one that came out empty"
 
 
+def test_a_table_absent_while_a_recording_is_open_is_not_final(campaign):
+    """An open recording can still give the table, so its absence is looked at again."""
+    metadata = campaign / "_jobs" / "job-0" / "logs" / "rosout_bag" / "metadata.yaml"
+    closed = metadata.read_text()
+    metadata.unlink()
+    build(str(campaign), tables=["rosbag2_nope"])
+    assert _manifest(campaign)["tables"]["rosbag2_nope"]["runs"]["cfg/0"]["complete"] is False
+
+    metadata.write_text(closed)
+    build(str(campaign), tables=["rosbag2_nope"])
+    assert _manifest(campaign)["tables"]["rosbag2_nope"]["runs"]["cfg/0"]["complete"] is True
+
+
 def test_a_failed_table_is_recorded_with_its_reason_and_counted_as_failed(campaign):
     config = {"groups": [{"bag_dir": "rosbag2", "plugins": [
         {"type": "tf_to_csv", "frames": "all", "require": ["nowhere"]}]}]}
