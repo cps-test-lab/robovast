@@ -5,24 +5,24 @@
 **The metric is nav2's, not ours.** ``controller_server`` logs "Control loop missed its
 desired rate" when it cannot hold its declared frequency. That is the stack saying it failed
 a deadline it set for itself, which is exactly what a health check should report and exactly
-what a CPU percentile cannot: measured across a sizing sweep, misses fell 12x between an
-allocation that lost 6 runs and one that lost none, while the throttle counter over the same
-range moved 1.4x and was not even monotone against it.
+what a CPU percentile cannot: across a sizing sweep the miss count moves by an order of
+magnitude between an allocation that loses runs and one that loses none, while the throttle
+counter over the same range barely moves and is not even monotone against it.
 
-**It grades a CAMPAIGN, and the per-run rows exist to be aggregated.** Inside the campaign
-that lost 11 runs the per-run count did not predict *which* runs failed -- failing runs
-averaged 1.1 misses, passing runs 1.2. That is the correct granularity anyway, because an
-allocation is a campaign-level property. So read these rows as ``SUM(value) GROUP BY
+**It grades a CAMPAIGN, and the per-run rows exist to be aggregated.** Within one campaign
+the per-run count does not predict *which* runs fail -- failing and passing runs show about
+the same number of misses. That is the correct granularity anyway, because an allocation is
+a campaign-level property. So read these rows as ``SUM(value) GROUP BY
 config_name`` or across campaigns; a single run's ``warn`` is a symptom, not a verdict.
 
 **Why post-hoc rather than in the scenario.** ``log_check(values: [...]) with: repeat(10)``
-already exists and is the established idiom, but it would not have fired on the campaign that
-lost 11 runs: the highest count in any single run was 8, and ``repeat(N)`` needs N
-tick-separated occurrences *within one action*, so it stays silent at both allocations being
-compared. It is a debounce, not a counter -- it can produce yes/no but not 60-vs-0, and here
-both are "no". Aborting would also destroy the measurement, since finding a floor needs
-degraded runs to *finish*. The scenario form remains right for its own job: abandoning a run
-whose control loop is definitively gone, to recover the compute.
+already exists and is the established idiom, but it stays silent on an allocation that
+loses runs through a few misses each: ``repeat(N)`` needs N tick-separated occurrences
+*within one action*, so it reads "no" at both allocations being compared. It is a debounce,
+not a counter -- it can produce yes/no but not a count to compare across allocations. Aborting
+would also destroy the measurement, since finding a floor needs degraded runs to *finish*. The
+scenario form remains right for its own job: abandoning a run whose control loop is
+definitively gone, to recover the compute.
 """
 
 from robovast.results_processing.data_query import DataQueryError

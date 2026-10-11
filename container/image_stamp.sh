@@ -1,16 +1,15 @@
 # What a locally built image reports about its own build: which revision, and when.
 #
 # Sourced by container/robovast/build.sh and container/controller/build.sh so both bake the
-# same values the same way -- for the reason platforms.env and buildcache.sh give, and with the
-# gap this file closes as the evidence: CI passed ROBOVAST_GIT_REVISION and the local build
-# scripts did not, so every locally released family deployed a service that could not say which
-# code it ran. `get_service_info` then reported no revision at all, and a caller asking "is my
-# change loaded?" had nothing to compare and had to probe for the behaviour instead.
+# same values the same way -- for the reason platforms.env and buildcache.sh give. A build that
+# does not pass ROBOVAST_GIT_REVISION deploys a service that cannot say which code it runs:
+# `get_service_info` reports no revision, and a caller asking "is my change loaded?" has nothing
+# to compare and has to probe for the behaviour instead.
 #
 # Derived, never passed. There is deliberately no --revision or --date option: an option is
-# something to forget, and forgetting it is exactly the bug this fixes. Which is also why both
-# stamps live here rather than one of them being a line in whichever build script needed it
-# first -- a second stamp wired into one script and not the other is the same bug again.
+# something to forget, and forgetting it leaves an image that cannot name its revision. Which
+# is also why both stamps live here rather than one of them being a line in whichever build
+# script needed it first -- a stamp wired into one script and not the other leaves the same gap.
 #
 # The revision must be byte-identical to what `robovast.common.execution._git_revision()` reports
 # for the same checkout -- short sha, plus `+dirty` from a plain `git status --porcelain`
