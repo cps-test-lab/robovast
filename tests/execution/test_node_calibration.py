@@ -528,6 +528,36 @@ def test_the_sizing_the_queue_uses_is_the_sizing_the_manifest_asks_for():
     assert calibrated.cpu < declared.cpu, "a calibrated node holds more of them"
 
 
+def test_the_queue_s_sizing_is_rendered_once_per_node_and_figures():
+    """The queue asks for every queued item, on every node, on every drain, under its lock.
+    Rendering a manifest per ask made one pass over a queue of thousands take minutes, so the
+    answer is kept per node -- and renewed when that node's figures are, never before."""
+    import types
+
+    from robovast.execution.cluster_execution import kubernetes_backend as kb
+
+    r = kb.BatchJobRunner()
+    figures = {"node-a": {"sut": {"cores": 1.0}}, "node-b": {"sut": {"cores": 2.0}}}
+    r._node_figures = figures.get
+    rendered = []
+
+    def _job_sizing(job, total, node_figures=None):
+        rendered.append(node_figures)
+        return types.SimpleNamespace(cpu=node_figures["sut"]["cores"])
+
+    r._job_sizing = _job_sizing
+    sizing = r._sizing_for_node(object(), 1, calibration=object())
+
+    for _ in range(1000):
+        assert sizing("node-a").cpu == 1.0 and sizing("node-b").cpu == 2.0
+    assert sizing("node-c") is None, "an unmeasured node has no figures to size from"
+    assert len(rendered) == 2
+
+    figures["node-a"] = {"sut": {"cores": 3.0}}
+    assert sizing("node-a").cpu == 3.0, "new figures are a new answer"
+    assert len(rendered) == 3
+
+
 def test_the_declared_role_decides_not_the_container_name():
     """A stack that bundles its own simulator serves the simulation role from its sut
     container. It is still the thing under test, so it is still sized on peak -- and that is
