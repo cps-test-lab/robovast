@@ -1837,8 +1837,10 @@ sizing rather than being sized from a limit: throttled past what its own statist
 or OOM-killed at all — a memory ceiling that binds kills rather than slows, so one is enough.
 Both counters come from the same file the sizing is read from.
 
-**A probe that loses a workload container stops the campaign, naming that container.** Those
-containers are native sidecars, so one that dies is *restarted* rather than ending the job.
+**A probe that loses a workload container stops the campaign, naming that container.** The
+sidecars are native sidecars, so one that dies is *restarted* rather than ending the job; the
+scenario container is not restarted, and an OOM kill of it leaves the pod running too, its
+uploader waiting for a done marker the killed container never writes.
 The instance that comes back starts nothing — a workload brought back mid-trial would run a
 fresh world under a stack still on the old one, so the sidecar entrypoint refuses a second
 start in the same pod — and the probe would go on sampling a stack with a hole in it, hold
