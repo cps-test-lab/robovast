@@ -168,10 +168,12 @@ class RoqsimBackend(SimulatorBackend):
             # entry point: the same command debugs the world by hand, so there is no
             # second way the simulator can be started.
             #
-            # No transport flags: which topics a world speaks, under which namespace, and
-            # whether it serves a control plane are the WORLD's to declare. A campaign
+            # No middleware flags: which topics a world speaks, under which namespace, and
+            # whether it serves the ROS control plane are the WORLD's to declare. A campaign
             # runner configuring a simulator's middleware would be reaching a layer down,
-            # and headless/pacing are the only two the deployment owns.
+            # and headless/pacing are the only two the deployment owns. Where roqsim's own
+            # control socket lives is the deployment's, since it depends on how the job's
+            # containers share a filesystem: :meth:`env` sets it.
             command = ["roqsim", "sim", _config_in_container(cfg.config),
                        "--headless", "--pacing", "realtime"]
             if cfg.overrides:
@@ -275,6 +277,14 @@ class RoqsimBackend(SimulatorBackend):
 
     def records_scene_state(self, cfg, execution: dict) -> bool:
         return True
+
+    def ground_truth(self, cfg, execution: dict) -> dict:
+        """The robots' bodies in the run's own recording, which :meth:`env` always asks for.
+
+        Taken inside the simulator on its own clock, so a world needs no ground-truth frame,
+        and a stepped run with no ROS at all has ground truth as well.
+        """
+        return {"table": "sim_poses", "entity_kind": "robot"}
 
     def default_panels(self, cfg, execution: dict) -> list:
         """The 3D scene, always -- for the same reason :meth:`env` asks for the recording.

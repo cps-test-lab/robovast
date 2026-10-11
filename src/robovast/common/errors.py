@@ -129,7 +129,7 @@ class ImageBuildFailed(RuntimeError):
     is the wait loop and names nothing the message does not, so — like a config
     error — this carries no traceback.
 
-    A ``RuntimeError`` so callers that predate the class still catch it.
+    A ``RuntimeError``, so a caller catching that catches this too.
     """
 
     include_traceback = False
@@ -179,17 +179,16 @@ class AuxContainerUnavailable(ActionableError):
 
     So the reason is always the *caller's context*, never the ``.vast``: the same file
     composes wherever a runner is arranged. A runner is **not** confined to a campaign's
-    composition -- the scene cache opens an aux pod outside one for its cache fills -- and
-    reading
-    it as a rule is what left ``preview_configurations`` refusing a perfectly good sweep.
+    composition -- the scene cache opens an aux pod outside one for its cache fills, and
+    ``preview_configurations`` composes a sweep through a held one.
 
     What this does *not* extend to is the exec manager's **query slot**: that runs a read-only
     question in a campaign's own image with nothing written back, so it is not a substitute
     for a helper image a variation writes into. A held *aux* slot in the same manager is,
     and is how a preview gets one.
 
-    Before this refusal existed the composition path fell through to the local ``docker
-    run`` and died in ``Popen`` with a bare ``FileNotFoundError: 'docker'`` -- which reads
+    Without this refusal the composition path would fall through to the local ``docker
+    run`` and die in ``Popen`` with a bare ``FileNotFoundError: 'docker'`` -- which reads
     as a broken ``.vast`` rather than as a runner that was never arranged, and names neither
     the variation nor the container it wanted.
 
@@ -207,7 +206,7 @@ class ImageStoreUnavailable(RuntimeError):
     report every built image as unbuilt — a missing *dependency* reported as a missing
     *artifact*.
 
-    A ``RuntimeError`` so the readers that already degrade on one keep working unchanged.
+    A ``RuntimeError``, so a reader that degrades on one handles this too.
     """
 
     include_traceback = False
