@@ -729,7 +729,7 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements,too-many-b
     return False, "Postprocessing failed: " + " | ".join(reasons)
 
 
-def _campaign_provider_records(campaign_dir) -> "Tuple[list, int]":
+def _campaign_provider_records(campaign_dir) -> Tuple[list, int]:
     """``(records, read)``: every DISTINCT container distributions record, and how many were read.
 
     ``_jobs/[<batch>/]job-N/`` is the shared job-artifact layout -- see
@@ -743,16 +743,17 @@ def _campaign_provider_records(campaign_dir) -> "Tuple[list, int]":
     campaign's asset providers.
 
     **Each distinct record once.** Every job's containers run the same few images, so their
-    records repeat -- and a record parses to about 170 KB of objects, which over a campaign of
-    ten thousand jobs is more than the host step's memory. Identical bytes are skipped before
-    they are parsed, which leaves the union :func:`providers_from_records` takes unchanged: it
+    records repeat -- and a record parses to hundreds of KB of objects, which over a campaign
+    of thousands of jobs is more than the host step's memory. Identical bytes are skipped
+    before they are parsed, which leaves the union :func:`providers_from_records` takes unchanged: it
     keeps the first value it meets, and the first copy is kept in the same sorted order.
     """
     import glob  # pylint: disable=import-outside-toplevel
     import hashlib  # pylint: disable=import-outside-toplevel
 
     pattern = os.path.join(str(campaign_dir), "_jobs", "**", "distributions_*.json")
-    records, seen, read = [], set(), 0
+    records, read = [], 0
+    usable = {}           # digest -> whether those bytes are a record
     for path in sorted(glob.glob(pattern, recursive=True)):
         try:
             with open(path, "rb") as handle:
@@ -760,16 +761,15 @@ def _campaign_provider_records(campaign_dir) -> "Tuple[list, int]":
         except OSError:
             continue          # one unreadable container's record is not the campaign's answer
         digest = hashlib.sha256(raw).digest()
-        if digest in seen:
-            read += 1
-            continue
-        try:
-            data = json.loads(raw)
-        except ValueError:
-            continue
-        if isinstance(data, dict):
-            seen.add(digest)
-            records.append(data)
+        if digest not in usable:
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                data = None
+            usable[digest] = isinstance(data, dict)
+            if usable[digest]:
+                records.append(data)
+        if usable[digest]:
             read += 1
     return records, read
 
