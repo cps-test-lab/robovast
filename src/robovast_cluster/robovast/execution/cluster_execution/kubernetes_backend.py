@@ -69,7 +69,7 @@ from robovast.common.campaign_data import (KIND_INVALID, KIND_SIZING, PROBE_DIR,
                                            image_is_pullable, record_container_failures,
                                            record_intervention)
 from robovast.common.common import get_scenario_parameters
-from robovast.common.config import SCENARIO_CONTAINER, job_deadline_seconds, recording_config
+from robovast.common.config import SCENARIO_CONTAINER, job_deadline_seconds
 from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter_documents,
                                        create_job_links, dump_multi_document_yaml,
                                        job_artifact_rel, node_label, read_job_links,
@@ -1219,8 +1219,7 @@ class BatchJobRunner:
         """
         return sim_job_overlay(self.campaign_data.get("execution") or {},
                                job.config.get("sim") or {},
-                               os.path.dirname(self.campaign_data.get("vast") or ""),
-                               recording=recording_config(self.campaign_data.get("recording")))
+                               os.path.dirname(self.campaign_data.get("vast") or ""))
 
     def _build_jobs(self):
         """One job per (config, run).

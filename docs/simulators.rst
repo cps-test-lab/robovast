@@ -162,9 +162,9 @@ Hooks, all optional except as noted:
    otherwise.
 ``env(cfg, execution, recording)``
    Environment the simulator reads. A campaign's own ``execution.env`` wins over it.
-   ``recording`` is the campaign's :ref:`recording: <recording-config>` block, or ``None`` for
-   an absent one, which means "record everything"; a backend that records reads its own
-   section of it. roqsim reads ``recording.roqsim`` and asks for its recording with
+   ``recording`` is the campaign's :ref:`execution.recording <recording-config>` block as its
+   model, or ``None`` for an absent one, which means "record everything"; a backend that records
+   reads its own section of it. roqsim reads ``execution.recording.roqsim`` and asks for its recording with
    ``ROQSIM_RECORD`` (``roqsim_bag/roqsim.mcap``, relative to the run directory), the capture
    rate with ``ROQSIM_CAPTURE_FPS`` and the tracks with ``ROQSIM_RECORD_TRACKS`` /
    ``ROQSIM_RECORD_EXCLUDE`` (comma-separated patterns) -- each only when the block sets it.

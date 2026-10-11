@@ -202,7 +202,7 @@ else
 
     # The scenario's recording, <run>/rosbag2: started here, before the runner, rather than
     # by a bag_record action in the scenario, so that what a run records is a property of
-    # the campaign (its `recording:` block, arriving as the RECORD_* variables) and not of
+    # the campaign (its `execution.recording` block, arriving as the RECORD_* variables) and not of
     # the scenario text. The bag goes into the run's directory, which a campaign job names
     # (RUN_OUTPUT_DIR); a container started outside a campaign -- a scenario tried in an
     # image -- has no run directory and records the infrastructure bag alone.

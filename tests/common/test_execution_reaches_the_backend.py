@@ -42,6 +42,9 @@ _DECLARED = {
     # refused, so it must arrive.
     "use_sim_time": True,
     "shm_size": "256Mi",
+    # Read by scenario_env for the RECORD_* variables and by the simulator backend for its own
+    # recording; it must arrive, or the run would record everything on the wrong clock.
+    "recording": {"ros2": {"topics": ["/odom"], "use_sim_time": True}},
     # Read by the cluster runner to decide whether a reservation is declared or measured;
     # it must ARRIVE, or a calibrated campaign would silently run fixed.
     "sizing": "calibrated",

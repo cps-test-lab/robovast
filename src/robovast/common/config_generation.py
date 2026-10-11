@@ -2482,11 +2482,9 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # downstream -- the container plan, the image builds, the run environment -- reads
     # one already-complete picture instead of each re-asking the backend and risking a
     # different answer. The campaign always wins; a backend fills in what was left out.
-    from robovast.common.config import recording_config  # pylint: disable=import-outside-toplevel
     from robovast.common.simulators import apply_backend  # pylint: disable=import-outside-toplevel
     execution_section = apply_backend(parameters.get('execution', {}) or {},
-                                      base_dir=os.path.dirname(variation_file),
-                                      recording=recording_config(parameters.get('recording')))
+                                      base_dir=os.path.dirname(variation_file))
     # And immediately resolve the ``family:`` refs a backend (or the default) contributed,
     # so the campaign data carries concrete images from here on. The project/tag arrive as
     # arguments rather than being read from the environment here: this runs in the
@@ -2557,9 +2555,6 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                if rel not in key_run_files and os.path.isfile(os.path.join(vast_dir, rel))]),
         "_output_dir": os.path.abspath(output_dir),
         "execution": execution_params,
-        # The `recording:` block as written, or None. Not underscore-prefixed for the same
-        # reason: the backend derives the run's RECORD_* environment from it.
-        "recording": parameters.get('recording'),
         "created_at": datetime.now().isoformat()
     }
 

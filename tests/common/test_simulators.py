@@ -479,16 +479,15 @@ def test_a_declared_transport_keeps_its_position_among_the_contributed_panels():
 
 def test_the_recording_block_reaches_the_backend_on_every_route():
     """apply_backend, the per-job overlay and the sidecar all hand the backend the same
-    block, so what the simulator is asked to record cannot differ by route."""
-    from robovast.common.config import RecordingConfig
+    ``execution.recording`` block, so what the simulator is asked to record cannot differ by
+    route."""
     from robovast.common.execution import sidecar_backend_env
     from robovast.common.simulators import sim_job_overlay
 
-    recording = RecordingConfig.model_validate({"roqsim": {"rate_hz": 25}})
-    ex = apply_backend(_execution("ros2", stage="s"), recording=recording)
+    ex = apply_backend({**_execution("ros2", stage="s"), "recording": {"roqsim": {"rate_hz": 25}}})
     assert ex["_backend_env"]["STUB_RATE"] == "25.0"
     assert sidecar_backend_env(ex, "simulation")["STUB_RATE"] == "25.0"
-    overlay = sim_job_overlay(ex, {"backend": "stub", "stage": "s"}, recording=recording)
+    overlay = sim_job_overlay(ex, {"backend": "stub", "stage": "s"})
     assert overlay["env"]["STUB_RATE"] == "25.0"
     # And its absence is a block, not an error: the backend is told there is none.
     assert "STUB_RATE" not in apply_backend(_execution("ros2", stage="s"))["_backend_env"]

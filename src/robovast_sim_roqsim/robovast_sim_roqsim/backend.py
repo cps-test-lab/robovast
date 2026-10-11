@@ -191,14 +191,14 @@ class RoqsimBackend(SimulatorBackend):
         return cfg.adapter or ADAPTER
 
     def env(self, cfg, execution: dict, recording) -> dict:
-        """What has one correct value for any campaign, plus what ``recording.roqsim`` asks.
+        """What has one correct value for any campaign, plus what ``execution.recording.roqsim`` asks.
 
         Not a "session" block in the world YAML and not keys in the ``.vast``: a campaign
         is always headless, always wants the recording its 3D run view replays, and always
         wants a GL backend that works on the node it landed on. There is nothing to
         decide, so there is nothing to declare. What a campaign *may* decide -- the sample
         rate and which tracks the recording holds -- comes from the ``.vast``'s
-        ``recording.roqsim`` block, and only the keys it sets are passed on, so the
+        ``execution.recording.roqsim`` block, and only the keys it sets are passed on, so the
         simulator's own defaults stay the simulator's.
         """
         env = {

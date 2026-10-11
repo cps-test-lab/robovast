@@ -3190,8 +3190,7 @@ class ServiceBase(RobovastInterface):
         # family. The stepped shape is unaffected: there the simulator genuinely *is* the
         # scenario container, and the backend says so.
         execution = apply_backend(campaign_config.execution.model_dump(),
-                                  os.path.dirname(os.path.abspath(vast_file)),
-                                  recording=campaign_config.recording)
+                                  os.path.dirname(os.path.abspath(vast_file)))
         plan = plan_containers(execution)
         target = plan.by_name(container) if container else plan.main
 

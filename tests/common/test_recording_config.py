@@ -1,6 +1,6 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The ``recording:`` block: what it accepts, and what the run is told because of it.
+"""The ``execution.recording`` block: what it accepts, and what the run is told because of it.
 
 The block is the only place a campaign says what its runs' bags hold, and the
 ``RECORD_*`` environment is the only way that reaches the entrypoint's recorder. So the
@@ -8,20 +8,23 @@ two are tested together: a shape the model refuses can never reach a run, and a 
 accepts must come out the other end spelled the way ``ros2 bag record`` reads it.
 """
 
+import textwrap
+
 import pytest
 from pydantic import ValidationError
 
 from robovast.common.config import (RESERVED_ENV_NAMES, ConfigV1, RecordingConfig,
                                     Ros2RecordingConfig, recording_config)
 from robovast.common.execution import scenario_env
+from robovast.common.migrations import SUPPORTED_CONFIG_VERSION
 
 _EXECUTION = {"containers": {"scenario": {"image": "x:1"}}, "runs": 1,
               "scenario_file": "s.osc"}
 
 
 def _env(recording=None):
-    return scenario_env({"execution": dict(_EXECUTION), "scenario_file": "s.osc",
-                         "recording": recording})
+    return scenario_env({"execution": {**_EXECUTION, "recording": recording},
+                         "scenario_file": "s.osc"})
 
 
 # -- the model -------------------------------------------------------------------------
@@ -33,11 +36,17 @@ def test_an_empty_block_records_everything():
     assert cfg.roqsim.tracks == "all" and cfg.roqsim.exclude == [] and cfg.roqsim.rate_hz is None
 
 
-def test_the_block_is_optional_on_the_config_and_absent_by_default():
+def test_the_block_is_optional_on_execution_and_absent_by_default():
     config = ConfigV1(execution=_EXECUTION)
-    assert config.recording is None
-    config = ConfigV1(execution=_EXECUTION, recording={"ros2": {"use_sim_time": True}})
-    assert config.recording.ros2.use_sim_time is True
+    assert config.execution.recording is None
+    config = ConfigV1(execution={**_EXECUTION, "recording": {"ros2": {"use_sim_time": True}}})
+    assert config.execution.recording.ros2.use_sim_time is True
+
+
+def test_a_top_level_block_is_refused_naming_the_key():
+    """The block is a section of ``execution``; at the top level it is an unknown key."""
+    with pytest.raises(ValidationError, match=r"recording\n\s+Extra inputs are not permitted"):
+        ConfigV1(execution=_EXECUTION, recording={"ros2": {"use_sim_time": True}})
 
 
 @pytest.mark.parametrize("block", [
@@ -117,6 +126,39 @@ def test_a_block_without_a_ros2_section_records_everything():
 
 def test_a_model_instance_is_accepted_as_the_block():
     env = _env(RecordingConfig(ros2=Ros2RecordingConfig(use_sim_time=True)))
+    assert env["RECORD_USE_SIM_TIME"] == "true"
+
+
+def test_a_composed_vast_carries_the_block_to_the_recorder(tmp_path):
+    """From the file to the ``RECORD_*`` variables: composition keeps ``execution.recording``
+    on the execution block it hands the backend, and the run environment is read from there."""
+    from robovast.common.config_generation import generate_scenario_variations
+
+    (tmp_path / "scenario.osc").write_text(
+        "import osc.robotics\n\nscenario nav:\n    do serial:\n        wait elapsed(1s)\n")
+    vast = tmp_path / "campaign.vast"
+    vast.write_text(textwrap.dedent(f"""\
+        version: {SUPPORTED_CONFIG_VERSION}
+        metadata: {{name: rec}}
+        configuration:
+        - name: base
+        execution:
+          mode: ros2
+          use_sim_time: false
+          containers:
+            scenario: {{image: scen:latest}}
+          runs: 1
+          scenario_file: scenario.osc
+          recording:
+            ros2: {{topics: [/odom, /clock], use_sim_time: true}}
+        """))
+    data = generate_scenario_variations(
+        str(vast), progress_update_callback=lambda m: None,
+        output_dir=str(tmp_path / "gen"), use_cache=False)
+
+    assert "recording" not in data
+    env = scenario_env(data)
+    assert env["RECORD_TOPICS"] == "/odom /clock"
     assert env["RECORD_USE_SIM_TIME"] == "true"
 
 

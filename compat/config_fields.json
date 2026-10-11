@@ -175,11 +175,6 @@
       "Union[list[str], NoneType]"
     ],
     [
-      "recording",
-      false,
-      "Union[RecordingConfig, NoneType]"
-    ],
-    [
       "results_processing",
       false,
       "Union[ResultsConfig, NoneType]"
@@ -382,6 +377,11 @@
       "pre_command",
       false,
       "Union[str, NoneType]"
+    ],
+    [
+      "recording",
+      false,
+      "Union[RecordingConfig, NoneType]"
     ],
     [
       "run_as_user",

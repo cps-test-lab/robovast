@@ -71,10 +71,9 @@ execution:
   - "moveit/gen/*.yaml"
   - "moveit/gen/meshes/*.stl"  # without them move_group plans through the bench
   timeout: 900  # move_group takes most of a minute to come up
-
-recording:
-  ros2:
-    use_sim_time: true  # stamps the bag on the clock move_group plans on
+  recording:
+    ros2:
+      use_sim_time: true  # stamps the bag on the clock move_group plans on
 
 # The box's trajectory, so a failure can be read; a run that recorded no box pose measured nothing.
 results_processing:

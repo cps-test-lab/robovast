@@ -46,7 +46,7 @@ import shlex
 from typing import Optional
 
 from robovast.common.config import (ALWAYS_ON_PANELS, SCENARIO_CONTAINER, SIMULATION_CONTAINER,
-                                    RecordingConfig,
+                                    RecordingConfig, recording_config,
                                     SUT_CONTAINER, flatten_panel_shorthand)
 
 #: Entry-point group backends register in.
@@ -175,9 +175,9 @@ class SimulatorBackend:
         A campaign's own ``execution.env`` wins over this: these are defaults a backend
         knows, not decisions it takes away.
 
-        *recording* is the campaign's ``recording:`` block, or ``None`` when it has none --
-        which means "record everything", not "record nothing". A backend that records
-        reads its own section of it here (roqsim reads ``recording.roqsim``) and asks the
+        *recording* is the campaign's ``execution.recording`` block, or ``None`` when it has
+        none -- which means "record everything", not "record nothing". A backend that records
+        reads its own section of it here (roqsim reads ``execution.recording.roqsim``) and asks the
         simulator for exactly that, so the knobs a campaign sets reach the process that
         honours them by the same route as every other variable the backend contributes.
         """
@@ -656,8 +656,7 @@ def backend_name(execution: dict) -> Optional[str]:
     return (block or {}).get("backend") if isinstance(block, dict) else None
 
 
-def apply_backend(execution: dict, base_dir: str = "",
-                  recording: Optional[RecordingConfig] = None) -> dict:
+def apply_backend(execution: dict, base_dir: str = "") -> dict:
     """Return *execution* with its backend's contributions merged in.
 
     Called once, where the raw ``execution`` mapping is turned into what the execution
@@ -667,10 +666,9 @@ def apply_backend(execution: dict, base_dir: str = "",
     The campaign always wins: a backend supplies defaults for keys the author left out,
     and never overrides one they set.
 
-    *recording* is the campaign's ``recording:`` block, handed to :meth:`SimulatorBackend.env`
-    so the environment stored here already carries what the simulator is asked to record.
-    A caller that only wants the container plan may leave it out: the plan does not read
-    the environment, and an absent block means the simulator records everything.
+    *execution*'s ``recording`` block is handed to :meth:`SimulatorBackend.env` as its model,
+    so the environment stored here already carries what the simulator is asked to record; an
+    absent block means the simulator records everything.
     """
     name = backend_name(execution)
     if not name:
@@ -714,7 +712,7 @@ def apply_backend(execution: dict, base_dir: str = "",
         ref = backend.simulation_ref(cfg, execution)
         if ref:
             result["simulation"] = ref
-    contributed = backend.env(cfg, execution, recording)
+    contributed = backend.env(cfg, execution, recording_config(execution.get("recording")))
     if contributed:
         result["_backend_env"] = contributed
     if shape == SHAPE_ROS:
@@ -1062,8 +1060,7 @@ def sim_input_files(execution: dict, block: dict, base_dir: str = "",
     return [str(p) for p in (declared or [])]
 
 
-def sim_job_overlay(execution: dict, block: dict, base_dir: str = "",
-                    recording: Optional[RecordingConfig] = None) -> dict:
+def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
     """What one job's resolved ``sim`` block contributes: ``{command, env, document}``.
 
     :func:`apply_backend`'s per-job twin, and deliberately the *same* hooks: the command and
@@ -1073,9 +1070,9 @@ def sim_job_overlay(execution: dict, block: dict, base_dir: str = "",
 
     ``document`` is what the execution backend writes to :data:`SIM_OVERRIDES_MOUNT`, or ``None``.
 
-    *recording* is the same block :func:`apply_backend` was given: the overlay's ``env`` is
-    merged over the campaign-level contribution, so a job asked with a different block
-    would silently rewrite what the run records.
+    The recording block is read from *execution*, the one :func:`apply_backend` read: the
+    overlay's ``env`` is merged over the campaign-level contribution, so a job asked with a
+    different block would silently rewrite what the run records.
     """
     empty = {"command": None, "env": {}, "document": None}
     name = backend_name(execution or {})
@@ -1087,7 +1084,7 @@ def sim_job_overlay(execution: dict, block: dict, base_dir: str = "",
     sim_container = contributed.get(SIMULATION_CONTAINER) or {}
     return {
         "command": sim_container.get("command"),
-        "env": backend.env(cfg, execution, recording) or {},
+        "env": backend.env(cfg, execution, recording_config(execution.get("recording"))) or {},
         "document": backend.sim_document(cfg, execution),
     }
 
