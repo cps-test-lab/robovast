@@ -436,14 +436,22 @@ def _write_postprocessing_provenance_yaml(
         "generated_by": "robovast",
         "entries": relative_entries,
     }
-    with open(yaml_path, "w", encoding="utf-8") as f:
-        yaml.dump(
-            data,
-            f,
-            default_flow_style=False,
-            sort_keys=False,
-            allow_unicode=True,
-        )
+    # Written beside it and renamed into place: a write that fails part-way must not leave a
+    # truncated record, which a reader would take for a finished pass.
+    fd, tmp_path = tempfile.mkstemp(dir=transient_dir, prefix=".postprocessing.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.dump(
+                data,
+                f,
+                default_flow_style=False,
+                sort_keys=False,
+                allow_unicode=True,
+            )
+        os.replace(tmp_path, yaml_path)
+    except BaseException:
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
 
 
 

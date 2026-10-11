@@ -166,3 +166,19 @@ def test_the_record_writer_raises_rather_than_skipping(tmp_path):
     (root / "_transient").write_text("a file where the directory should be")
     with pytest.raises(OSError):
         postprocessing._write_postprocessing_provenance_yaml(str(root), [])  # pylint: disable=protected-access
+
+
+def test_a_write_that_fails_part_way_leaves_no_record(tmp_path, monkeypatch):
+    """A truncated record would read as a finished pass; the record appears whole or not at
+    all."""
+    root = tmp_path / "camp"
+    root.mkdir()
+
+    def fail_part_way(_data, stream, **_kwargs):
+        stream.write("generated_by: robovast\n")
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(postprocessing.yaml, "dump", fail_part_way)
+    with pytest.raises(OSError):
+        postprocessing._write_postprocessing_provenance_yaml(str(root), [])  # pylint: disable=protected-access
+    assert list((root / "_transient").iterdir()) == []
