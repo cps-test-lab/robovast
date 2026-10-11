@@ -47,8 +47,8 @@ function mf(): Promise<MFRuntime> {
  *  failure path only, to recover it.
  *
  *  A syntax error in the bundle, a 404, a MIME type the browser refuses to execute and a
- *  runtime version skew all reach the user as the same sentence otherwise. That sentence has
- *  already cost one debugging round — the comment above `type: 'module'` is what it bought.
+ *  runtime version skew all reach the user as the same sentence otherwise, and none of them is
+ *  diagnosable from it.
  */
 async function diagnose(remote: RemoteDescriptor, mfError: Error): Promise<string> {
   let real = ''

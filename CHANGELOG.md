@@ -3,6 +3,33 @@
 What changed in each released version of RoboVAST, newest first. Each section lists the
 changes a user must know about; the git history holds the rest.
 
+## 2.2.1
+
+- **Pinned simulator** — the roqsim image builds the roqsim commit its Dockerfile pins, the last this line supports
+  ([#900](https://github.com/cps-test-lab/robovast/pull/900))
+- **MCP image tag** — `start_campaign` takes `image_project_tag`, as the CLI's `--image-project-tag` does
+  ([#709](https://github.com/cps-test-lab/robovast/pull/709))
+- **Screenshots kept** — a simulation screenshot is stored and addressable by path, not only returned inline
+  ([#708](https://github.com/cps-test-lab/robovast/pull/708))
+- **World check** — the project check reports what the simulator warns about a world's start state
+  ([#715](https://github.com/cps-test-lab/robovast/pull/715))
+- **Exit codes** — `vast campaign wait` and `vast image wait` define their codes once; help, docs and MCP render that list
+  ([#719](https://github.com/cps-test-lab/robovast/pull/719))
+- **Admission** — a pass is linear in the queue, sizes a queued job once per node, and reads the cluster outside its lock
+  ([#699](https://github.com/cps-test-lab/robovast/pull/699), [#881](https://github.com/cps-test-lab/robovast/pull/881))
+- **Free disk** — admission takes a node's free disk as the kubelet measures it, less its eviction threshold
+  ([#892](https://github.com/cps-test-lab/robovast/pull/892))
+- **Postprocessing** — a failed conversion delivers what it converted; an OOM-killed stage step fails its pod instead of holding it
+  ([#880](https://github.com/cps-test-lab/robovast/pull/880), [#899](https://github.com/cps-test-lab/robovast/pull/899))
+- **Stall report** — a campaign whose batch has finished every run is not called queued
+  ([#707](https://github.com/cps-test-lab/robovast/pull/707))
+- **Archived campaigns** — read as archived on the exec path too, so a key they ran without does not refuse them
+  ([#692](https://github.com/cps-test-lab/robovast/pull/692))
+- **roqsim socket** — a ros-shape run names its control socket on `/ipc` for simulator and scenario alike
+  ([#894](https://github.com/cps-test-lab/robovast/pull/894))
+- **roqsim image** — no longer installs `roqsim_webctrl`, which roqsim does not ship
+  ([#898](https://github.com/cps-test-lab/robovast/pull/898))
+
 ## 2.2.0
 
 - **Local Docker lane removed** — campaigns run on a Kubernetes cluster, on one machine a minikube or kind; `vast serve` needs `robovast-cluster`

@@ -25,9 +25,9 @@ each container printed. Everything a run is *analyzed* on is sim seconds — the
 receive time under ``use_sim_time``, which is what the run view's playback bar scrubs.
 Relating the two is this module's whole job.
 
-**A single offset is wrong.** Sim time does not run at wall rate: measured on one
-recorded run, ``dt/dw = 1.369`` — the simulator ran 1.37× faster than the wall clock, so
-an offset taken at the start is ~8 s out by the end of a 29 s run. It can also pause. So
+**A single offset is wrong.** Sim time does not run at wall rate: a simulator that is not
+realtime-paced runs faster or slower than the wall clock, so an offset taken at the start
+drifts by the rate difference times the run's length. It can also pause. So
 the relation is carried as *samples* and interpolated piecewise-linearly between them.
 
 **Outside the sampled range there is no answer, and none is invented.** The samples come
@@ -41,8 +41,6 @@ stamp and say so, rather than extrapolating backwards into a clock that was not 
 from __future__ import annotations
 
 import bisect
-import csv
-import os
 from typing import List, NamedTuple, Optional, Sequence, Tuple
 
 #: ``clock_map_source`` values. ``none`` is a finding, not a default: it says this run's
@@ -51,7 +49,6 @@ SOURCE_NONE = "none"
 SOURCE_ROS_CLOCK_BAG = "ros_clock_bag"
 #: The ``clock`` channel of roqsim's own recording.
 SOURCE_ROQSIM = "roqsim"
-#: A clock-map CSV a simulator wrote beside its recording.
 
 
 class ClockMapInfo(NamedTuple):
@@ -87,7 +84,7 @@ class ClockMapInfo(NamedTuple):
 class ClockMap:
     """Wall→sim for one run, from ``(wall_ts, sim_ts)`` samples.
 
-    Samples must be sorted by ``wall_ts``; :func:`load_clock_map` sorts them.
+    Samples must be sorted by ``wall_ts``; :func:`from_rows` sorts them.
     """
 
     def __init__(self, samples: Sequence[Tuple[float, float]],
@@ -140,31 +137,6 @@ def from_rows(rows, source: str = SOURCE_ROS_CLOCK_BAG) -> ClockMap:
             samples.append((float(row["wall_ts"]), float(row["sim_ts"])))
         except (KeyError, TypeError, ValueError):
             continue
-    if len(samples) < 2:
-        return NO_CLOCK_MAP
-    samples.sort(key=lambda pair: pair[0])
-    return ClockMap(samples, source)
-
-
-def load_clock_map(path: str, source: str = SOURCE_ROS_CLOCK_BAG) -> ClockMap:
-    """Read a clock map a simulator wrote as CSV; :data:`NO_CLOCK_MAP` when it is absent or
-    unusable.
-
-    A missing file is the normal case for a run whose map comes from ``/clock``, so it is not
-    an error here -- it becomes the ``none`` provenance the reader is told about.
-    """
-    if not path or not os.path.isfile(path):
-        return NO_CLOCK_MAP
-    samples: List[Tuple[float, float]] = []
-    try:
-        with open(path, newline="", encoding="utf-8") as handle:
-            for row in csv.DictReader(handle):
-                try:
-                    samples.append((float(row["wall_ts"]), float(row["sim_ts"])))
-                except (KeyError, TypeError, ValueError):
-                    continue
-    except OSError:
-        return NO_CLOCK_MAP
     if len(samples) < 2:
         return NO_CLOCK_MAP
     samples.sort(key=lambda pair: pair[0])

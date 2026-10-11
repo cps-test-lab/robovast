@@ -880,10 +880,12 @@ def run_cleanup(campaign, namespace, context):
     # level they would make `vast login` and `vast campaign wait` pay for the cluster stack.
     from .cluster_execution import _label_safe_campaign  # pylint: disable=import-outside-toplevel
     from .cluster_execution import cleanup_cluster_campaign, get_cluster_job_counts_per_campaign
+    from .kube_client import core_v1_client  # pylint: disable=import-outside-toplevel
     from .kubernetes import check_kubernetes_access  # pylint: disable=import-outside-toplevel
-    from .kubernetes import get_kubernetes_client
     try:
-        k8s_client = get_kubernetes_client(context=context)
+        # Raises naming both configuration sources when neither loads, rather than handing
+        # the access check a client that is not there.
+        k8s_client = core_v1_client(context)
         click.echo("Checking Kubernetes cluster access...")
         k8s_ok, k8s_msg = check_kubernetes_access(k8s_client, namespace=namespace)
         if not k8s_ok:

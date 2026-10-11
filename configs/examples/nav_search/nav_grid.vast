@@ -150,12 +150,11 @@ results_processing:
   health_checks:
   - nav2_control_loop_rate
   postprocessing:
-  # `all` extracts every TF child frame that resolves against map, so a world that later
-  # gains a walker frame shows it without editing this. `require` names what the analysis is
-  # measured from, and a run missing any of them fails loudly rather than quietly scoring.
+  # `all` extracts every TF frame that resolves against map. A run missing a `require`d frame
+  # fails loudly; ground truth is not one -- it is the recording's (ground_truth_poses).
   - rosbags_tf_to_csv:
       frames: all
-      require: [base_link, odom, turtlebot4_base_link_gt]
+      require: [base_link, odom]
   # Declared explicitly so "no collision" and "no oracle" stay distinguishable, and so the
   # clearance series exists as a table rather than only inside the bag.
   - rosbags_to_csv:

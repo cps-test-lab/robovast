@@ -5,7 +5,7 @@ import { isTerminalPhase, type CampaignSummary } from './robovastClient'
 // The list stream is the only signal there is -- the service pushes the whole list whenever it
 // changes and has no per-campaign event vocabulary -- so a transition is a diff of two
 // consecutive frames. The phase vocabulary itself is NOT restated here: `isTerminalPhase` is the
-// one copy of it (three had already drifted apart once), and this asks it rather than listing
+// one copy of it, and this asks it rather than listing
 // phases of its own.
 
 export type CampaignEventKind = 'started' | 'finished' | 'failed' | 'stopped'
@@ -67,8 +67,8 @@ const ACTIVITY_BY_ENTRY: Readonly<Record<string, CampaignActivity>> = {
  * An unknown or absent entry phase means `campaign`, deliberately.
  *
  * That is the case where the app opened mid-spell: the first frame seeds silently, so the entry
- * was never observed. Falling back to the generic wording is both honest and exactly what this
- * said before there was an activity at all -- and it is the safe direction if the list stream
+ * was never observed. Falling back to the generic wording is honest -- nothing was observed that
+ * could name another activity -- and it is the safe direction if the list stream
  * ever coalesces frames and skips the entry phase entirely.
  */
 function activityOf(entry: string | undefined): CampaignActivity {

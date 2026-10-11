@@ -168,22 +168,28 @@ class DataPlane:
     # -- the five operations --
 
     def campaign_tar_stream(self, campaign_id: str, raw: bool = False, *,
-                            live: "bool | None" = None, facts: "dict | None" = None):
+                            live: "bool | None" = None, facts: "dict | None" = None,
+                            part: str = "", compress: bool = True):
         """The campaign as a tar stream; see the interface method of the same name.
 
         *live* is whether the campaign is still being written -- a caller that knows says
         so and gives the *facts* the snapshot marker records; left ``None`` the tree
         decides, and a campaign without a terminal record is marked with what the tree
         can say, which is only that it is not over.
+
+        *part* stages one part of a table build (``raw`` only) for the pod that builds it,
+        with no snapshot marker: a part is read, not imported. *compress* ``False`` is a
+        plain tar, for a reader inside the cluster.
         """
         from robovast.execution import campaign_archive  # pylint: disable=import-outside-toplevel
         campaign_dir = self.campaign_dir(campaign_id)
         if live is None:
             live = not self.campaign_is_finished(campaign_id)
-        snapshot = dict(facts or {}) if live else None
+        snapshot = dict(facts or {}) if live and not part else None
         return campaign_archive.iter_campaign_tar(
             str(campaign_dir),
-            campaign_archive.RAW if raw else campaign_archive.WITH_TABLES, snapshot=snapshot)
+            campaign_archive.RAW if raw else campaign_archive.WITH_TABLES, snapshot=snapshot,
+            part=part, compress=compress)
 
     def campaign_inputs_tar_stream(self, campaign_id: str, job_tags: "list[str]",
                                    config_files: "list[tuple[str, str]] | None" = None):
@@ -522,7 +528,9 @@ def data_router(source):
         return result
 
     @router.get(Routes.campaign_archive("{campaign_id}"))
-    def download_campaign_archive(campaign_id: str, raw: bool = Query(default=False)):
+    def download_campaign_archive(campaign_id: str, raw: bool = Query(default=False),
+                                  part: str = Query(default=""),
+                                  uncompressed: bool = Query(default=False)):
         """Stream the campaign as a ``tar.gz``.
 
         Backs ``vast campaign download`` and the web UI's download menu. What comes out is
@@ -532,14 +540,21 @@ def data_router(source):
 
         Nothing is buffered and no scratch is used: the tree is tarred into the response
         as it is read. Decisive for campaigns that run to terabytes.
+
+        ``part`` (with ``raw=true``) stages one part of a table build for the pod that
+        builds it; ``uncompressed=true`` is a plain tar, for a reader inside the cluster.
         """
+        if part and not raw:
+            raise HTTPException(status_code=400,
+                                detail="a table part is staged from the records alone: raw=true")
         # The name before the stream: a running campaign is offered as
         # `<id>.incomplete.tar.gz`, and the header is the only place that reaches a browser
         # -- which saves whatever this says and never sees the marker inside the archive.
         name = _guard(lambda: source.campaign_archive_name(campaign_id, raw))
         return StreamingResponse(
-            _guard(lambda: source.campaign_tar_stream(campaign_id, raw)),
-            media_type=GZIP_MEDIA_TYPE,
+            _guard(lambda: source.campaign_tar_stream(campaign_id, raw, part=part,
+                                                      compress=not uncompressed)),
+            media_type=TAR_MEDIA_TYPE if uncompressed else GZIP_MEDIA_TYPE,
             headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
     @router.get(Routes.campaign_export_download("{campaign_id}", "{export_id}"))

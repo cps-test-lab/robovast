@@ -82,6 +82,11 @@ def load_plugins(mcp: FastMCP) -> list[MCPPlugin]:
     (:func:`~robovast.mcp_server.service_access.answering_errors`), so no tool catches
     an exception only to report it.
 
+    An entry point exists only where the distribution declaring it is installed, so a
+    plugin that cannot be imported, instantiated or registered is a broken install rather
+    than a missing one: it raises :class:`PluginLoadError`, and the server does not start
+    with part of its surface silently gone.
+
     Parameters
     ----------
     mcp:
@@ -91,32 +96,40 @@ def load_plugins(mcp: FastMCP) -> list[MCPPlugin]:
     Returns
     -------
     list[MCPPlugin]
-        The instantiated plugin objects that were successfully loaded.
+        The instantiated plugin objects, one per entry point.
     """
     loaded: list[MCPPlugin] = []
     plugin_tools: dict[str, list[str]] = {}
     for ep in entry_points(group=ENTRY_POINT_GROUP):
         try:
-            plugin_cls = ep.load()
-            plugin: MCPPlugin = plugin_cls()
-            if not isinstance(plugin, MCPPlugin):
-                logger.warning(
-                    "Entry point %r does not satisfy MCPPlugin protocol – skipped.", ep.name
-                )
-                continue
-            before = set(registered_tools(mcp))
+            plugin = ep.load()()
+        except Exception as e:
+            raise PluginLoadError(ep, f"{type(e).__name__}: {e}") from e
+        if not isinstance(plugin, MCPPlugin):
+            raise PluginLoadError(ep, "it does not satisfy the MCPPlugin protocol")
+        before = set(registered_tools(mcp))
+        try:
             plugin.register(mcp)
-            after = registered_tools(mcp)
-            added = sorted(set(after) - before)
-            for name in added:
-                after[name].fn = answering_errors(after[name].fn)
-            plugin_tools[plugin.name] = added
-            loaded.append(plugin)
-            logger.debug("Loaded MCP plugin %r from %r.", plugin.name, ep.value)
-        except Exception:
-            logger.exception("Failed to load MCP plugin from entry point %r.", ep.name)
+        except Exception as e:
+            raise PluginLoadError(ep, f"register() raised {type(e).__name__}: {e}") from e
+        after = registered_tools(mcp)
+        added = sorted(set(after) - before)
+        for name in added:
+            after[name].fn = answering_errors(after[name].fn)
+        plugin_tools[plugin.name] = added
+        loaded.append(plugin)
+        logger.debug("Loaded MCP plugin %r from %r.", plugin.name, ep.value)
     _last_plugin_tools.update(plugin_tools)
     return loaded
+
+
+class PluginLoadError(RuntimeError):
+    """A registered ``robovast.mcp_plugins`` entry point that could not be loaded."""
+
+    def __init__(self, ep, why: str):
+        dist = getattr(getattr(ep, "dist", None), "name", None) or "an unknown distribution"
+        super().__init__(f"MCP plugin {ep.name!r} ({ep.value}, from {dist}) could not be "
+                         f"loaded: {why}")
 
 
 #: Mapping of plugin name → list of tool names, populated by :func:`load_plugins`.

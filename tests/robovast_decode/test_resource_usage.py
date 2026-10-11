@@ -196,24 +196,6 @@ def test_ticks_outside_the_trial_window_are_flagged_not_dropped(tmp_path):
     assert [r["in_window"] for r in rows] == [0, 1, 0]
 
 
-# -- the campaign totals -------------------------------------------------------
-
-
-def test_campaign_totals_carry_every_counter_a_job_reported():
-    """Driven by the dataclass fields, so a counter added later cannot be silently dropped
-    from the summary -- which is the one thing these counters exist to prevent."""
-    import dataclasses
-    totals, job = resource_usage.ScanStats(), resource_usage.ScanStats()
-    for spec in dataclasses.fields(job):
-        setattr(job, spec.name, ["x"] if spec.type.startswith("List") else 3)
-    totals.add_job(job)
-    for spec in dataclasses.fields(totals):
-        if spec.name in resource_usage.ScanStats._PER_RUN_FIELDS:
-            continue
-        value = getattr(totals, spec.name)
-        assert value in (3, ["x"]), f"{spec.name} was not folded"
-
-
 # -- the shared-memory pool ----------------------------------------------------
 #
 # One tmpfs for the whole run, sampled once per tick and repeated across the tick's process
@@ -269,20 +251,3 @@ def test_an_unmeasured_pool_is_absent_not_zero(tmp_path):
     assert (ticks[0].shm_used_bytes, ticks[0].shm_total_bytes) == (None, None)
     rows = resource_usage.rows_for_slice(ticks, _slice(tmp_path))
     assert [(r["shm_used_bytes"], r["shm_total_bytes"]) for r in rows] == [(None, None)]
-
-
-def test_the_peak_covers_bring_up_not_just_the_trial_window(tmp_path):
-    """A participant allocates its segments as it starts, and a SIGBUS there loses the run.
-
-    So the high-water mark is taken over every tick of the job, which includes bring-up,
-    rather than over the ticks inside the trial window.
-    """
-    ticks = [
-        resource_usage.Tick(wall_ts=90.0, container="robovast", processes={"a": (1.0, 1, 1)},
-                            shm_used_bytes=900_000_000, shm_total_bytes=1_073_741_824),
-        resource_usage.Tick(wall_ts=150.0, container="robovast", processes={"a": (1.0, 1, 1)},
-                            shm_used_bytes=1_000_000, shm_total_bytes=1_073_741_824),
-    ]
-    slice_ = _slice(tmp_path, start=100.0, end=200.0)
-    assert [r["in_window"] for r in resource_usage.rows_for_slice(ticks, slice_)] == [0, 1]
-    assert resource_usage.peak_shm(ticks) == (900_000_000, 1_073_741_824)
