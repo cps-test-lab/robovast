@@ -17,6 +17,7 @@ It ships in the plugin rather than as loose glue, so these tests load it by path
 import importlib.util
 import json
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -80,10 +81,10 @@ def test_every_pending_campaign_is_named_not_just_the_first(hook, capsys):
 
 
 @pytest.mark.parametrize("command", [
-    "vast exec wait camp-a --interval 10",
-    "vast wait camp-a --interval 10",           # after waiting left the exec group
-    "vast campaign wait camp-a --interval 10",  # and after it landed under `campaign`
-    "/home/u/.venv/bin/vast exec wait camp-a",  # an explicit path still counts
+    "vast campaign wait camp-a --interval 10",
+    "/home/u/.venv/bin/vast campaign wait camp-a",  # an explicit path still counts
+    "vast -l DEBUG campaign wait camp-a",          # a root option before the group
+    "cd /w && nohup vast campaign wait camp-a &",
 ])
 def test_a_backgrounded_waiter_stands_the_hook_down(hook, capsys, command):
     """Nagging an agent that chose the better mechanism teaches the wrong one."""
@@ -93,6 +94,16 @@ def test_a_backgrounded_waiter_stands_the_hook_down(hook, capsys, command):
     assert _check(hook, capsys) is None
 
 
+@pytest.mark.parametrize("command", ["vast wait camp-a", "vast exec wait camp-a",
+                                     "robovast campaign wait camp-a"])
+def test_a_wait_command_vast_does_not_have_does_not_stand_it_down(hook, capsys, command):
+    """None of these is a command `vast` runs, so it waits for nothing."""
+    _start(hook, "camp-a")
+    hook.delegated({"session_id": "s1", "tool_input": {"command": command}},
+                   _ledger(hook))
+    assert _check(hook, capsys) is not None
+
+
 def test_an_unrelated_bash_command_does_not_stand_it_down(hook, capsys):
     _start(hook, "camp-a")
     hook.delegated({"session_id": "s1", "tool_input": {"command": "ls -la"}},
@@ -100,12 +111,34 @@ def test_an_unrelated_bash_command_does_not_stand_it_down(hook, capsys):
     assert _check(hook, capsys) is not None
 
 
+def _stop_reply(ok):
+    """What ``stop_campaign`` itself answers, so the hook is pinned to the tool's reply
+    rather than to a shape written down beside it."""
+    from robovast.mcp_server import service_access
+    from robovast.mcp_server.plugins import execution
+
+    class _Service:
+        def stop(self, campaign_id):
+            return types.SimpleNamespace(ok=ok, message="stopping" if ok else "already over")
+
+    service_access.use_in_process_service(_Service())
+    try:
+        return execution.stop_campaign("camp-a")
+    finally:
+        service_access.use_in_process_service(None)
+
+
 def test_stopping_a_campaign_settles_it(hook, capsys):
     """Abandoning one deliberately is a decision; what the hook objects to is silence."""
     _start(hook, "camp-a")
-    hook.clear({"session_id": "s1",
-                "tool_response": {"campaign_id": "camp-a", "ok": True}}, _ledger(hook))
+    hook.clear({"session_id": "s1", "tool_response": _stop_reply(True)}, _ledger(hook))
     assert _check(hook, capsys) is None
+
+
+def test_a_refused_stop_settles_nothing(hook, capsys):
+    _start(hook, "camp-a")
+    hook.clear({"session_id": "s1", "tool_response": _stop_reply(False)}, _ledger(hook))
+    assert _check(hook, capsys) is not None
 
 
 def test_a_refused_launch_records_nothing(hook, capsys):
