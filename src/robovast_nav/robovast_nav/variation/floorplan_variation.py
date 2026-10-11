@@ -217,9 +217,8 @@ class FloorplanGeneration(NavVariation):
     .. code-block:: yaml
 
         - FloorplanGeneration:
-            name:
-            - map_file
-            - mesh_file
+            scenario: {map: map_file}
+            sim: {mesh: components.floorplan.mesh}
             floorplans:
             - floorplans/rooms/rooms.fpm
             - floorplans/hallways/hallways.fpm
