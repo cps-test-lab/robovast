@@ -79,9 +79,9 @@ class ExecPathUnavailable(RuntimeError):
     container one attempt named are therefore incidental, and naming them invites a caller
     to try another.
 
-    A status that is *not* a success is not this: the API server answering ``404`` or
-    ``500`` is answering about the one target that was asked for, which a caller may retry
-    against another.
+    A status that is *not* a success is not this: it is the API server answering the one
+    call that asked -- that its target is gone (:class:`ExecTargetGone`), or that this call
+    failed -- which a caller may make again.
 
     Distinct from a command that ran and failed, which is the caller's own question
     answered, and from :class:`ClusterUnreachableError`, where the API server never answered
@@ -108,7 +108,10 @@ class ExecTargetGone(RuntimeError):
     answered about *the one target that was asked for* rather than refusing every exec, so
     the deployment needs no attention and the target can simply be made again. A pod ends
     without its span ending -- an eviction, a drained node, a deadline -- and the next exec
-    into it is the first thing that notices.
+    into it is the first thing that notices. Only an answer that says the target is not
+    there is this; a refused caller or a busy or failing API server is a plain failure,
+    since a caller acting on "gone" recreates a target, or reads it as idle, while it is
+    still there.
 
     Its own type because the caller that can act on it cannot act on a message: a runner
     holding a name that no longer resolves recreates the container and repeats what it was
