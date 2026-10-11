@@ -669,7 +669,7 @@ def test_a_scenario_container_that_ended_in_a_running_pod_is_a_candidate():
                                "without writing its done marker")
 
 
-def test_a_scenario_container_that_exited_zero_without_its_marker_is_still_a_candidate():
+def test_a_scenario_that_exited_zero_without_its_marker_is_a_candidate():
     """What condemns the trial is the missing marker, not the exit code."""
     entry = scenario_ended_job_forensics(
         _Core([_scenario_ended(reason="Completed", exit_code=0)]), "ns", "sel")["j"]
