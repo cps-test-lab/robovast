@@ -30,6 +30,7 @@ would leave the guard inert for anyone who chose another name.
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -38,6 +39,9 @@ from pathlib import Path
 # abandoned session must not greet the next one with a block about a campaign that ended
 # hours ago.
 STALE_AFTER_S = 6 * 3600
+
+# `vast`, by any path, then `campaign wait`; root options such as `-l DEBUG` may come between.
+_WAITER = re.compile(r"(?:^|[\s/;&|(])vast\s(?:.*\s)?campaign\s+wait\s")
 
 
 def _ledger_path(payload):
@@ -131,8 +135,7 @@ def delegated(payload, path):
     exit: that is the moment responsibility moves to the waiter.
     """
     command = str((payload.get("tool_input") or {}).get("command") or "")
-    # Any path to the executable counts: it ends in `vast`, so the substring still matches.
-    if "vast campaign wait" not in command:
+    if not _WAITER.search(command):
         return
     data = _live(_read(path))
     handed = [cid for cid in data if cid in command]

@@ -82,6 +82,8 @@ def test_every_pending_campaign_is_named_not_just_the_first(hook, capsys):
 @pytest.mark.parametrize("command", [
     "vast campaign wait camp-a --interval 10",
     "/home/u/.venv/bin/vast campaign wait camp-a",  # an explicit path still counts
+    "vast -l DEBUG campaign wait camp-a",          # a root option before the group
+    "cd /w && nohup vast campaign wait camp-a &",
 ])
 def test_a_backgrounded_waiter_stands_the_hook_down(hook, capsys, command):
     """Nagging an agent that chose the better mechanism teaches the wrong one."""
@@ -91,9 +93,10 @@ def test_a_backgrounded_waiter_stands_the_hook_down(hook, capsys, command):
     assert _check(hook, capsys) is None
 
 
-@pytest.mark.parametrize("command", ["vast wait camp-a", "vast exec wait camp-a"])
+@pytest.mark.parametrize("command", ["vast wait camp-a", "vast exec wait camp-a",
+                                     "robovast campaign wait camp-a"])
 def test_a_wait_command_vast_does_not_have_does_not_stand_it_down(hook, capsys, command):
-    """Neither is a command `vast` runs, so it waits for nothing."""
+    """None of these is a command `vast` runs, so it waits for nothing."""
     _start(hook, "camp-a")
     hook.delegated({"session_id": "s1", "tool_input": {"command": command}},
                    _ledger(hook))
