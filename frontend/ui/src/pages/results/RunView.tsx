@@ -419,6 +419,10 @@ export function RunView({
   // ends the range is read once more (the finalised tables) and following ends there.
   const tlTable = panels.data?.timeline?.table
   const tlCol = panels.data?.timeline?.time_column
+  // What the live stream refused or could not read, in the service's words. The panels only stop
+  // moving when it happens, so this is the one place that says why.
+  const [liveError, setLiveError] = useState<string | null>(null)
+  useEffect(() => setLiveError(null), [provider])
   useEffect(() => {
     if (!provider || !run) return
     let alive = true
@@ -458,6 +462,8 @@ export function RunView({
               clock.setRange(span[0], span[1])
               clock.follow()
             }
+          } else if (event.kind === 'error') {
+            setLiveError(event.message)
           } else if (event.kind === 'eof') {
             readRange().then((range) => {
               if (!alive) return
@@ -701,6 +707,11 @@ export function RunView({
               <b>Edit visualization</b> — to show anything else.
             </Alert>
           )}
+          {liveError ? (
+            <Alert severity="error" variant="outlined">
+              The live stream of this run failed: {liveError}
+            </Alert>
+          ) : null}
           {nowOn && live ? <TapTail tap={tap} /> : null}
           <Box
             // The panels are the point of this view, so they get the whole window rather than
