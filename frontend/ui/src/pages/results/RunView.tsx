@@ -562,9 +562,9 @@ export function RunView({
             that tree. */}
         <RefreshResultsButton state={refresh} />
         {/* Refused while the campaign runs: saving writes into the campaign's own
-            `_config/<name>.vast`, which the runs that have not started yet are configured from. Editing the
-            view would change the experiment. A tooltip on a span, since a disabled button fires
-            no events for one to listen to. */}
+            `_config/<name>.vast`, which the runs that have not started yet are configured from.
+            Editing the view would change the experiment. A tooltip on a span, since a disabled
+            button fires no events for one to listen to. */}
         <Tooltip
           title={running
             ? 'Not while the campaign is running — saving edits its configuration, which its '

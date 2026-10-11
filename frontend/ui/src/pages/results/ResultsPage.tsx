@@ -24,9 +24,9 @@ const RunView = lazyView('Run view', () => import('./RunView')
 const DataBrowser = lazyView('Data browser', () => import('./DataBrowser')
   .then((m) => ({ default: m.DataBrowser })))
 
-// Remember the campaign across *sessions*. Within a session the URL
-// carries it; this is only the seed used when the URL names none — a fresh tab, or a return to the
-// topic after browsing elsewhere.
+// Remember the campaign across *sessions*. Within a session the URL carries it; this is only the
+// seed used when the URL names none — a fresh tab, or a return to the topic after browsing
+// elsewhere.
 const LAST_CAMPAIGN_KEY = 'eval.campaignId'
 
 // The Results topic container: fetches the campaign list once and distributes the campaign selection
