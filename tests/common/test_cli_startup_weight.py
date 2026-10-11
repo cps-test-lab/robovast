@@ -3,7 +3,7 @@
 """What a plain ``vast`` invocation is allowed to import.
 
 ``load_plugins()`` imports **every** registered CLI plugin on every invocation, so one
-module-level import in one plugin is paid for by ``vast login``, ``vast wait`` and
+module-level import in one plugin is paid for by ``vast login``, ``vast campaign wait`` and
 ``vast --help`` alike. Heavy dependencies are imported in the command body that needs them.
 
 Nothing fails when this rule is broken -- the CLI is just slow and the cluster stack becomes
