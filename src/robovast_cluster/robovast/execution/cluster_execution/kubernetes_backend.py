@@ -1493,12 +1493,23 @@ class BatchJobRunner:
         """
         if calibration is None:
             return None
+        # One rendering per node and set of figures. The queue asks this for every queued
+        # item on every node on every drain, under its lock, and rendering a manifest per ask
+        # made a pass over a queue of thousands take minutes -- during which no finished run
+        # was replaced and every status read waited. Every job of a batch is the same shape,
+        # so the answer changes only when the node's figures do; a node's figures are
+        # replaced, never mutated, so identity is the test.
+        rendered: dict = {}
 
         def _sizing(node_id):
             figures = self._node_figures(node_id)
             if not figures:
                 return None
-            return self._job_sizing(job, total_jobs, node_figures=figures)
+            cached = rendered.get(node_id)
+            if cached is None or cached[0] is not figures:
+                cached = (figures, self._job_sizing(job, total_jobs, node_figures=figures))
+                rendered[node_id] = cached
+            return cached[1]
 
         return _sizing
 
@@ -2929,9 +2940,9 @@ class BatchJobRunner:
                                               campaign_root) -> None:
         """Record the jobs whose pod ended on a container OOM-killed at a measured figure.
 
-        The restart path sees only a container the pod restarts. The scenario container is
-        not restarted, so its kill ends the pod instead, and is read here. Asked only once
-        some node has figures: before that there is no measured figure to be killed at.
+        The restart path sees a container the pod restarts, and a scenario container killed
+        while its pod runs on. A kill that ended the pod is read here. Asked only once some
+        node has figures: before that there is no measured figure to be killed at.
         """
         calibration = getattr(self, "_calibration", None)
         if calibration is None or not calibration.outcome().get("calibrated"):
@@ -3042,7 +3053,8 @@ class BatchJobRunner:
             log_text, log_status = ("", "unavailable")
             if pod_name:
                 log_text, log_status = previous_container_log(
-                    self.k8s_client, self.namespace, pod_name, record["container"])
+                    self.k8s_client, self.namespace, pod_name, record["container"],
+                    previous=record.get("log") != "current")
             record.update({
                 "job_name": job_name,
                 "job_dir": job_dir,
@@ -3315,9 +3327,9 @@ class BatchJobRunner:
                             f"runs the same images with the same reservation, so a whole "
                             f"batch blocked points at the campaign rather than at the "
                             f"cluster: an image reason at the execution image reference "
-                            f"and its pull credentials, an Unschedulable one at a "
-                            f"reservation no node can satisfy (the message above names "
-                            f"it).")
+                            f"and its pull credentials, an OOMKilled init container at that "
+                            f"step's memory limit, an Unschedulable one at a reservation no "
+                            f"node can satisfy (the message above names it).")
                     self._drop_blocked_jobs(rnd.expired, blocked, jobs_by_name,
                                             campaign_root)
             # No grace period, deliberately: unlike a blocked pod, a restart has already
@@ -3675,6 +3687,8 @@ class KubernetesBackend(ExecutionBackend):
         )
         # Every later batch of the campaign runs the sidecar this one fixed.
         options.sidecar_image = runner._sidecar_image  # noqa: SLF001 - same module
+        # The sidecar a table-building part stages with: the one the campaign ran with.
+        self._sidecar_image = runner._sidecar_image  # noqa: SLF001 - same module
         # Now, and not after the batch: the runner's plan carries the digest every pod will
         # run (``_pin_image_refs``), and this is the earliest moment it is known. A campaign
         # that dies in its first batch still leaves a record naming the exact bytes it was
@@ -3872,6 +3886,21 @@ class KubernetesBackend(ExecutionBackend):
                               image_digests=digests or None,
                               image_labels=image_labels or None,
                               nodes_skipped=runner.skipped_nodes() or None)
+
+    def table_builder(self, campaign_root: str, should_stop=None):
+        """Build the campaign's tables in parts, one Job each (``table_jobs``), with the
+        sidecar the campaign ran with.
+
+        A part is sized from the campaign's own record of what its system under test was
+        given on each node (:func:`~.table_jobs.recorded_sizing`), the record a
+        postprocessing started later reads too. ``None`` when that record says nothing about
+        the size: the tables are built where the campaign is postprocessed.
+        """
+        from .table_jobs import cluster_pod_builder  # noqa: PLC0415
+        return cluster_pod_builder(
+            campaign_root, namespace=self.namespace, kube_context=self.kube_context,
+            cluster_config=lambda: self.cluster_config, admission=lambda: self._admission,
+            sidecar_image=getattr(self, "_sidecar_image", None), should_stop=should_stop)
 
     def finalize_campaign(self, campaign_root: str) -> None:
         """Release what the cluster held for this campaign: its calibration and its rank.

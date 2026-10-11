@@ -38,7 +38,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pyarrow as pa
-from rosbags.typesys.msg import Nodetype
+from rosbags.interfaces import Nodetype
 
 # -- a topic's own table, from the message definition -----------------------------------------
 

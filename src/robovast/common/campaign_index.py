@@ -181,12 +181,11 @@ def build_campaign_store(campaign_dir, *, force: bool = False) -> Path:
             )
             indexed.add(cfg_dir.name)
             store.record_runs(unit_id, read_run_outcomes(cfg_dir, campaign_dir))
-        # A configuration the campaign was composed with but whose directory never reached
-        # the tree. Recorded as a unit of its own, with no runs, because the alternative is
-        # what this indexer used to do: build the record from the directories that exist,
-        # so a sweep that lost cells reported the smaller number as its whole design and
-        # nothing anywhere said otherwise. A shortfall has to be a row before it can be a
-        # finding.
+        # A configuration the campaign was composed with but whose directory never reached the
+        # tree. Recorded as a unit of its own, with no runs, because building the record from
+        # the directories that exist would let a sweep that lost cells report the smaller number
+        # as its whole design, with nothing anywhere saying otherwise. A shortfall has to be a
+        # row before it can be a finding.
         for name in _declared_config_names(campaign_dir):
             if name in indexed:
                 continue

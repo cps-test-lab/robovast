@@ -177,7 +177,7 @@ def catalog_for(schemas: Iterable, bag_dir: Optional[str] = None) -> TypeCatalog
 
 def _referenced_types(fielddef) -> list:
     """The message types a ``rosbags`` field definition refers to, one level deep."""
-    from rosbags.typesys.msg import Nodetype  # pylint: disable=import-outside-toplevel
+    from rosbags.interfaces import Nodetype  # pylint: disable=import-outside-toplevel
     out = []
     for _name, node in fielddef[1]:
         kind, info = node

@@ -23,7 +23,7 @@ _CONFIG = {
         "goal_poses": [{"position": {"x": 4.0, "y": 0.0}, "orientation": {"yaw": 0.0}}],
     },
     "_path": [{"x": 0.0, "y": 0.0}, {"x": 4.0, "y": 0.0}],
-    "_goal_parameter_name": "goal_poses",
+    "_slot_bindings": {"start": "start_pose", "goal": "goal_poses"},
     "_config_name": "blk",
 }
 

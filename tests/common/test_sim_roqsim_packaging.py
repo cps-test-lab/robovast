@@ -178,3 +178,18 @@ def test_the_recording_block_becomes_the_simulators_knobs():
     # A block with no roqsim section says nothing to roqsim.
     ros_only = apply_backend(dict(execution), recording=recording_config({"ros2": {"use_sim_time": True}}))
     assert "ROQSIM_CAPTURE_FPS" not in ros_only["_backend_env"]
+
+
+def test_the_control_socket_reaches_the_scenario_and_the_per_job_simulator():
+    """The scenario container is told the same socket as the simulator, and so is a
+    simulator started from a per-job overlay."""
+    from robovast.common.execution import scenario_env
+    from robovast.common.simulators import apply_backend, sim_job_overlay
+    from robovast_sim_roqsim.backend import ROQSIM_CONTROL_URI
+
+    execution = {"mode": "ros2",
+                 "containers": {"simulation": {"backend": "roqsim", "config": "pkg:world"}}}
+    applied = apply_backend(dict(execution))
+    assert scenario_env({"execution": applied})["ROQSIM_CONTROL"] == ROQSIM_CONTROL_URI
+    overlay = sim_job_overlay(execution, execution["containers"]["simulation"])
+    assert overlay["env"]["ROQSIM_CONTROL"] == ROQSIM_CONTROL_URI

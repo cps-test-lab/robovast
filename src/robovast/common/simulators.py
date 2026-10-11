@@ -266,6 +266,17 @@ class SimulatorBackend:
         """
         return False
 
+    def ground_truth(self, cfg, execution: dict) -> Optional[dict]:
+        """Where a run's ``ground_truth_poses`` come from, or ``None`` for the ROS convention.
+
+        A simulator that records its own state names the table and the selector its truth is
+        read with, in the decoder's vocabulary (:func:`robovast_decode.ground_truth.source_of`)
+        -- roqsim answers ``{"table": "sim_poses", "entity_kind": "robot"}``. ``None``, the
+        default, is a simulator that records nothing of its own: its ground truth is the
+        ``*_gt`` frame its world publishes on ``/tf``, read from ``poses``.
+        """
+        return None
+
     def default_panels(self, cfg, execution: dict) -> list:
         """Run-view panels this backend contributes, as ``{<type>: <props>}`` entries.
 
@@ -551,6 +562,19 @@ def scene_export_command(execution: dict, *, world: str, max_tex_dim: int,
     cfg = _validated_cfg(backend, block, name)
     return backend.scene_export(cfg, execution, world=world, max_tex_dim=max_tex_dim,
                                 overrides=overrides, overrides_file=overrides_file)
+
+
+def ground_truth_source(execution: dict, base_dir: str = "") -> Optional[dict]:
+    """The configured backend's :meth:`SimulatorBackend.ground_truth`, or ``None``.
+
+    A campaign with no backend -- a simulator its scenario launches itself -- has the base
+    class's answer: the ROS convention.
+    """
+    if not (name := backend_name(execution or {})):
+        return None
+    backend = resolve_backend(name, base_dir)
+    block = ((execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {})
+    return backend.ground_truth(_validated_cfg(backend, block, name), execution)
 
 
 def merge_default_panels(raw_panels: list, execution: dict, base_dir: str = "") -> list:
@@ -1099,6 +1123,7 @@ __all__ = [
     "backend_own_keys",
     "campaign_sim_block",
     "flatten_sim_block",
+    "ground_truth_source",
     "merge_sim_block",
     "resolve_backend",
     "resolve_sim_path",
