@@ -312,8 +312,9 @@ def _output_fingerprint(out_dir, vast_dir):
     return stamp
 
 
-def _cache_key(name, generator_cls, params, out, inputs, vast_dir):
-    """Cache key over the generator's identity, its parameters and what it read."""
+def _cache_key(name, generator_cls, params, out, inputs, vast_dir, image_digest=None):
+    """Cache key over the generator's identity, its parameters, what it read and the digest
+    of the image it runs in, if it declares one."""
     from robovast.common.file_cache2 import CacheKey  # pylint: disable=import-outside-toplevel
 
     key = CacheKey()
@@ -322,6 +323,8 @@ def _cache_key(name, generator_cls, params, out, inputs, vast_dir):
     key.add("format_version", getattr(generator_cls, "FORMAT_VERSION", 1))
     key.add("params", params)
     key.add("out", out)
+    if image_digest is not None:
+        key.add("image_digest", image_digest)
     for path in sorted(inputs):
         if os.path.isfile(path):
             key.add_file(path, base_dir=vast_dir)
@@ -427,10 +430,28 @@ def _run_one(name, generator_cls, params, out, out_dir, vast_dir, field, progres
                      "(a containerized run?); regenerating rather than trusting a key "
                      "built from nothing", name)
         prior = None
+    from robovast.common.config_generation import (  # pylint: disable=import-outside-toplevel
+        aux_image_digest, aux_images_fixed)
+
+    spec = generator_cls.get_required_container(params)
+    container_runner = None
+    image_digest = None
     if stamps is not None and prior:
-        key = _cache_key(name, generator_cls, params, out, prior, vast_dir)
+        if spec is not None:
+            # Where the digest needs a runner, it is the one a regeneration would use.
+            if not aux_images_fixed():
+                container_runner = _make_runner(spec, container_runner_factory, name)
+            try:
+                image_digest = aux_image_digest(spec, container_runner)
+            except BaseException:
+                if container_runner is not None:
+                    container_runner.close()
+                raise
+        key = _cache_key(name, generator_cls, params, out, prior, vast_dir, image_digest)
         cached = stamps.get_json(key)
         if cached is not None and cached.get("outputs") == _output_fingerprint(out_dir, vast_dir):
+            if container_runner is not None:
+                container_runner.close()
             progress(f"Input generator '{name}' is up to date ({out}).")
             return {"name": name, "params": params, "out": out,
                     "outputs": collect_output_files(out_dir, vast_dir),
@@ -438,7 +459,8 @@ def _run_one(name, generator_cls, params, out, out_dir, vast_dir, field, progres
 
     progress(f"Running input generator '{name}' -> {out} ...")
     generator = generator_cls()
-    container_runner = _make_runner(generator_cls, params, container_runner_factory, name)
+    if container_runner is None and spec is not None:
+        container_runner = _make_runner(spec, container_runner_factory, name)
     try:
         generator.container_runner = container_runner
         generator.progress_update = progress
@@ -481,6 +503,9 @@ def _run_one(name, generator_cls, params, out, out_dir, vast_dir, field, progres
             f"  {type(exc).__name__}: {exc}\n"
             f"{_failure_excerpt(exc)}"
             f"The previous contents of {out!r} were left untouched.") from exc
+    else:
+        if stamps is not None and inputs and spec is not None and image_digest is None:
+            image_digest = aux_image_digest(spec, container_runner)
     finally:
         if container_runner is not None:
             container_runner.close()
@@ -489,7 +514,8 @@ def _run_one(name, generator_cls, params, out, out_dir, vast_dir, field, progres
     outputs = collect_output_files(out_dir, vast_dir)
     hashed = _hash_inputs(inputs or [])
     if stamps is not None and inputs:
-        stamps.set_json(_cache_key(name, generator_cls, params, out, inputs, vast_dir),
+        stamps.set_json(_cache_key(name, generator_cls, params, out, inputs, vast_dir,
+                                   image_digest),
                         {"outputs": _output_fingerprint(out_dir, vast_dir), "inputs": hashed})
     elif inputs is None:
         # Not a warning: plenty of generators legitimately cannot enumerate what they
@@ -528,11 +554,8 @@ def _swap_in(staging, out_dir):
     shutil.rmtree(previous, ignore_errors=True)
 
 
-def _make_runner(generator_cls, params, container_runner_factory, name):
-    """Build the auxiliary-container runner this generator declared, if any."""
-    spec = generator_cls.get_required_container(params)
-    if spec is None:
-        return None
+def _make_runner(spec, container_runner_factory, name):
+    """Build the runner for the auxiliary container *spec* a generator declared."""
     if container_runner_factory is None:
         from robovast.common.config_generation import \
             _make_container_runner  # pylint: disable=import-outside-toplevel

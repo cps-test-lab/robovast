@@ -48,7 +48,9 @@ from robovast.common.execution import GIT_TOKEN_SECRET_ID as _GIT_TOKEN_SECRET_I
 from robovast.common.execution import (BUILD_IMAGE_PREFIX, BUILD_MANIFEST_DIR,
                                        BUILD_MANIFEST_FILES, DEFAULT_IMAGE_USER,
                                        FAMILY_IMAGE_PREFIX)
-from robovast.service.interface import ImageBuildError, ImageBuildRef, ImageBuildStatus
+from robovast.execution.wait_exit import ImageWaitExit
+from robovast.service.interface import (IMAGE_BUILT_PHASES, ImageBuildError, ImageBuildRef,
+                                        ImageBuildStatus)
 
 logger = logging.getLogger(__name__)
 
@@ -1317,7 +1319,7 @@ def not_built_message(container: str, build_id: str,
                 f"(build {build_id}, phase {phase}{since}) -- wait for it rather than "
                 f"starting another build. {tail}",
                 f"run in the background: vast image wait {build_id} --interval 5 "
-                f"(exit 0 built, 1 failed)")
+                f"({ImageWaitExit.summary()})")
     if status is not None and phase == "failed":
         detail = getattr(getattr(status, "error", None), "message", "") or ""
         because = f": {detail}" if detail else ""
@@ -1326,7 +1328,7 @@ def not_built_message(container: str, build_id: str,
                 f"and change what it names. {tail}",
                 f"get_image_build_status('{build_id}') for error_detail, then "
                 f"get_image_build_log(build_id='{build_id}', summarize=True)")
-    if status is not None and phase in ("succeeded", "cached"):
+    if status is not None and phase in IMAGE_BUILT_PHASES:
         return (f"the image for container '{container}' was built (build {build_id}) and "
                 f"is no longer on the service's image store -- deleted from the registry. "
                 f"It has to be built again. {tail}",

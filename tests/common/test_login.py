@@ -38,6 +38,16 @@ def _runner():
     return CliRunner()
 
 
+def test_the_login_and_the_user_env_share_one_directory(monkeypatch, tmp_path):
+    """One place for a user's settings: the user-level ``.env`` is read from the directory
+    the login is kept in, resolved by the same rule, however that rule is set."""
+    from robovast.common.env_file import user_env_file
+    monkeypatch.delenv("ROBOVAST_CONFIG", raising=False)
+    monkeypatch.delenv("ROBOVAST_ENV_FILE", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert login.config_path().parent == user_env_file().parent == tmp_path / "xdg" / "robovast"
+
+
 def test_nothing_stored_reads_as_logged_out():
     assert login.load() == {}
     assert login.credentials() == ("", "", "")
@@ -50,6 +60,19 @@ def test_save_then_load_round_trips():
 
 def test_the_token_file_is_private():
     path = login.save("https://robovast.example.org", "tok", "Fred")
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    assert mode == 0o600, oct(mode)
+
+
+def test_a_token_written_over_a_readable_file_leaves_it_private():
+    """``os.open``'s mode applies only to a file it creates, not to one it truncates."""
+    path = login.config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{}\n")
+    path.chmod(0o644)
+
+    login.save("https://robovast.example.org", "tok", "Fred")
+
     mode = stat.S_IMODE(os.stat(path).st_mode)
     assert mode == 0o600, oct(mode)
 

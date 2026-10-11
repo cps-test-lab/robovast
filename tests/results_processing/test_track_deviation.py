@@ -2,23 +2,19 @@
 # SPDX-License-Identifier: Apache-2.0
 """``get_track_deviation`` -- a recorded track against a path its configuration contributed.
 
-The track is read in full from the index, so these pin that the answer covers the whole
+The track is read in full from the campaign's tables, so these pin that the answer covers the whole
 recording (not a reply-sized prefix of it), that a floor-plan path is compared in the plane,
 that the geometry is the nearest point of any segment, and that each way of not having an
 answer names what does exist.
 """
-
-import os
 
 import pytest
 import yaml
 
 from robovast.results_processing.track_deviation import choose_path
 
-DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
-pg = pytest.mark.skipif(not DSN, reason="ROBOVAST_TEST_PG_DSN is not set")
+from .conftest import write_campaign_db
 
-SCHEMA = "track_deviation_test"
 CAMPAIGN = "camp-deviation-2026-09-21-120000"
 
 #: More poses than fit in one capped SQL reply: a figure over a prefix would differ.
@@ -33,6 +29,7 @@ def _campaign(results):
     path, and the true figure are three different numbers.
     """
     root = results / CAMPAIGN
+    write_campaign_db(root, CAMPAIGN)
     run = root / "cfg-a" / "0"
     run.mkdir(parents=True)
     (root / "_execution").mkdir()
@@ -53,31 +50,15 @@ def _campaign(results):
 
 @pytest.fixture(name="transport")
 def _transport(monkeypatch, tmp_path):
-    psycopg = pytest.importorskip("psycopg")
     pytest.importorskip("robovast_nav")
-    from robovast.common import index_db
-    from robovast.results_processing import campaign_ingest, index_query, index_views
     from tests.service.null_service import NullService
-    with psycopg.connect(DSN, autocommit=True) as setup:
-        for statement in (f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE",
-                          "DROP SCHEMA IF EXISTS campaign CASCADE",
-                          f"CREATE SCHEMA {SCHEMA}"):
-            setup.execute(statement)
-    monkeypatch.setenv(index_db.DSN_ENV, f"{DSN} options=-csearch_path={SCHEMA}")
+
     # The results root is derived from the workspaces store.
     monkeypatch.setenv("ROBOVAST_WORKSPACES_ROOT", str(tmp_path / "workspaces"))
-    root = _campaign(tmp_path / "results")
-    with index_query.open_index(readonly=False) as conn:
-        campaign_ingest.ingest_campaign(conn, str(root), CAMPAIGN)
-        index_views.create_views(conn)
-    yield NullService()
-
-    with psycopg.connect(DSN, autocommit=True) as teardown:
-        teardown.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
-        teardown.execute("DROP SCHEMA IF EXISTS campaign CASCADE")
+    _campaign(tmp_path / "results")
+    return NullService()
 
 
-@pg
 def test_the_deviation_covers_every_pose_and_ignores_height_for_a_floor_plan_path(transport):
     result = transport.get_track_deviation(CAMPAIGN, "cfg-a", 0)
     assert result.points == _POSES
@@ -95,13 +76,11 @@ def test_the_deviation_covers_every_pose_and_ignores_height_for_a_floor_plan_pat
     assert 0.9 < result.efficiency < 1.0
 
 
-@pg
 def test_an_unrecorded_frame_is_refused_with_the_recorded_ones(transport):
     with pytest.raises(KeyError, match="base_link"):
         transport.get_track_deviation(CAMPAIGN, "cfg-a", 0, frame="odom")
 
 
-@pg
 def test_a_table_that_is_not_a_pose_table_is_refused_with_the_ones_that_are(transport):
     with pytest.raises(ValueError, match="poses"):
         transport.get_track_deviation(CAMPAIGN, "cfg-a", 0, source="runs")

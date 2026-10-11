@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from robovast.client.status import Phase, Status
 from robovast.common.campaign_data import write_execution_outcome
-from robovast.service import auth
+from robovast.service import auth, tar_io
 from robovast.service.app import build_app
 from robovast.service.data_app import build_data_app
 from robovast.service.interface import Routes
@@ -156,6 +156,31 @@ def test_a_job_tag_cannot_reach_outside_the_campaigns_documents(client):
         assert resp.status_code == 400, (tag, resp.text)
 
 
+def test_a_cells_file_cannot_name_another_campaigns_cell(client, root):
+    """``config_file`` names a cell of this campaign: a name that steps out of it would
+    read another campaign's inputs under the token of this one."""
+    _campaign(root, _OTHER)
+    for config_name in (f"../{_OTHER}/cell-a", "cell-a/..", ".", ".."):
+        resp = client.get(Routes.campaign_inputs(_CAMPAIGN),
+                          params={"job": ["job-1"],
+                                  "config_file": [f"{config_name}:campaign.vast"]})
+        assert resp.status_code == 400, (config_name, resp.text)
+    resp = client.get(Routes.campaign_inputs(_CAMPAIGN),
+                      params={"job": ["job-1"],
+                              "config_file": [f"cell-a:../../{_OTHER}/cell-a/_config/campaign.vast"]})
+    assert resp.status_code == 400, resp.text
+
+
+def test_a_cells_file_cannot_lead_out_of_its_campaign_through_a_link(client, root):
+    """A one-segment name is still a way out when the cell is a symlink to another
+    campaign's cell: the file is refused where it resolves, not by how it is spelled."""
+    _campaign(root, _OTHER)
+    (root / _CAMPAIGN / "cell-b").symlink_to(root / _OTHER / "cell-a")
+    resp = client.get(Routes.campaign_inputs(_CAMPAIGN),
+                      params={"job": ["job-1"], "config_file": ["cell-b:campaign.vast"]})
+    assert resp.status_code == 400, resp.text
+
+
 def test_outputs_stream_into_the_campaign_and_the_driver_keeps_its_log(client, root):
     payload = _tar([("cell-a/1/test.xml", b"<testsuite/>"),
                     ("cell-a/1/logs/system.log", b"ran\n"),
@@ -168,6 +193,53 @@ def test_outputs_stream_into_the_campaign_and_the_driver_keeps_its_log(client, r
     assert sorted(body["refused"]) == ["_execution/controller.log", "campaign.db"]
     assert (root / _CAMPAIGN / "cell-a" / "1" / "test.xml").read_bytes() == b"<testsuite/>"
     assert (root / _CAMPAIGN / "_execution" / "controller.log").read_text() == "driver's\n"
+
+
+def test_outputs_may_not_write_the_services_own_folders(client, root):
+    """``_transient/`` holds the job-link manifest the driver turns into symlinks, and
+    ``_config/`` what every job is handed; a link inside the delivery is no way around it."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        link = tarfile.TarInfo("cell-a/1/t")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "../../_transient"
+        tar.addfile(link)
+        for name in ("_transient/job_links.yaml", "_config/campaign.vast",
+                     "_execution/outcome.json", "cell-a/1/t/job_links.yaml",
+                     "cell-a/1/test.xml"):
+            info = tarfile.TarInfo(name)
+            info.size = 1
+            tar.addfile(info, io.BytesIO(b"x"))
+    resp = client.put(Routes.campaign_outputs(_CAMPAIGN), content=buf.getvalue())
+    assert resp.status_code == 200, resp.text
+    assert sorted(resp.json()["refused"]) == [
+        "_config/campaign.vast", "_execution/outcome.json", "_transient/job_links.yaml",
+        "cell-a/1/t/job_links.yaml"]
+    assert not (root / _CAMPAIGN / "_transient" / "job_links.yaml").exists()
+    assert (root / _CAMPAIGN / "_config" / "campaign.vast").read_text().startswith("configuration")
+    assert (root / _CAMPAIGN / "cell-a" / "1" / "test.xml").read_bytes() == b"x"
+
+
+def test_ranges_append_and_a_mismatch_is_answered_with_a_resync(client, root):
+    """A live delivery extends a log; one that does not continue it names it in ``resync``."""
+    log = root / _CAMPAIGN / "cell-a" / "1" / "logs" / "system.log"
+    log.parent.mkdir(parents=True)
+    log.write_bytes(b"one\n")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        for name, payload, offset in (("cell-a/1/logs/system.log", b"two\n", 4),
+                                      ("cell-a/1/metrics.csv", b"a,b\n", 9)):
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            info.pax_headers = {tar_io.OFFSET_HEADER: str(offset)}
+            tar.addfile(info, io.BytesIO(payload))
+    resp = client.put(Routes.campaign_outputs(_CAMPAIGN), content=buf.getvalue())
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["files"] == 1
+    assert body["resync"] == ["cell-a/1/metrics.csv"]
+    assert log.read_bytes() == b"one\ntwo\n"
+    assert not (root / _CAMPAIGN / "cell-a" / "1" / "metrics.csv").exists()
 
 
 def test_outputs_for_a_campaign_that_is_not_here_are_a_404_before_the_body(client):
@@ -190,28 +262,22 @@ def test_a_body_that_is_not_a_tar_is_a_400(client):
     assert resp.status_code == 400, resp.text
 
 
-def test_the_archive_narrows_to_what_a_postprocess_pod_reads(client, root):
+def test_the_archive_carries_the_records_and_the_tables_and_raw_only_the_records(client, root):
     campaign = root / _CAMPAIGN
     (campaign / "_calibration").mkdir()
     (campaign / "_calibration" / "probe.mcap").write_bytes(b"probe")
-    (campaign / "_jobs" / "batch-1" / "job-0" / "rosbag2").mkdir(parents=True)
-    (campaign / "_jobs" / "batch-1" / "job-0" / "rosbag2" / "a.mcap").write_bytes(b"bag")
-    (campaign / "_jobs" / "batch-2" / "job-0").mkdir(parents=True)
-    (campaign / "_jobs" / "batch-2" / "job-0" / "sysinfo.yaml").write_text("n: 1\n")
-    (campaign / "_execution" / "postprocessing.log").write_text("previous attempt\n")
+    (campaign / ".cache" / "tables").mkdir(parents=True)
+    (campaign / ".cache" / "tables" / "poses.parquet").write_bytes(b"PAR1")
 
-    everything = _names(client.get(Routes.campaign_archive(_CAMPAIGN)).content, gz=True)
-    assert f"{_CAMPAIGN}/_calibration/probe.mcap" in everything
+    names = _names(client.get(Routes.campaign_archive(_CAMPAIGN)).content, gz=True)
+    assert f"{_CAMPAIGN}/_calibration/probe.mcap" in names
+    assert f"{_CAMPAIGN}/_config/campaign.vast" in names
+    assert f"{_CAMPAIGN}/.cache/tables/poses.parquet" in names
 
-    staged = _names(client.get(Routes.campaign_archive(_CAMPAIGN),
-                               params={"stage": "true", "skip_bags": "true",
-                                       "batch_jobs": "batch-2",
-                                       "uncompressed": "true"}).content)
-    assert f"{_CAMPAIGN}/_calibration/probe.mcap" not in staged
-    assert f"{_CAMPAIGN}/_jobs/batch-1/job-0/rosbag2/a.mcap" not in staged
-    assert f"{_CAMPAIGN}/_execution/postprocessing.log" not in staged
-    assert f"{_CAMPAIGN}/_jobs/batch-2/job-0/sysinfo.yaml" in staged
-    assert f"{_CAMPAIGN}/_config/campaign.vast" in staged
+    raw = _names(client.get(Routes.campaign_archive(_CAMPAIGN), params={"raw": "true"}).content,
+                 gz=True)
+    assert f"{_CAMPAIGN}/_calibration/probe.mcap" in raw
+    assert not [n for n in raw if "/.cache" in n]
 
 
 def test_the_standalone_plane_reads_liveness_from_the_tree(standalone, root):
@@ -284,8 +350,6 @@ def test_a_forged_scope_is_not_authenticated(standalone):
 def test_a_full_disk_is_a_507(client, monkeypatch):
     import errno
 
-    from robovast.service import tar_io
-
     def _full(*_a, **_k):
         raise OSError(errno.ENOSPC, "No space left on device")
     monkeypatch.setattr(tar_io, "_write_atomic", _full)
@@ -297,8 +361,6 @@ def test_a_write_the_service_could_not_make_is_a_500_not_a_bad_upload(client, mo
     """A disk gone read-only or failing is the service's fault, and an uploader retries a 5xx.
     Answered as 400 -- "not a readable tar" -- it would give up on output that was sound."""
     import errno
-
-    from robovast.service import tar_io
 
     def _read_only(*_a, **_k):
         raise OSError(errno.EROFS, "Read-only file system")
@@ -337,11 +399,6 @@ def test_only_an_archive_that_leaves_the_cluster_is_compressed(client, root):
     assert resp.headers["content-disposition"].endswith('.tar.gz"')
     _names(resp.content, gz=True)
 
-    resp = client.get(Routes.campaign_archive(_CAMPAIGN), params={"uncompressed": "true"})
-    assert resp.headers["content-type"] == "application/x-tar"
-    assert resp.headers["content-disposition"].endswith('.tar"')
-    assert f"{_CAMPAIGN}/_config/campaign.vast" in _names(resp.content)
-
     resp = client.get(Routes.campaign_inputs(_CAMPAIGN), params=_JOB)
     assert resp.headers["content-type"] == "application/x-tar"
     _names(resp.content)
@@ -354,30 +411,3 @@ def test_an_upload_is_read_compressed_or_not(client, root):
                           content=_tar([(f"cell-a/{n}/test.xml", b"<testsuite/>")], gz=gz))
         assert resp.status_code == 200, resp.text
         assert (root / _CAMPAIGN / "cell-a" / str(n) / "test.xml").exists()
-
-
-def test_a_part_is_given_its_runs_and_nothing_of_another_parts(client, root):
-    from robovast.execution.campaign_archive import write_part
-
-    campaign = root / _CAMPAIGN
-    for run in ("0", "1"):
-        (campaign / "cell-a" / run).mkdir()
-        (campaign / "cell-a" / run / "test.xml").write_text("<t/>")
-        job = campaign / "_jobs" / "batch-0" / f"job-{run}"
-        job.mkdir(parents=True)
-        (job / "log.txt").write_text("x\n")
-    write_part(str(campaign), "m1", ["cell-a/1"], ["_jobs/batch-0/job-1"])
-
-    resp = client.get(Routes.campaign_archive(_CAMPAIGN), params={"stage": True, "part": "m1",
-                                                                 "uncompressed": True})
-    assert resp.status_code == 200, resp.text
-    names = set(_names(resp.content))
-    assert f"{_CAMPAIGN}/cell-a/1/test.xml" in names
-    assert f"{_CAMPAIGN}/_jobs/batch-0/job-1/log.txt" in names
-    assert f"{_CAMPAIGN}/_config/campaign.vast" in names
-    assert not any("cell-a/0/" in n or "job-0/" in n for n in names)
-
-
-def test_a_part_nobody_planned_is_not_found(client):
-    resp = client.get(Routes.campaign_archive(_CAMPAIGN), params={"stage": True, "part": "m9"})
-    assert resp.status_code == 404

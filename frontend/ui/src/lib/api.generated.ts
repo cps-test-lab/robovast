@@ -455,6 +455,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Export
+         * @description Start an export of the campaign: its tables as files, its records, its bags.
+         */
+        post: operations["create_export_campaigns__campaign_id__exports_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/campaigns/{campaign_id}/exports/{export_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Export Status
+         * @description Where an export has got to; its file is on the data plane once it is done.
+         */
+        get: operations["get_export_status_campaigns__campaign_id__exports__export_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/job-exec": {
         parameters: {
             query?: never;
@@ -479,7 +519,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Job Log */
+        /**
+         * Get Job Log
+         * @description A job's log rows after *cursor*, running or finished.
+         */
         get: operations["get_job_log_campaigns__campaign_id__job_log_get"];
         put?: never;
         post?: never;
@@ -498,10 +541,8 @@ export interface paths {
         };
         /**
          * Stream Job Log
-         * @description Server-sent events: one job's log, tailed live (``Last-Event-ID`` resumes).
-         *
-         *     A **finished** job is served too, not only a running one. What the events mean,
-         *     and which residual case is still an error, is ``_sse_log_stream``'s to say.
+         * @description Server-sent events: one job's log rows as they are written (``Last-Event-ID``
+         *     resumes). A finished job is served too; see ``_sse_rows_stream``.
          */
         get: operations["stream_job_log_campaigns__campaign_id__job_log_stream_get"];
         put?: never;
@@ -546,6 +587,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/job-tap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Tap Job
+         * @description Server-sent events: a tap on a **running** job, relaying what its simulator
+         *     publishes now for at most ``max_seconds`` (capped at the service's bound). ``line``
+         *     events carry the lines, ``eof`` the exit code; ``selection`` is comma-separated and
+         *     means topics in the ROS shape, empty for the topic list. Recorded as a probe of the
+         *     run; see ``_sse_tap_stream``.
+         */
+        get: operations["tap_job_campaigns__campaign_id__job_tap_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/jobs": {
         parameters: {
             query?: never;
@@ -570,7 +635,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Campaign Logs */
+        /**
+         * Get Campaign Logs
+         * @description A campaign's infrastructure log rows after *cursor*, running or finished.
+         */
         get: operations["get_campaign_logs_campaigns__campaign_id__logs_get"];
         put?: never;
         post?: never;
@@ -589,8 +657,9 @@ export interface paths {
         };
         /**
          * Stream Campaign Logs
-         * @description Server-sent events: a campaign's controller log, tailed live. Resumable —
-         *     send ``Last-Event-ID`` to continue from the last line received.
+         * @description Server-sent events: a campaign's infrastructure log rows as they are written
+         *     (``Last-Event-ID`` resumes; the same filters as the pull). A finished campaign is
+         *     served too; see ``_sse_rows_stream``.
          */
         get: operations["stream_campaign_logs_campaigns__campaign_id__logs_stream_get"];
         put?: never;
@@ -762,11 +831,37 @@ export interface paths {
          *     agent cannot spend its window on one ``SELECT *`` by forgetting a parameter.
          *
          *     ``campaigns`` widens the scope to the ids it names -- the A/B comparison, the
-         *     whole search arm. It is a parameter rather than the default because the index
-         *     holds every campaign: a query that spans them by *omission* returns rows of the
-         *     right shape from the wrong experiment, and nothing about the reply says so.
+         *     whole search arm. It is a parameter rather than the default because a query that
+         *     spans campaigns by *omission* returns rows of the right shape from the wrong
+         *     experiment, and nothing about the reply says so.
          */
         post: operations["query_campaign_data_sql_campaigns__campaign_id__query_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/campaigns/{campaign_id}/query.arrow": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Query Campaign Data Arrow
+         * @description Stream the same read-only ``SELECT`` as an Arrow IPC stream: typed, no row cap.
+         *
+         *     The CSV twin spells every value as text and a list column as ``[...]``; this keeps
+         *     the types, which is what ``robovast-data`` reads a service's tables through. The
+         *     request's ``tables`` are the caller's own relations -- each an Arrow IPC stream in
+         *     base64 -- registered under their names for this query alone, so a DataFrame a
+         *     notebook made joins the campaign's tables on the service.
+         */
+        post: operations["query_campaign_data_arrow_campaigns__campaign_id__query_arrow_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -808,7 +903,7 @@ export interface paths {
         put?: never;
         /**
          * Retrigger Campaign
-         * @description Launch a new campaign from an existing one's frozen config and pinned image. The source campaign is not modified. Refused (400) when the pre-flight blocks on an axis, naming each one; force launches anyway.
+         * @description Launch a new campaign from an existing one's frozen config, running exactly the image digests its launch record holds and resolving none again. The source campaign is not modified. Refused (400) when the pre-flight blocks on an axis, naming each one; force launches anyway, except past a record lacking a digest for something the campaign runs.
          */
         post: operations["retrigger_campaign_campaigns__campaign_id__retrigger_post"];
         delete?: never;
@@ -982,6 +1077,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/screenshots/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Campaign Screenshot Frame
+         * @description A render ``POST .../screenshot`` kept, fetched again by the name it was kept under.
+         *
+         *     Kept for a bounded time and count (``robovast.service.screenshot``); a 404 once it is
+         *     gone. Its bytes never change under its name, so it is served as immutable.
+         */
+        get: operations["campaign_screenshot_frame_campaigns__campaign_id__screenshots__name__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/search/history": {
         parameters: {
             query?: never;
@@ -1050,6 +1168,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/campaigns/{campaign_id}/tables": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Clear Campaign Tables
+         * @description Remove one campaign's built tables to free storage; each is built again on use.
+         */
+        delete: operations["clear_campaign_tables_campaigns__campaign_id__tables_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/campaigns/{campaign_id}/tables/build": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Build Campaign Tables
+         * @description Build a finished campaign's tables now; never needed, since each is built on use.
+         */
+        post: operations["build_campaign_tables_campaigns__campaign_id__tables_build_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/campaigns/{campaign_id}/track_deviation": {
         parameters: {
             query?: never;
@@ -1110,20 +1268,94 @@ export interface paths {
         };
         /**
          * Download Campaign Archive
-         * @description Stream the campaign as a ``tar.gz``, or a plain tar with ``uncompressed``.
+         * @description Stream the campaign as a ``tar.gz``.
          *
-         *     Backs ``vast campaign download``, the web UI's download button and the
-         *     postprocessing pod's stage, which asks for the plain tar, being in the cluster.
-         *     What comes out is the campaign as this service holds
-         *     it -- postprocessed if it has been, raw if it has not; derived data is an addition
-         *     to a campaign, never the condition for reading one. ``stage``, ``skip_bags``,
-         *     ``batch_jobs`` and ``part`` narrow it to what a postprocessing pod reads
-         *     (:class:`ArchiveSelection`).
+         *     Backs ``vast campaign download`` and the web UI's download menu. What comes out is
+         *     the campaign as this service holds it -- its records, what postprocessing derived,
+         *     and its built tables, so it opens in a notebook without building anything -- or,
+         *     with ``raw=true``, the records alone, which an import postprocesses afresh.
          *
          *     Nothing is buffered and no scratch is used: the tree is tarred into the response
          *     as it is read. Decisive for campaigns that run to terabytes.
          */
         get: operations["download_campaign_archive_data_campaigns__campaign_id__archive_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data/campaigns/{campaign_id}/exports/{export_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Campaign Export
+         * @description Stream a finished export as a ``tar.gz``.
+         *
+         *     Backs ``vast campaign export`` and the web UI's Export dialog. A 404 until the
+         *     export is done (the status route on the control plane says how far it is), a 409
+         *     carrying the reason once it failed. Answered from the export's files alone, so the
+         *     standalone data container serves what the control plane built.
+         */
+        get: operations["download_campaign_export_data_campaigns__campaign_id__exports__export_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data/campaigns/{campaign_id}/frame": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Campaign Frame
+         * @description One camera frame of a run: as ``image/jpeg`` no wider than 640 px, or whole.
+         *
+         *     The last frame at or before ``t``, the first when none is; the newest without
+         *     ``t``. Its stamp, in the seconds every table of the run uses, is the
+         *     ``X-Frame-Time`` header. With ``full`` the frame is what the camera produced --
+         *     ``application/x-npy`` holding the pixels in the encoding's own dtype (the encoding
+         *     in ``X-Frame-Encoding``), or a compressed image's own bytes -- and its frame is
+         *     ``X-Frame-Id``. A live run's frame comes from the watcher following its recording,
+         *     a finished run's from an index built on first request. ``404`` for a run without
+         *     the topic or with no frame of it yet, with the reason.
+         */
+        get: operations["get_campaign_frame_data_campaigns__campaign_id__frame_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data/campaigns/{campaign_id}/frame-index": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Campaign Frame Index
+         * @description The stamp of every frame of a run's image topic, in recording order.
+         *
+         *     What a scrubber steps through: the moments ``GET .../frame?t=`` answers exactly.
+         *     The same sources as the frame route; ``404`` for a run without the topic.
+         */
+        get: operations["get_campaign_frame_index_data_campaigns__campaign_id__frame_index_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1157,6 +1389,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/data/campaigns/{campaign_id}/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream Campaign Live
+         * @description Stream a run's tables as they are decoded while it records, as server-sent events.
+         *
+         *     A ``batch`` event carries ``{"table": name, "rows": [...]}`` -- at most
+         *     :data:`LIVE_FRAME_ROWS` rows, so one decoded batch may be several events -- and
+         *     a table's batches add up to what a query of the finished run gives. A table the
+         *     run's recordings do not carry yet is followed from the moment a topic that gives it
+         *     appears. With ``frames``, a ``frame`` event per named image topic carries
+         *     ``{"topic", "t", "jpeg_base64"}``, the newest frame, at most every
+         *     :data:`LIVE_FRAME_S` seconds and only while it changes. ``heartbeat`` after
+         *     :data:`LIVE_HEARTBEAT_S` seconds of silence. ``eof`` once the run has its verdict
+         *     and its recordings are closed and read to their end; at once for a run that is not
+         *     live, since its rows are all there for a query. ``streamerror`` then ``eof`` for a
+         *     campaign or run that is not here, a run key or table list that is not one, and a
+         *     client that fell :data:`~robovast.service.live.QUEUE_MAX` batches behind, which is
+         *     dropped rather than buffered without bound. A non-finite float is ``null`` in a
+         *     row, a timestamp its ISO text, and bytes base64.
+         */
+        get: operations["stream_campaign_live_data_campaigns__campaign_id__live_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/data/campaigns/{campaign_id}/outputs": {
         parameters: {
             query?: never;
@@ -1173,6 +1440,31 @@ export interface paths {
          *     source resolves the directory before it reads the stream.
          */
         put: operations["upload_campaign_outputs_data_campaigns__campaign_id__outputs_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/data/campaigns/{campaign_id}/points": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Campaign Points
+         * @description One point cloud of a run as an Arrow IPC stream, one column per field.
+         *
+         *     The cloud at or before ``t`` (the last without it), or with ``after`` the first one
+         *     after ``t``. Its stamp is ``X-Frame-Time``, its frame ``X-Frame-Id``. ``404`` for a
+         *     run or topic that is not here, a topic that is not a point cloud, and a step past
+         *     the last cloud, with the reason.
+         */
+        get: operations["get_campaign_points_data_campaigns__campaign_id__points_get"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
@@ -1812,6 +2104,21 @@ export interface components {
             ok: boolean;
         };
         /**
+         * ArrowQueryRequest
+         * @description A read-only ``SELECT`` answered as an Arrow IPC stream (``POST /campaigns/{id}/query.arrow``).
+         *
+         *     The typed twin of ``query.csv``: a ``LIST`` column arrives as a list and every column in
+         *     its type, with no row cap. What ``robovast-data`` reads a service's tables through.
+         */
+        ArrowQueryRequest: {
+            /** Sql */
+            sql: string;
+            /** Tables */
+            tables?: {
+                [key: string]: string;
+            } | null;
+        };
+        /**
          * BatchObjective
          * @description One search batch's objective figures.
          *
@@ -1823,6 +2130,11 @@ export interface components {
         BatchObjective: {
             /** Best So Far */
             best_so_far: number | null;
+            /**
+             * Complete
+             * @default false
+             */
+            complete: boolean;
             /** Idx */
             idx: number;
             /** Max */
@@ -1893,6 +2205,11 @@ export interface components {
              * @default
              */
             path: string;
+            /**
+             * Wait
+             * @default true
+             */
+            wait: boolean;
         };
         /** Body_put_sources_file_sources__workspace_id___path__put */
         Body_put_sources_file_sources__workspace_id___path__put: {
@@ -1964,6 +2281,21 @@ export interface components {
             op: string | null;
         };
         /**
+         * BuildCampaignTablesRequest
+         * @description Build a finished campaign's tables now rather than when each is first named.
+         *
+         *     Not needed for any answer: a table is built the first time a query, a panel or an
+         *     export names it. This only moves that cost to now, for a campaign about to be analyzed
+         *     at length. ``tables`` names the ones to build; empty builds every table its records can
+         *     give.
+         */
+        BuildCampaignTablesRequest: {
+            /** Campaign Id */
+            campaign_id: string;
+            /** Tables */
+            tables?: string[];
+        };
+        /**
          * BuildImageRequest
          * @description Build the derived images a workspace project's containers declare.
          *
@@ -2022,6 +2354,70 @@ export interface components {
              * @enum {string}
              */
             outcome: "deleted" | "not_found" | "partial" | "running" | "invalid";
+        };
+        /**
+         * CampaignLogChunk
+         * @description The rows of a campaign's infrastructure log that arrived after *cursor*.
+         *
+         *     Read from the phase files under the campaign's ``_execution/`` (the archived runs of a
+         *     repeatable phase under ``sections/`` included), which grow while the campaign runs,
+         *     so a running campaign and a finished one answer alike. The filters a
+         *     read was given are applied while reading, so ``rows`` is what they kept and the
+         *     cursor still advances over what they skipped.
+         */
+        CampaignLogChunk: {
+            /**
+             * Cursor
+             * @default
+             */
+            cursor: string;
+            /**
+             * Eof
+             * @default false
+             */
+            eof: boolean;
+            /** Phases */
+            phases: string[];
+            /** Rows */
+            rows: components["schemas"]["CampaignLogRow"][];
+        };
+        /**
+         * CampaignLogRow
+         * @description One record of a campaign's infrastructure log.
+         *
+         *     A stamped line of a phase file (``<date> <level> <logger>: <message>``, or the
+         *     ``[<level>] [<t>] [<node>]:`` form a run's containers relay into ``controller.log``)
+         *     with the unstamped lines under it joined into ``message``; an unstamped line with no
+         *     record above it is its own row at level ``NOTE`` -- build and pip output, mostly.
+         */
+        CampaignLogRow: {
+            /**
+             * Level
+             * @default NOTE
+             */
+            level: string;
+            /**
+             * Logger
+             * @default
+             */
+            logger: string;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /**
+             * Phase
+             * @default
+             */
+            phase: string;
+            /**
+             * Seq
+             * @default 0
+             */
+            seq: number;
+            /** Wall Ts */
+            wall_ts: number | null;
         };
         /**
          * CampaignOrigin
@@ -2090,7 +2486,7 @@ export interface components {
          * @description The run-view panels for a campaign: the ones its snapshot ``.vast``
          *     declares under ``visualization.results.run_view.panels``, plus the
          *     contributed ones no ``.vast`` has to write (the ``playback`` transport
-         *     always, a ``scene3d`` for a simulator that records a capture). Each entry
+         *     always, a ``scene3d`` for a simulator that records its scene state). Each entry
          *     is the flattened panel dict (``type`` + ``position`` + panel-specific data
          *     bindings), rendered by the web run-view against the campaign's results tables.
          *     ``timeline`` (optional, ``visualization.results.run_view.timeline``) names
@@ -2231,6 +2627,19 @@ export interface components {
             started_at: string | null;
         };
         /**
+         * CampaignTablesCleared
+         * @description What clearing one campaign's built tables removed. Each is built again on use.
+         */
+        CampaignTablesCleared: {
+            /** Campaign Id */
+            campaign_id: string;
+            /**
+             * Freed Bytes
+             * @default 0
+             */
+            freed_bytes: number;
+        };
+        /**
          * CampaignVisualization
          * @description One ``evaluation.visualization`` notebook workload + the node levels it
          *     defines a notebook for (a subset of ``run``/``config``/``batch``/``campaign``).
@@ -2361,7 +2770,7 @@ export interface components {
         };
         /**
          * DataDescribe
-         * @description Schema of a campaign's tables in the index (+ the ``campaign`` schema).
+         * @description Schema of a campaign's tables, views and ``campaign`` record.
          *
          *     Each ``tables`` entry is a :class:`DataTable`, whose schema is the key ``schema`` in
          *     every dump it appears in.
@@ -2408,6 +2817,8 @@ export interface components {
          * @description One queryable table, as :meth:`describe_campaign_data` reports it.
          */
         DataTable: {
+            /** Built */
+            built: number | null;
             /** Column Notes */
             column_notes: {
                 [key: string]: unknown;
@@ -2419,8 +2830,19 @@ export interface components {
              * @default
              */
             description: string;
+            /** Failed */
+            failed: {
+                [key: string]: string;
+            };
+            /**
+             * Kind
+             * @default
+             */
+            kind: string;
             /** Rows */
             rows: number | null;
+            /** Runs */
+            runs: number | null;
             /**
              * Schema
              * @default
@@ -2628,6 +3050,79 @@ export interface components {
             target: string | null;
         };
         /**
+         * ExportRef
+         * @description A started export: its id, and where its file will be once it is done.
+         */
+        ExportRef: {
+            /** Export Id */
+            export_id: string;
+            /** Url */
+            url: string;
+        };
+        /**
+         * ExportRequest
+         * @description What an export of a campaign carries: its tables as files, its bags, its records.
+         *
+         *     An export is what a laptop analysis or a hand-off wants: the campaign's logical tables
+         *     written one file per table, in a format pandas or DuckDB opens directly, with the
+         *     records that produced them and, if asked, the recordings. The archive
+         *     (``GET /data/campaigns/{id}/archive``) is the campaign as the service holds it, its
+         *     tables in the decoder's own cache; an export is plain files, built for the request and
+         *     disposable.
+         */
+        ExportRequest: {
+            /**
+             * Bags
+             * @default none
+             * @enum {string}
+             */
+            bags: "none" | "mcap" | "sqlite3";
+            /**
+             * Format
+             * @default parquet
+             * @enum {string}
+             */
+            format: "parquet" | "csv";
+            /**
+             * Records
+             * @default true
+             */
+            records: boolean;
+            /** Tables */
+            tables?: string[] | null;
+        };
+        /**
+         * ExportStatus
+         * @description Where one export has got to (poll like an image build's :class:`ImageBuildStatus`).
+         */
+        ExportStatus: {
+            /**
+             * Bytes
+             * @default 0
+             */
+            bytes: number;
+            /**
+             * Done
+             * @default false
+             */
+            done: boolean;
+            /**
+             * Error
+             * @default
+             */
+            error: string;
+            /** Export Id */
+            export_id: string;
+            /** Finished At */
+            finished_at: string | null;
+            /** Started At */
+            started_at: string | null;
+            /** Tables */
+            tables: {
+                [key: string]: number;
+            };
+        };
+        /**
          * FileMeta
          * @description Result of a write/upload — metadata only, never the content.
          *
@@ -2652,6 +3147,16 @@ export interface components {
              */
             sha256: string;
         };
+        /**
+         * FrameTimes
+         * @description The stamps of every frame of one image topic of a run, in seconds of the run's clock.
+         */
+        FrameTimes: {
+            /** Times */
+            times: number[];
+            /** Topic */
+            topic: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -2671,8 +3176,8 @@ export interface components {
          *     ``level`` decides what happens, and only these two mean anything here:
          *
          *     * ``error`` — the run is not doing what it was started to do. Ends a ``vast campaign wait``
-         *       (exit 5), because nobody would otherwise be told: a run whose simulator is wedged
-         *       still holds ``running`` for its whole life.
+         *       (as ``HEALTH_FINDING``), because nobody would otherwise be told: a run whose simulator
+         *       is wedged still holds ``running`` for its whole life.
          *     * ``warn`` — worth reporting, never worth ending a wait for. Surfaces on
          *       ``get_job_state`` and on the campaign's own exit.
          *
@@ -2902,11 +3407,6 @@ export interface components {
              */
             pending: number;
             /**
-             * Postprocessing
-             * @default 0
-             */
-            postprocessing: number;
-            /**
              * Running
              * @default 0
              */
@@ -2921,6 +3421,67 @@ export interface components {
              * @default 0
              */
             waiting: number;
+        };
+        /**
+         * JobLogChunk
+         * @description The rows of a job's log that arrived after *cursor*.
+         *
+         *     Read from the job's ``logs/system*.log`` files in the campaign directory, which grow
+         *     while the job runs, so a running job and a finished one answer alike.
+         *     Rows within a chunk are in stamp order; across chunks, in the order they arrived. The
+         *     finished, deduplicated record of a run's log is the ``run_log`` table.
+         */
+        JobLogChunk: {
+            /**
+             * Cursor
+             * @default
+             */
+            cursor: string;
+            /**
+             * Eof
+             * @default false
+             */
+            eof: boolean;
+            /** Rows */
+            rows: components["schemas"]["JobLogRow"][];
+        };
+        /**
+         * JobLogRow
+         * @description One record of a job's log: a stamped line and the unstamped lines that follow it.
+         */
+        JobLogRow: {
+            /**
+             * Container
+             * @default
+             */
+            container: string;
+            /**
+             * Level
+             * @default
+             */
+            level: string;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /**
+             * Node
+             * @default
+             */
+            node: string;
+            /**
+             * Severity
+             * @default
+             */
+            severity: string;
+            /**
+             * Time Source
+             * @default none
+             */
+            time_source: string;
+            /** Wall Ts */
+            wall_ts: number | null;
         };
         /**
          * JobState
@@ -2965,7 +3526,7 @@ export interface components {
          * @description One execution unit of a campaign's current batch.
          *
          *     A "job" is whatever the backend fans a batch out into: a **Kubernetes Job** on the
-         *     cluster backend, which may pack several runs. ``job_name`` is the id
+         *     cluster backend, running one run. ``job_name`` is the id
          *     :meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional
          *     human-friendly label (batch/job-index on the cluster).
          */
@@ -3069,12 +3630,10 @@ export interface components {
         };
         /**
          * LogChunk
-         * @description An incremental slice of a campaign's ``controller.log``.
+         * @description An incremental slice of a byte-addressed log: the service's own, an image build's.
          *
-         *     The controller runs in the driving process, so its log is a local file there
-         *     (the service). Clients poll from a byte
-         *     *offset* and append — ``next_offset`` is where to resume; ``eof`` is True once
-         *     the campaign has reached a terminal phase and no more will be written.
+         *     Clients poll from a byte *offset* and append — ``next_offset`` is where to resume;
+         *     ``eof`` is True once nothing more will be written.
          */
         LogChunk: {
             /**
@@ -3144,11 +3703,6 @@ export interface components {
             /** Calls */
             calls: components["schemas"]["McpCall"][];
             /**
-             * Detail
-             * @default
-             */
-            detail: string;
-            /**
              * Limit
              * @default 0
              */
@@ -3158,11 +3712,6 @@ export interface components {
              * @default 0
              */
             offset: number;
-            /**
-             * Status
-             * @default ok
-             */
-            status: string;
             /**
              * Total
              * @default 0
@@ -3211,17 +3760,8 @@ export interface components {
         /**
          * McpToolStats
          * @description The ranking, plus what the record covers.
-         *
-         *     :attr:`status` distinguishes the two ways this can be empty, which a bare list cannot:
-         *     no tool has been called yet, or the index that holds the log is unreachable and the
-         *     answer is unknown. A reader that drew the second as the first would be inventing a fact.
          */
         McpToolStats: {
-            /**
-             * Detail
-             * @default
-             */
-            detail: string;
             /**
              * Max Age S
              * @default 0
@@ -3232,11 +3772,6 @@ export interface components {
              * @default 0
              */
             max_rows: number;
-            /**
-             * Status
-             * @default ok
-             */
-            status: string;
             /** Tools */
             tools: components["schemas"]["McpToolStat"][];
         };
@@ -3273,6 +3808,8 @@ export interface components {
             files: number;
             /** Refused */
             refused: string[];
+            /** Resync */
+            resync: string[];
         };
         /**
          * PanelsSource
@@ -3374,6 +3911,12 @@ export interface components {
         /**
          * PreviewResponse
          * @description Result of :meth:`RobovastInterface.preview_configurations`.
+         *
+         *     ``state`` is ``ready`` for a preview that waited for the expansion (the default). A
+         *     preview asked for with ``wait=False`` answers ``composing`` while the expansion runs in
+         *     the background (``progress`` then counts its steps once the first is counted), ``ready``
+         *     once every other field holds, and ``failed`` when the expansion raised, with ``error``
+         *     saying why; the counts and ``configurations`` are empty in every state but ``ready``.
          */
         PreviewResponse: {
             /** Aux Containers */
@@ -3390,10 +3933,22 @@ export interface components {
             /** Configurations */
             configurations: components["schemas"]["PreviewConfiguration"][];
             /**
+             * Error
+             * @default
+             */
+            error: string;
+            progress: components["schemas"]["StepProgress"] | null;
+            /**
              * Runs Per Config
              * @default 0
              */
             runs_per_config: number;
+            /**
+             * State
+             * @default ready
+             * @enum {string}
+             */
+            state: "composing" | "ready" | "failed";
             /**
              * Total Trials
              * @default 0
@@ -3564,7 +4119,15 @@ export interface components {
              */
             runnable: boolean;
         };
-        /** RunPostprocessingRequest */
+        /**
+         * RunPostprocessingRequest
+         * @description (Re)run one campaign's postprocessing.
+         *
+         *     ``force`` clears the campaign's built tables first, so what it declares is built again
+         *     and its steps run with ``force``; ``replay`` clears them and builds every table the
+         *     records can give, for every run, before the campaign-end pass -- the rows a live watcher
+         *     wrote as the runs went, built again from the records.
+         */
         RunPostprocessingRequest: {
             /** Campaign Id */
             campaign_id: string;
@@ -3573,6 +4136,11 @@ export interface components {
              * @default false
              */
             force: boolean;
+            /**
+             * Replay
+             * @default false
+             */
+            replay: boolean;
             /** Skip */
             skip?: string[];
         };
@@ -4168,11 +4736,30 @@ export interface components {
             stopping_verdict: string | null;
             /** Updated At */
             updated_at: number;
+            variation: components["schemas"]["StepProgress"] | null;
             /**
              * Waiting For Capacity
              * @default false
              */
             waiting_for_capacity: boolean;
+        };
+        /**
+         * StepProgress
+         * @description How far composing a ``.vast`` has got: *done* of *total* variation steps, one step per
+         *     variation of each configuration block. A step can expand into any number of
+         *     configurations, so this counts work, not configurations.
+         */
+        StepProgress: {
+            /**
+             * Done
+             * @default 0
+             */
+            done: number;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
         };
         /**
          * TrackDeviation
@@ -4738,6 +5325,10 @@ export interface components {
              * @default false
              */
             packaged: boolean;
+            /** Warnings */
+            warnings: {
+                [key: string]: unknown;
+            }[] | null;
             /**
              * World
              * @default
@@ -5377,6 +5968,73 @@ export interface operations {
             };
         };
     };
+    create_export_campaigns__campaign_id__exports_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportRef"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_export_status_campaigns__campaign_id__exports__export_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                export_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportStatus"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     exec_in_job_campaigns__campaign_id__job_exec_post: {
         parameters: {
             query: {
@@ -5417,7 +6075,7 @@ export interface operations {
         parameters: {
             query: {
                 job_name: string;
-                offset?: number;
+                cursor?: string;
             };
             header?: never;
             path: {
@@ -5433,7 +6091,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["LogChunk"];
+                    "application/json": components["schemas"]["JobLogChunk"];
                 };
             };
             /** @description Validation Error */
@@ -5548,6 +6206,41 @@ export interface operations {
             };
         };
     };
+    tap_job_campaigns__campaign_id__job_tap_get: {
+        parameters: {
+            query: {
+                job_name: string;
+                selection?: string;
+                max_seconds?: number;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_jobs_campaigns__campaign_id__jobs_get: {
         parameters: {
             query?: never;
@@ -5582,7 +6275,10 @@ export interface operations {
     get_campaign_logs_campaigns__campaign_id__logs_get: {
         parameters: {
             query?: {
-                offset?: number;
+                cursor?: string;
+                phase?: string;
+                min_level?: string;
+                grep?: string;
             };
             header?: never;
             path: {
@@ -5598,7 +6294,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["LogChunk"];
+                    "application/json": components["schemas"]["CampaignLogChunk"];
                 };
             };
             /** @description Validation Error */
@@ -5614,7 +6310,12 @@ export interface operations {
     };
     stream_campaign_logs_campaigns__campaign_id__logs_stream_get: {
         parameters: {
-            query?: never;
+            query?: {
+                cursor?: string;
+                phase?: string;
+                min_level?: string;
+                grep?: string;
+            };
             header?: never;
             path: {
                 campaign_id: string;
@@ -6043,6 +6744,41 @@ export interface operations {
             };
         };
     };
+    query_campaign_data_arrow_campaigns__campaign_id__query_arrow_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ArrowQueryRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     query_campaign_data_csv_campaigns__campaign_id__query_csv_get: {
         parameters: {
             query: {
@@ -6350,6 +7086,38 @@ export interface operations {
             };
         };
     };
+    campaign_screenshot_frame_campaigns__campaign_id__screenshots__name__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_search_history_campaigns__campaign_id__search_history_get: {
         parameters: {
             query?: never;
@@ -6478,6 +7246,72 @@ export interface operations {
             };
         };
     };
+    clear_campaign_tables_campaigns__campaign_id__tables_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignTablesCleared"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    build_campaign_tables_campaigns__campaign_id__tables_build_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BuildCampaignTablesRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_track_deviation_campaigns__campaign_id__track_deviation_get: {
         parameters: {
             query: {
@@ -6571,11 +7405,7 @@ export interface operations {
     download_campaign_archive_data_campaigns__campaign_id__archive_get: {
         parameters: {
             query?: {
-                stage?: boolean;
-                skip_bags?: boolean;
-                batch_jobs?: string;
-                uncompressed?: boolean;
-                part?: string;
+                raw?: boolean;
             };
             header?: never;
             path: {
@@ -6605,11 +7435,166 @@ export interface operations {
             };
         };
     };
+    download_campaign_export_data_campaigns__campaign_id__exports__export_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                export_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_campaign_frame_data_campaigns__campaign_id__frame_get: {
+        parameters: {
+            query: {
+                /** @description the run, as <config>/<run_id> */
+                run: string;
+                /** @description the image topic */
+                topic: string;
+                /** @description a moment in seconds of the run's clock; the newest frame without it */
+                t?: number | null;
+                /** @description the whole frame instead of the JPEG preview: a raw image as its pixels in numpy's .npy format, a compressed one as recorded */
+                full?: boolean;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-npy": unknown;
+                    "image/jpeg": unknown;
+                    "image/png": unknown;
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_campaign_frame_index_data_campaigns__campaign_id__frame_index_get: {
+        parameters: {
+            query: {
+                /** @description the run, as <config>/<run_id> */
+                run: string;
+                /** @description the image topic */
+                topic: string;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FrameTimes"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     download_campaign_inputs_data_campaigns__campaign_id__inputs_get: {
         parameters: {
             query: {
                 job: string[];
                 config_file?: string[];
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_campaign_live_data_campaigns__campaign_id__live_get: {
+        parameters: {
+            query: {
+                /** @description the run, as <config>/<run_id> */
+                run: string;
+                /** @description the tables to follow, comma-separated */
+                tables: string;
+                /** @description image topics whose newest frame to send as it changes, comma-separated */
+                frames?: string;
             };
             header?: never;
             path: {
@@ -6658,6 +7643,53 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["OutputsIngested"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_campaign_points_data_campaigns__campaign_id__points_get: {
+        parameters: {
+            query: {
+                /** @description the run, as <config>/<run_id> */
+                run: string;
+                /** @description the point cloud topic */
+                topic: string;
+                /** @description a moment in seconds of the run's clock; the last cloud without it */
+                t?: number | null;
+                /** @description the first cloud strictly after t (the run's first without t), to step through the topic */
+                after?: boolean;
+            };
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.apache.arrow.stream": unknown;
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

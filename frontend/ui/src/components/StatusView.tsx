@@ -18,6 +18,7 @@ import {
   type ListJobsResponse,
   readUploadProgress,
   type Status,
+  type StepProgress,
   type UploadProgress,
 } from '@/lib/robovastClient'
 import {
@@ -31,7 +32,7 @@ import {
   noResultRuns,
   ringBudget,
 } from '@/lib/eta'
-import { isCalibrationJob, isPostprocessingJob, nonRunsFirst } from '@/lib/jobKind'
+import { isCalibrationJob, nonRunsFirst } from '@/lib/jobKind'
 import { jobAgeSeconds, jobMeters, type UsageMeter } from '@/lib/jobUsage'
 import { CHIP_COLOURS, distinctColorer } from '@/lib/nameColor'
 import { formatBytes, formatDuration } from '@/lib/format'
@@ -43,7 +44,8 @@ import { BatchObjectiveChart } from './BatchObjectiveChart'
 import { CollapsibleBox } from './CollapsibleBox'
 import { DetailsBox } from './DetailsBox'
 import { FactRows, HoverFacts } from './HoverFacts'
-import { LogPanel } from './LogPanel'
+import { LiveCampaignLog } from './runLog/LiveCampaignLog'
+import { LiveJobLog } from './runLog/LiveJobLog'
 import { MeterBar } from './MeterBar'
 
 // The upload-to-share bar, shown only while the campaign is in the `sharing` phase.
@@ -57,6 +59,30 @@ import { MeterBar } from './MeterBar'
 // With no total (a provider that cannot say), the bar goes indeterminate rather
 // than showing a made-up 0%: a bar pinned at zero through a multi-hour upload is the
 // exact failure this replaced.
+// Composition's step counter while the campaign is in `variation`, the pre-run phase that can take
+// longest; null before its first step is counted and in every other phase.
+function variationProgress(status: Status): StepProgress | null {
+  const v = status.phase === 'variation' ? status.variation : null
+  return v && v.total > 0 ? v : null
+}
+
+const variationText = (v: StepProgress) => `${v.done}/${v.total} variations`
+
+function VariationMeter({ variation, height }: { variation: StepProgress; height?: number }) {
+  return (
+    <MeterBar
+      height={height}
+      fraction={variation.done / variation.total}
+      color="info.main"
+      text={
+        <Box component="span" sx={{ color: 'text.primary', fontVariantNumeric: 'tabular-nums' }}>
+          {variationText(variation)}
+        </Box>
+      }
+    />
+  )
+}
+
 function UploadSection({ upload }: { upload: UploadProgress }) {
   const { percent, sourceDone, sourceTotal, sent, rate } = upload
   const meta = [
@@ -137,6 +163,7 @@ export function MiniRunMeter({
   const succeeded = Math.max(0, runs.completed - runs.failed)
   const noResult = noResultRuns(status, counts)
   const failedText = runMeterFailedText(status, counts)
+  const variation = variationProgress(status)
   return (
     // The ring's slot is reserved whether or not there is a ring, so this whole group is a
     // constant width. Without that, a search campaign's row pushed the time cell beside it 32px
@@ -148,6 +175,12 @@ export function MiniRunMeter({
           <SearchRing campaignId={campaignId} status={status} />
         ) : null}
       </Box>
+    {variation ? (
+      // Before the first run there are no runs to count; the bar counts composition instead.
+      <Box sx={{ width, flexShrink: 0 }} title={`composing: ${variationText(variation)} done`}>
+        <VariationMeter variation={variation} />
+      </Box>
+    ) : (
     <HoverFacts
       title="runs"
       facts={[
@@ -177,6 +210,7 @@ export function MiniRunMeter({
         />
       </Box>
     </HoverFacts>
+    )}
     </Stack>
   )
 }
@@ -486,7 +520,7 @@ export function ringLabelWidth(label: string): number {
   return em * RING.fontSize
 }
 
-// Renders one campaign's live Status — the browser analog of what `vast cluster monitor` prints:
+// Renders one campaign's live Status — the browser analog of what `vast campaign status` prints:
 // phase, run-level progress within the current batch, batch counter, and each budget/stopping
 // criterion. Purely presentational; the caller supplies the (polled) Status and, optionally, the
 // (polled) live jobs listing.
@@ -495,7 +529,7 @@ export function StatusView({
   status,
   campaignId,
   jobs,
-  hideLog = false,
+  jobsError = null,
   liveOnly = false,
   newest = true,
   quotaCpu,
@@ -512,14 +546,15 @@ export function StatusView({
   // for any caller that only holds one.
   campaignId?: string
   jobs?: ListJobsResponse
-  // The Launcher hides the campaign log — it's a launch confirmation, not a viewer;
-  // the full log lives in Monitor.
-  hideLog?: boolean
-  // Monitor cares only about jobs still meaningful right now: it drops completed ones
-  // from both the count summary and the jobs list (the Launcher lists everything).
+  // Why the jobs listing could not be read, when it could not: the service's sentence. Shown
+  // in place of the list, because an empty list here reads as "nothing is running", and a
+  // listing that failed says nothing of the kind.
+  jobsError?: string | null
+  // Drop completed jobs from both the count summary and the jobs list, keeping only what is
+  // still meaningful right now. Omitted → every job is listed.
   liveOnly?: boolean
-  // The top card in Monitor's newest-first campaign list — see FailureBox. Defaults to
-  // true so the Launcher and other single-campaign callers keep the box open.
+  // The top card in the Campaigns page's newest-first list — see FailureBox. Defaults to
+  // true, so a view showing a single campaign keeps the box open.
   newest?: boolean
   // Cluster CPU capacity, for Details' "jobs in flight" estimate. Omitted → not shown.
   quotaCpu?: number | null
@@ -530,8 +565,8 @@ export function StatusView({
   // means not recorded -- a campaign that ended before this was measured, or one still
   // running -- and Details then shows no size rather than "0 B".
   resultsBytes?: number | null
-  // Offer each running job a Stop button. Omitted → no buttons, which is what the Launcher
-  // wants: this view stays presentational and the caller owns the confirm + the mutation,
+  // Offer each running job a Stop button. Omitted → no buttons. This view stays
+  // presentational and the caller owns the confirm + the mutation,
   // because it also owns the jobs query that has to be invalidated afterwards.
   onStopJob?: (job: JobSummary) => void
   // The job a stop is currently in flight for, so its button can disable itself rather than
@@ -592,10 +627,6 @@ export function StatusView({
     // that has started nothing because it is still measuring its nodes otherwise reads as
     // `waiting N` with nothing anywhere saying what it is waiting for.
     counts && counts.calibration > 0 ? `calibrating ${counts.calibration}` : null,
-    // Beside them for the same reason, and with the opposite problem to solve: by the time
-    // the conversion runs every run state is zero, so a summary without this is an empty
-    // line on a campaign that is still working.
-    counts && counts.postprocessing > 0 ? 'converting rosbags' : null,
   ]
     .filter(Boolean)
     .join(' · ')
@@ -610,9 +641,19 @@ export function StatusView({
   // the runs are over and their bar is frozen, while gigabytes move to somebody else's
   // storage. Rendered first because during `sharing` it is the only thing happening.
   const upload = status.phase === 'sharing' ? readUploadProgress(status) : null
+  // Composing the configurations comes before any run, so the same way it is drawn first.
+  const variation = variationProgress(status)
   return (
     <Stack spacing={1.5}>
       {upload ? <UploadSection upload={upload} /> : null}
+      {variation ? (
+        <Box>
+          <Typography variant="caption" color="text.secondary">
+            composing configurations
+          </Typography>
+          <VariationMeter variation={variation} />
+        </Box>
+      ) : null}
       <Box>
         <Stack direction="row" justifyContent="space-between">
           {/* Just "runs", and no batch counter -- `batch 2 (3 done)` -- riding along: it
@@ -736,7 +777,7 @@ export function StatusView({
           The panel is a ternary, not two hidden divs: an unselected Log tab that stayed mounted
           would hold its EventSource open invisibly. The cost is that switching back re-opens the
           stream; the jobs' expansion state survives because StatusView owns it. */}
-      {cid && !hideLog ? (
+      {cid ? (
         <Box>
           <Tabs
             value={tab}
@@ -763,6 +804,8 @@ export function StatusView({
                 resultsBytes={resultsBytes}
                 selected
               />
+            ) : jobsError ? (
+              <ErrorText>could not list the jobs: {jobsError}</ErrorText>
             ) : (
               <JobsSection
                 campaignId={cid}
@@ -791,7 +834,7 @@ export function StatusView({
  *  and drawing a meter would need a denominator the campaign never declared.
  *
  *  Closed by default and fetched only while open. That gating is the whole reason this can sit on
- *  a campaign card at all: the Monitor renders every campaign in the list, so anything a card does
+ *  a campaign card at all: the Campaigns page renders every campaign, so anything a card does
  *  unconditionally is paid for by the whole page — see `useDetails`, which is closed by default for
  *  exactly this reason.
  *
@@ -888,13 +931,11 @@ const JOB_STATUS_COLOR: Record<string, 'default' | 'info' | 'success' | 'error' 
   blocked: 'error',
 }
 
-// Two of the campaign's jobs are not trials: a node-calibration probe, which measures the
-// machine the runs will be sized against, and the postprocessing conversion, which turns the
-// finished runs' rosbags into CSV. Both are listed because they hold real capacity, and both
-// are marked because they are not runs — unmarked, a probe arrives carrying batch job 0's
-// display name and a conversion reads as a run that outlived the batch.
+// One kind of the campaign's jobs is not a trial: a node-calibration probe, which measures the
+// machine the runs will be sized against. It is listed because it holds real capacity, and it is
+// marked because it is not a run — unmarked, a probe arrives carrying batch job 0's display name.
 //
-// Marked with a second chip rather than by recolouring the status one, for two reasons. Their
+// Marked with a second chip rather than by recolouring the status one, for two reasons. Its
 // `status` is telling the truth — a failed probe must still read as failed, and that is the
 // one probe worth looking at. And the four status hues are the only colours on this
 // screen that carry a meaning (see `colors.ts`): the band is held to one lightness on purpose
@@ -945,8 +986,7 @@ function JobsSection({
 }) {
   // What is not a trial goes ahead of the cap, not behind it: a batch wide enough to truncate
   // is exactly the one where a probe is both the reason nothing has started and the row that
-  // falls off the end, and where the conversion is the one row saying what the campaign is
-  // doing. There is at most one probe per node and one conversion, so the runs lose nothing.
+  // falls off the end. There is at most one probe per node, so the runs lose nothing.
   const shown = nonRunsFirst(jobs).slice(0, JOBS_RENDER_CAP)
   // The empty state is the reason this renders at all now. As a foldable section it simply
   // vanished when the live set emptied -- which happens whenever no job is running. A TAB that vanished would take the tab bar's shape with it,
@@ -1108,13 +1148,11 @@ function JobRow({
   stopping?: boolean
 }) {
   const calibration = isCalibrationJob(job)
-  const postprocessing = isPostprocessingJob(job)
   // Offered only on a `running` job — the same rule the service enforces, so the UI never
   // shows a button the server would refuse. A pending or queued job has not started, and a
-  // blocked one has a cause that deleting it does not fix. Nor on a probe or a conversion:
-  // neither carries a run, so the service refuses to record one as killed.
-  const canStop =
-    Boolean(onStopJob) && job.status === 'running' && !calibration && !postprocessing
+  // blocked one has a cause that deleting it does not fix. Nor on a probe: it carries no run,
+  // so the service refuses to record one as killed.
+  const canStop = Boolean(onStopJob) && job.status === 'running' && !calibration
   // Why a job is stuck — e.g. a Kubernetes ImagePullBackOff reason + message — so a job
   // that can never start is legible without opening its (empty) log.
   const detail = job.detail ? (
@@ -1154,12 +1192,6 @@ function JobRow({
             title="A node-calibration probe: it measures this node so the campaign's runs can be sized against it. Not one of the campaign's runs, and not counted as one."
           />
         ) : null}
-        {postprocessing ? (
-          <NonRunChip
-            label="postprocessing"
-            title="The campaign's postprocessing: it converts the finished runs' rosbags in the execution image they were recorded with. Not one of the campaign's runs, and not counted as one. What it prints goes to the campaign log's POSTPROCESSING section, which is why this row does not open."
-          />
-        ) : null}
         <Chip
           label={job.status}
           size="small"
@@ -1174,39 +1206,33 @@ function JobRow({
     // this to mute the colour would take the accessible name off every job row.
     title: job.display_name || job.job_name,
     meta: <JobVitals job={job} nodeColour={nodeColour} />,
-    // Where a postprocessing row's output is lives on its chip's tooltip, not here: `note` is
-    // a line under every such row for the life of the campaign, and it would be spent saying
-    // that nothing is missing. What belongs in this always-visible slot is a job in trouble.
+    // What belongs in this always-visible slot is a job in trouble.
     note: detail,
   }
-  // The postprocessing row is a header and nothing else, because the log it would open is not
-  // this pod's to serve. The conversion runs in initContainers -- the bag download, then the
-  // conversion itself -- and a pod log reader reports the containers that run for the pod's
-  // whole life, so through the entire conversion the panel had nothing to show and said so.
-  // The output is not missing: every container's, init ones included, is published to the
-  // campaign's POSTPROCESSING section as it runs, and that copy is on the results volume, so it
-  // is still there minutes later when `ttlSecondsAfterFinished` has taken the pod away --
-  // which is exactly when someone reads a failed postprocess.
-  if (postprocessing) return <CollapsibleBox {...header} collapsible={false} />
   return (
     <CollapsibleBox {...header} open={open} onToggle={onToggle}>
-      <LogPanel
-        resetKey={`${campaignId}/${job.job_name}`}
-        streamUrl={robovast.jobLogStreamUrl(campaignId, job.job_name)}
-      />
+      {/* A fixed height: the log view fills its parent and windows its rows against it. */}
+      <Box sx={{ height: 320, display: 'flex', flexDirection: 'column' }}>
+        <LiveJobLog campaignId={campaignId} jobName={job.job_name} />
+      </Box>
     </CollapsibleBox>
   )
 }
 
-// Live unified infrastructure log for one campaign (variation + run + postprocessing
-// phases, divider-separated), streamed over SSE.
+// The infrastructure log of one campaign -- every phase, as rows -- streamed over SSE into the
+// row viewer, faceted by phase and coloured by level.
 //
 // No frame and no open state of its own: it is a tab's content, and the tab is both. The stream
 // therefore opens when the tab is selected and closes when it is not, because the tab panel
 // unmounts -- which is why the panels are rendered as a ternary rather than hidden with CSS. A
 // hidden-but-mounted Log would hold an EventSource open for a panel nobody can see.
 export function CampaignLog({ campaignId }: { campaignId: string }) {
-  return <LogPanel resetKey={campaignId} streamUrl={robovast.campaignLogStreamUrl(campaignId)} />
+  return (
+    // A fixed height: the log view fills its parent and windows its rows against it.
+    <Box sx={{ height: 480, display: 'flex', flexDirection: 'column' }}>
+      <LiveCampaignLog campaignId={campaignId} />
+    </Box>
+  )
 }
 
 // One backend error string, shown verbatim. These are multi-line — an exception message plus a

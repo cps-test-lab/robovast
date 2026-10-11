@@ -41,10 +41,6 @@ import logging
 import pathlib
 
 from robovast.common.config_plugins import GIT_TOKEN_ENVS
-# Re-exported rather than spelled again: the env var is the service's contract with
-# common.index_db, and two spellings of it would drift into a service that cannot find its
-# own index while both halves look correct.
-from robovast.common.index_db import DSN_ENV as INDEX_DSN_ENV
 from robovast.service.interface import DEFAULT_PORT
 
 from . import data_paths
@@ -115,7 +111,8 @@ WORKSPACES_ROOT_ENV = "ROBOVAST_WORKSPACES_ROOT"
 #: Not a cache and not a mirror: ``<results_root>/<campaign_id>/`` **is** the campaign.
 #: The driver writes into it, a job pod's outputs are extracted into it by the data plane,
 #: per-run extraction reads it through a path (``search.extractor.Extractor.extract``),
-#: postprocessing derives its results into it, and every read a client makes of
+#: postprocessing runs against it in the service process, the tables a query names are built
+#: into its ``.cache/``, and every read a client makes of
 #: ``/results/…`` is a file opened under it. Unmounted it would land on the container's
 #: writable layer — as ``/var/lib/results``, the *sibling* of the workspaces mount, one
 #: directory outside what is covered — and every restart would discard it.
@@ -238,33 +235,23 @@ def results_volume(storage_path="", storage_class=""):
 #: many at once.
 DEFAULT_RESULTS_SIZE = "500Gi"
 
-#: Kubernetes quantity suffixes, as multiples of a byte. Both series, because a
-#: StorageClass takes either and an operator who writes ``500G`` must not be told it is
-#: smaller than the ``500Gi`` already deployed without the comparison being true.
-_QUANTITY_UNITS = {"": 1, "k": 10**3, "M": 10**6, "G": 10**9, "T": 10**12, "P": 10**15,
-                   "Ki": 2**10, "Mi": 2**20, "Gi": 2**30, "Ti": 2**40, "Pi": 2**50}
-
 
 def parse_quantity(value: str) -> int:
     """A Kubernetes storage quantity in bytes, or ``ValueError`` naming what was read.
 
-    Only enough of the grammar to compare two claim sizes, which is the one question asked
-    of it: a decimal number and an optional binary or decimal suffix. Refusing what it
-    cannot read rather than guessing is what keeps a typo from being read as a shrink --
-    the one outcome a provider rejects after the claim is already patched.
+    Read with the Kubernetes client's own quantity grammar, so what compares here is what
+    the claim accepts. Refusing what it cannot read rather than guessing is what keeps a
+    typo from being read as a shrink -- the one outcome a provider rejects after the claim
+    is already patched.
     """
-    text = (value or "").strip()
-    for suffix in sorted(_QUANTITY_UNITS, key=len, reverse=True):
-        if suffix and not text.endswith(suffix):
-            continue
-        number = text[:len(text) - len(suffix)] if suffix else text
-        try:
-            return int(float(number) * _QUANTITY_UNITS[suffix])
-        except ValueError:
-            break
-    raise ValueError(
-        f"{value!r} is not a storage size: write a number and an optional unit, "
-        f"e.g. '500Gi', '2Ti' or '750G'.")
+    from kubernetes.utils.quantity import \
+        parse_quantity as read_quantity  # pylint: disable=import-outside-toplevel
+    try:
+        return int(read_quantity((value or "").strip()))
+    except (ValueError, OverflowError) as exc:  # OverflowError: "inf" reads as Infinity
+        raise ValueError(
+            f"{value!r} is not a storage size: write a number and an optional unit, "
+            f"e.g. '500Gi', '2Ti' or '750G'.") from exc
 
 
 def results_pvc_manifest(namespace, storage_class, size=""):
@@ -351,8 +338,7 @@ def _service_rbac_manifests(namespace):
             # The service drives campaigns in-process (there is no controller pod), so it
             # needs everything such a pod's ServiceAccount would hold.
             "rules": [
-                # Scenario runs and the rosbag→CSV postprocessing are Jobs the
-                # service creates, watches and reaps.
+                # Scenario runs are Jobs the service creates, watches and reaps.
                 {"apiGroups": ["batch"], "resources": ["jobs"],
                  "verbs": ["create", "get", "list", "watch", "delete", "deletecollection"]},
                 # read_namespaced_job_status hits the jobs/status subresource,
@@ -372,14 +358,9 @@ def _service_rbac_manifests(namespace):
                 # Nothing lists, watches or rewrites a Secret, so nothing may.
                 {"apiGroups": [""], "resources": ["secrets"],
                  "verbs": ["get", "create", "delete"]},
-                # ConfigMaps are NOT read-only, unlike the Secret above: besides reading
-                # the private-CA ConfigMap, postprocessing ships its scripts into the
-                # postprocess Job as a ConfigMap it creates, replaces on a re-run and
-                # deletes afterwards (see postprocess_job.py). Granting only "get"
-                # alongside the Secret let every campaign RUN and then fail its
-                # postprocessing with a 403 -- after the compute was already spent.
-                {"apiGroups": [""], "resources": ["configmaps"],
-                 "verbs": ["create", "get", "list", "update", "patch", "delete"]},
+                # ConfigMaps, read only: the private-CA ConfigMap, by name. Nothing the
+                # service does creates or rewrites one.
+                {"apiGroups": [""], "resources": ["configmaps"], "verbs": ["get"]},
                 # Variations that declare an auxiliary container run their commands
                 # in that campaign's aux pod via the pods/exec subresource (see
                 # cluster_execution.container_runner.ClusterContainerRunner).
@@ -500,9 +481,8 @@ def _deployment_manifest(namespace, image, env=None, git_secret=False,
     **Three containers, one port.** The control plane (``vast serve``) and the data plane
     (``vast serve-data``, the tar streams pods exchange with the service) are two
     processes on Unix sockets, and an nginx front owns :data:`SERVICE_PORT` and routes
-    between them -- see :mod:`.front_deploy` for why. The registry and the campaign index
-    live in the ``robovast`` pod (:mod:`.store_pod`): they are cluster-lifetime
-    infrastructure, and this Deployment is rolled by every upgrade. Every container here
+    between them -- see :mod:`.front_deploy` for why. The registry lives in the ``robovast`` pod
+    (:mod:`.store_pod`): it is cluster-lifetime infrastructure, and this Deployment is rolled by every upgrade. Every container here
     goes with an upgrade, and none carries state that should not.
     """
     from . import front_deploy  # pylint: disable=import-outside-toplevel
@@ -911,8 +891,8 @@ def _kubectl(namespace, kube_context) -> str:
 def _next_step(signal, namespace, kube_context) -> str:
     """The one thing to do about *signal*, as a runnable command.
 
-    Four states, four different actions -- the same reason ``_status_next_step`` in the MCP
-    layer branches rather than offering one generic hint: a credential fault wants the
+    Four states, four different actions -- the same reason ``image_report.build_next_step``
+    branches rather than offering one generic hint: a credential fault wants the
     config checked, a crash-loop wants the dead container's log, and telling either to
     "inspect the pod" is a dead end for the reader who already did.
 
@@ -1196,9 +1176,8 @@ def _ingress_manifest(namespace, host, ingress_class="", tls_secret="",
 
 #: Secret + key holding the GitHub token that lets the service install a
 #: private-repo (``git+https``) variation plugin declared in a ``.vast``'s
-#: ``plugins:``. Sourced from the host env at setup. It reaches the service pod and the
-#: host container of a postprocessing Job, which re-installs those plugins; never a trial's
-#: controller pod, and never a container running the campaign's own image.
+#: ``plugins:``. Sourced from the host env at setup. It reaches the service pod only; never a
+#: trial's controller pod, and never a container running the campaign's own image.
 #: **Mounted read-only as a file** (not an env var) so it is not inherited by any
 #: child process/command — the path must match ``config_plugins.GIT_TOKEN_FILE``.
 GIT_SECRET_NAME = "robovast-git-credentials"
@@ -1582,51 +1561,12 @@ def existing_auth_token(namespace, kube_context=None):
     return base64.b64decode(encoded).decode() if encoded else ""
 
 
-def existing_index_password(namespace, kube_context=None):
-    """The index password already deployed in *namespace*, or ``""``.
-
-    Read back rather than regenerated, and the reason is harsher than the auth token's. A
-    Postgres ``POSTGRES_PASSWORD`` is applied by ``initdb`` and then ignored: on any restart
-    with an existing data directory the role keeps whatever password it was created with. So
-    minting a new one on upgrade would leave a Secret and a database that disagree -- the
-    deploy would report success, the sidecar would come up healthy, and every query would
-    fail authentication against data that is perfectly intact.
-
-    Worse, it would look like a first-deploy success: a fresh volume initialises with
-    whatever password it is handed, so the fault appears only on the *second* deploy, which
-    is where nobody is looking for it.
-
-    Two pods read this one Secret now: the store pod's Postgres takes it as
-    ``POSTGRES_PASSWORD``, this service takes it inside its DSN. That makes never rotating
-    it load-bearing twice over -- the two are deployed by different commands at different
-    times, so a rotation would not even be simultaneous.
-    """
-    import base64  # pylint: disable=import-outside-toplevel
-
-    from kubernetes import client  # pylint: disable=import-outside-toplevel
-    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
-
-    from . import index_deploy  # pylint: disable=import-outside-toplevel
-
-    _load_kube_config(kube_context)
-    try:
-        secret = client.CoreV1Api().read_namespaced_secret(
-            index_deploy.INDEX_SECRET_NAME, namespace)
-    except ApiException as exc:
-        if exc.status == 404:
-            return ""
-        raise
-    encoded = (secret.data or {}).get(index_deploy.INDEX_PASSWORD_KEY, "")
-    return base64.b64decode(encoded).decode() if encoded else ""
-
-
 def ensure_registry_htpasswd(namespace="default", kube_context=None, host="",
                              password=""):
     """Put the built-in registry's password file in the cluster; return the password.
 
-    Called by ``cluster setup`` **before** the store pod is applied, for the same reason
-    :func:`ensure_index_secret` is: the registry container mounts this Secret, and a pod
-    created without it sits in CreateContainerConfigError.
+    Called by ``cluster setup`` **before** the store pod is applied: the registry container
+    mounts this Secret, and a pod created without it sits in CreateContainerConfigError.
 
     Returns ``""`` when *host* is empty. An unpublished deployment has no route to its
     registry and no prefix to build into, so there is nothing to protect and no credential
@@ -1671,42 +1611,6 @@ def ensure_registry_htpasswd(namespace="default", kube_context=None, host="",
     if minted:
         logger.info("Minted the built-in registry's credential; it is held only in the "
                     "cluster and is reused by every later setup.")
-    return password
-
-
-def ensure_index_secret(namespace="default", kube_context=None):
-    """Create the index password Secret if it is not there yet; return the password.
-
-    Called by ``cluster setup`` **before** the store pod is applied, because that pod's
-    Postgres container references this Secret and a pod created without it sits in
-    CreateContainerConfigError. ``deploy_service`` then reads the very same value back
-    (:func:`existing_index_password`) instead of minting a second one.
-
-    Never overwrites an existing Secret, for the reason
-    :func:`existing_index_password` gives: ``initdb`` applied the first password to a data
-    directory that still exists, and a new one would leave the Secret and the database
-    disagreeing while every surface reported success.
-    """
-    from kubernetes import client  # pylint: disable=import-outside-toplevel
-    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
-
-    from robovast.service.auth import generate_token  # pylint: disable=import-outside-toplevel
-
-    from . import index_deploy  # pylint: disable=import-outside-toplevel
-
-    existing = existing_index_password(namespace, kube_context)
-    if existing:
-        return existing
-    password = generate_token()
-    core = client.CoreV1Api()
-    try:
-        core.create_namespaced_secret(
-            namespace, index_deploy.index_secret_manifest(namespace, password))
-    except ApiException as exc:
-        if exc.status != 409:
-            raise
-        # Raced with another deploy; theirs is the one initdb will see.
-        return existing_index_password(namespace, kube_context)
     return password
 
 
@@ -1847,24 +1751,21 @@ def reconcile_registry_ingress_path(namespace="default", kube_context=None):
 
 def verify_store_pod_infrastructure(namespace="default", kube_context=None,
                                     registry_authenticated=False):
-    """Raise unless the live ``robovast`` pod runs the registry and the index, and nothing else.
+    """Raise unless the live ``robovast`` pod runs the registry, and nothing else.
 
     The pod is created once by ``vast cluster setup`` (:mod:`.store_pod`) and **kept** on a
-    re-run -- a 409 is tolerated so a setup does not restart the index and the registry for
-    nothing -- so a live pod that does not match the manifest stays as it is. Two shapes of
+    re-run -- a 409 is tolerated so a setup does not restart the registry for nothing -- so a live pod that does not match the manifest stays as it is. Two shapes of
     mismatch are refused here, before the service is deployed, because the service rendered
     against them would look healthy and fail far away:
 
-    * a pod that lacks the registry or the index: the Ingress would route ``/v2`` at a
-      container that does not exist and the DSN would name a port nothing listens on -- an
-      ImagePullBackOff on the next campaign's job pods and an IndexUnreachableError on the
-      next query;
+    * a pod that lacks the registry: the Ingress would route ``/v2`` at a container that
+      does not exist -- an ImagePullBackOff on the next campaign's job pods;
     * a pod that carries an object-store container: campaigns live on the service's
       results volume, so every campaign in that store is one the service cannot see.
 
     Both have one remedy, ``vast cluster cleanup`` followed by ``vast cluster setup``, which
     recreates the pod. What that costs is said in the message: built images are rebuilt on
-    demand and the index is re-ingested, but a campaign in an object store is **not
+    demand, but a campaign in an object store is **not
     migrated** and must be archived first.
 
     No pod at all is refused too: nothing but setup creates it, so its absence means the
@@ -1883,7 +1784,7 @@ def verify_store_pod_infrastructure(namespace="default", kube_context=None,
             raise
         raise RuntimeError(
             f"there is no {store_pod.STORE_POD_NAME} pod in namespace {namespace}, so the "
-            f"service has no registry to push to and no index to query. 'vast cluster setup' "
+            f"service has no registry to push to. 'vast cluster setup' "
             f"creates it.") from exc
     remedy = "'vast cluster cleanup' then 'vast cluster setup', which recreates the pod"
     if store_pod.carries_an_object_store(pod):
@@ -1901,8 +1802,7 @@ def verify_store_pod_infrastructure(namespace="default", kube_context=None,
             f"the {store_pod.STORE_POD_NAME} pod in namespace {namespace} does not run "
             f"{', '.join(missing)}. Setup keeps an existing pod as it is, so re-running "
             f"setup cannot add them; the remedy is {remedy}. Built images are rebuilt on "
-            f"demand and the index is re-ingested from the campaigns on the results volume, "
-            f"which this does not touch.")
+            f"demand; the campaigns on the results volume are not touched.")
     _warn_if_registry_auth_is_not_live(pod, namespace, registry_authenticated)
 
 
@@ -1949,9 +1849,10 @@ def _cluster_env(namespace, config_name, config_kwargs, kube_context=None,
     The service (the cluster mode) reconstructs the same cluster config the controller
     uses -- the provider's scheduling answers and its ``-o`` options -- from these.
 
-    ``kube_context`` records the context this service was deployed with, so the
-    in-pod driver can resolve per-cluster resource lists (keyed by context name)
-    — in-cluster there is no kubeconfig context to fall back on.
+    ``kube_context`` records the context this service was deployed with -- the one
+    named, else the kubeconfig's current one (:func:`deploy_service` resolves it) -- so
+    the in-pod driver can resolve per-cluster resource lists (keyed by context name):
+    in-cluster there is no kubeconfig context to fall back on.
     """
     import json
     env = [{"name": "ROBOVAST_NAMESPACE", "value": namespace}]
@@ -1997,13 +1898,6 @@ def _cluster_env(namespace, config_name, config_kwargs, kube_context=None,
     headroom()
     for var in (HEADROOM_CPU_ENV, HEADROOM_MEMORY_ENV):
         env.append({"name": var, "value": os.environ.get(var, "").strip()})
-    # Into how many Jobs a campaign's postprocessing may be split: the operator's, from the
-    # same `.env`, for the same reason. Checked here so a value the service could not use
-    # refuses the deploy instead of every postprocess after it.
-    from .postprocess_parts import MAX_PARALLEL_ENV, max_parallel  # noqa: PLC0415
-    max_parallel()
-    env.append({"name": MAX_PARALLEL_ENV,
-                "value": os.environ.get(MAX_PARALLEL_ENV, "").strip()})
     # How large this cluster may get, asked HERE rather than in the pod that reads it: the
     # answer comes from the provider's own CLI, which this command has and the service image
     # does not. Written on every deploy, empty included, so a cluster that stopped being able
@@ -2114,7 +2008,7 @@ def service_manifests(namespace="default", image=None, env=None,
                       public_origin=None, registry_host="", registry_password="",
                       workspaces_storage_path="", workspaces_storage_class="",
                       results_storage_size="",
-                      node_selector=None, index_password=""):
+                      node_selector=None):
     """Return all robovast-service manifests (RBAC [+ git/share Secrets] + Deployment + Service).
 
     *pull_secret* names the dockerconfigjson Secret for the service's own image; it is
@@ -2144,11 +2038,7 @@ def service_manifests(namespace="default", image=None, env=None,
         env = _cluster_env(namespace, config_name, config_kwargs, kube_context,
                            job_node_labels=job_node_labels,)
     # No ROBOVAST_CONTROLLER_IMAGE in the pod env, deliberately: nothing in the pod reads
-    # it, so setting it would say something untrue about what this deployment uses. The
-    # conversion scripts come from a per-campaign ConfigMap built in the driver's own
-    # process (postprocess_job.scripts_configmap_manifest, precisely so there is no
-    # controller-image version skew), and the conversion container runs the *campaign's*
-    # recorded execution image.
+    # it, so setting it would say something untrue about what this deployment uses.
     #
     # Every RoboVAST image except this one is resolved *in this pod* -- the scenario image
     # for a campaign, the simulator's, the sidecar for every init container, the build
@@ -2187,6 +2077,16 @@ def service_manifests(namespace="default", image=None, env=None,
     if not any(e["name"] == RESERVE_ENV for e in env):
         configured_reserve_gb()
         env = [*env, {"name": RESERVE_ENV, "value": os.environ.get(RESERVE_ENV, "").strip()}]
+
+    # The query bounds, carried and parsed the same way: an operator's .env states them
+    # once, and the pod answers queries under them.
+    from robovast.common.query_limits import (  # pylint: disable=import-outside-toplevel
+        MEMORY_ENV, THREADS_ENV, query_limits)
+
+    query_limits()
+    for var in (MEMORY_ENV, THREADS_ENV):
+        if not any(e["name"] == var for e in env):
+            env = [*env, {"name": var, "value": os.environ.get(var, "").strip()}]
 
     # The pod's timezone (see _host_timezone), carried unconditionally for the same reason
     # as the family env above: "" is UTC to libc -- what an unset TZ already means.
@@ -2257,7 +2157,6 @@ def service_manifests(namespace="default", image=None, env=None,
     if registry_ca:
         extra.append(registry_ca)
 
-    from . import index_deploy  # pylint: disable=import-outside-toplevel
     # Both node-local stores claim through the same class. `workspaces_pvc_manifest` existed
     # but was never emitted, so passing --workspaces-storage-class produced a Deployment
     # referencing a PVC nothing created and a pod that stayed Pending with no explanation.
@@ -2268,20 +2167,7 @@ def service_manifests(namespace="default", image=None, env=None,
         if pvc:
             extra.append(pvc)
 
-    # The index credential, and the DSN that reaches it. The Secret is emitted here AND at
-    # cluster setup, because both pods need it: the store pod's Postgres reads it as
-    # POSTGRES_PASSWORD, this Deployment carries it inside the DSN. `deploy_service` reads
-    # the deployed value back rather than minting one -- see `existing_index_password` on
-    # why regenerating it would break only the second deploy.
-    if index_password:
-        extra.append(index_deploy.index_secret_manifest(namespace, index_password))
     env = list(env or [])
-    if not any(e.get("name") == INDEX_DSN_ENV for e in env):
-        # Built from the Service name and this namespace, never from a configured host:
-        # the index is in another pod now, so the DSN is a `<service>.<namespace>.svc`
-        # name that resolves in any cluster (see `store_pod.store_host`).
-        env.append({"name": INDEX_DSN_ENV,
-                    "value": index_deploy.index_dsn(index_password, namespace)})
 
     ingress = _ingress_manifest(namespace, ingress_host, ingress_class,
                                 tls_secret, issuer, auth_token=auth_token,
@@ -2489,6 +2375,15 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     rbac = client.RbacAuthorizationV1Api()
     apps = client.AppsV1Api()
     dr = "All" if dry_run else None
+    # The context this deploy ran against, named or not, is what the service resolves
+    # per-cluster resource lists with: in-cluster it has no kubeconfig to ask, and a launch
+    # carries no context of its own. With no --context that is the kubeconfig's current one.
+    from .cluster_context import get_active_kube_context  # pylint: disable=import-outside-toplevel
+    recorded_context = kube_context or get_active_kube_context()
+    if not recorded_context:
+        logger.warning("No Kubernetes context could be determined for this deploy, so the "
+                       "service records none and refuses per-cluster resource lists. Pass "
+                       "--context to record one.")
 
     # Anything the caller did not state is RECOVERED, never defaulted. `upgrade` passes none
     # of the storage or placement arguments, so reading "not passed" as "unpinned, on a
@@ -2534,18 +2429,11 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     auth_token = "" if rotate_token else existing_auth_token(namespace, kube_context)
     auth_token = auth_token or generate_token()
 
-    # The index password is ALWAYS reused when one is deployed -- never rotated, not even by
-    # --rotate-token. `initdb` applied it once to a data directory that still exists, so a
-    # new one would leave the Secret and the database disagreeing while every surface
-    # reported success. Rotating it would mean re-initialising the volume, i.e. discarding
-    # the index; that is a deliberate operation, not a side effect of a token rotation.
-    index_password = existing_index_password(namespace, kube_context) or generate_token()
-
     manifests = service_manifests(
         namespace=namespace, image=image, env=env, job_node_labels=job_node_labels,
         config_name=config_name, config_kwargs=config_kwargs,
-        kube_context=kube_context, pull_secret=pull_secret,
-        auth_token=auth_token, index_password=index_password,
+        kube_context=recorded_context, pull_secret=pull_secret,
+        auth_token=auth_token,
         ingress_host=ingress_host,
         ingress_class=ingress_class, tls_secret=tls_secret, issuer=issuer,
         insecure_http=insecure_http, public_origin=public_origin,

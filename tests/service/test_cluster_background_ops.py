@@ -4,17 +4,15 @@
 
 ``run_postprocessing`` / ``run_share`` are the two operations a caller reaches for
 *after* a campaign has finished — exactly when the runs are already paid for and a
-crash is most expensive. Both referenced a ``Phase`` that the module never imported,
-so every call raised ``NameError`` before dispatching anything and surfaced as a bare
-HTTP 500. Nothing covered them, so the name error survived; ruff had been reporting it
-as F821 the whole time.
+crash is most expensive. The dispatch tests stub the dispatcher, so the work closure
+never runs and no cluster is needed; they assert that the call resolves its names and
+hands the right phase to the dispatcher.
 
-These tests stub the dispatcher, so the work closure never runs and no cluster is
-needed. They assert only that the call resolves its names and hands the right phase to
-the dispatcher — which is all that was broken, and all that a unit test can honestly
-claim here.
+Postprocessing runs in the service process, beside the campaign on the results volume: its
+work calls the pipeline directly and records the verdict
+into the campaign.
 """
-
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -60,66 +58,39 @@ def test_run_share_dispatches_in_the_sharing_phase(svc, monkeypatch):
     assert callable(seen["work"])
 
 
-def test_postprocess_job_loads_the_given_context(monkeypatch):
-    """Postprocessing must dial the context the campaign's Jobs were submitted with.
+def test_postprocessing_runs_in_the_service_process_and_records_its_verdict(
+        tmp_path, monkeypatch):
+    """No Job and no image: the work calls the pipeline on the campaign directory itself."""
+    from robovast.execution import status_recovery
+    from robovast.results_processing import postprocessing
 
-    The Kubernetes clients this path builds read whatever context is loaded at the moment
-    they are constructed, so loading it is the whole of the requirement. Without it the path
-    dials the ambient kubeconfig while the campaign's Jobs have gone to the service's
-    ``--context`` cluster. Postprocessing then fails against
-    a cluster the campaign never used, and said so self-contradictorily: naming the
-    configured API server as unreachable while quoting a timeout to a different address.
+    svc = ClusterService(namespace="ns", cluster_config_name="x", cluster_config_kwargs={},
+                         reap_on_start=False, results_dir=str(tmp_path))
+    (tmp_path / "camp-1").mkdir()
+    seen = _capture(svc, monkeypatch)
+    ran, recorded = {}, {}
 
-    So this pins the load itself, rather than any probe that happens to imply it. The stub
-    raises after recording,
-    which stops the test where the context has been consumed and needs no cluster.
-    """
-    from robovast.execution.cluster_execution import kube_client, postprocess_job
+    def _run(**kwargs):
+        ran.update(kwargs)
+        return True, "done"
 
-    seen = {}
+    def _record(campaign_dir, postprocessing):
+        recorded.update(campaign_dir=campaign_dir, outcome=postprocessing)
+        return SimpleNamespace(postprocessed=True, postprocessing_error=None,
+                               phase="finished")
 
-    class _Stop(Exception):
-        pass
+    monkeypatch.setattr(postprocessing, "run_postprocessing", _run)
+    monkeypatch.setattr(status_recovery, "record_step_outcome", _record)
+    notifier = MagicMock()
+    monkeypatch.setattr(svc, "_notifier", lambda campaign_id: notifier)
 
-    def _load(context=None, **kwargs):
-        seen["context"] = context
-        raise _Stop
+    svc.run_postprocessing(RunPostprocessingRequest(campaign_id="camp-1", force=True))
+    state = MagicMock()
+    seen["work"](state)
 
-    monkeypatch.setattr(kube_client, "load_kube_config", _load)
-    # The steps are rendered from the campaign's own `.vast`, which this test has none of.
-    monkeypatch.setattr(postprocess_job, "image_steps_for", lambda *a, **k: [])
-
-    with pytest.raises(_Stop):
-        postprocess_job.run_conversion_job(
-            MagicMock(), "camp-1", "/results/camp-1", "ns", "img", ["echo"],
-            token="campaign:camp-1.0123abcd", kube_context="local")
-
-    assert seen.get("context") == "local", (
-        f"postprocessing did not load the caller's context: {seen}")
-
-
-def test_postprocess_campaign_forwards_the_context(monkeypatch):
-    """``postprocess_campaign`` hands its context to the Job it schedules."""
-    from robovast.execution.cluster_execution import postprocess_job
-
-    seen = {}
-
-    class _Stop(Exception):
-        pass
-
-    def _conversion(*args, **kwargs):
-        seen.update(kwargs)
-        raise _Stop  # stop before the wait, which needs a cluster
-
-    monkeypatch.setattr(postprocess_job, "run_conversion_job", _conversion)
-    # The facts the manifest needs about the campaign are read from its directory through
-    # `_read_submit_inputs`. Patched at that seam, so this test needs no campaign tree.
-    monkeypatch.setattr(postprocess_job, "_read_submit_inputs",
-                        lambda root, skip=None, skip_rosout=False:
-                        (["echo"], "img", (), None, None))
-
-    with pytest.raises(_Stop):
-        postprocess_job.postprocess_campaign(
-            MagicMock(), "camp-1", "/nonexistent", "ns", token="campaign:camp-1.0123abcd",
-            kube_context="local")
-    assert seen.get("kube_context") == "local"
+    assert ran["campaign"] == "camp-1"
+    assert ran["results_dir"] == str(tmp_path)
+    assert ran["force"] is True
+    assert recorded == {"campaign_dir": tmp_path / "camp-1", "outcome": (True, "done")}
+    state.set_phase.assert_called_with("finished")
+    notifier.postprocessed.assert_called_once()

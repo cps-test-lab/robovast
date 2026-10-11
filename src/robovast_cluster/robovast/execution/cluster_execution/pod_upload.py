@@ -24,8 +24,12 @@ happens to finish. The protocol is three parties and one directory:
   (:data:`robovast.common.execution._CLUSTER_POST_RUN_BLOCK`);
 * each sidecar stops its workload on seeing that and writes ``/ipc/done.<name>`` once its
   own monitor has stopped (``secondary_entrypoint.sh``);
+* the file agent (``robovast/execution/data/file_agent.py``, container
+  :data:`AGENT_CONTAINER`) ships the growth of the run's line files and bags while it runs, and
+  writes ``/ipc/done.agent`` after its final drain once the others have finished;
 * this container waits for every marker it was told to, then streams ``/out`` as one tar
-  into ``PUT /campaigns/<id>/outputs`` (:func:`~.pod_access.deliver_command`).
+  into ``PUT /campaigns/<id>/outputs`` (:func:`~.pod_access.deliver_command`). Waiting for
+  the agent too makes this tar the last delivery, the one that leaves every file whole.
 
 A marker that never comes -- a sidecar killed hard, an image whose entrypoint never ran --
 must not hold the result hostage: once ``done.main`` has existed for the grace period the
@@ -45,13 +49,21 @@ Runs from the sidecar image, so this is POSIX ``sh`` for busybox, with ``curl`` 
 ``tar``.
 """
 
-from robovast.common.execution import IPC_DIR, MAIN_CONTAINER, done_marker
+from robovast.common.execution import FILE_AGENT_SCRIPT, IPC_DIR, MAIN_CONTAINER, done_marker
 
 from .pod_access import TRANSFER_ATTEMPTS, TRANSFER_BACKOFF_S, deliver_command
 
 #: The uploader's name in the pod: a regular container, so the Job is complete only once
 #: the results are home, and failed when they could not be delivered.
 UPLOADER_CONTAINER = "uploader"
+
+#: The file agent's name in the pod: a regular container beside the uploader, so it runs
+#: for the whole run and the uploader can wait for its marker.
+AGENT_CONTAINER = "agent"
+
+#: Where the agent runs from: copied into the campaign's ``_transient/`` and fetched into
+#: ``/config`` with the rest of the run's scripts.
+AGENT_SCRIPT = f"/config/{FILE_AGENT_SCRIPT}"
 
 #: What a ``tar | curl`` of a results tree needs: a little CPU and a bounded heap, whatever
 #: the tree's size, because both stream and neither compresses.
@@ -71,19 +83,21 @@ OUT_DIR = "/out"
 #: result minutes, not the Job's deadline.
 UPLOAD_GRACE_SECONDS = 120
 
+#: The agent's grace after ``done.main`` before it ends without a missing sidecar marker.
+#: Shorter than the uploader's, so its marker exists before the uploader stops waiting.
+AGENT_GRACE_SECONDS = UPLOAD_GRACE_SECONDS - 30
+
+#: A Python process holding one delivery (the agent's byte budget) at a time.
+AGENT_RESOURCES = {
+    "requests": {"cpu": "50m", "memory": "32Mi"},
+    "limits": {"memory": "128Mi"},
+}
+
 #: The pod's ``terminationGracePeriodSeconds`` floor: the window the uploader's TERM
 #: handler has to deliver what ``/out`` holds before the kubelet kills it. A bound on a
 #: best effort -- a tree larger than the window allows is lost with the pod, and a
 #: longer window holds every stopped pod's resources for that much longer.
 UPLOAD_TERMINATION_GRACE = 120
-
-#: roqsim's live sample stream, packed into ``run.npz`` at close and unlinked. Excluded
-#: only from the upload a TERM forces: a run whose recorder is still writing has no archive
-#: to keep beside the stream, and roqsim documents the stream a hard kill leaves as
-#: forensics whose signal is the archive's absence. Once every marker exists nothing is
-#: still being written, so the ordinary upload excludes nothing.
-IN_PROGRESS_SUFFIX = ".part"
-
 
 _SCRIPT = r'''#!/bin/sh
 # The uploader of one scenario pod: see robovast.execution.cluster_execution.pod_upload.
@@ -159,10 +173,6 @@ deliver() {
     ( cd "${OUT_DIR}" && @@DELIVER@@ ) 2>"${IPC_DIR}/.upload.err"
 }
 
-deliver_in_progress() {
-    ( cd "${OUT_DIR}" && @@DELIVER_IN_PROGRESS@@ ) 2>"${IPC_DIR}/.upload.err"
-}
-
 # The HTTP status behind a curl exit 22, or nothing when the failure was not an HTTP one.
 http_status() {
     sed -n 's/.*returned error: \([0-9][0-9][0-9]\).*/\1/p' "${IPC_DIR}/.upload.err" | head -n 1
@@ -212,11 +222,12 @@ upload_with_retries() {
 
 # A TERM before the result was delivered: the pod is being torn down -- a stop, a restart
 # the runner acted on, a deadline -- and whatever /out holds is the evidence of why. One
-# attempt, with the streams still being written left out.
+# attempt, of everything there: a recording cut short is readable up to its last complete
+# chunk, and is the forensics of the kill.
 upload_on_term() {
     log "WARNING: terminated before the result was delivered; uploading what ${OUT_DIR} holds"
     rc=0
-    deliver_in_progress || rc=$?
+    deliver || rc=$?
     if [ "${rc}" -eq 0 ]; then
         log "delivered on termination"
         return 0
@@ -264,17 +275,32 @@ def uploader_script(campaign_id: str, wait_for: "list[str]", grace_s: int = UPLO
             .replace("@@GRACE_S@@", str(int(grace_s)))
             .replace("@@ATTEMPTS@@", str(int(attempts)))
             .replace("@@BACKOFF_S@@", str(int(backoff_s)))
-            .replace("@@DELIVER@@", deliver_command(".", route))
-            .replace("@@DELIVER_IN_PROGRESS@@",
-                     deliver_command(".", route, exclude=(f"*{IN_PROGRESS_SUFFIX}",))))
+            .replace("@@DELIVER@@", deliver_command(".", route)))
 
 
 def uploader_command(campaign_id: str, wait_for: "list[str]",
                      grace_s: int = UPLOAD_GRACE_SECONDS) -> list:
-    """The ``command`` of the uploader container: the script, handed to ``sh``."""
-    return ["sh", "-c", uploader_script(campaign_id, wait_for, grace_s)]
+    """The ``command`` of the uploader container: the script, handed to ``sh``.
+
+    *wait_for* names the pod's sidecars; the uploader waits for the file agent as well.
+    """
+    names = [n for n in wait_for if n != AGENT_CONTAINER] + [AGENT_CONTAINER]
+    return ["sh", "-c", uploader_script(campaign_id, names, grace_s)]
 
 
-__all__ = ["IN_PROGRESS_SUFFIX", "IPC_DIR_ENV", "OUT_DIR", "OUT_DIR_ENV", "UPLOADER_CONTAINER",
-           "UPLOADER_RESOURCES", "UPLOAD_GRACE_SECONDS", "UPLOAD_TERMINATION_GRACE", "done_marker",
-           "uploader_command", "uploader_script"]
+def agent_command(wait_for: "list[str]", grace_s: int = AGENT_GRACE_SECONDS) -> list:
+    """The ``command`` of the file agent container.
+
+    *wait_for* names the pod's sidecars, whose ``done.<name>`` markers (with ``done.main``)
+    end the agent; they are its positional arguments.
+    """
+    for name in wait_for:
+        if not name or any(c.isspace() for c in name) or "/" in name:
+            raise ValueError(f"not a container name: {name!r}")
+    return ["python3", AGENT_SCRIPT, "--grace", str(int(grace_s)), *wait_for]
+
+
+__all__ = ["AGENT_CONTAINER", "AGENT_GRACE_SECONDS", "AGENT_RESOURCES", "AGENT_SCRIPT",
+           "IPC_DIR_ENV", "OUT_DIR", "OUT_DIR_ENV", "UPLOADER_CONTAINER",
+           "UPLOADER_RESOURCES", "UPLOAD_GRACE_SECONDS", "UPLOAD_TERMINATION_GRACE", "agent_command",
+           "done_marker", "uploader_command", "uploader_script"]

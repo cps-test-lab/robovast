@@ -39,7 +39,7 @@ class AzureClusterConfig(BaseConfig):
         readme_content = """# Azure Cluster Setup Instructions
 
 Finished campaigns live on the service's **results volume**, beside the workspaces; the
-`robovast` pod in this manifest holds the container registry and the campaign index.
+`robovast` pod in this manifest holds the container registry.
 
 On AKS, back every volume with a StorageClass rather than a node directory: a managed
 node pool replaces machines, and a hostPath goes with the machine. `managed-csi` is the
@@ -48,7 +48,6 @@ stock class:
 ```bash
 vast cluster setup azure \\
     --workspaces-class managed-csi \\
-    --index-class managed-csi \\
     --registry-class managed-csi \\
     --buildkit-class managed-csi
 ```
@@ -71,8 +70,7 @@ kubectl apply -f robovast-manifest.yaml
 kubectl wait --for=condition=ready pod/robovast --timeout=120s
 ```
 
-The registry answers on `/v2` of the service's published host; the index on port 5432 of
-the `robovast` Service, from inside the cluster only.
+The registry answers on `/v2` of the service's published host.
 """
         with open(f"{output_dir}/README_azure.md", "w") as f:
             f.write(readme_content)

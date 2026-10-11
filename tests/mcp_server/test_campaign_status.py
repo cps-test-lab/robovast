@@ -4,7 +4,7 @@
 overall progress (never a batch-scoped ratio presented as completion)."""
 
 from robovast.execution.control_server import Status
-from robovast.mcp_server.plugins import execution as cc
+from robovast.client import campaign_report
 
 
 def _status(**kw):
@@ -17,7 +17,7 @@ def _status(**kw):
 def test_batch_progress_is_completed_over_total():
     st = _status(phase="running", mode="batch",
                  runs={"completed": 3, "total": 10})
-    d = cc._status_to_dict("camp", "local", st)
+    d = campaign_report.status_to_dict("camp", "local", st)
     assert d["batch_runs_done"] == 3 and d["batch_runs_total"] == 10
     assert d["progress"] == 0.3
 
@@ -29,7 +29,7 @@ def test_search_progress_comes_from_budget_not_run_ratio():
                  runs={"completed": 3, "total": 10},
                  budget=[{"label": "batches", "current": 2, "limit": 10, "done": False},
                          {"label": "time_s", "current": 30, "limit": 300, "done": False}])
-    d = cc._status_to_dict("camp", "local", st)
+    d = campaign_report.status_to_dict("camp", "local", st)
     assert d["progress"] == 0.2  # max(2/10, 30/300) — not 3/10
     assert d["batch_runs_done"] == 3  # still exposed, but clearly batch-scoped
 
@@ -39,14 +39,14 @@ def test_search_progress_is_null_when_unknowable():
     st = _status(phase="running", mode="search",
                  runs={"completed": 3, "total": 10},
                  budget=[{"label": "metric", "current": None, "limit": 1.0, "done": False}])
-    d = cc._status_to_dict("camp", "local", st)
+    d = campaign_report.status_to_dict("camp", "local", st)
     assert d["progress"] is None
 
 
 def test_search_without_budget_is_null_not_run_ratio():
     st = _status(phase="running", mode="search",
                  runs={"completed": 3, "total": 10})
-    d = cc._status_to_dict("camp", "local", st)
+    d = campaign_report.status_to_dict("camp", "local", st)
     assert d["progress"] is None
 
 
@@ -59,7 +59,7 @@ def test_rich_search_fields_passed_through():
                  runs={"completed": 5, "total": 5},
                  budget=[{"label": "batches", "current": 7, "limit": 7, "done": True}],
                  stop={"kind": "batches", "reason": "max batches reached"})
-    d = cc._status_to_dict("camp", "service", st)
+    d = campaign_report.status_to_dict("camp", "service", st)
     assert d["mode"] == "search"
     assert d["batches_done"] == 7
     assert d["best_objective"] == 0.42
@@ -70,7 +70,7 @@ def test_rich_search_fields_passed_through():
 def test_batch_mode_omits_search_only_fields():
     st = _status(phase="finished", mode="batch",
                  runs={"completed": 4, "total": 4})
-    d = cc._status_to_dict("camp", "local", st)
+    d = campaign_report.status_to_dict("camp", "local", st)
     assert d["progress"] == 1.0
     assert "best_objective" not in d
     assert "stop" not in d
@@ -90,7 +90,7 @@ def test_finished_local_search_reads_rich_state_from_outcome(tmp_path):
     write_execution_outcome(tmp_path, st)
 
     reloaded = read_execution_outcome(tmp_path)  # what get_campaign_status reads
-    d = cc._status_to_dict("camp", "local", reloaded)
+    d = campaign_report.status_to_dict("camp", "local", reloaded)
     assert d["mode"] == "search"
     assert d["best_objective"] == 0.13
     assert d["stop"]["kind"] == "batches"
@@ -109,7 +109,7 @@ def test_progress_names_the_criterion_it_is_a_share_of():
                           "done": False, "kind": "runs"},
                          {"label": "batches", "current": 1, "limit": 10,
                           "done": False, "kind": "batches"}])
-    d = cc._status_to_dict("camp", "local", st)
+    d = campaign_report.status_to_dict("camp", "local", st)
     assert d["progress_of"] == "runs"          # 120/180 beats 1/10
     assert d["progress"] == 120 / 180
 
@@ -123,7 +123,7 @@ def test_a_time_budget_reports_where_the_search_is_now():
                  search_since=_t.time() - 1800,
                  budget=[{"label": "time", "current": 0.0, "limit": 3600.0,
                           "done": False, "kind": "time"}])
-    d = cc._status_to_dict("camp", "local", st)
+    d = campaign_report.status_to_dict("camp", "local", st)
     # Published as 0 and never refreshed; half the hour has actually gone.
     assert 0.49 < d["progress"] < 0.51
     assert d["progress_of"] == "time"
@@ -136,5 +136,5 @@ def test_a_time_budget_without_an_origin_keeps_its_published_value():
     st = _status(phase="running", mode="search",
                  budget=[{"label": "time", "current": 600.0, "limit": 3600.0,
                           "done": False, "kind": "time"}])
-    d = cc._status_to_dict("camp", "local", st)
+    d = campaign_report.status_to_dict("camp", "local", st)
     assert d["budget"][0]["current"] == 600.0

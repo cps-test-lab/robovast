@@ -33,7 +33,6 @@ A ``search:`` section is self-contained: its configurations are synthesized from
    execution:
      scenario_file: scenario.osc
      runs: 3
-     runs_per_job: 1
 
    search:
      # ---- universal core (every strategy) ----
@@ -94,10 +93,9 @@ just reads, aggregates and names.
 *How* it aggregates is a real choice, and the obvious answer is usually the wrong
 one. Averaging hides the run you care about — four comfortable landings and one that
 nearly tipped over average to "comfortable" — and on a quality-diversity archive it
-collapses the very spread the archive exists to map: measured on a quadrotor QD
-campaign, behaviour measures averaged over five runs filled 3 of 512 cells, because
-averaging pulled every cell toward the middle of the behaviour space before the
-archive saw it. :func:`robovast.search.aggregate.aggregate` provides ``worst``
+collapses the very spread the archive exists to map: behaviour measures averaged over
+several runs fill only a small fraction of the archive's cells, because averaging pulls
+every cell toward the middle of the behaviour space before the archive sees it. :func:`robovast.search.aggregate.aggregate` provides ``worst``
 (the default), ``quantile`` (a pessimistic tail that one freak run cannot define) and
 ``mean`` (which must be asked for by name)::
 
@@ -215,7 +213,7 @@ Marker rules:
    That set is recorded as ``composition_failed`` (visible in the store's ``unit``
    table), nothing runs for it, and the batch carries on with the rest. So ``tell()``
    may be handed **fewer evaluations than ``ask()`` proposed**, and a strategy has to
-   cope: ingest what arrived, or — if its optimiser cannot take a short generation —
+   cope: take what arrived, or — if its optimiser cannot take a short generation —
    skip that generation. Never fill the hole with a stand-in objective: the measures
    would have to be invented too, and an invented measure vector lands the fabrication
    in a real archive cell where the search then chases it.
@@ -237,7 +235,9 @@ Marker rules:
    generation is *not* short in this case — a recalled evaluation is a real answer to a real
    proposal. A recalled cell costs no runs and is not counted as a new evaluation, so
    neither a ``runs`` nor an ``evaluations`` budget is spent on it; ``batches`` still
-   advances, which is what ends a search that has stopped finding anything new.
+   advances, which is what ends a search that has stopped finding anything new. The
+   batch records it as a ``unit`` row with status ``recalled`` whose ``recalled_from``
+   names the unit that measured it; the row carries no objectives or runs of its own.
 
 Strategies
 ----------
@@ -347,7 +347,7 @@ ways can this fail?", not just "what is the single worst case". Use it for
 ``strategy_parameters``:
 
 * ``archive.type`` — ``grid`` (per-measure ``bins``) or ``cvt`` (``cells``
-  centroids; preferred for more than ~2 measures).
+  centroids, placed from ``search.seed``; preferred for more than ~2 measures).
 * ``archive.measures`` — the behavior axes, ``{name: {low, high, bins}}``; each
   name must be a measure the extractor returns (``bins`` applies to ``grid``).
   Enforced, and fatally: a cell is placed by all of its axes at once, so one the
@@ -357,7 +357,8 @@ ways can this fail?", not just "what is the single worst case". Use it for
   archive reads the ones it declares.
 * ``sigma`` — emitter step size as a fraction of each dimension's range
   (default ``0.1``).
-* ``emitters`` — number of CMA-ME emitters (default ``1``).
+* ``emitters`` — number of CMA-ME emitters (default ``1``). They split each batch
+  between them, so there are at most ``per_batch``; more is refused.
 
 Needs the extra: ``pip install 'robovast[qd]'``.
 
@@ -405,7 +406,8 @@ evaluations — the complement to ``random`` (coverage) and ``qd`` (diversity).
 ``strategy_parameters``:
 
 * ``sampler`` — ``tpe`` (default, Tree-structured Parzen Estimator), ``cmaes``
-  (CMA-ES; strong on smooth continuous spaces) or ``random``.
+  (CMA-ES; strong on smooth continuous spaces), ``random``, or ``nsga2`` (NSGA-II, the
+  Pareto sampler: required with more than one objective, refused with one).
 * ``constant_liar`` — for ``tpe``, improves batched (per-batch) asks by
   penalizing in-flight points (default ``true``).
 * ``n_startup_trials`` — random trials before the model takes over (optional).
@@ -519,13 +521,13 @@ Stopping a search part-way
 
 Ending a search by hand is a normal way to end one — the budget is a ceiling, not a
 target — and **what it measured stays queryable**. Stopping the runs stops only the runs:
-the batches that completed are postprocessed and indexed like any other campaign's, so the
+the batches that completed are postprocessed like any other campaign's, so the
 campaign ends with its derived data present.
 
 Which phase it ends in says where the stop landed. A stop seen at a batch boundary is an
 ordinary stopping criterion to the loop — recorded as ``stop_kind = 'external'`` — and the
 campaign ends ``finished``; one that cut a batch short ends ``stopped``. Either way the
-cells it did score are in the index.
+cells it did score are in its record, and queryable.
 
 Its cells are read the way a finished search's are:
 
@@ -537,6 +539,9 @@ Its cells are read the way a finished search's are:
 The per-batch objective trajectory is served from ``campaign.db`` directly
 (``GET /campaigns/{id}/search/history``, and ``objective_history`` on the campaign status),
 so it needs no postprocessing at all and is available while the search is still running.
+Each batch carries ``complete``: false while it runs, or after an interruption until the
+resume finishes it, so its counts are what it has recorded so far. ``batches_since_improvement``
+counts complete batches only.
 
 A **second** stop, once the campaign has reached ``postprocessing``, cancels that instead:
 the runs and their results are kept and only the derived data is missing, which
@@ -548,11 +553,11 @@ Surviving a service restart
 ---------------------------
 
 A search whose service process goes away — a pod replacement, an eviction, an OOM — is
-picked back up by the next one, at the batch boundary it reached. **Nothing about the
-strategy is serialized.** The campaign's ``batch`` and ``unit`` rows already record what it
-proposed and what each proposal scored, so a fresh strategy is re-driven through the exact
-``ask``/``tell`` sequence the first one saw (``SearchStrategy.resume``), and from there it
-carries on identically.
+picked back up by the next one, and carries on as if it had not been interrupted, including
+in the middle of a batch. **Nothing about the strategy is serialized.** The campaign's
+``batch`` and ``unit`` rows already record what it proposed and what each proposal scored,
+so a fresh strategy is re-driven through the exact ``ask``/``tell`` sequence the first one
+saw (``SearchStrategy.resume``), and from there it carries on identically.
 ``campaign.db`` is published at each batch boundary for this reason: those rows are the
 checkpoint.
 
@@ -565,6 +570,33 @@ was **proposed** — the batch row's ``asked`` — not what came back, and not t
 ``unit`` rows either: a draw the variation pipeline could not realize, or one whose runs
 were all lost, costs a proposal and produces no evaluation, and a repeated draw costs a
 proposal and produces no row of its own.
+
+What is told back is what the live batch told: its ``evaluated`` cells, then its
+``recalled`` ones, each read from the unit its ``recalled_from`` names. A recalled cell is
+an answer the strategy was given, so a replay that left it out would hand the strategy a
+shorter generation than it saw — ``optuna`` would close that trial as failed — and the
+resumed search would propose differently from there.
+
+A batch recorded before store schema 14 has no row for a recalled cell. Its replay reads
+them off the proposals it re-asks: every distinct one an earlier batch measured is a cell
+the live loop recalled, so such a campaign resumes exactly too.
+
+Only a **complete** batch is replayed: one whose row is marked ``complete``, which the loop
+sets once the batch's last unit, recalled cells included, is recorded and before the
+strategy is told. A batch interrupted before that holds only some of its units, and
+replaying it as it stands would tell the strategy a short batch it was never told —
+``optuna`` would close the missing trials as failed and ``qd`` would close the generation
+incomplete. It is the campaign's last batch, and the resumed loop finishes it instead: it
+asks the strategy again, which after the replay proposes the same cells, keeps the units
+already recorded, runs the cells that are missing and tells the strategy the whole batch.
+Neither a recorded cell nor a run that already has a verdict is run again.
+If the re-ask proposes anything the batch did not record, the resume stops with an error
+rather than finish the batch with another batch's cells.
+
+A batch recorded before store schema 15 is complete when a later batch follows it, since
+the loop opens the next batch only after telling the strategy this one, or when the
+campaign's recorded ``batches`` count covers it. A last batch that neither rule covers is
+finished on resume as above, which runs nothing when it already had every cell.
 
 Two conditions, both checked before the campaign is re-launched:
 
@@ -597,10 +629,10 @@ Why a fixed repetition count wastes most of its runs
 simultaneously too many and too few. A cell whose runs all agree was decided by its
 first one; a cell on a failure boundary is exactly where more samples buy something.
 
-Measured on a quadrotor search campaign: **3 of 32 configurations produced a mixed
-outcome across 5 repetitions**. The other 29 spent 5 runs each to establish a single
-bit — 145 of 160 runs. At three milliseconds a run that is invisible; at ninety
-seconds a run it is the campaign's whole budget.
+Typically **only the few configurations on a failure boundary produce a mixed outcome
+across their repetitions**; every other cell spends its whole count establishing a single
+bit. When a run takes milliseconds that is invisible; when it takes minutes it is most of
+the campaign's budget.
 
 The ``repetitions`` block
 ^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -615,12 +647,12 @@ The ``repetitions`` block
        min: 1                 # floor: the cheapest a cell can be evaluated
        max: 8                 # ceiling: the cost guard
        neighbours: 5          # how many evaluated neighbours judge "contested"
-       paired: false          # reuse one seed list across cells (see below)
+       paired: false          # true is refused (see below)
 
 Omitting the block entirely is not a policy of uniformity — it is the *absence* of a
-policy, and every cell runs ``execution.runs`` times exactly as it always did.
+policy, and every cell runs ``execution.runs`` times.
 
-* ``fixed`` — every cell gets the same count. Today's behaviour, stated explicitly.
+* ``fixed`` — every cell gets ``execution.runs``, the same as omitting the block.
 * ``adaptive`` — a cell whose nearest already-evaluated neighbours **agree** gets
   ``min``; one sitting where they **disagree** gets up to ``max``.
 
@@ -644,7 +676,7 @@ Two consequences worth knowing:
   cell gets ``min``. Guessing high would rebuild the uniform waste with a different
   constant.
 * When **every observation so far agrees**, no neighbourhood can be contested and
-  everything gets ``min``. That is the 29-of-32 case, and spending the floor on it is
+  everything gets ``min``. That is the common case above, and spending the floor on it is
   the correct answer, not a degenerate one.
 
 A strategy still outranks the policy
@@ -663,8 +695,8 @@ accordingly, so a batch may become several execution groups.
 Budgeting a search whose repetitions vary
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Once repetitions are adaptive, ``batches × per_batch × execution.runs`` no longer
-predicts anything. Bound the campaign with ``budget: [{runs: N}]``, which counts
+With adaptive repetitions, ``batches × per_batch × execution.runs`` does not predict
+the spend. Bound the campaign with ``budget: [{runs: N}]``, which counts
 executions directly. This is also what makes two strategies comparable: a fair contest
 gives both the same number of runs, not the same number of batches.
 
@@ -676,19 +708,20 @@ spent one, and stop a ``runs`` budget in the wrong place.
 Pairing, and what it does not buy
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-``paired: true`` reuses one seed list across every cell, so two cells are compared
-run-for-run instead of only in distribution — a variance reduction that lets a real
-difference show up in far fewer runs.
+``paired: true`` and ``seed_parameter`` are **refused**. Pairing would reuse one seed
+list across every cell, so two cells are compared run-for-run instead of only in
+distribution, and ``seed_parameter`` would name the variation channel the per-repetition
+seed is delivered on (e.g. ``{sim: seed}``). Both need repetition *i* of every cell to draw
+the same noise, which takes a per-run seed no execution backend delivers: a simulator
+override document is written per configuration, so every repetition of a cell would
+receive the same seed and stop varying. Repetitions are therefore unseeded: they still
+vary, and they cannot be paired or replayed.
 
-Be clear about its limits. Pairing covers the **simulator's** seeded noise. A system
-under test running asynchronously in its own container — message timing, callback
-order, CPU contention — is not replayable, so a single run is never reproducible even
-paired, and every claim a search makes remains distributional: *"this configuration
-fails about 40% of the time"*, never *"this run fails"*.
-
-``seed_parameter`` names the variation channel the per-repetition seed is delivered on
-(e.g. ``{sim: seed}``). Without it, repetitions still differ — they are simply
-unseeded, so neither pairing nor replay is available.
+A seed would cover only the **simulator's** noise. A system under test running
+asynchronously in its own container — message timing, callback order, CPU contention — is
+not replayable, so a single run is never reproducible, and every claim a search makes is
+distributional: *"this configuration fails about 40% of the time"*, never *"this run
+fails"*.
 
 Postprocessing: one mechanism, two lists
 -----------------------------------------
@@ -697,8 +730,8 @@ Postprocessing plugins (``BasePostprocessingPlugin``) are loaded identically
 wherever they appear — by entry-point name **or** a local ``./path.py:Class`` file
 reference — via one shared resolver/runner. They are configured in two places:
 
-* ``results_processing.postprocessing`` — runs at analysis time
-  (``vast campaign postprocess``, then the web UI's Results views).
+* ``results_processing.postprocessing`` — runs when the campaign ends, and again on a
+  re-run (``vast campaign postprocess``, or the web UI's retrigger).
 * ``search.postprocessing`` — runs over each batch's results during a search,
   before ``extract``.
 

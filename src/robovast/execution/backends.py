@@ -78,10 +78,22 @@ class RunOptions:
     # where an env var could not distinguish them (same reason as ``postprocess`` below).
     image_project: str | None = None
     image_project_tag: str | None = None
-    # Concrete refs for containers whose image was *built*, keyed by container name.
-    # Filled by the build lifecycle before the backend runs; a container absent from
-    # here uses its declared image verbatim.
+    # Concrete refs keyed by container name (and role): the built ones, filled by the build
+    # lifecycle before the backend runs, or on a replay every container's recorded digest. A
+    # container absent from here uses its declared image, fixed to a digest at launch.
     images: dict = field(default_factory=dict)
+    # The sidecar image every pod of this campaign runs, as a digest. Fixed once per campaign
+    # before its first pod -- an aux pod's transfer container, or a Job's ``fetch-inputs`` --
+    # so every pod of it runs the same bytes; ``None`` until then.
+    sidecar_image: str | None = None
+    # ``{aux container name: digest}`` for the auxiliary containers composition runs, filled
+    # as each is fixed or, on a replay, from the launch record.
+    aux_images: dict = field(default_factory=dict)
+    # True when this campaign replays a launch record (a retrigger, or an adoption after a
+    # service restart): ``images``, ``sidecar_image`` and ``aux_images`` are every image it
+    # may run, and one they do not fix is refused rather than resolved -- a tag, a project or
+    # the composition cache could otherwise hand a replay bytes its source never ran.
+    images_fixed: bool = False
     log_tree: bool = False
     # -- chained analysis postprocessing (cluster backend only) --------------
     # Per-campaign, so it must travel with the options rather than through the

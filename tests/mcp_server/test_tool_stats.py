@@ -1,38 +1,21 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""The MCP call log: what it keeps, what it cuts, and what it must never do.
+"""The MCP call log: what it keeps, what it cuts, and what it must never do."""
 
-Set ``ROBOVAST_TEST_PG_DSN`` to run the ones that need an index; the contract that
-matters most -- recording must never fail a tool call -- is checked without one.
-"""
-
-import os
+import sqlite3
 import time
 
 import pytest
 
 from robovast.mcp_server import tool_stats
 
-DSN = os.environ.get("ROBOVAST_TEST_PG_DSN")
-
-SCHEMA = "tool_stats_test"
-
 
 @pytest.fixture(name="log")
-def _log(monkeypatch):
-    """A fresh log against an empty index schema, env pointed at it as a deployment would."""
-    if not DSN:
-        pytest.skip("ROBOVAST_TEST_PG_DSN is not set")
-    psycopg = pytest.importorskip("psycopg")
-    from robovast.common import index_db
-
-    with psycopg.connect(DSN, autocommit=True) as setup:
-        setup.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
-        setup.execute(f"CREATE SCHEMA {SCHEMA}")
-    monkeypatch.setenv(index_db.DSN_ENV, f"{DSN} options=-csearch_path={SCHEMA}")
-    yield tool_stats.ToolCallLog()
-    with psycopg.connect(DSN, autocommit=True) as teardown:
-        teardown.execute(f"DROP SCHEMA IF EXISTS {SCHEMA} CASCADE")
+def _log(tmp_path):
+    """A fresh log in its own file, opened the way the service opens it."""
+    log = tool_stats.ToolCallLog()
+    log.open(tmp_path / "workspaces" / tool_stats.FILENAME)
+    return log
 
 
 def test_a_call_is_recorded_and_read_back(log):
@@ -82,25 +65,42 @@ def test_the_log_filters_to_one_tool(log):
     assert [c.tool for c in log.read_calls(tool="b")] == ["b"]
 
 
-def test_an_index_with_no_table_yet_reads_as_an_empty_log(log):
-    # Nothing has been flushed, so the table does not exist. That is an empty log, and a
-    # panel must be able to tell it from an error.
+def test_a_log_nothing_was_written_to_reads_as_empty(log):
     assert log.read_calls() == []
     assert log.read_stats() == []
+
+
+def test_a_process_that_opened_no_log_records_nothing_and_reads_empty():
+    log = tool_stats.ToolCallLog()
+    log.record("list_campaigns", 1.0, True)
+    assert log.flush() == 0
+    assert log.read_calls() == [] and log.read_stats() == []
+
+
+def test_the_log_outlives_the_process_that_wrote_it(tmp_path):
+    """A restart opens the same file and finds what the last process recorded."""
+    path = tmp_path / tool_stats.FILENAME
+    first = tool_stats.ToolCallLog()
+    first.open(path)
+    first.record("list_campaigns", 1.0, True)
+    first.flush()
+    second = tool_stats.ToolCallLog()
+    second.open(path)
+    assert [c.tool for c in second.read_calls()] == ["list_campaigns"]
 
 
 def test_pruning_drops_rows_past_the_age_and_the_row_cap(log, monkeypatch):
     monkeypatch.setattr(tool_stats, "MAX_ROWS", 2)
     log.record("old", 1.0, True)
     log.flush()
-    from robovast.common import index_db
-    with index_db.connect() as conn:
-        conn.execute(f"UPDATE {tool_stats.TABLE} SET at = %s",
+    path = log._path  # pylint: disable=protected-access
+    with sqlite3.connect(path) as conn:
+        conn.execute(f"UPDATE {tool_stats.TABLE} SET at = ?",
                      (time.time() - tool_stats.MAX_AGE_S - 1,))
     for name in ("new1", "new2", "new3"):
         log.record(name, 1.0, True)
     log.flush()
-    with index_db.connect() as conn:
+    with sqlite3.connect(path) as conn:
         log._prune(conn)  # pylint: disable=protected-access
 
     kept = {c.tool for c in log.read_calls()}
@@ -108,12 +108,12 @@ def test_pruning_drops_rows_past_the_age_and_the_row_cap(log, monkeypatch):
     assert len(kept) == 2, "the row cap is the backstop when age alone does not bound it"
 
 
-def test_recording_never_raises_when_the_index_is_unreachable(monkeypatch):
+def test_recording_never_raises_when_the_file_cannot_be_written(log):
     """The one contract that outranks the record: accounting must not fail a tool call."""
-    from robovast.common import index_db
-    monkeypatch.delenv(index_db.DSN_ENV, raising=False)
+    path = log._path  # pylint: disable=protected-access
+    path.unlink()
+    path.mkdir()  # a directory where the file was: every write now fails
 
-    log = tool_stats.ToolCallLog()
     log.record("list_campaigns", 1.0, True)
     assert log.flush() == 0
 

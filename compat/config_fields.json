@@ -165,11 +165,6 @@
       "Union[str, NoneType]"
     ],
     [
-      "general",
-      false,
-      "Union[GeneralConfig, NoneType]"
-    ],
-    [
       "metadata",
       false,
       "Union[dict[str, Any], NoneType]"
@@ -178,6 +173,11 @@
       "plugins",
       false,
       "Union[list[str], NoneType]"
+    ],
+    [
+      "recording",
+      false,
+      "Union[RecordingConfig, NoneType]"
     ],
     [
       "results_processing",
@@ -374,6 +374,21 @@
       "str"
     ],
     [
+      "post_command",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "pre_command",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "run_as_user",
+      false,
+      "Union[int, NoneType]"
+    ],
+    [
       "run_files",
       false,
       "Union[list[str], NoneType]"
@@ -381,11 +396,6 @@
     [
       "runs",
       true,
-      "int"
-    ],
-    [
-      "runs_per_job",
-      false,
       "int"
     ],
     [
@@ -416,7 +426,7 @@
     [
       "<extra>",
       false,
-      "ignore"
+      "forbid"
     ]
   ],
   "ExplorerConfig": [
@@ -473,13 +483,6 @@
       "<extra>",
       false,
       "forbid"
-    ]
-  ],
-  "GeneralConfig": [
-    [
-      "<extra>",
-      false,
-      "allow"
     ]
   ],
   "ImageProvenanceConfig": [
@@ -697,16 +700,16 @@
       "ignore"
     ]
   ],
-  "PostprocessResourcesConfig": [
+  "RecordingConfig": [
     [
-      "cpu",
+      "roqsim",
       false,
-      "Union[int, float, str, list[dict[str, Union[int, float, str]]], NoneType]"
+      "Union[RoqsimRecordingConfig, NoneType]"
     ],
     [
-      "memory",
+      "ros2",
       false,
-      "Union[str, list[dict[str, str]], NoneType]"
+      "Union[Ros2RecordingConfig, NoneType]"
     ],
     [
       "<extra>",
@@ -805,11 +808,6 @@
       "Union[list[Union[dict[str, Any], str]], NoneType]"
     ],
     [
-      "resources",
-      false,
-      "Union[PostprocessResourcesConfig, NoneType]"
-    ],
-    [
       "<extra>",
       false,
       "ignore"
@@ -830,6 +828,55 @@
       "run_view",
       false,
       "Union[RunViewConfig, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "RoqsimRecordingConfig": [
+    [
+      "exclude",
+      false,
+      "list[str]"
+    ],
+    [
+      "rate_hz",
+      false,
+      "Union[float, NoneType]"
+    ],
+    [
+      "tracks",
+      false,
+      "Union[Literal[all], list[str]]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "Ros2RecordingConfig": [
+    [
+      "exclude",
+      false,
+      "list[str]"
+    ],
+    [
+      "exclude_types",
+      false,
+      "list[str]"
+    ],
+    [
+      "topics",
+      false,
+      "Union[Literal[all], list[str]]"
+    ],
+    [
+      "use_sim_time",
+      false,
+      "bool"
     ],
     [
       "<extra>",

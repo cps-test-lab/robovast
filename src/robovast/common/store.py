@@ -80,14 +80,6 @@ _STAMP_NOW = object()
 # (a batch ``campaign-<id>/`` or a ``search-<ts>/`` root).
 STORE_FILENAME = "campaign.db"
 
-#: ``unit.status`` values that mean the cell produced no run at all, each naming a
-#: different coverage loss: ``composition_failed`` is a draw whose configuration could not
-#: be built, ``missing`` a declared configuration that reached the results tree with no
-#: directory of its own. Both are units a run join would drop, so every reader that counts
-#: cells adds them back from here rather than naming one of them -- a shortfall that only
-#: one reader knows about is a shortfall nobody is told about.
-RUNLESS_UNIT_STATUSES = ("composition_failed", "missing")
-
 #: The full current layout, applied to a fresh database. Mirrors the cumulative effect of
 #: every entry in :data:`_MIGRATIONS`; see the module docstring for why both exist.
 _SCHEMA = """
@@ -157,7 +149,9 @@ CREATE TABLE IF NOT EXISTS batch (
     idx         INTEGER NOT NULL,
     dir         TEXT,
     created_at  REAL,
-    asked       INTEGER          -- parameter sets the strategy PROPOSED for this batch
+    asked       INTEGER,         -- parameter sets the strategy PROPOSED for this batch
+    recalls_recorded INTEGER,    -- 1: its recalled cells have unit rows; NULL: written before they could
+    complete    INTEGER          -- 1: all its units are recorded; NULL: running or interrupted
 );
 CREATE TABLE IF NOT EXISTS unit (
     id            INTEGER PRIMARY KEY,
@@ -173,7 +167,8 @@ CREATE TABLE IF NOT EXISTS unit (
     result_dir    TEXT,
     created_at    REAL,
     n_reps        INTEGER,         -- repetitions ALLOCATED to this cell; n_samples is what came back
-    channels_json TEXT             -- {scenario, sim, sut}: what each variation channel resolved to
+    channels_json TEXT,            -- {scenario, sim, sut}: what each variation channel resolved to
+    recalled_from INTEGER REFERENCES unit(id)  -- status 'recalled': the unit that measured this cell
 );
 CREATE TABLE IF NOT EXISTS job (
     id           INTEGER PRIMARY KEY,
@@ -193,7 +188,8 @@ CREATE TABLE IF NOT EXISTS node (
     allocatable_json TEXT,            -- status.allocatable: what the scheduler may hand out
     node_info_json   TEXT,            -- status.nodeInfo minus machineID/systemUUID
     labels_json      TEXT,            -- metadata.labels minus kubernetes.io/hostname
-    first_seen       REAL
+    first_seen       REAL,
+    calibration_json TEXT             -- what this node's calibration measured and allocated
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_node_label ON node (campaign_id, node_label);
 CREATE TABLE IF NOT EXISTS run (
@@ -293,7 +289,7 @@ CREATE TABLE IF NOT EXISTS unit (
 # ``n_samples`` and ``status`` are lossy roll-ups of runs that had no row of their
 # own. The ``run`` table completes ``campaign -> batch -> unit -> run`` and mirrors
 # each run's ``test.xml`` (the runner's contract), so pass/fail is queryable live
-# and the results index can be built from it instead of re-parsing the XML.
+# and the ``runs`` table can be built from it instead of re-parsing the XML.
 _MIGRATION_ADD_RUN = """
 CREATE TABLE IF NOT EXISTS run (
     id              INTEGER PRIMARY KEY,
@@ -324,11 +320,8 @@ ALTER TABLE campaign ADD COLUMN description TEXT;
 # 3 -> 4: the execution job, and the campaign's own provenance.
 #
 # ``job`` is its own table rather than columns on ``run`` because ``sysinfo.yaml`` is
-# written once per *job*, not per run: a packed multi-config job runs several
-# (config, run) pairs and they share one host record through each run dir's ``job``
-# symlink. A ``run.sysinfo_json`` would repeat the same blob across those runs and
-# destroy the fact that they shared a machine — which is exactly what makes "did the slow
-# runs land together?" answerable.
+# written by the *job*, the unit that ran on a host, and reached from its run through the
+# run dir's ``job`` symlink.
 #
 # The ``campaign`` columns lift ``_execution/execution.yaml`` into the row it describes.
 # They are the fields compared ACROSS campaigns ("which of these ran which image?"), and
@@ -499,7 +492,7 @@ ALTER TABLE unit ADD COLUMN n_reps INTEGER;
 # `config` block, and on a search campaign it is the parameter set the strategy proposed --
 # which the replay feeds back to the strategy, so it cannot carry anything else. A factor
 # written on the `sim:` or `sut:` channel therefore reached the results tree as a file and
-# the index not at all, and two factors on adjacent lines of one .vast were not equally
+# the ``runs`` table not at all, and two factors on adjacent lines of one .vast were not equally
 # analysable.
 #
 # Kept beside `params_json` rather than merged into it for that reason: the two answer
@@ -522,8 +515,59 @@ ALTER TABLE campaign ADD COLUMN origin_config_version_from    INTEGER;
 ALTER TABLE campaign ADD COLUMN origin_config_migration_steps TEXT;
 """
 
+# 13 -> 14: the cells a search batch RECALLED rather than ran.
+#
+# A cell an earlier batch measured is not run again; the strategy is told what it scored
+# then, and the replay on a resume tells it the same. A recalled cell is a ``unit`` row with
+# status ``'recalled'`` and ``recalled_from`` naming the unit that measured it, carrying no
+# objectives of its own.
+#
+# ``batch.recalls_recorded`` separates a batch that recalled nothing from one written before
+# a recall had a row: NULL on every batch recorded before this step, whose replay reads its
+# recalls off the proposals it re-asks (``search.history.RecordedBatch.with_recalls``).
+_MIGRATION_ADD_RECALLED = """
+ALTER TABLE batch ADD COLUMN recalls_recorded INTEGER;
+ALTER TABLE unit ADD COLUMN recalled_from INTEGER REFERENCES unit(id);
+"""
+
+# 14 -> 15: whether a batch recorded all of its units.
+#
+# A batch row is opened before its cells run and its units are recorded as they are scored,
+# so an interrupted batch leaves a row with some of its units. ``complete`` is set once the
+# last one -- recalled cells included -- is recorded; a resume replays only complete batches
+# and finishes the one that is not (``search.history.unfinished_batch``).
+#
+# Backfilled where the record decides it: a batch that is not its campaign's last was
+# followed by another, which the loop opens only after telling the strategy this one, and a
+# batch the campaign's recorded ``batches`` count covers was finished by that count's
+# definition. A last batch neither covers stays NULL; a resume re-asks it and runs whatever
+# cells it lacks, none if it had them all.
+#
+# ``_BATCH_COMPLETE_BEFORE_15`` is that rule as a condition on a ``batch`` row, shared with
+# :func:`read_batch_objectives`, which reads a store without migrating it.
+_BATCH_COMPLETE_BEFORE_15 = (
+    "(batch.idx < (SELECT MAX(later.idx) FROM batch later "
+    "WHERE later.campaign_id = batch.campaign_id) "
+    "OR batch.idx < COALESCE((SELECT c.batches FROM campaign c "
+    "WHERE c.id = batch.campaign_id), 0))")
+_MIGRATION_ADD_BATCH_COMPLETE = f"""
+ALTER TABLE batch ADD COLUMN complete INTEGER;
+UPDATE batch SET complete = 1 WHERE {_BATCH_COMPLETE_BEFORE_15};
+"""
+
+# 15 -> 16: what a node's calibration measured and what it allocated.
+#
+# Under ``sizing: calibrated`` every run on a node is sized from that node's probe, so the
+# figures decide how much CPU and memory each run's containers had -- a condition of the run as
+# much as the machine is. Kept on the machine's own row, where every run already joins
+# (``run.job_id -> job.node_label -> node``): the figures are frozen once set, so one row per
+# node is one record per run. NULL where the node was not calibrated.
+_MIGRATION_ADD_NODE_CALIBRATION = """
+ALTER TABLE node ADD COLUMN calibration_json TEXT;
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 16
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -546,6 +590,9 @@ _MIGRATIONS = [
     _MIGRATION_ADD_UNIT_N_REPS,
     _MIGRATION_ADD_UNIT_CHANNELS,
     _MIGRATION_ADD_ORIGIN_CONFIG_VERSION,
+    _MIGRATION_ADD_RECALLED,
+    _MIGRATION_ADD_BATCH_COMPLETE,
+    _MIGRATION_ADD_NODE_CALIBRATION,
 ]
 
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
@@ -728,14 +775,28 @@ class CampaignStore:
         draws with the same values are one cell, composed and recorded once, and a replay
         that asked for the rows would rewind the strategy's stream (see
         :func:`robovast.search.history.recorded_batches`).
+
+        Every batch opened here records its recalled cells (:meth:`record_recall`), so it is
+        stamped ``recalls_recorded``: that is what tells a replay it has the whole batch.
         """
         cur = self._conn.execute(
-            "INSERT INTO batch (campaign_id, idx, dir, created_at, asked) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO batch (campaign_id, idx, dir, created_at, asked, recalls_recorded) "
+            "VALUES (?, ?, ?, ?, ?, 1)",
             (campaign_id, idx, batch_dir, time.time(), asked),
         )
         self._conn.commit()
         return cur.lastrowid
+
+    def complete_batch(self, batch_id: int) -> None:
+        """Mark *batch_id* complete: every unit it will have is recorded.
+
+        That includes its recalled cells, so it is stamped ``recalls_recorded`` too, which
+        matters for a batch opened before schema 14 and finished by a resume. A search batch
+        is marked before its strategy is told it.
+        """
+        self._conn.execute(
+            "UPDATE batch SET complete = 1, recalls_recorded = 1 WHERE id = ?", (batch_id,))
+        self._conn.commit()
 
     def record_unit(
         self,
@@ -786,6 +847,39 @@ class CampaignStore:
         self._conn.commit()
         return cur.lastrowid
 
+    def record_recall(self, batch_id: int, paramset_id: str, params: dict) -> int:
+        """Record that *batch_id* re-proposed a cell an earlier batch measured.
+
+        The row points at the unit that measured the cell -- the first ``evaluated`` one of
+        this campaign with that ``paramset_id``, which is the evaluation the loop recalls --
+        and carries nothing of its outcome: no config name, result directory, objectives or
+        runs, and ``n_reps`` 0 because the batch allocated it nothing. Readers that count
+        cells, runs or objectives therefore pass over it, and the replay reads the answer
+        from the unit it names.
+
+        Raises ``LookupError`` when the campaign has no such unit: a recall of a cell nobody
+        measured would tell a replay an answer that does not exist.
+        """
+        source = self._conn.execute(
+            "SELECT u.id FROM unit u JOIN batch b ON u.batch_id = b.id "
+            "WHERE b.campaign_id = (SELECT campaign_id FROM batch WHERE id = ?) "
+            "AND u.paramset_id = ? AND u.status = 'evaluated' ORDER BY u.id LIMIT 1",
+            (batch_id, paramset_id)).fetchone()
+        if source is None:
+            raise LookupError(
+                f"batch {batch_id} recalls parameter set {paramset_id!r}, but no unit of its "
+                f"campaign evaluated it")
+        cur = self._conn.execute(
+            "INSERT INTO unit (batch_id, paramset_id, config_name, params_json, "
+            "objectives_json, measures_json, n_samples, status, result_dir, created_at, "
+            "n_reps, recalled_from) "
+            "VALUES (?, ?, '', ?, '{}', '{}', 0, 'recalled', '', ?, 0, ?)",
+            (batch_id, paramset_id, json.dumps(params, default=str), time.time(),
+             source[0]),
+        )
+        self._conn.commit()
+        return cur.lastrowid
+
     def upsert_node(self, campaign_id: int, label: str,
                     cpu_name: Optional[str] = None,
                     facts: Optional[dict] = None) -> None:
@@ -797,7 +891,8 @@ class CampaignStore:
         touched.
 
         *facts* is what only the Kubernetes API can say (capacity, allocatable, nodeInfo,
-        labels); ``None`` means nobody could ask -- an unreadable node, or
+        labels), and the campaign's calibration of the machine where it had one; ``None``
+        means nobody could ask -- an unreadable node, or
         a re-index with no cluster in reach. The row is still written, because *which*
         machine a run used is worth recording even when its hardware is not available.
         *cpu_name* comes the other way, from the run's own ``/proc/cpuinfo``: Kubernetes
@@ -807,7 +902,7 @@ class CampaignStore:
             return
         row = self._conn.execute(
             "SELECT id, cpu_name, capacity_json, allocatable_json, node_info_json, "
-            "labels_json FROM node WHERE campaign_id = ? AND node_label = ?",
+            "labels_json, calibration_json FROM node WHERE campaign_id = ? AND node_label = ?",
             (campaign_id, label)).fetchone()
         facts = facts or {}
         cols = {
@@ -816,15 +911,16 @@ class CampaignStore:
             "allocatable_json": _json_or_none(facts.get("allocatable")),
             "node_info_json": _json_or_none(facts.get("node_info")),
             "labels_json": _json_or_none(facts.get("labels")),
+            "calibration_json": _json_or_none(facts.get("calibration")),
         }
         if row is None:
             self._conn.execute(
                 "INSERT INTO node (campaign_id, node_label, cpu_name, capacity_json, "
-                "allocatable_json, node_info_json, labels_json, first_seen) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "allocatable_json, node_info_json, labels_json, first_seen, calibration_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (campaign_id, label, cols["cpu_name"], cols["capacity_json"],
                  cols["allocatable_json"], cols["node_info_json"], cols["labels_json"],
-                 time.time()))
+                 time.time(), cols["calibration_json"]))
             self._conn.commit()
             return
         # Fill gaps only. The first writer wins, so a later job on the same machine cannot
@@ -843,9 +939,8 @@ class CampaignStore:
                    ) -> Optional[int]:
         """Record the execution job at *job_dir*, returning its row id.
 
-        Idempotent on ``(campaign_id, job_dir)``: a packed multi-config job is reached
-        once per run that ran inside it, and all of them describe the same host, so the
-        second and later calls resolve to the existing row instead of duplicating it.
+        Idempotent on ``(campaign_id, job_dir)``: a second call for the same job resolves
+        to the existing row instead of duplicating it.
 
         ``sysinfo`` may be ``None`` — a job whose ``sysinfo.yaml`` never appeared still
         gets a row, because *which* job a run belonged to is worth recording even when the
@@ -1301,6 +1396,9 @@ def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
     A batch where every unit is one of those comes back with ``n_scored = 0`` and ``None``
     statistics — a gap, which a reader must not confuse with a batch that scored zero.
 
+    ``complete`` is false for a batch still running or interrupted: its counts are what it
+    has recorded so far, not what it ended with.
+
     ``best_so_far`` is folded here rather than stored, because it is the only figure that
     depends on the objective's *direction*; ``min``/``max``/``mean`` are raw, so no reader
     has to know the direction to interpret a field name.
@@ -1339,14 +1437,22 @@ def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
                 # removed the unmeasured units from `n_units`, so n_scored == n_units always and
                 # the coverage loss this exists to surface could never be seen. Here `n_units`
                 # is every cell the batch had and `n_scored` only the ones that yielded the
-                # objective, so `7/8` reads as what it is: one cell that produced nothing.
-                "SELECT b.idx AS idx, COUNT(u.id) AS n_units, "
+                # objective, so `7/8` reads as what it is: one cell that produced nothing. A
+                # recalled cell is not one the batch had: an earlier batch measured it, and
+                # counting it here would report a shortfall where nothing was lost.
+                "SELECT b.idx AS idx, "
+                "COUNT(CASE WHEN u.status IS NOT 'recalled' THEN u.id END) AS n_units, "
                 "COUNT(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS n_scored, "
                 "MIN(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS lo, "
                 "MAX(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS hi, "
                 "AVG(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS mean "
                 "FROM batch b LEFT JOIN unit u ON u.batch_id = b.id "
                 "GROUP BY b.idx ORDER BY b.idx").fetchall()
+            batch_columns = {c[1] for c in conn.execute("PRAGMA table_info(batch)")}
+            complete = "batch.complete" if "complete" in batch_columns \
+                else _BATCH_COMPLETE_BEFORE_15
+            complete_by_idx = dict(conn.execute(
+                f"SELECT batch.idx, {complete} FROM batch").fetchall())
     except sqlite3.Error:
         return {**empty, "unavailable": "no_store"}  # pre-batch/unit schema, or unreadable
 
@@ -1367,6 +1473,7 @@ def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
             "max": r["hi"] if scored else None,
             "mean": r["mean"] if scored else None,
             "best_so_far": best,
+            "complete": bool(complete_by_idx.get(r["idx"])),
         })
     return {"objective_name": row["name"], "direction": row["direction"] or "maximize",
             "batches": batches, "unavailable": None}

@@ -45,16 +45,18 @@ the service but not your filesystem — ``create_workspace`` + ``write_file`` co
 ``.vast``/``.osc``, and ``create_upload`` covers a single file of any other kind.
 
 The one exception is a **retrigger**: ``start_campaign(from_campaign=<campaign-id>)``
-runs a *previous campaign's* frozen configuration and the image its runs actually used,
-with no workspace involved at all. Campaigns are workspace-independent, and the workspace
+runs a *previous campaign's* frozen configuration and exactly the image digests its launch
+recorded — containers, sidecar and auxiliary helpers, none resolved again — with no workspace
+involved at all. Campaigns are workspace-independent, and the workspace
 one came from may be gone — its own ``_config/`` is the durable source of truth. It
 produces a new campaign and leaves the source untouched, so it works whatever state that
 campaign ended in, and it replays the recorded launch, so re-running a one-config pilot
 stays a one-config pilot. It takes no other argument but ``force`` (passing one is an error
-rather than being ignored), and the service refuses it when the pre-flight blocks — a campaign
-that recorded no usable image, whose build context is not archived either, has to be launched
-from its workspace instead. ``get_campaign_summary``'s ``retrigger`` key reports the same
-verdict without launching, and ``force`` re-runs despite it
+rather than being ignored), and the service refuses it when the pre-flight blocks. A campaign
+whose launch record lacks a digest for anything it runs is refused whatever ``force`` says,
+naming each missing one; ``create_workspace(from_campaign=<campaign-id>)`` rebuilds its project
+for a fresh launch instead. ``get_campaign_summary``'s ``retrigger`` key reports the same
+verdict without launching, and ``force`` re-runs despite any other blocking axis
 (:ref:`results-retrigger-preflight`).
 
 A ``.vast`` file defines a **project**; a **campaign** is one execution of it; a
@@ -86,10 +88,11 @@ Pass ``--no-mcp`` to ``vast serve`` to serve the API without the tools.
 Claude Code plugin
 ------------------
 
-The repository ships a small Claude Code plugin (``.claude-plugin/``) with one job:
-**never end a turn silently in the middle of a campaign.** ``start_campaign`` returns as
-soon as the campaign is *named*, so an agent that reads one status and stops has told the
-user a campaign finished when it had barely begun.
+The repository ships a small Claude Code plugin (``.claude-plugin/``) with two jobs: the
+``changelog`` skill under ``skills/`` writes a release's section of ``CHANGELOG.md``, and
+its hook exists to **never end a turn silently in the middle of a campaign.**
+``start_campaign`` returns as soon as the campaign is *named*, so an agent that reads one
+status and stops has told the user a campaign finished when it had barely begun.
 
 Its hook blocks the first attempt to end a turn on a campaign nobody is waiting for, once,
 and then allows. Three things settle a campaign: backgrounding ``vast campaign wait``, saying
@@ -270,9 +273,10 @@ remember and map onto their situation:
   only the counts. The composition is cached either way, so a following ``start_campaign``
   reuses the work.
 * Where the runner for that helper image comes from is the *caller's* business, arranged per
-  span by ``ServiceBase._aux_runner_context``: a campaign gets one for its run, a preview
-  gets one held by the container-exec manager, idle only once every holder has released it
-  and reaped after that. When neither applies — composing in a process with no backend —
+  span by ``ServiceBase._aux_runner_context``: a campaign gets one for its run; a preview,
+  a validation and an ``exec_in_container`` that stages a configuration get one held by the
+  container-exec manager, keyed on the project so the three share a warm container, idle
+  only once every holder has released it and reaped after that. When neither applies — composing in a process with no backend —
   the refusal is
   :class:`~robovast.common.errors.AuxContainerUnavailable`, naming the variation and the
   container, rather than a ``docker run`` that dies with a bare ``FileNotFoundError``. It says
@@ -424,31 +428,79 @@ the single ``{"error": …}`` convention, that no retired name survives in text 
 reads, and a ceiling on the surface's total token cost.
 
 
+.. _mcp-errors:
+
+One answer for every failure
+----------------------------
+
+A tool that fails answers ``{"error": …}``, sometimes with ``next_step``, and never with a
+protocol-level error. The registry wraps every tool a plugin registers
+(:func:`~robovast.mcp_server.service_access.answering_errors`), so a tool does not catch an
+exception only to report it: what it raises is rendered by
+:func:`~robovast.mcp_server.service_access.error_result`, one way for the whole surface.
+
+* **No service** -- none configured, or none answering at the configured address -- is the one
+  sentence that says to stop rather than work around it; an address that did not answer is
+  named in front of it.
+* **A deployment that cannot run a container** is its cause, plus which tools that disables
+  and which still answer.
+* **A full disk** is the sentence the HTTP surface answers a 507 with, not an errno.
+* **A refusal** -- a service error, a bad argument, an unknown id, a conflict, or any error
+  declared a clean refusal -- is its message. One that knows the caller's next move carries it
+  as ``next_step``; an absent ``next_step`` says there is nothing obvious to do.
+* **Anything else is a bug**: its type, message and the tail of its traceback, as a failed
+  campaign records one.
+
+A tool still returns ``{"error": …}`` itself where it checks an argument before doing any
+work, and still catches an exception it turns into a different answer (a binary file read
+as text is answered with the URL that serves its bytes). The call log counts a call that
+answered with the error document as failed.
+
+**A failed read is not an empty campaign.** A tool that computes over a campaign's data --
+``get_campaign_summary``, ``get_camera_frame`` -- answers a lookup that failed (no such
+campaign, no service, a transport error) with that failure. Only data the campaign does not
+have reads as absent: a campaign with no runs is "no run data", a run with no ``videos`` row
+"registered no video", and a table or column a store predates is left out of the answer.
+
+
 .. _mcp-analysis:
 
 Reading results: SQL, not a tool per scope
 ------------------------------------------
 
 There is no tool that summarizes one configuration, none that returns a single run's
-outcome, none that returns a run's host information. There were nine such tools, each a
-hand-written reader of the campaign's ``metadata.yaml`` with its own response schema. Two
-things were wrong with that. The file is written **only by postprocessing**, so every one
-of them answered "run postprocessing first" about campaigns whose outcomes were already
-recorded in ``campaign.db``. And the shape of the question was fixed by whoever wrote the
-tool: "the mean error per parameter value, for the runs that passed" was not expressible at
-all, while "the status of 200 runs" cost 200 calls.
+outcome, none that returns a run's host information. A reader per scope would fix the shape
+of the question to whoever wrote the tool: "the mean error per parameter value, for the runs
+that passed" would not be expressible at all, while "the status of 200 runs" would cost 200
+calls. And a reader of a file postprocessing writes would answer "run postprocessing first"
+about campaigns whose outcomes are already recorded in ``campaign.db``.
 
-So the per-run and per-configuration views collapsed onto the same read-only SQL the
-metric tables already used:
+So the per-run and per-configuration views are the same read-only SQL the metric tables
+answer to, over the campaign directory itself (:ref:`database-or-address-space`): the engine
+is DuckDB, in-process, and a table is built from the campaign's records the first time a
+query names it.
 
 * ``describe_campaign_data`` — the schema, and **where the canonical query for each
-  question is written down**. Read its ``note`` first.
-* ``query_campaign_data_sql`` — one ``SELECT``, **confined to the campaign it names**.
-  Every campaign's rows live in one index, so a query that omits ``WHERE campaign_id =
-  ...`` would otherwise answer with the corpus, in the same columns and with nothing in
-  the reply to say it had; the index enforces the scope instead of the caller remembering
-  it. Spanning campaigns is still one query and is now asked for: name the ids in the
-  call's ``campaigns`` argument.
+  question is written down**. Read its ``note`` first. It lists every table the campaign's
+  records can give, each with its ``kind`` (``view``, ``table``, ``record``) and, for a
+  per-run table, ``built`` of ``runs`` — for how many runs it is built already — and under
+  ``failed`` the runs it has no rows for, or only part of them, with the reason
+  (:ref:`results-table-cache`). Describing builds nothing; a table's ``columns`` are empty
+  until it is built for some run.
+* ``query_campaign_data_sql`` — one ``SELECT`` in DuckDB's dialect, **confined to the
+  campaign it names**: the query sees only that campaign's files, so ``WHERE campaign_id =
+  ...`` is never needed to keep another campaign's rows out. Before it runs, the tables it
+  names are built for the runs in scope that lack them — narrowed to the runs its top-level
+  ``WHERE`` restricts them to by ``config_name``/``run_id`` equality or ``IN``, so a first
+  look at a large table is cheap when it names one run. What could not be built is reported
+  in the reply's ``note``, by table and run. Spanning campaigns is deliberate rather than
+  default: the interface's ``campaigns`` argument (on the HTTP query route) names the
+  further campaigns, and every row then carries ``campaign_id``.
+* ``build_campaign_tables(campaign_id, tables=None)`` / ``clear_campaign_tables(campaign_id)``
+  — build a finished campaign's tables for every run ahead of a long analysis, in the
+  background with progress in the campaign log's ``TABLES`` section; or remove them to free
+  storage. Neither is needed for an answer: a query builds what it names, and a cleared
+  table is built again on use.
 
 The entry points are two flat views, queried unqualified:
 
@@ -527,15 +579,23 @@ camera the world defines). That needs a simulator that can re-render — roqsim 
 cannot — and a run that recorded its state, and it runs a container in the campaign's own
 simulation image: seconds if that image is on the node, minutes if it must be pulled.
 
-Both return an image, so both **raise** rather than returning ``{"error": …}``: an image
-response has no dict to carry one. And for a *human* who wants to watch a run, neither is the
-answer — ``read_file`` on the ``.webm`` returns a URL, and a video is not something to move
+Both return an image, and a failure as ``{"error": …}`` like every tool
+(:ref:`mcp-errors`). For a *human* who wants to watch a run, neither is the answer — ``read_file`` on the ``.webm`` returns a URL, and a video is not something to move
 through this interface one frame at a time.
 
-An aggregate over a distance needs a square root, and SQLite's own ``sqrt`` is a
-compile-time option, so a query could work on the MCP host and fail in the service.
-``SQRT(x)`` is therefore registered alongside ``STDDEV``/``MEDIAN``/``PERCENTILE`` and is
-available to every SQL caller.
+A screenshot is also **kept**, so it can be attached, saved or handed on without rendering it
+again: beside the image the tool returns ``{url, kept_for_s}``, the address the service
+serves that render at (``GET /campaigns/<campaign_id>/screenshots/<name>``) and how long it
+stays there. The service keeps a render for 24 hours after it was made and at most 200 renders
+in all, the oldest removed first; after that the address answers 404 and the render has to be
+made again. They are kept under ``ROBOVAST_SCREENSHOTS`` (default
+``~/.robovast/cache/screenshots``) on the service's host. ``url`` is omitted when the service
+declares no origin to reach it on, as ``read_file``'s is.
+
+The dialect is DuckDB's: ``CAST(x AS DOUBLE)``, ``x::JSON`` with ``->`` / ``->>``,
+``unnest``, ``median``, ``quantile_cont``, ``regexp_matches``, and ``sqrt`` for an aggregate
+over a distance. Two macros keep SQL written for other engines meaning what it meant:
+``PERCENTILE(x, p)`` with ``p`` in 0..100, and ``REGEXP(pattern, x)`` as a search.
 
 Two limits worth knowing, both stated in ``describe_campaign_data``'s output:
 
@@ -544,22 +604,28 @@ Two limits worth knowing, both stated in ``describe_campaign_data``'s output:
   runs, so on a stopped or partially-run campaign it omits exactly the ones worth
   inspecting.
 * **Do not** ``SELECT config_json``. It is the whole ``.vast`` in one cell, exceeds the
-  per-cell limit, and returns truncated. Use ``config_view``, the Postgres JSON operators
-  for a known path (``config_json::jsonb -> 'execution' -> 'containers' -> 'scenario' ->>
-  'image'`` -- the index has no SQLite ``json_extract``), or ``read_file`` on ``/results/<campaign>/_config/*.vast`` for the file as
+  per-cell limit, and returns truncated. Use ``config_view``, the JSON operators for a
+  known path (``config_json::JSON -> 'execution' -> 'containers' -> 'scenario' ->>
+  'image'``), or ``read_file`` on ``/results/<campaign>/_config/*.vast`` for the file as
   authored — that last one being the only way to see what the author *wrote* rather than
   the validated config with defaults filled in.
 
 A query costs the rows it touches
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Results live in a central index, so a query is answered there for every campaign. Nothing is materialized in the service to answer one, and no per-campaign database
-has to exist before a question can be asked — so ``describe_campaign_data`` takes a
-campaign id and returns the schema, and a query result says what it matched and nothing
-about where it came from.
+A query is answered by the service, next to the campaign's directory, and nothing has to be
+prepared before a question can be asked — so ``describe_campaign_data`` takes a campaign id
+and returns the schema, and a query works while the campaign runs.
 
-Cost tracks the rows a query touches, not the rosbags beside them — the same rule
-``read_file`` follows for ``/results``.
+A service reads only the campaigns in its own results tree and refuses an absolute path in
+place of a campaign id. With no service reachable, ``describe_campaign_data`` and
+``query_campaign_data_sql`` read the campaign in the MCP server's own process instead, and
+there also take an absolute path to a campaign folder on this host.
+
+The first query to name a table for a run pays for building it from that run's records; every
+later one reads the parquet file it left in ``.cache/``. After that, cost tracks the rows a
+query touches, not the rosbags beside them — the same rule ``read_file`` follows for
+``/results``. Which is why a first look names one run.
 
 
 .. _mcp-files:
@@ -588,15 +654,11 @@ Five tools work over it — ``list_files``, ``read_file``, ``write_file``, ``edi
 ``delete_file`` — instead of a reader and a lister per scope. The path after the owner
 is the **real on-disk path**, so what a listing shows is what you can read:
 
-.. code-block:: text
-
-   /results/<campaign>/  _config/     scenario.osc, <name>.vast, run files, notebooks
-                         _execution/  launch.yaml, outcome.json, execution.yaml,
-                                      controller.log, postprocessing.log
-                         _transient/  configurations.yaml, entrypoint.sh,
-                                      postprocessing.yaml
-                         _jobs/job-N/ sysinfo.yaml, logs/system.log
-                         <config_name>/<run>/  test.xml, out.csv, rosbag2/, scene/
+.. literalinclude:: ../src/robovast/mcp_server/plugins/files.py
+   :language: text
+   :start-after: _LAYOUT = """
+   :end-before: """
+   :dedent: 4
 
 ``<config_name>`` is the directory name, which is **not** the ``config_identifier``
 that the configuration tools accept — list the campaign root to see the real names.
@@ -611,9 +673,8 @@ record a figure is drawn over, and a rewritten one is a figure nobody can check.
 writes accept only ``.vast``/``.osc``; everything else goes through ``create_upload``,
 so its bytes never enter the token stream.
 
-``get_service_info`` reports the two address templates, and — when the service runs on
-your own machine — ``results_root`` / ``sources_root``, so you can read files with your
-own tools rather than through the interface.
+``get_service_info`` reports both templates, as ``results_address`` and
+``sources_address``.
 
 .. _mcp-origin:
 
@@ -650,18 +711,23 @@ The ``execution`` plugin lets an assistant drive campaigns. It is a
 login``, or the one answering on the conventional port. The service is the single
 execution authority and owns run-state tracking; there is **no local subprocess path**.
 When no service is reachable every tool fails loudly (``{"error": "no robovast-service
-reachable — …"}``) rather than silently running or reading something else. There is no
+reachable — …"}``, :ref:`mcp-errors`) rather than silently running or reading something else. There is no
 serviceless run at all: which service answers is the only thing that differs between a
 deployment on this machine and one across the room.
 
 ``start_campaign`` validates and launches through the service and returns
 immediately — the campaign has barely started. Wait for it with
-``vast campaign wait <campaign-id>`` (exit 0 finished, 1 failed/stopped, 2 ``--timeout``
-elapsed), which returns only once the campaign is genuinely over, past
-postprocessing. Deliberately a **command and not an MCP tool**: a campaign can
-run for days, and a blocking tool call would occupy its caller for the whole of
-it, where a command can be backgrounded and waited on. ``get_campaign_status``
-is the single-read version for a campaign you are not waiting on.
+``vast campaign wait <campaign-id>``, which returns once the campaign is over, past
+postprocessing, or earlier on a stall or a simulator-reported fault with the campaign still
+running; its exit code says which (:ref:`client-wait-exit-codes`). Deliberately a
+**command and not an MCP tool**: a campaign can run for days, and a blocking tool call would
+occupy its caller for the whole of it, where a command can be backgrounded and waited on.
+``get_campaign_status`` is the single-read version for a campaign you are not waiting on.
+
+``start_campaign``'s ``image_project_tag`` pins the tag RoboVAST's ``family:`` images are
+taken at for this run, as ``vast workspace run --image-project-tag`` does; left empty, they
+resolve to the service's own ``ROBOVAST_PROJECT_TAG``, which is often a floating ``latest``
+(see :doc:`images`). An image the ``.vast`` names is run as written either way.
 
 ``start_campaign``'s ``priority`` says which campaign the cluster queue admits first
 when several are waiting, so an assistant told to start something out of the way of a
@@ -683,7 +749,7 @@ rule that survives: **if a wait can outlive a turn, it is not a tool.**
 
 ``next_step`` is how those commands reach the caller: a literal command with the
 ids already filled in, in band with the answer, because a reply carrying only an
-id leaves "and now wait for it" to be remembered — and it was not. **An error may
+id leaves "and now wait for it" to be remembered, which it is not. **An error may
 carry one too.** A refusal is where the next move is least obvious: an agent told
 "the image is not built" moments after building it has nowhere to go, whereas the
 same refusal with ``vast image wait <build-id>`` attached is a next action. Where
@@ -691,13 +757,25 @@ the field is *absent*, that is an answer as well: there is nothing obvious to do
 next. It is deliberately not on every reply, since a field that always appears is
 one that stops being read.
 
-Results live
-wherever the service keeps them — its results root (retrieve via the web UI or
-``get_campaign_download``, which hands back the route, the ``vast campaign download``
-command with the id filled in, and a URL when this deployment declares an origin to build
-one from — see :ref:`mcp-origin`). It says nothing about the share: whether a campaign has
-a copy there is not a fact the service records, so claiming one would be advertising what
-the caller may not have.
+Results live wherever the service keeps them — its results root (retrieve via the web UI or
+``get_campaign_download``, which hands back the route, the ``vast campaign download`` command
+with the id filled in, and a URL when this deployment declares an origin to build one from —
+see :ref:`mcp-origin`; ``raw=True`` points at the records alone, without the built tables and
+what postprocessing produced). It says nothing about the share: whether a campaign has a copy
+there is not a fact the service records, so claiming one would be advertising what the caller
+may not have.
+
+``export_campaign`` is the other way out, and the one to reach for when the point is an
+**analysis away from the service** -- a notebook on a laptop, a hand-off to someone without
+an account: it has the service build an export (:ref:`results-export`) -- the campaign's
+tables as one parquet or CSV file each, its records beside them, its recordings if asked --
+and returns a handle: the ``export_id`` to poll with ``get_export_status``, the route, a
+URL where an origin is declared, and the ``vast campaign export`` command with every option
+filled in. The download is link-only for the same reason the archive's is. Download the
+archive instead when the point is the **campaign itself** -- to import it into another
+service, to keep it whole, or when the tables are not what is wanted: the archive ships no
+table, and an export's tables are built for the request, from the same records, by the
+same decoder a query uses.
 
 The opposite direction is ``import_campaign``: it takes in a campaign archive
 somebody else produced and registers it, so it lists, displays and can be re-run like
@@ -747,8 +825,8 @@ ids apart. The launcher in the web UI has the same field.
 
    ``stop_campaign`` is a cooperative stop through the service, which owns the
    teardown (the in-flight scenario Jobs). It lands on whatever is *running*, and the reply says which: the
-   **runs** (the batches that finished are still postprocessed and indexed, so the
-   campaign stays queryable), **postprocessing** (results kept, derived data not
+   **runs** (the batches that finished are still postprocessed, and the campaign
+   stays queryable), **postprocessing** (results kept, derived data not
    computed — re-run it), or the **share upload** (cancelled, partial archive removed).
    A campaign that is already over is refused rather than silently accepted.
    ``list_campaigns(running_only=True)`` reports the campaigns the service considers
@@ -767,7 +845,7 @@ ids apart. The launcher in the web UI has the same field.
 .. note::
 
    ``list_campaign_jobs`` and ``get_job_log`` give an assistant the same
-   **per-job** view the web UI Monitor shows: the current batch's jobs with their
+   **per-job** view the web UI's Campaigns page shows: the current batch's jobs with their
    status (running / pending / completed / failed) and aggregate counts, and the
    log of a single job. A **finished** job is served as readily as a running one: a pod
    that has gone is read from the campaign's own files instead.
@@ -843,13 +921,15 @@ owns, with no log reading at all:
        either way.
    * - ``stalled``
      - **Tri-state.** ``true`` once ``progress_age_s`` passes ``progress_deadline_s``
-       (the declared ``execution.timeout`` scaled by ``runs_per_job``); ``false``
+       (the declared ``execution.timeout``); ``false``
        inside it; ``null`` when no verdict is possible — the ``.vast`` declares no
-       timeout, ``status`` is not ``running`` (see below), or every job of the current
-       batch is queued for cluster capacity, so no run is running and none can complete.
-       That last case is the second one's argument applied inside ``running``: the budget
-       is per-run, and a queue the campaign does not control is not a stalled run.
-       ``stall_verdict`` then says which.
+       timeout, ``status`` is not ``running`` (see below), every run of the current batch
+       has finished (``batch_runs_done`` plus ``batch_runs_no_result`` reaches
+       ``batch_runs_total``) while the campaign collects them and moves on, or every job of the current batch is queued for cluster
+       capacity, so no run is running and none can complete. The last two cases are the
+       second one's argument applied inside ``running``: the budget is per-run, and neither
+       the work after a batch's last run nor a queue the campaign does not control is a
+       stalled run. ``stall_verdict`` then says which.
    * - ``stall_reason``
      - Present only when ``stalled`` is ``true``. Names the comparison *and the next
        call*, so the follow-up is not something to remember.
@@ -875,12 +955,12 @@ owns, with no log reading at all:
    passing the budget there says only that the phase outlasted a single run. Converting a
    large campaign's rosbags always does, and asserting a stall over it reported a healthy
    campaign as wedged — pointing the reader at a job that had already finished, and ending
-   ``vast campaign wait`` at exit 4. Read ``progress_age_s`` as the age of the phase, and
+   ``vast campaign wait`` as ``STALLED``. Read ``progress_age_s`` as the age of the phase, and
    ``get_campaign_log`` for what the phase is doing.
 
 That backstop is not wasted — it is simply a different job. The cluster *enforces* a per-job
 limit from ``execution.timeout`` (a Job ``activeDeadlineSeconds``), and falls back to an
-hour per packed run when none is declared. Killing late still beats never, whereas *reporting* late is worse than reporting nothing, so the two
+hour when none is declared. Killing late still beats never, whereas *reporting* late is worse than reporting nothing, so the two
 figures are deliberately separate (``job_deadline_seconds``, which falls back, versus
 ``declared_job_seconds``, which does not). A wedged local run with no declared timeout
 therefore stays alive to be inspected — end it with ``stop_campaign``.
@@ -909,9 +989,10 @@ against its memory, and a probe that was not asked would size the simulator with
 
 .. code-block:: json
 
-   {"level": "error", "check": "sim-time-rate", "detail": "sim advanced 3.1s in 60s of wall time"}
+   {"level": "error", "check": "sim-time-stuck", "detail": "sim time has not advanced for 75 s of wall time, since sim 4.20 s; the limit was 60 s"}
 
-RoboVAST interprets **one word**: ``level``. ``error`` ends a ``vast campaign wait`` (exit 5);
+RoboVAST interprets **one word**: ``level``. ``error`` ends a ``vast campaign wait`` (as
+``HEALTH_FINDING``, :ref:`client-wait-exit-codes`);
 ``warn`` never does, and surfaces on ``get_job_state`` and the campaign's own exit.
 ``check`` is a stable slug the simulator owns — carried through untouched, so it is matched
 and reported, never interpreted — and ``detail`` is its observation in its own words. There
@@ -932,7 +1013,7 @@ author's, and :ref:`configuration <config-sizing>` says how.
 
 This paragraph is the specification, deliberately: the two sides of it cannot import each
 other, and an agreed format with no written home drifts the first time either side is
-edited. The precedent is :mod:`robovast.common.scenario_markers`, for the same reason.
+edited. The precedent is :mod:`robovast_decode.scenario_markers`, for the same reason.
 
 .. important::
 
@@ -956,18 +1037,23 @@ Where the scenario has got to
 
 The simulator's half says whether the world is stepping and where its bodies are. It cannot say
 which **action** the scenario is stuck in, which is usually the sentence that identifies the
-fault -- so ``get_job_state`` asks scenario-execution's own reader for that too, by a fixed
-command, and returns what it says under ``scenario``.
+fault -- so ``get_job_state`` folds that from the run's ``behaviors`` and ``behaviors_meta``
+tables, the rows the campaign's data engine reads out of the ``behaviors.jsonl`` the run writes,
+and returns it under ``scenario`` in the shape scenario-execution's own ``tree_state`` reader
+gives. Nothing runs in the job for it: the log grows in the campaign directory as the file
+agent delivers it, and the tree shown is the one a query of the run sees.
 
 Two properties, both deliberate:
 
 * **The two reads are independent.** The scenario runs in every campaign whatever the simulator
-  is, so it is asked unconditionally: a campaign whose simulator cannot report on itself still
+  is, so it is read unconditionally: a campaign whose simulator cannot report on itself still
   gets the more useful half.
 * **It is the expensive half, and therefore on demand.** The behaviour-tree log holds one line
-  per status change, so the current tree is a fold over the whole file rather than a tail read.
+  per status change, so the current tree is a fold over every row rather than a tail read.
   That is why it lives on ``get_job_state``, asked for when someone wants it, and never in the
-  cheap reply the service polls. Every run records it; there is no way to turn it off.
+  cheap reply the service polls. Every run records it; there is no way to turn it off. A log
+  without its metadata record is refused, naming the file: without it the tree is of an
+  unknown run.
 
 Alongside both, ``resources`` carries the newest sample the run's own monitor wrote, per
 container and per process. It answers what neither of the others can: a run stuck at 0% CPU is
@@ -995,10 +1081,8 @@ them apart.
    others reported that the run had written nothing.
 
 **What is it doing?** That is a log question, and the log tools answer it. All three
-(``get_campaign_log``, ``get_job_log``, ``get_image_build_log``) — and
-``search_run_logs`` below — take the same
-controls, applied in this order — a claim this page made while ``get_campaign_log`` was
-in fact the one tool without ``tail``, so it now has one:
+(``get_campaign_log``, ``get_job_log``, ``get_image_build_log``) take the same controls,
+applied in this order (``search_run_logs`` below shares all but ``tail``):
 
 .. list-table::
    :header-rows: 1
@@ -1017,11 +1101,11 @@ in fact the one tool without ``tail``, so it now has one:
        are chasing. Never silent: the response carries ``shutdown_dropped`` on every
        call, ``0`` included, and names the way back when it cut something.
 
-       ``get_campaign_log`` and ``get_job_log`` read a live stream, so they find the
-       verdict in the text (:mod:`robovast.common.scenario_markers`); a stream that
+       ``get_campaign_log`` and ``get_job_log`` read a live log, so they find the
+       verdict in the text (:mod:`robovast_decode.scenario_markers`); a stream that
        concatenates runs resumes at the next ``Executing scenario``. ``search_run_logs``
-       reads it from :ref:`scenario_timestamps <scenario-verdict>` instead, where
-       postprocessing recorded it — one answer to "when did the trial end", shared with
+       reads it from :ref:`scenario_timestamps <scenario-verdict>` instead, the table the
+       decoder builds from the same verdict line — one answer to "when did the trial end", shared with
        the web UI. Not offered by ``get_image_build_log`` or ``exec_in_container``:
        neither has a scenario.
    * - ``grep``
@@ -1030,7 +1114,7 @@ in fact the one tool without ``tail``, so it now has one:
      - Keep lines rated at least ``"warn"`` / ``"error"`` by RoboVAST's **own**
        classifier: a line's ``[WARN]``/``[ERROR]`` marker when it has one, else the
        published keyword pattern
-       (:data:`~robovast.common.log_summary.DEFAULT_SEVERITY_PATTERN`). Use this
+       (:data:`~robovast_decode.log_summary.DEFAULT_SEVERITY_PATTERN`). Use this
        instead of hand-writing a severity ``grep`` — it is the same definition
        everything else uses, and two patterns mean two answers to "is this healthy?".
        A marker outranks a keyword, so an ``[INFO]`` line reporting ``errors=0`` is
@@ -1048,56 +1132,64 @@ searches the merged :ref:`run_log <merged-run-log>` table — every container's 
 ``/rosout``, on each run's own playback clock — across runs and across campaigns.
 
 Same reading vocabulary as the tools above (``hide_shutdown``, ``grep``, ``min_severity``,
-``summarize``, ``tail``), defaults included — though ``hide_shutdown`` is the one it implements
+``summarize``), defaults included — though ``hide_shutdown`` is the one it implements
 differently, as a SQL term over ``scenario_timestamps`` rather than a scan of the text, because
 its default shape (``group_by_run``) never renders lines at all. Since nothing is dropped in
 Python there is no ``shutdown_dropped`` to report, so every response instead *says* in its
 ``note`` that only the trial was searched. What it adds is *scope*: ``config_filter``, ``run_id``,
-``container``, ``node``, ``source``, a sim-time window (``t0``/``t1``), and ``in_window`` to
-separate "during the trial" from "while the simulator was being reset around it". Set
-``campaign_regex`` to make ``campaign_id`` a pattern over campaign ids.
+``container``, ``node`` and a sim-time window (``t0``/``t1``). Set ``campaign_regex`` to make
+``campaign_id`` a pattern over campaign ids. ``tail``, ``offset``, ``source`` and ``in_window``
+are not parameters: the ``run_log`` table has those columns, and ``query_campaign_data_sql``
+reaches them directly for the question that needs them.
 
 Three shapes, one per question:
 
 * ``group_by_run=True`` (the default) — hits per run, joined to ``passed``/``status`` and the
   first sim time it appeared at. This is the "which runs, and did they fail?" answer.
-* ``group_by_run=False`` — the matching lines themselves, paged with ``limit``/``offset``.
+* ``group_by_run=False`` — the matching lines themselves, up to ``limit``.
 * ``summarize=True`` — patterns and counts, so "what flooded this sweep" costs one call. The
   summary scans far more rows than it returns, because it returns counts.
 
 Two costs it reports rather than hides. Every response carries ``campaigns`` and
-``campaigns_skipped``: the rows live in the central index, so a campaign costs no transfer, but
-``grep`` is still a regex over every log line of every campaign it spans — hence
+``campaigns_skipped``: each campaign's ``run_log`` is read where it lies, so a campaign costs
+no transfer, but ``grep`` is still a regex over every log line of every campaign it spans, and
+a campaign whose ``run_log`` is not built yet builds it first — hence
 ``max_campaigns`` defaults to 5, and what it leaves out is named rather than silently trimmed.
 
 Each run also reports its ``clock_map_source``; ``none`` means that run's lines have no
 ``sim_time`` at all — readable, but not on the timeline (see :ref:`clock-map`).
 
-``get_campaign_log`` takes one more, because its stream is several phases concatenated
-under ``===== PHASE =====`` dividers (variation → run → postprocessing): ``phase`` reads
-one of them — or ``"all"``. Every read reports ``phases`` as
-``[{name, lines, included}, …]``, so what a read left out is stated rather than absent.
+``get_campaign_log`` takes one more, because its log is several phases read as rows
+(import → build → plugin install → variation → run, then postprocessing, share and
+``TABLES`` — a table build asked for ahead — in the order they ran, each as often as it
+ran): ``phase`` reads one of them — or ``"all"``. Every read reports ``phases`` as
+``[{name, included, rows}, …]``, so what a read left out is stated rather than absent. On
+this tool ``phase``, ``grep`` and ``min_severity`` are applied by the service **as it
+reads** the phase files (:ref:`_execution/ <results-execution-dir>`), so a read of one
+phase never transfers the others; each row it returns is rendered the way
+``vast campaign log`` prints it, ``[PHASE] <time> <LEVEL> <logger>: <message>`` with a
+continuation indented, and ``tail``, ``summarize`` and the page window apply to those lines.
 
 ``summarize=True`` is the one to reach for on a stalled run, because **filtering
-cannot diagnose a flood — the flood is the signal.** A campaign whose TF was being
-rejected wholesale matched a severity ``grep`` 18226 times; the returned lines looked
-like ordinary noise and the count that was the actual finding went unread. Summarized,
-it is one line:
+cannot diagnose a flood — the flood is the signal.** A campaign whose TF is rejected
+wholesale can match a severity ``grep`` tens of thousands of times; the returned lines
+look like ordinary noise and the count that is the actual finding goes unread.
+Summarized, it is one line:
 
 .. code-block:: text
 
    get_campaign_log(campaign_id, summarize=True)
    → patterns: [{pattern: "[tf_bridge] TF_OLD_DATA ignoring data from the past for
                             frame base_link at time <n> according to authority <…>",
-                 count: 18226, severity: "warn", example: "<the first raw line>"}]
-     patterns_total: 2, severity_counts: {other: 1, warn: 18226, error: 0}
+                 count: <N>, severity: "warn", example: "<the first raw line>"}]
+     patterns_total: 2, severity_counts: {other: 1, warn: <N>, error: 0}
 
 Each line is normalized before grouping — timestamps, coordinates, ids and hashes
 become ``<n>`` / ``<hex>`` / ``<uuid>`` — so the same message with different numbers
 collapses, while the same text from two different nodes stays two findings.
 ``example`` keeps the group actionable, since the placeholders have eaten the
 specifics. ``patterns_total`` is the true number of distinct patterns even when
-``top`` capped the list, and ``severity_counts`` counts **lines**, not groups: "18226
+``top`` capped the list, and ``severity_counts`` counts **lines**, not groups: "<N>
 warnings" is the finding, "1 distinct warning" is only how it is reported.
 
 Summarizing replaces the text rather than shortening it: the response carries
@@ -1135,8 +1227,8 @@ exposes:
   registry manifest probe (or one ``docker image inspect``) when nothing changed, and
   ``cached_builds`` is the answer per container. Nothing else answers that without a
   ``build_id`` already in hand.
-* ``vast image wait <build-id>…`` — block until every build is done (exit 0 built,
-  1 failed, 2 stopped waiting: ``--timeout``, or the service stopped answering). Takes
+* ``vast image wait <build-id>…`` — block until every build is done; the exit code says how
+  they ended (:ref:`its codes <client-image-wait-exit-codes>`). Takes
   several ids because a project builds one image per container that adds packages, and
   waiting for the first says nothing about the rest.
 * ``get_image_build_status`` — poll a build: ``phase`` / ``done`` plus a **structured**
@@ -1258,6 +1350,13 @@ that made this rule — and then ``errors`` says why while the cheap half still 
 read ``dropped_transport``, which names the transport plugins left out of the build (a describe
 publishes nothing, so they contribute nothing but a way to fail).
 
+**The start state comes with the entities.** Asking for ``entities`` also resets the world, as a
+run does before each trial, and ``warnings`` lists what that state holds that is likely to make a
+run misbehave, each ``{check, message, hint}`` in the simulator's words -- two bodies placed inside
+one another, which the contact solver flings apart on the first steps. ``null`` means the world was
+not reset (no ``entities`` asked for, or ``errors.reset`` says why); ``[]`` means nothing to say.
+``validate_project`` reports the same warnings as advice.
+
 .. _mcp-container-exec:
 
 Testing a container and its setup
@@ -1297,6 +1396,26 @@ cheaper way to ask.
 * named — that configuration staged exactly as a campaign stages it, so an empty
   ``command`` starts its scenario.
 
+``config_name`` is never a file. The *source* says which ``.vast``: ``workspace_id`` with
+``config_path`` for one in a workspace, ``campaign_id`` for the project that campaign recorded.
+``config_name`` then picks one of the configurations that ``.vast`` expands into after its
+variations — the names ``preview_configurations`` lists, which are also the directory names
+under ``/results/<campaign_id>/``:
+
+.. code-block:: text
+
+   preview_configurations(workspace_id=ws, config_path="press.vast")
+   # -> configurations: [{name: "nominal-1", parameters: {...}}, {name: "stiff-1", ...}, ...]
+
+   exec_in_container(workspace_id=ws, config_path="press.vast", config_name="stiff-1",
+                     command="cd /config && roqsim check world/world.yaml")
+   # -> that configuration's project, staged under /config with its parameters in
+   #    /config/scenario.config, checked in the image a campaign would use
+
+   exec_in_container(campaign_id=cid, config_name="stiff-1",
+                     command="cd /config && roqsim check world/world.yaml")
+   # -> the same, against what that campaign actually ran
+
 **Both sources are projects.** ``workspace_id`` + ``config_path`` names a workspace's
 ``.vast``; ``campaign_id`` uses an existing campaign's ``_config/``, which *is* a project.
 Nothing about the campaign case is special — same staging, same environment. The image
@@ -1312,20 +1431,28 @@ service's data plane into the pod, exactly as a campaign job's inputs are, so an
 campaign can stage this can stage too — there is no separate size ceiling to run into.
 
 **A running campaign is never a target of this tool.** There is no way from here to a
-job's container or pod, and the argument for that has not changed: a campaign in flight is
-provenance-recorded, reproducible compute, and attaching to it perturbs the thing it exists
-to produce.
+job's container or pod: a campaign in flight is provenance-recorded, reproducible compute,
+and attaching to it perturbs the thing it exists to produce.
 
-What changed is that the perturbation is now *recordable* rather than forbidden. Two tools
-reach a live job, and the difference between them is who chooses the command:
+What a live job does allow is a *recorded* perturbation. Three tools
+reach a live job, and the difference between them is who chooses the command and for how
+long it runs:
 
 * ``get_job_state`` runs only **fixed** commands the service chose — the simulator's own health
-  read, scenario-execution's own tree reader, and a tail of the run's own resource samples, each
-  in the container that runs it. Nothing arbitrary can ride in, nothing is perturbed, and nothing
-  is recorded. That property holds *because* the commands are ours: they read files the run is
-  already writing.
+  read and a tail of the run's own resource samples, each in the container that runs it — and
+  folds the scenario's tree from the run's tables without entering the job at all. Nothing
+  arbitrary can ride in, nothing is perturbed, and nothing is recorded. That property holds
+  *because* the commands are ours: they read files the run is already writing.
 * ``exec_in_job`` runs **yours**, which cannot be bounded, so it is written into the
-  campaign instead: every run the job covers is marked ``probed`` in the results index.
+  campaign instead: every run the job covers is recorded as probed in the campaign's
+  ``_execution/interventions.json``, which is the ``runs.probed`` column a query reads.
+* ``tap_job`` runs the simulator's own **following** command
+  (:meth:`~robovast.common.simulators.SimulatorBackend.tap_command`) -- ``ros2 topic echo``
+  of the selected topics in the ROS shape, the topic list for none -- and collects what it
+  prints for a few seconds. The command is the service's, but a process it started runs in
+  the simulator's container for as long as the tap lasts, so it is recorded exactly as
+  ``exec_in_job`` is. A simulator whose recording is already the live view (roqsim) has no
+  tap and says so by name; read its run's tables instead.
 
 That makes this tool the right *first* move rather than the only one, because it answers the
 same question against a copy at no cost to the campaign. A fault that does not reproduce here
@@ -1403,10 +1530,10 @@ What it keeps, and does not:
   :data:`~robovast.mcp_server.tool_stats.MAX_ROWS`, whichever bites first. Age alone would not
   bound the table -- one agent loop emits thousands of calls in an hour -- so a burst shortens
   the retained window, and the panel says so rather than claiming a month it does not have.
-* Rows go to the central index (:mod:`robovast.common.index_db`), buffered rather than written
-  per call: a Postgres round-trip in front of every tool call would cost more than some of the
-  tools. They therefore survive a service restart but not the results volume, which the index
-  shares a lifetime with.
+* Rows go to ``mcp_calls.db``, a SQLite file on the workspaces volume beside the service's
+  event log, buffered rather than written per call: a write in front of every tool call would
+  cost more than some of the tools. They therefore survive a service restart, and last as
+  long as that volume does.
 * ``actor`` is the resolved principal -- the name the caller gave and the source it
   authenticated by -- and ``session`` is ``"<client>/<session>"``: over streamable HTTP that
   client's ``mcp-session-id``, the same for every call it makes. The principal is who the
@@ -1421,7 +1548,7 @@ window. The panel's page ceiling bounds one JSON response the service holds in m
 export streams and so is bounded only by what is retained.
 
 **Recording never fails a tool call.** Every path in
-:mod:`robovast.mcp_server.tool_stats` swallows its own failure -- an unreachable index costs the
+:mod:`robovast.mcp_server.tool_stats` swallows its own failure -- an unwritable log file costs the
 log, never the call. This is the same contract :class:`robovast.service.event_log.EventLog`
 states for itself, for the same reason: what is recorded is a description of the work, not the
 work.

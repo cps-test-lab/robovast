@@ -84,8 +84,8 @@ class NullService(ServiceBase):
         self._refuse("postprocessing")
 
     def _aux_runner_context(self, tag: str, project, *, hold: bool = False,
-                            should_stop=None):
-        del tag, project, hold, should_stop
+                            should_stop=None, options=None):
+        del tag, project, hold, should_stop, options
         return contextlib.nullcontext(None)
 
     def _scene_runner_context(self, identity: dict, on_wait=None):
@@ -149,21 +149,17 @@ class NullService(ServiceBase):
         del campaign_id, job_name, target, run_dir
         self._refuse("get_job_state")
 
+    def _job_probe_dir(self, campaign_id: str, job_name: str) -> tuple:
+        del campaign_id, job_name
+        self._refuse("tap_job")
+
     def _job_output_dir(self, campaign_id: str, job_name: str, run_dir: str) -> str:
         del campaign_id, job_name, run_dir
         self._refuse("get_job_state")
 
-    def _new_job_log_tail(self, campaign_id: str, job_name: str):
-        del campaign_id, job_name
-        self._refuse("get_job_log")
-
     def list_jobs(self, campaign_id: str):
         del campaign_id
         self._refuse("list_jobs")
-
-    def get_job_log(self, campaign_id: str, job_name: str, offset: int = 0):
-        del campaign_id, job_name, offset
-        self._refuse("get_job_log")
 
     def stop(self, campaign_id: str) -> ActionResult:
         del campaign_id
@@ -205,9 +201,7 @@ class NullService(ServiceBase):
 
     def version(self) -> VersionInfo:
         return self._version_info(backend=self.IMPLEMENTATION, can_build_images=False,
-                                  can_schedule=self._queues_campaigns(),
-                                  results_root=str(self._campaigns_root()),
-                                  sources_root=str(self.store.registry.root))
+                                  can_schedule=self._queues_campaigns())
 
     def upgrade_info(self) -> UpgradeInfo:
         return UpgradeInfo(supported=False,

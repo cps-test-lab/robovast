@@ -46,9 +46,10 @@ MCP together — pass ``--no-mcp`` to serve the API without them (see :ref:`mcp`
    ``Authorization: Bearer``. The cookie is not a preference — ``EventSource`` cannot
    set headers, so it is what keeps the live streams in the web UI working.
 
-   Publishing the service insists on TLS, and on a token being configured. Both
-   refusals are deliberate: a campaign names its own container image, so an open
-   Ingress lets anyone who finds the URL run containers in the cluster.
+   Publishing the service insists on a token being configured, and on TLS unless
+   ``--insecure-http`` says the network is trusted. Both refusals are deliberate: a
+   campaign names its own container image, so an open Ingress lets anyone who finds
+   the URL run containers in the cluster.
 
 The deployment
 --------------
@@ -97,7 +98,7 @@ Access matrix
 
 The published row is hardened once for the whole surface: one shared secret, presented as
 a cookie by browsers and a bearer header by everything else, in front of an Ingress
-that refuses to exist without TLS.
+that refuses to exist without TLS unless ``--insecure-http`` was passed.
 
 Walkthrough — the in-cluster service
 ------------------------------------
@@ -165,7 +166,13 @@ UI, the campaign driver -- and ``robovast-data`` the data plane, the tar streams
 exchange with the service (:doc:`http_api`, "Addressing files"). Both are the same
 image, both listen on Unix sockets in a shared in-memory volume, and ``robovast-front``,
 an nginx, owns port 8800 and routes ``/data/`` to the one and everything else to the
-other. The Service and the Ingress see one port, exactly as before.
+other. The Service and the Ingress see one port.
+
+The control plane also **postprocesses**: a campaign's postprocessing steps run in that
+process, against the campaign on the results volume, exactly as on a local service -- no Job,
+no execution image and no database. The tables a query reads are built from the campaign's
+own records (its bags, logs, run files and ``campaign.db``) the first time something names
+them, into ``<campaign>/.cache/``, and SQL over them is answered in the same process.
 
 The split exists so that bulk bytes never share a process with the control plane: a
 dozen pods delivering gigabytes of run output at once slow each other down and nothing
@@ -186,9 +193,8 @@ cost every client a port. The front's configuration is rendered by ``setup`` and
 Keeping the service up to date
 ------------------------------
 
-Controllers are launched per campaign, so execution always tracks the configured
-controller image. The persistent service Deployment does not, so it has to be
-updated deliberately.
+A campaign is driven inside the service pod, so the persistent service Deployment is
+the code every campaign runs under, and it has to be updated deliberately.
 
 .. code-block:: bash
 
@@ -229,9 +235,9 @@ retries its delivery for long enough to outlast the replacement coming up — in
 the time it spends resuming campaigns before it binds its port.
 
 RBAC reconciliation is not decoration. The ``/usage`` endpoint (cluster CPU/memory,
-shown in the web UI top bar and by the ``resource_usage`` MCP tool) once needed a new
-cluster-scoped ``ClusterRole`` over ``nodes``/``pods``; a service deployed before that
-returned a permissions error until it was set up again. An upgrade that skipped RBAC
+shown in the web UI top bar and by the ``get_resource_usage`` MCP tool) needs a
+cluster-scoped ``ClusterRole`` over ``nodes``/``pods``; a service whose RBAC lacks it
+returns a permissions error until it is set up again. An upgrade that skipped RBAC
 would reintroduce exactly that, as a runtime 403 that reads like a bug rather than a
 missed migration.
 
@@ -252,14 +258,17 @@ that reconciles it. Also *reconcile when convenient*. ``get`` and ``list`` are t
 what ``metrics.k8s.io`` serves — it has no watch — so the numbers are polled, once per sample
 window for the whole service rather than per campaign or per job.
 
-Before rolling, it asks the service which live campaigns the replacement could **not**
-pick up again, and names each with its reason. A live campaign is no longer reason enough
-on its own: its Jobs are not children of the pod being replaced, and the new pod
-re-attaches to them (:doc:`cluster_execution`). What still blocks a roll is a campaign
-nothing could re-launch — one with no records, or a search with no ``search.seed``. ``--yes`` skips the question; without it a non-interactive run aborts rather than
-rolling silently. A service that cannot be reached is reported and the roll proceeds, since
-a wedged service is a reason to upgrade rather than a reason to refuse, but it says so —
-a silent roll must never be read as "nothing was running".
+Before rolling, it asks the service for the live campaigns, names every one and asks. A
+live campaign survives a roll on its own — its Jobs are not children of the pod being
+replaced, and the new pod re-attaches to them (:doc:`cluster_execution`) — except one
+nothing could re-launch: one with no records, a search with no ``search.seed``, or a
+search whose strategy declares itself not resumable. Only the web UI's button leaves that
+distinction to the service, which refuses those campaigns alone, each named with its
+reason; ``upgrade`` and ``vast service restart`` ask about every live campaign.
+``--yes`` skips the question; without it a non-interactive run aborts rather than rolling
+silently. A service that cannot be reached is reported and the roll proceeds, since a
+wedged service is a reason to upgrade rather than a reason to refuse, but it says so — a
+silent roll must never be read as "nothing was running".
 
 There is a smaller verb for the common case, and it needs no kubeconfig:
 
@@ -269,9 +278,10 @@ There is a smaller verb for the common case, and it needs no kubeconfig:
 
 That asks the service to roll *itself* — the Deployment's restart annotation, and nothing
 else. It is the same thing the web UI's Admin page button does (:ref:`web-ui-admin`), and
-it exists because ``upgrade`` needs cluster access, so somebody who reached the deployment
-through ``vast login`` had a button in the browser and no command at all. It carries the
-same live-campaign guard and the same ``--yes``.
+it exists because ``upgrade`` needs cluster access, which somebody who reached the
+deployment through ``vast login`` does not have. It asks about live campaigns as
+``upgrade`` does and takes the same ``--yes``; once answered, it forces the roll past the
+service's own refusal.
 
 **It reconciles nothing.** RBAC, the registry ingress route, the
 credential Secrets and the build daemon are all untouched, so a version needing a new
@@ -336,37 +346,6 @@ Where a node setting comes from decides what each command does with it:
 A ``.env`` entry is the standing statement, so both commands apply it whole — run them from the
 shell that has the deployment's ``.env``.
 
-.. _deployment-postprocess-parallel:
-
-Splitting a campaign's postprocessing
--------------------------------------
-
-On a cluster, a campaign's postprocessing can run in several Jobs at once instead of one. The
-steps that work run by run — the rosbag conversion, ``run_log``, ``resource_usage`` and every
-other step whose plugin declares it (:ref:`extending-postprocessing`) — run in one Job per
-*part* of the campaign's runs, each staging only its own runs; the admission queue places
-them wherever the cluster has room. One more Job then runs the remaining steps and the index
-ingest over the whole campaign.
-
-**Nothing has to be set for this.** By default a campaign is cut into as many parts as the
-cluster could run at once: its recorded size (``ROBOVAST_CLUSTER_MAX_CPU``, written by
-``setup``) divided by the CPU one conversion reserves, which is the campaign's own
-``results_processing.resources``. A cluster that cannot say how large it is gets eight. How
-many of those Jobs run at the same time is, as for a campaign's runs, the admission queue's
-decision.
-
-Set a cap when you want one:
-
-.. code-block:: bash
-
-   # .env on the machine you run setup/upgrade from
-   ROBOVAST_POSTPROCESS_MAX_PARALLEL=8
-
-It is then the most Jobs one campaign's postprocessing is split into; ``1`` keeps the whole
-postprocessing in one Job. A campaign with fewer scenario jobs gets fewer parts either way.
-``vast cluster setup`` and ``vast service upgrade`` carry the value into the Deployment and
-refuse one that is not a whole number of at least 1.
-
 .. _deployment-disk-reserve:
 
 Keeping free space
@@ -386,7 +365,9 @@ point where the node evicts it. It honours the reserve two ways:
 Stopping or deleting campaigns is never refused. The web UI's sidebar and
 ``get_resource_usage`` (``storage_refusal``) show the same verdict. If clearing the service's
 caches would help, the refusal says so: ``vast service cache --clear``, or **Service cache** on
-the Admin page.
+the Admin page. Its ``table cache`` entry is every campaign's built tables under
+``<campaign>/.cache/tables/``; clearing it loses nothing but the time to build them again on
+their next use, and leaves alone a campaign whose tables are being built.
 
 Unset, the reserve is **15% of the disk being written to**: above the kubelet's default hard
 eviction threshold (``nodefs.available<10%``), which evicts every pod on the node -- the service
@@ -421,6 +402,27 @@ until free space is back above the sum. With ``nodefs.available<5%`` and a minim
 ``ROBOVAST_BUILDKIT_CACHE_MIN_FREE`` says otherwise (see :ref:`the build daemon's settings
 <buildkit-settings>`).
 
+.. _bounding-a-query:
+
+Bounding a query
+----------------
+
+A query over a campaign's tables runs in the service's own process, on DuckDB, with a timer.
+What one query may use is bounded by two variables, read from the same ``.env`` as the reserve
+and carried into the service Deployment the same way:
+
+.. code-block:: bash
+
+   ROBOVAST_QUERY_MEMORY=4GB    # a DuckDB memory limit: 4GB, 512MiB, ...
+   ROBOVAST_QUERY_THREADS=2     # threads one query may use
+
+Unset, DuckDB's own memory ceiling (most of the RAM it can see) and a few threads apply. Set
+them on a service that shares its node with running campaigns, or that answers many queries at
+once: the bound is per query, so several at a time add up. An invalid value is an error naming
+the variable, not a fallback. Every engine the service builds honours them -- a query, a table
+build, an export, a track deviation -- and so does a notebook rendered in the Results Explorer;
+a notebook on a laptop passes the same options to ``Campaign(..., threads=, memory_limit=)``.
+
 Checking a deployment
 ---------------------
 
@@ -438,7 +440,9 @@ resolves and the API server answers, that the caller may create ClusterRoles (se
 does), and that the nodes report allocatable capacity at all. It reports the largest
 node rather than judging against a threshold: a campaign's pod is whatever its ``.vast``
 asks for, and a request no node can hold is refused when the campaign launches, naming
-both the request and each node's allocatable.
+both the request and each node's allocatable. These cluster checks come with
+``robovast-cluster``; without it they are absent and one ``cluster support: not installed``
+line says why.
 
 **It also checks whether the deployment can build experiment images**, which is the one
 prerequisite that would otherwise surface only when a campaign is submitted and refused:

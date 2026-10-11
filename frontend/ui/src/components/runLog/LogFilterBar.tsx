@@ -44,7 +44,12 @@ const HIGHLIGHT_TITLE: Record<HighlightMode, string> = {
   only: 'Showing only warnings and errors — click to turn highlighting off',
 }
 
-type FacetKind = 'containers' | 'nodes' | 'sources'
+export type FacetKind = 'containers' | 'nodes' | 'sources'
+
+/** What each facet's values are, in the dropdown's group headings. A run's log facets by
+ *  container and ROS node; a host whose rows mean something else names them -- the campaign
+ *  log puts its phase in the container column and its logger in the node column. */
+export type FacetTitles = Partial<Record<FacetKind, string>>
 
 const FACET_TITLE: Record<FacetKind, string> = {
   containers: 'Container',
@@ -65,10 +70,13 @@ export function LogFilterBar({
   onWrapChange,
   wrapDisabledReason,
   notes,
+  facetTitles,
 }: {
   filter: LogFilter
   onChange: (filter: LogFilter) => void
   facets: Facets
+  /** Headings for the facet groups where the default ones would misname the rows. */
+  facetTitles?: FacetTitles
   invalidRegex?: boolean
   /** Provided only where there is a clock to seek; absent in the Explorer. */
   onStepSeverity?: (dir: 1 | -1) => void
@@ -301,7 +309,7 @@ export function LogFilterBar({
             {groups.map(({ kind, values }, gi) => [
               gi ? <Divider key={`d-${kind}`} /> : null,
               <ListSubheader key={`h-${kind}`} sx={{ lineHeight: '24px', fontSize: 11 }}>
-                {FACET_TITLE[kind]}
+                {facetTitles?.[kind] ?? FACET_TITLE[kind]}
               </ListSubheader>,
               ...values.map((facet) => (
                 <MenuItem

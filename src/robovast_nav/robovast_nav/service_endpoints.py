@@ -20,28 +20,31 @@ A ``robovast.service_endpoints`` plugin serves run-scoped JSON at
 ``GET /campaigns/{id}/<name>?config_name=…&run_id=…&…`` with no core edit — see
 :mod:`robovast.service.endpoint_plugin` for the mechanism. This is the data half of the
 nav costmap panel: the panel (``robovast_nav/web``) calls ``data.fetchRun('costmap', …)``,
-which lands here. Panel + endpoint both now live in this package.
+which lands here. Panel and endpoint both live in this package.
 """
 
+from robovast.results_processing.data_query import DataQueryError
 
 #: Why a campaign has no costmap to show, and what to do about it. One message for both
 #: ways it happens, because the remedy is the same and the endpoint cannot tell them apart:
-#: the stack may be nav2-on-ROS 2 with the postprocessing step simply not declared, or it may
+#: the stack may be nav2-on-ROS 2 with the costmap topics simply not configured, or it may
 #: not be nav2 at all -- a differently-navigated robot, or one on another middleware, has no
 #: costmap topic to record and never will. Naming both is what stops the second case reading
 #: as a misconfiguration of the first.
 _ABSENT = (
-    "This campaign recorded no nav2 costmaps. If the stack is nav2 on ROS 2, add the "
-    "rosbags_costmap_to_csv postprocessing step and record the costmap topics in the "
-    "scenario's bag_record. If it is not -- another planner, another middleware, or a robot "
-    "that does not navigate -- this panel has nothing to show for it.")
+    "This campaign recorded no nav2 costmaps. If the stack is nav2 on ROS 2, record the "
+    "costmap topics in the scenario's bag_record: every recorded OccupancyGrid topic is "
+    "tabulated, and a rosbags_costmap_to_csv entry narrows which. If it is not -- "
+    "another planner, another middleware, or a robot that does not navigate -- this panel "
+    "has nothing to show for it.")
 
 
 class CostmapEndpoint:
     """Serve the nav2 costmap frame nearest a time, for the run-view costmap panel.
 
-    Reads the ``costmaps`` table (produced by the ``rosbags_costmap_to_csv`` postprocessing
-    step) directly and untruncated — the panel decodes ``data`` (zlib+base64 int8 cells).
+    Reads the ``costmaps`` table (built from the recording for the topics the
+    ``rosbags_costmap_to_csv`` entry names) directly and untruncated — the panel decodes
+    ``data`` (zlib+base64 int8 cells).
     The bare name ``costmap`` matches the existing panel's ``fetchRun('costmap', …)`` call;
     new packages should namespace their endpoints (e.g. ``nav/foo``).
 
@@ -66,8 +69,6 @@ class CostmapEndpoint:
     name = "costmap"
 
     def handle(self, ctx):
-        from robovast.results_processing.data_query import DataQueryError
-
         topic = ctx.params.get("topic")
         if not topic:
             raise ValueError("missing required query param 'topic'")
@@ -77,50 +78,44 @@ class CostmapEndpoint:
         except (TypeError, ValueError) as e:
             raise ValueError(f"t must be a number, got {t_raw!r}") from e
 
+        run = (ctx.campaign_id, ctx.config_name, ctx.run_id, topic)
         with ctx.open_db() as conn:
-            has = conn.execute(
-                "SELECT 1 FROM information_schema.tables "
-                "WHERE table_schema = current_schema() AND table_name = 'costmaps'"
-            ).fetchone()
-            if not has:
-                raise DataQueryError(_ABSENT)
-            row = conn.execute(
-                'SELECT timestamp, frame_id, resolution, width, height, '
-                'origin_x, origin_y, origin_yaw, data FROM costmaps '
-                'WHERE campaign_id = %s AND config_name = %s AND run_id = %s AND topic = %s '
-                'ORDER BY ABS(CAST(timestamp AS double precision) - %s) LIMIT 1',
-                (ctx.campaign_id, ctx.config_name, ctx.run_id, topic, t)).fetchone()
+            try:
+                row = conn.execute(
+                    "SELECT timestamp, frame_id, resolution, width, height, "
+                    "origin_x, origin_y, origin_yaw, data FROM costmaps "
+                    "WHERE campaign_id = ? AND config_name = ? AND run_id = ? AND topic = ? "
+                    "ORDER BY ABS(CAST(timestamp AS DOUBLE) - ?) LIMIT 1",
+                    (*run, t)).fetchone()
+            except DataQueryError as exc:
+                if "does not exist" in str(exc):
+                    raise DataQueryError(_ABSENT) from exc
+                raise
             if row is None:
-                # Absent and empty are different answers, and the central index makes the
-                # difference matter. The table existing says only that *some* campaign in the
-                # index is a nav2/ROS 2 stack that recorded costmaps -- so a campaign whose
-                # robot has no nav2, or runs on another middleware entirely, would fall
-                # through to a bare `None` that the panel draws as "no frame here", implying
-                # a costmap exists elsewhere in the run. This query has no time bound, so no
-                # row means this run recorded no costmaps at all: say so, and name the fix.
-                scoped = conn.execute(
-                    'SELECT 1 FROM costmaps WHERE campaign_id = %s LIMIT 1',
-                    (ctx.campaign_id,)).fetchone()
+                # Absent and empty are different answers. The table exists when some run of
+                # this campaign recorded costmaps; a campaign with none at all -- a robot with
+                # no nav2, another middleware -- would otherwise fall through to a bare `None`
+                # that the panel draws as "no frame here", implying a costmap exists elsewhere
+                # in the run. This query has no time bound, so no row for the whole campaign
+                # means it recorded none: say so, and name the fix.
+                scoped = conn.execute("SELECT 1 FROM costmaps WHERE campaign_id = ? LIMIT 1",
+                                      (ctx.campaign_id,)).fetchone()
                 if not scoped:
                     raise DataQueryError(_ABSENT)
                 return None
-            # The frame's recorded neighbours (see the class docstring). Two things are
-            # load-bearing here, not cosmetic. `campaign_id` scopes the query: one index holds
-            # every campaign, so without it this matches run 3 of config 'nominal' in every
-            # campaign that has one. And the CAST is `double precision`, not `REAL`: `timestamp`
-            # may be text, and MIN/MAX/</> over text compare lexicographically ('10.022' <
-            # '9.5'); but Postgres' REAL is 4 bytes, which rounds an epoch stamp to the nearest
-            # ~30 s and would pick a neighbour tens of seconds away while still looking sane.
+            # The frame's recorded neighbours (see the class docstring). The CAST is to DOUBLE
+            # because `timestamp` may be text, and MIN/MAX/</> over text compare
+            # lexicographically ('10.022' < '9.5'); and not to a 4-byte REAL, which rounds an
+            # epoch stamp to the nearest ~30 s and would pick a neighbour tens of seconds away.
             t_frame = float(row["timestamp"])
             neighbours = conn.execute(
-                'SELECT MAX(CAST(timestamp AS double precision)) AS t_prev, '
-                '(SELECT MIN(CAST(timestamp AS double precision)) FROM costmaps '
-                ' WHERE campaign_id = %s AND config_name = %s AND run_id = %s AND topic = %s '
-                ' AND CAST(timestamp AS double precision) > %s) AS t_next '
-                'FROM costmaps WHERE campaign_id = %s AND config_name = %s AND run_id = %s '
-                'AND topic = %s AND CAST(timestamp AS double precision) < %s',
-                (ctx.campaign_id, ctx.config_name, ctx.run_id, topic, t_frame,
-                 ctx.campaign_id, ctx.config_name, ctx.run_id, topic, t_frame)).fetchone()
+                "SELECT MAX(CAST(timestamp AS DOUBLE)) FILTER "
+                "(WHERE CAST(timestamp AS DOUBLE) < ?) AS t_prev, "
+                "MIN(CAST(timestamp AS DOUBLE)) FILTER "
+                "(WHERE CAST(timestamp AS DOUBLE) > ?) AS t_next "
+                "FROM costmaps "
+                "WHERE campaign_id = ? AND config_name = ? AND run_id = ? AND topic = ?",
+                (t_frame, t_frame, *run)).fetchone()
 
         t_prev = neighbours["t_prev"]
         t_next = neighbours["t_next"]

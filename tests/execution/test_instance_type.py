@@ -22,11 +22,12 @@ from robovast.execution.cluster_execution.kubernetes_backend import _instance_ty
 @pytest.fixture
 def campaign_data(tmp_path):
     """The minimum a campaign needs staged: a .vast and a scenario file that exist."""
-    (tmp_path / "s.vast").write_text("version: 4\n", encoding="utf-8")
+    (tmp_path / "s.vast").write_text("version: 7\n", encoding="utf-8")
     (tmp_path / "s.osc").write_text("scenario x:\n    do serial:\n        wait elapsed(1s)\n",
                                     encoding="utf-8")
     return {"vast": str(tmp_path / "s.vast"), "scenario_file": str(tmp_path / "s.osc"),
-            "configs": [{"name": "c1", "config": {}}], "execution": {"runs": 1}}
+            "configs": [{"name": "c1", "config": {}, "_config_block": {"name": "c1"},
+                         "_read_files": []}], "execution": {"runs": 1}}
 
 
 def _instance_type_line(campaign_data, **kwargs) -> str:

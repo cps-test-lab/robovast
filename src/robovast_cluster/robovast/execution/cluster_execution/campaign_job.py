@@ -14,12 +14,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The shape every admitted campaign Job shares: a scenario run and a postprocessing Job.
+"""The shape of an admitted campaign Job.
 
-Both are one-shot pods placed by the admission queue on a campaign node, labelled with
-their group and campaign so that selectors count, watch and clean them up. What differs
-is the pod they run and how long a finished Job lingers. Each builds its pod and hands it
-here, so a label, a toleration or a pin is decided in one place for both.
+A campaign Job is a one-shot pod placed by the admission queue on a campaign node,
+labelled with its group and campaign so that selectors count, watch and clean it up. Its
+builder hands the pod here, so a label, a toleration or a pin is decided in one place.
 """
 
 from .cluster_execution import _label_safe_campaign
@@ -33,7 +32,7 @@ def campaign_job_manifest(*, name: str, namespace: str, jobgroup: str, campaign_
     """A campaign Job around *pod_spec*.
 
     ``backoffLimit: 0`` and ``restartPolicy: Never``: a campaign Job is one attempt, and a
-    retry would be a second trial or a second conversion that nothing asked for. The pod
+    retry would be a second trial that nothing asked for. The pod
     tolerates the campaign nodes' taint (:func:`apply_campaign_pod_policy`) and carries
     *pull_secret* when one is configured. *ttl_seconds* is how long the finished Job stays
     readable for whoever waits on it.

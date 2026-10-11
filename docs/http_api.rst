@@ -45,11 +45,8 @@ a restart forgets nothing, and a scope stops mattering the moment nothing answer
 Handing a pod the shared secret instead would let any container in the cluster start
 campaigns.
 
-Two consequences show up in the table. ``GET /version`` redacts ``results_root`` and
-``sources_root`` for any caller that is not on the same machine, because those are
-filesystem paths only useful — and only safe — to one that is; a forwarded request
-counts as remote, since behind a proxy the peer address is the proxy. And the file routes
-serve real paths on the service host, which is the point of the address space below.
+The file routes serve real paths on the service host, which is the point of the address
+space below.
 
 Addressing files
 ================
@@ -70,13 +67,18 @@ Large uploads take the side channel instead: ``POST /uploads`` grants a token, a
 
 The **data plane** is the third namespace, ``/data``: every route that moves a campaign's
 or a staged slot's bytes as one tar stream. ``GET /data/campaigns/{id}/archive`` is the
-campaign as a tar.gz (narrowed by ``stage``, ``skip_bags`` and ``batch_jobs`` to what a
-postprocessing pod reads, and a plain tar with ``uncompressed``); ``GET .../inputs`` is what a job pod extracts into its
+whole campaign as a tar.gz -- its records, what postprocessing derived, and its built
+tables (the ``.cache/`` manifest and table files) -- and ``?raw=true`` the records alone,
+without the tables and what postprocessing recorded producing;
+``GET /data/campaigns/{id}/exports/{export_id}`` is
+a finished export's tar.gz (:ref:`results-export`), a ``404`` until it is done and a ``409``
+naming the reason once it failed; ``GET .../inputs`` is what a job pod extracts into its
 ``/config``, with the campaign's ``_config/`` and ``_transient/`` flattened, only the
 named jobs' own documents (``job=<tag>``, required) taken from the per-job ones, and a
 cell's own files (``config_file=<config>:<rel>``) landing on top; ``PUT .../outputs`` takes a
-pod's output tree into the campaign, last writer wins, with what the driver owns -- the
-campaign's own store, its logs -- refused per member and named in the reply; and
+pod's output tree into the campaign, last writer wins, with what the service owns -- the
+campaign's own store and its ``_config/``, ``_transient/`` and ``_execution/`` -- refused
+per member and named in the reply; and
 ``GET``/``PUT /data/staged/{slot}`` move the scratch trees the service stages for a build
 or exec pod. Every stream a pod reads is a plain tar, and an upload may be plain or
 gzipped: the reader detects it. These are **control routes, not writes under** ``/results``, so that space
@@ -125,7 +127,8 @@ the meaning of a status is uniform across every route:
    * - ``409``
      - ``RuntimeError`` — the request conflicts with current state (stopping a campaign
        that is not running; importing over a campaign that is already here, or one that
-       is busy with another operation).
+       is busy with another operation). Also an ``ActionableError`` whose state is not
+       there yet: an image not built, a helper container nothing here provides.
    * - ``422``
      - A notebook or visualization failed to render.
    * - ``501``
@@ -135,7 +138,7 @@ the meaning of a status is uniform across every route:
        workspaces are not configured on this service.
    * - ``503``
      - A dependency did not answer, so the request could not be attempted: the object
-       store, the index, or the exec path into a container. Worth retrying, unlike the
+       store, or the exec path into a container. Worth retrying, unlike the
        codes above.
    * - ``507``
      - The service is out of disk space, or low enough that it declines new work (see
@@ -152,27 +155,93 @@ above: ``400`` for an id that is not a campaign id, ``409`` for a running campai
 
 A refusal whose *class* a caller must act on rather than print also carries an
 ``x-robovast-error`` header naming that class: ``exec_path_unavailable``, for a deployment
-where no command can be run in a container at all, and ``unsupported_operation``, for an
-operation this service does not offer (a client neither retries it nor blames its input). The
+where no command can be run in a container at all, ``unsupported_operation``, for an
+operation this service does not offer (a client neither retries it nor blames its input), and
+``binary_file``, for a text read (``?as=text``) of a binary file, which the HTTP transport
+raises again as ``BinaryFile`` so a caller can fetch the bytes instead. The
 exception type is what an
 HTTP boundary drops, and a client that has to *behave* differently (report the deployment
 rather than the image, degrade a check to "unchecked") would otherwise have to match on the
 sentence, which then nobody may reword. ``ServiceError.code`` carries it; the body stays
 FastAPI's ``{"detail": ...}`` for every refusal, coded or not.
 
+A refusal that knows the command which moves the caller forward -- build the image, wait
+for the build, clear the service cache -- carries it in an ``x-robovast-next-step`` header.
+``ServiceError.next_step`` carries it on the client side, and the MCP tools hand it back as
+``next_step`` beside ``error``, as they do when they run inside the service.
+
 Streaming
 =========
 
-Five routes stream instead of returning a body. The two ``.../stream`` log routes and
-``GET /campaigns/events`` are **server-sent events**; they are resumable, so a client that
-drops sends ``Last-Event-ID`` and continues from the line after the one it last saw rather
-than replaying the whole log. ``GET /data/campaigns/{id}/archive`` streams a tar.gz of the
+Several routes stream instead of returning a body. The three ``.../stream`` log routes (a
+campaign's, a job's, and the service's own under ``/admin``) and ``GET /campaigns/events``
+are **server-sent events**. The log streams are resumable, so a client that drops sends
+``Last-Event-ID`` and continues from the line after the one it last saw rather than
+replaying the whole log; the list stream sends the whole list again on reconnect, which is
+the client's initial state anyway.
+
+``GET /campaigns/{id}/job-tap?job_name=&selection=a,b&max_seconds=`` is server-sent events
+with no pull form: a **tap** on a running job, the simulator's own following command
+(:meth:`~robovast.common.simulators.SimulatorBackend.tap_command`) started in the job's
+simulation container and its stdout relayed as ``line`` events (``{"t_wall", "line"}``) for
+at most ``max_seconds``, capped at the service's bound of two minutes. ``eof`` carries
+``{"exit_code", "timed_out"}`` -- ``124`` and true when the bound cut it, ``null`` when the
+reader closed the stream first, which ends the tap. A refusal is ``streamerror`` then
+``eof``: the job is not running, the simulator has no tap (named), or a tap is already open
+on that job. It is not resumable -- a relay of the moment, not a record -- and it is
+**recorded against the run as a probe** before it starts, exactly as ``POST .../job-exec``
+is: a process the service started runs in the simulator's container while it lasts.
+
+``GET /data/campaigns/{id}/live?run=<config>/<run>&tables=a,b`` is server-sent events too: a
+run's tables as they are decoded while it records. A ``batch`` event carries ``{"table":
+name, "rows": [...]}``, at most 2000 rows, so one decoded batch may be several events; a
+table's batches add up to what a query of the finished run gives, and a table the recording
+does not carry yet starts when a topic that gives it appears. ``eof`` follows the run's
+verdict once its recordings are closed and read to their end; a run that is not live --
+``runs.live`` is false: it has its ``test.xml``, or the campaign its terminal record -- gets
+``eof`` at once, because its rows are all there for ``POST .../query``. ``streamerror`` then
+``eof`` names a campaign or run that is not here, a run key or table list that is not one,
+and a client that fell too far behind: batches keep coming at the recorder's pace, and a
+reader that does not keep up is dropped rather than buffered without bound. It is not
+resumable; a client that reconnects reads what landed so far from the SQL and follows from
+there. On the data plane rather than the control plane because the watcher behind it must
+run where the pods' deliveries land, which is where a recording can be followed as it is
+appended to (:ref:`the data plane <data-plane>`); a pod's scoped token does not reach it.
+With ``&frames=<topic>,...`` the same stream also carries a ``frame`` event per named image
+topic -- ``{"topic", "t", "jpeg_base64"}``, the newest frame, at most every 250 ms and only
+while it changes -- because a camera's messages never become rows. The frames themselves
+are two plain routes beside it: ``GET /data/campaigns/{id}/frame?run=&topic=[&t=]`` answers
+``image/jpeg`` with the last frame at or before ``t`` (the newest without it), no wider
+than 640 px, its stamp in ``X-Frame-Time``; with ``&full=1`` it answers the whole frame
+instead -- a raw image as its pixels in numpy's ``.npy`` format (``application/x-npy``, the
+encoding in ``X-Frame-Encoding``), a compressed image as recorded -- which is what
+``robovast-data`` reads. ``GET .../frame-index?run=&topic=`` lists every frame's stamp as
+``{"topic", "times"}``. ``GET .../points?run=&topic=[&t=][&after=1]`` answers one point
+cloud as an Arrow IPC stream, one column per field, the cloud at or before ``t`` or with
+``after`` the first one after it, so a reader steps through the topic. All of them read the
+recording itself: a live run's through the watcher following it, a finished run's through an
+index built on first request and kept per run and topic. A run without the topic, or with
+no frame of it yet, is a ``404`` that says so. Rows leave the control plane as
+``GET /campaigns/{id}/query.csv?sql=`` (text) or ``POST /campaigns/{id}/query.arrow`` (an
+Arrow IPC stream, typed, the request's ``tables`` -- Arrow streams in base64 -- registered
+under their names for the query). ``GET /data/campaigns/{id}/archive`` streams a tar.gz of the
 campaign, tarred from the campaign directory as it is read. Every service answers it:
 refusing because "the results are already on this host's filesystem" would assert
 something true of a caller on that host and false of everyone else.
 ``GET /workspaces/{id}/archive`` is the same for a workspace's project files, under a
 single top-level directory. It is a control-plane route rather than a data one, because a
 workspace is not on the results volume the data routes serve.
+
+An **export** is the campaign's tables as files, with its records and, if asked, its
+recordings, built for one request (:ref:`results-export`). ``POST /campaigns/{id}/exports``
+takes the request (``tables``, ``format``, ``bags``, ``records``) and answers at once with
+the export's id and the data-plane route its file will be at; a table the campaign's
+catalog does not have is a ``400`` before anything is built, and a campaign still running
+a ``409``. ``GET /campaigns/{id}/exports/{export_id}`` is its status -- ``done``, ``error``,
+``bytes`` and the row count of every table written so far -- answered from the export's
+own record on disk once it is finished, so it survives a restart. The file is
+``GET /data/campaigns/{id}/exports/{export_id}``, which a token scoped to the campaign may
+fetch like its archive.
 
 Every tick of an SSE stream that had nothing to report sends a ``heartbeat`` event. It is a
 named event rather than the SSE comment such keepalives usually are, because a comment is
@@ -188,10 +257,10 @@ What may ride on a polled payload
 
 ``GET /campaigns/{id}/status`` and ``GET /campaigns/events`` are **hot fan-out payloads**, and
 that governs what may be put on them. The web UI renders every campaign in the list as a card;
-each card polls the status every 1.5 seconds, and the list stream re-lists every campaign once a
-second for as long as any tab is open. So the cost of a field there is multiplied by campaigns on
-screen, by polls, and by open tabs — and served over HTTP/2, where no connection limit throttles a
-page-load burst the way it once did.
+each running campaign's card polls the status every 1.5 seconds, and the list stream re-lists
+the newest hundred campaigns once a second for as long as any tab is open. So the cost of a
+field there is multiplied by campaigns on screen, by polls, and by open tabs — and served over
+HTTP/2, where no connection limit throttles a page-load burst.
 
 Four tiers, and the question to ask of any new data is which one it is in:
 
@@ -211,14 +280,13 @@ Four tiers, and the question to ask of any new data is which one it is in:
      - a search's per-batch objective trajectory
      - its own route, fetched lazily, keyed on a cursor
    * - High-rate telemetry from a running run
-     - a future live run view
+     - a run's tables as it records, ``GET /data/campaigns/{id}/live``
      - its own stream, per run
 
-The **series** row is the one that gets this wrong. ``Status`` carried a ``batch_history`` — one entry
-per batch, growing for the whole run — that **nothing ever read**, on the payload polled most
-often in the system. It was replaced by ``GET /campaigns/{id}/search/history``, which is requested
-only while something is displaying it and re-requested only when ``batches_done`` (a single integer
-on the status) moves. A series is almost never so small that it belongs on the status; if it grows
+The **series** row is the one most easily got wrong: a per-batch list on ``Status`` would grow
+for the whole run on the payload polled most often in the system. A search's trajectory is
+``GET /campaigns/{id}/search/history`` instead, requested only while something is displaying it
+and re-requested only when ``batches_done`` (a single integer on the status) moves. A series is almost never so small that it belongs on the status; if it grows
 with batches, runs, or time, it does not.
 
 ``GET /admin/events`` is the **series** row done the way that row prescribes: its own
@@ -251,13 +319,13 @@ requested by the panel displaying them and never carried on a polled payload. Th
 aggregate **over** the call log rather than a counter maintained beside it, so the two cannot
 drift; the CSV is the same rows as a download.
 
-Their record lives in the central index rather than in ``events.db``, which is the one place these
-depart from the events above: the rows carry a truncated copy of each call's arguments and answer,
-so they are bulky and they age out (30 days, or 200 000 calls, whichever bites first), where the
-event log's whole point is that it is small and durable. Both bounds are reported on the response,
-because a reader told "a month" during a burst that emptied it in a day would be told a wrong
-thing. An unreachable index is reported as ``status`` rather than as an empty list, for the same
-reason: "nothing was called" and "the record cannot be read" are different answers.
+Their record is a SQLite file of its own, ``mcp_calls.db`` on the workspaces volume beside
+``events.db``, rather than rows in the event log, which is the one place these depart from the
+events above: the rows carry a truncated copy of each call's arguments and answer, so they are
+bulky and they age out on bounds of their own (30 days, or 200 000 calls, whichever bites
+first), where the event log keeps 30 days or 20 000 rows. The call log's two bounds are reported
+on the ranking's response (``max_age_s``, ``max_rows``), because a reader told "a month" during a burst that emptied it in
+a day would be told a wrong thing.
 
 A page of ``/admin/mcp-calls`` reports the same way. It carries ``total``, ``truncated`` and the
 ``limit``/``offset`` it was actually read with, because a page that reported none of them read as
@@ -312,9 +380,14 @@ builders for parameterized ones. Both the app and ``HTTPTransport`` use it so th
 bindings cannot drift — a route renamed in one place is renamed for the client too.
 
 The table below is **generated from the running application**, not maintained by hand: it
-is what the service registers, including routes added by installed endpoint plugins. A
-hand-written endpoint list is exactly how the retired synthetic run-file route came to look
-documented while matching no directory on disk.
+is what the service registers, including routes added by installed endpoint plugins, so a
+route that exists is listed and one that does not is not.
+
+A campaign's tables have two routes of their own, neither needed for an answer — a query
+builds what it names: ``POST /campaigns/{id}/tables/build`` builds a finished campaign's tables
+for every run in the background (a ``tables`` list narrows it; progress is the campaign log's
+``TABLES`` section), and ``DELETE /campaigns/{id}/tables`` removes them to free storage,
+refused while the campaign runs or its tables are being built.
 
 Routes
 ======

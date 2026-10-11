@@ -26,7 +26,7 @@ from types import SimpleNamespace
 import pytest
 
 _VAST = """\
-version: 4
+version: 7
 metadata:
   name: tiers
 {plugins}configuration:
@@ -232,14 +232,13 @@ def test_an_actionable_refusal_keeps_its_next_step_in_a_problem():
 
 
 def test_preview_configurations_keeps_an_actionable_refusals_next_step(monkeypatch):
-    """Preview composes, so it is a place the aux-container refusal surfaces.
-
-    Returning ``{"error": str(e)}`` drops the ``next_step`` riding on an ActionableError --
-    leaving the caller a reason and no move, in exactly the case where the move is least
-    obvious.
+    """Preview composes, so it is a place the aux-container refusal surfaces, and its
+    ``next_step`` reaches the caller: a reason with no move is least useful exactly where
+    the move is least obvious.
     """
     from robovast.common.errors import AuxContainerUnavailable
     from robovast.mcp_server.plugins import authoring
+    from tests.mcp_server.conftest import registered_tools
 
     def _refuse(**_kwargs):
         raise AuxContainerUnavailable("needs a container", next_step="start_campaign(...)")
@@ -249,7 +248,7 @@ def test_preview_configurations_keeps_an_actionable_refusals_next_step(monkeypat
     monkeypatch.setattr("robovast.common.config_generation.generate_scenario_variations",
                         _refuse)
 
-    result = authoring.preview_configurations("some.vast", limit=1)
+    result = registered_tools()["preview_configurations"].fn("some.vast", limit=1)
     assert result["error"] == "needs a container"
     assert result["next_step"] == "start_campaign(...)"
 
@@ -324,6 +323,57 @@ def test_validation_composes_inside_the_service_s_aux_runner_context(monkeypatch
     assert entered == [(_preview_tag("ws-1", "x.vast"), True)]
 
 
+@pytest.mark.parametrize("source, expected_key", [
+    ({"workspace_id": "ws-1", "config_path": "x.vast"}, ("ws-1", "x.vast")),
+    ({"campaign_id": "camp-7"}, ("camp-7", "")),
+])
+def test_exec_stages_a_configuration_inside_the_service_s_aux_runner_context(
+        monkeypatch, source, expected_key):
+    """Staging a configuration composes the file, so exec is a place a runner is arranged.
+
+    Composition reaches the simulator's input-files query, a variation's helper image and a
+    generator's, and a service pod has no ``docker`` to fall back on -- so without the hook
+    an exec of a campaign's or a workspace's configuration refuses on the service for a
+    property of where it ran. Held and keyed like preview, so a file previewed and then
+    exec'd reuses one warm container.
+    """
+    from robovast.service import container_exec
+    from robovast.service.interface import ExecRequest
+    from robovast.service.service_base import _preview_tag
+    from tests.service.null_service import NullService
+
+    entered, inside = [], []
+
+    @contextlib.contextmanager
+    def _record(self, tag, project, *, hold=False):
+        entered.append((tag, hold))
+        inside.append(True)
+        try:
+            yield
+        finally:
+            inside.pop()
+
+    class _Staged(Exception):
+        pass
+
+    def _stage(vast_file, config_name, **_kw):
+        # The assertion that matters: composition runs while the runner is installed.
+        assert inside, "stage() composed outside the aux-runner context"
+        assert config_name == "cell"
+        raise _Staged
+
+    monkeypatch.setattr(NullService, "_aux_runner_context", _record)
+    monkeypatch.setattr(NullService, "_exec_vast_file", lambda self, request: "/p/x.vast")
+    monkeypatch.setattr(container_exec, "stage", _stage)
+
+    with pytest.raises(_Staged):
+        NullService.exec_in_container(
+            object.__new__(NullService), ExecRequest(config_name="cell", **source))
+
+    assert entered == [(_preview_tag(*expected_key), True)]
+    assert not inside
+
+
 def test_the_preview_tag_is_stable_per_project_and_name_safe():
     """Stable or the pod is never reused; name-safe or it cannot be a pod name at all."""
     from robovast.service.service_base import _preview_tag
@@ -342,16 +392,17 @@ def test_a_campaign_still_arranges_one_after_the_split(monkeypatch):
     seen = []
     monkeypatch.setattr(
         NullService, "_aux_runner_context",
-        lambda self, tag, project, *, hold=False, should_stop=None: (
-            seen.append((tag, hold, should_stop)) or contextlib.nullcontext()))
-    stop = object()
+        lambda self, tag, project, *, hold=False, should_stop=None, options=None: (
+            seen.append((tag, hold, should_stop, options)) or contextlib.nullcontext()))
+    stop, options = object(), object()
     with NullService._campaign_context(
-            object.__new__(NullService), "camp-7", None, should_stop=stop):
+            object.__new__(NullService), "camp-7", None, should_stop=stop, options=options):
         pass
     # The campaign's own id, and *not* held: its span owns the container, which is what
     # lets per-campaign cleanup find it. Its stop flag travels with it, for the waits the
-    # span makes that are long enough for an operator to give up on.
-    assert seen == [("camp-7", False, stop)]
+    # span makes that are long enough for an operator to give up on, and so do its options,
+    # which fix the images its aux pods run.
+    assert seen == [("camp-7", False, stop, options)]
 
 
 def test_composition_reports_the_aux_container_it_used():

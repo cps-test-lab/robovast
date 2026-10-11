@@ -16,8 +16,7 @@
 
 """How a pod reaches the service's data plane, and what it is given to do so.
 
-Every pod the service launches -- a scenario Job, a postprocessing Job, an aux or exec
-pod, an image build -- moves its bytes through the data plane
+Every pod the service launches -- a scenario Job, an aux or exec pod, an image build -- moves its bytes through the data plane
 (:mod:`robovast.service.data_app`): one ``GET`` of a tar for what it needs, one ``PUT``
 of a tar for what it made. This module is the one place that knows three things every
 such pod needs to agree on with the service:
@@ -62,8 +61,12 @@ def data_url(namespace: str) -> str:
 
 
 def campaign_secret_name(campaign_id: str) -> str:
+    """The campaign's token Secret: the prefix and the whole label-safe id.
+
+    Not cut to 63 characters: a Secret name allows 253, and a cut drops the id's timestamp.
+    """
     from .cluster_execution import _label_safe_campaign  # pylint: disable=import-outside-toplevel
-    return (CAMPAIGN_SECRET_PREFIX + _label_safe_campaign(campaign_id))[:63].rstrip("-.")
+    return CAMPAIGN_SECRET_PREFIX + _label_safe_campaign(campaign_id).rstrip("-.")
 
 
 def campaign_secret_manifest(namespace: str, campaign_id: str, token: str) -> dict:

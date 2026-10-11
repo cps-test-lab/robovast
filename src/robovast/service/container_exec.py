@@ -37,7 +37,8 @@ import threading
 import time
 from typing import Optional, Protocol
 
-from robovast.common.execution import prepare_campaign_configs, render_entrypoint, scenario_env
+from robovast.common.execution import (MCAP_STORAGE_CONFIG, prepare_campaign_configs,
+                                       render_entrypoint, scenario_env)
 from robovast.service.interface import ExecContainerState, ExecRequest, ExecResult, ExecStopResult
 
 logger = logging.getLogger(__name__)
@@ -154,6 +155,25 @@ class ExecRunner(Protocol):
         than a constant. *target* is opaque -- a ``(pod, container)`` pair -- so a caller
         obtains one from the runner rather than constructing it. That is what lets one
         primitive serve the held diagnostic container *and* a live job's.
+        """
+
+    def stream_in(self, target, argv: list, *, limit_s: float, on_line, should_stop,
+                  env: dict | None = None) -> tuple[int | None, bool]:
+        """Run *argv* in *target* and hand every line it prints to *on_line* as it appears.
+
+        :meth:`exec_in` for a command whose output is the point *while it runs* -- a tap on a
+        live run -- rather than a result read once it is over. Stdout and stderr both reach
+        *on_line*, without their newline: a tap whose tool complains on stderr must show the
+        complaint, or it reads as a stream that printed nothing.
+
+        *limit_s* bounds the command; past it the runner ends the exec and reports
+        ``(124, True)``, as :meth:`exec_in` does. *should_stop* is polled between reads and a
+        true answer ends the exec at once with ``(None, False)``: there is no exit status to
+        report for a process that was cut off rather than waited for.
+
+        **Ending the exec does not end the process in the container**: closing a
+        ``pods/exec`` stream signals nothing. A caller that needs the process gone wraps it in a bound of
+        its own (``timeout``), which is what the tap does.
         """
 
     def exec_in_held(self, spec: "ExecSpec", limit_s: int, detach: bool,
@@ -387,7 +407,8 @@ def build_env(scenario_vars: dict, execution: dict, *, staged_config: bool) -> d
 
 
 def stage(vast_file: str, config_name: str, *,
-          cluster: bool, command: str) -> tuple[ExecSpec, dict, int, str]:
+          cluster: bool, command: str,
+          archived: bool = False) -> tuple[ExecSpec, dict, int, str]:
     """Turn a resolved ``.vast`` into a runnable :class:`ExecSpec`.
 
     A campaign's ``_config/`` is itself a project, so both sources reach this with just
@@ -415,8 +436,12 @@ def stage(vast_file: str, config_name: str, *,
             # depend on.
             # An image-family exec has no project, so there is nothing to read a
             # timeout or an env override out of -- the bare image and its command.
-            execution = ((load_config(vast_file) or {}).get("execution") or {}
-                         if vast_file else {})
+            # *archived* reads a campaign's own ``_config/``, which already ran and cannot
+            # be edited. A key the schema no longer declares changed nothing when it ran, so
+            # refusing it now makes a finished campaign unreadable rather than catching
+            # anything -- the split :func:`validate_config` documents.
+            execution = ((load_config(vast_file, upgrade=archived) or {}).get("execution")
+                         or {} if vast_file else {})
             campaign_data = {"configs": [], "execution": execution}
             os.makedirs(os.path.join(generated, "_transient"), exist_ok=True)
             with open(os.path.join(generated, "_transient", "entrypoint.sh"),
@@ -468,7 +493,8 @@ def _assemble_config_mount(staging: str, generated: str, campaign_data: dict) ->
     mount = os.path.join(staging, "config")
     os.makedirs(mount, exist_ok=True)
     transient = os.path.join(generated, "_transient")
-    for name in ("entrypoint.sh", "collect_sysinfo.py", "monitor_resources.py"):
+    for name in ("entrypoint.sh", "collect_sysinfo.py", "monitor_resources.py",
+                 MCAP_STORAGE_CONFIG):
         src = os.path.join(transient, name)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(mount, name))

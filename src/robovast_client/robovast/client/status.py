@@ -42,12 +42,11 @@ from pydantic import BaseModel, ConfigDict, Field
 class Phase(StrEnum):
     """The campaign lifecycle vocabulary carried by ``Status.phase``.
 
-    A ``StrEnum`` so members *are* their plain string value: the wire format is
-    unchanged (JSON still sees ``"finished"``), existing string comparisons keep
-    working, and set membership against raw strings does too. Prefer the group
+    A ``StrEnum`` so members *are* their plain string value: JSON sees
+    ``"finished"``, and string comparisons and set membership against raw strings
+    work. Prefer the group
     predicates (:func:`is_terminal` / :func:`is_running`) over re-listing phase
-    names at a call site — that re-listing had drifted into several divergent
-    "terminal" sets across the CLI, service, and MCP plugins.
+    names at a call site, since each re-listing is a copy free to drift.
 
     ``Status.phase`` stays typed ``str`` on purpose (the field is deliberately
     open, so a future ``stage``-like marker slots in without a schema change);
@@ -56,7 +55,7 @@ class Phase(StrEnum):
     # -- live: the campaign is still working ------------------------------
     # Ordered by when they occur: acceptance → pre-flight → image build (if any)
     # → plugin install (if any) → config-variation expansion (batch) → the run loop
-    # → finish → postprocess → share. (``importing`` is the exception: it is where a
+    # → finish → share (if any) → postprocess. (``importing`` is the exception: it is where a
     # campaign that was taken in rather than run *starts*.) ``initializing``, ``building``, ``plugin
     # install`` and ``variation`` precede ``running`` and exist so the pre-run steps
     # are observable rather than a blank "starting".
@@ -83,8 +82,8 @@ class Phase(StrEnum):
     # "live" -- ``vast campaign wait``, the busy guard, the campaign view -- treats an import
     # like any other work in progress without being told about imports.
     IMPORTING = "importing"
-    POSTPROCESSING = "postprocessing"
     SHARING = "sharing"
+    POSTPROCESSING = "postprocessing"
     # -- terminal: the campaign is over, one way or another ---------------
     FINISHED = "finished"
     FAILED = "failed"
@@ -177,6 +176,14 @@ class RunProgress(BaseModel):
     outcomes_counted: bool = False
 
 
+class StepProgress(BaseModel):
+    """How far composing a ``.vast`` has got: *done* of *total* variation steps, one step per
+    variation of each configuration block. A step can expand into any number of
+    configurations, so this counts work, not configurations."""
+    done: int = 0
+    total: int = 0
+
+
 class HealthFinding(BaseModel):
     """One thing a run's **simulator** reported wrong about itself, while it was running.
 
@@ -190,8 +197,8 @@ class HealthFinding(BaseModel):
     ``level`` decides what happens, and only these two mean anything here:
 
     * ``error`` — the run is not doing what it was started to do. Ends a ``vast campaign wait``
-      (exit 5), because nobody would otherwise be told: a run whose simulator is wedged
-      still holds ``running`` for its whole life.
+      (as ``HEALTH_FINDING``), because nobody would otherwise be told: a run whose simulator
+      is wedged still holds ``running`` for its whole life.
     * ``warn`` — worth reporting, never worth ending a wait for. Surfaces on
       ``get_job_state`` and on the campaign's own exit.
 
@@ -286,9 +293,8 @@ class Status(BaseModel):
     # last actual advance is what separates them. See
     # ``ControllerState._stamp_progress`` for what counts as an advance.
     progress_since: float = Field(default_factory=time.time)
-    # How long ``progress_since`` may legitimately stand still: the declared job budget
-    # (``execution.timeout`` — see ``common.config.declared_job_seconds``), used as
-    # declared, because packed runs can publish their results in one burst per job.
+    # How long ``progress_since`` may legitimately stand still: the declared budget of one
+    # run (``execution.timeout`` — see ``common.config.declared_job_seconds``).
     # Carried on the status so a reader calls a run stalled against a *declared* limit
     # instead of a threshold it invented, and left on the conservative side: a missed
     # stall is recoverable, a false accusation against a healthy long run is not.
@@ -329,6 +335,9 @@ class Status(BaseModel):
     # reconstructed from disk -- the same caveat ``batch_since`` carries.
     search_since: Optional[float] = None
     stage: Optional[str] = None
+    # Composition's step counter while ``phase == "variation"``; ``None`` until the first step
+    # is counted, and for a campaign whose composition was served from the cache.
+    variation: Optional[StepProgress] = None
     mode: Optional[str] = None
     campaign_id: Optional[str] = None
     batch: int = 0                       # current batch index (0-based)
@@ -492,15 +501,29 @@ NO_STALL_VERDICT = ("cannot judge: the .vast declares no execution.timeout, so t
 #: ``ControllerState._progress_signal``) — neither of which a phase that runs no runs can move.
 #: So the clock could only ever run out: converting a large campaign's rosbags legitimately
 #: outlasts any single run, and judging that against the per-run budget reported every such
-#: campaign as stalled while it was healthily postprocessing — and ended ``vast campaign wait`` at exit 4
-#: with the advice to go inspect a job that had already succeeded. ``{phase}`` is named because
-#: the useful next read differs per phase, and the age is re-described because ``set_phase``
-#: restarts ``progress_since`` on every phase change: outside ``running`` it *is* the phase's age.
+#: campaign as stalled while it was healthily postprocessing — and ended ``vast campaign wait``
+#: as STALLED with the advice to go inspect a job that had already succeeded. ``{phase}`` is
+#: named because the useful next read differs per phase, and the age is re-described because
+#: ``set_phase`` restarts ``progress_since`` on every phase change: outside ``running`` it *is*
+#: the phase's age.
 NO_STALL_VERDICT_QUEUED = (
     "cannot judge: every job of the current batch is queued for cluster capacity, so no run "
     "of this campaign is running and none can complete. The no-progress deadline is a "
     "per-run budget, and this is a queue rather than a stalled run. It resolves itself when "
     "capacity frees; get_resource_usage() shows what the cluster is busy with.")
+
+#: Told to a caller whose campaign is still in ``running`` although every run of its current
+#: batch has finished. The same argument as the phase case, inside ``running``: what is left is
+#: the campaign's own work after its runs -- collecting results, composing the next batch --
+#: and none of it can move the per-run signal the budget is measured against. It takes
+#: precedence over :data:`NO_STALL_VERDICT_QUEUED`: a capacity wait that outlives the batch's
+#: last run is not holding back any run, so "none can complete" would be false.
+NO_STALL_VERDICT_RUNS_DONE = (
+    "cannot judge: every run of the current batch has finished ({finished} of {total}), so "
+    "there is no run left for the per-run budget to measure. What remains is the campaign's "
+    "own work after its runs -- collecting their results, then the next batch or "
+    "postprocessing -- and progress_age_s is the time since the last run finished. Read what "
+    "it is doing with get_campaign_log")
 
 NO_STALL_VERDICT_OFF_RUN = (
     "cannot judge: the campaign is in '{phase}', where no run executes, and the only budget "
@@ -530,11 +553,12 @@ def stall_report(status: "Status") -> dict:
         what to do next.
       - ``False`` — inside the declared budget.
       - ``None``  — no verdict is possible: no ``execution.timeout`` was declared, the
-        campaign is live in a phase that executes no runs (below), or every job of its
-        current batch is queued for cluster capacity, so no run is running and none can
-        complete. That last one is the same argument as the phase case, applied inside
-        ``running``: the budget is per-run, and a queue the campaign does not control is
-        not a stalled run.
+        campaign is live in a phase that executes no runs (below), every run of its
+        current batch has finished, or every job of its current batch is queued for
+        cluster capacity, so no run is running and none can complete. The last two are
+        the same argument as the phase case, applied inside ``running``: the budget is
+        per-run, and neither the work after a batch's last run nor a queue the campaign
+        does not control is a stalled run.
         ``stall_verdict`` says which, and how to get one. Never a substituted
         backstop: the cluster's force-kill default exists so a run cannot hang
         forever, which is a fine reason to kill at one hour and a terrible reason to
@@ -566,6 +590,14 @@ def stall_report(status: "Status") -> dict:
         # a phase it cannot judge is what invited the comparison in the first place.
         return {"progress_age_s": age, "stalled": None,
                 "stall_verdict": NO_STALL_VERDICT_OFF_RUN.format(phase=status.phase)}
+    finished = status.runs.completed + status.runs.no_result
+    if status.runs.total and finished >= status.runs.total:
+        # Before the capacity check: once the batch's last run has finished, a capacity wait
+        # can hold back no run of it, and reporting one says "none can complete" of runs that
+        # all have. ``no_result`` counts too -- a run that delivered nothing is over as well.
+        return {"progress_age_s": age, "stalled": None,
+                "stall_verdict": NO_STALL_VERDICT_RUNS_DONE.format(
+                    finished=finished, total=status.runs.total)}
     if status.waiting_for_capacity:
         # Before the budget check, for the same reason the phase check is: this is the more
         # specific reason no verdict is possible. The age is still reported -- suppressing

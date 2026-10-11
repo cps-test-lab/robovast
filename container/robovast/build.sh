@@ -331,6 +331,12 @@ build_base() {
     "$EMPTY_CTX"
 }
 
+# The commit Dockerfile.roqsim pins roqsim to: its `ARG ROQSIM_REF=<sha>` default.
+pinned_roqsim_ref() {
+  sed -n 's/^ARG ROQSIM_REF=\([0-9a-f]\{40\}\)[[:space:]]*$/\1/p' "$BASEDIR/Dockerfile.roqsim" |
+    head -n 1
+}
+
 build_roqsim() {
   # FROM the base by its *resolved* tag rather than a floating one, so the derived image
   # is always built on the base that was just built (or the one explicitly named) and
@@ -348,7 +354,15 @@ build_roqsim() {
   # remote does.
   #
   # It also turns the build log into a record of what was built, which a branch name is not.
-  local ref="${ROQSIM_REF:-main}" resolved
+  #
+  # Without ROQSIM_REF the ref is the commit Dockerfile.roqsim pins, which is what this image
+  # is meant to carry: moving that pin is how the image changes (docs/images.rst), and CI
+  # reads the same line.
+  local ref="${ROQSIM_REF:-$(pinned_roqsim_ref)}" resolved
+  if [[ -z "$ref" ]]; then
+    echo "error: no ROQSIM_REF given and none pinned in $BASEDIR/Dockerfile.roqsim." >&2
+    return 1
+  fi
   if [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
     resolved="$ref"
   else

@@ -17,6 +17,7 @@
 import contextvars
 import copy
 import fnmatch
+import hashlib
 import json
 import logging
 import os
@@ -144,10 +145,78 @@ def set_aux_stop_predicate(should_stop):
     return _aux_stop_predicate.set(should_stop)
 
 
+# What fixes the image of an auxiliary container a campaign's composition needs, when no
+# container is started for it. Scoped like the factory above, and set only for a campaign's
+# span (``ClusterService._aux_runner_context``). A step served from a cache -- a composition,
+# an up-to-date input generator -- starts no helper, yet its key needs the helper's digest
+# and a replay of the campaign recomposes and runs one, so the image is fixed and recorded
+# here, exactly as a started one is (:func:`aux_image_digest`).
+_aux_image_fixer: "contextvars.ContextVar" = contextvars.ContextVar(
+    "robovast_aux_image_fixer", default=None)
+
+
+def set_aux_image_fixer(fixer):
+    """Register ``fixer(spec) -> digest`` for the auxiliary containers of this context.
+
+    Called with a :class:`~.variation.container_runner.ContainerSpec` for every auxiliary
+    container a cache needs the digest of (:func:`aux_image_digest`); returns the ``Token`` like
+    :func:`set_container_runner_factory`. A caller that does not record images registers
+    none.
+    """
+    return _aux_image_fixer.set(fixer)
+
+
+def aux_images_fixed() -> bool:
+    """Whether :func:`aux_image_digest` answers here without a runner."""
+    return _aux_image_fixer.get() is not None
+
+
+def aux_image_digest(spec, runner=None, *, image_project=None, image_project_tag=None,
+                     purpose="") -> str:
+    """The ``sha256:…`` digest of the image *spec*'s container runs in here; raise if unreadable.
+
+    What a cache of a helper's output is keyed on, since ``spec.image`` is a ref a push moves.
+    In a campaign the fixer answers with the digest its pods are pinned to, and no container
+    is started. Elsewhere *runner* reports it, or one is built for the purpose: on a
+    development machine that is a ``docker image inspect``, pulling an absent image first; in
+    a service's held span it is the held pod.
+    """
+    fixer = _aux_image_fixer.get()
+    if fixer is not None:
+        digest = fixer(spec)
+    elif runner is not None:
+        digest = runner.image_digest()
+    else:
+        runner = _make_container_runner(spec, image_project=image_project,
+                                        image_project_tag=image_project_tag, purpose=purpose)
+        try:
+            digest = runner.image_digest()
+        finally:
+            runner.close()
+    if not digest:
+        raise RuntimeError(f"cannot read the digest of auxiliary image {spec.image}")
+    # Only the digest: a local inspect, the kubelet and the registry name the repository
+    # differently for the same bytes.
+    return str(digest).rsplit("@", 1)[-1]
+
+
 #: Set in the child environment of the isolated compose subprocess. Its presence
 #: makes ``generate_scenario_variations`` run the composition in-process (no further
 #: fork) — see ``_compose_isolated`` and the dispatch in that function.
 _ISOLATED_ENV = "ROBOVAST_ISOLATED_COMPOSE"
+
+#: Composition counts its steps -- one per variation of each configuration block -- on the
+#: same progress line as everything else it narrates, because that line is the one channel
+#: that also crosses the isolated worker's stdout. :func:`parse_composition_step` is its only
+#: reader.
+_STEP_LINE = "Composed variation {done} of {total}."
+_STEP_RE = re.compile(r"^Composed variation (\d+) of (\d+)\.$")
+
+
+def parse_composition_step(line):
+    """``(done, total)`` when *line* is composition's step counter, else ``None``."""
+    m = _STEP_RE.match(line.strip())
+    return (int(m.group(1)), int(m.group(2))) if m else None
 
 
 
@@ -193,7 +262,8 @@ def _make_container_runner(spec, *, image_project=None, image_project_tag=None, 
             "execution-backend container runner was installed for this composition, and "
             "there is no local 'docker' to fall back on. That is a property of where this "
             "ran, not of the .vast -- the same file composes wherever a runner is arranged, "
-            "which a campaign and a preview through the service both do.",
+            "which a campaign, a preview and an exec of a configuration through the "
+            "service all do.",
             next_step=("compose it where a runner exists: preview_configurations or "
                        "start_campaign against a service, rather than in a process that has "
                        "neither a backend nor docker. If this IS such a service, it reached "
@@ -213,7 +283,7 @@ def _make_container_runner(spec, *, image_project=None, image_project_tag=None, 
     return LocalContainerRunner(spec, should_stop=_aux_stop_predicate.get())
 
 
-def execute_variation(base_dir, configs, variation_class, parameters, general_parameters, progress_update_callback, scenario_file, output_dir=None, container_runner=None):
+def execute_variation(base_dir, configs, variation_class, parameters, progress_update_callback, scenario_file, output_dir=None, container_runner=None):
     logger.debug(f"Executing variation: {variation_class.__name__}")
     # Constructing a plugin validates its parameters, so a refusal happens HERE -- and
     # reported from outside this function it named neither the plugin nor the config block,
@@ -222,7 +292,7 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
     # way a construction can fail keeps the exception it already raises, including the ones
     # carrying their own next step.
     try:
-        variation = variation_class(base_dir, parameters, general_parameters, progress_update_callback, scenario_file, output_dir, container_runner=container_runner)
+        variation = variation_class(base_dir, parameters, progress_update_callback, scenario_file, output_dir, container_runner=container_runner)
     except VariationConfigError as e:
         msg = f"Variation failed. {variation_class.__name__}: {e}"
         logger.error(msg)
@@ -268,7 +338,8 @@ def execute_variation(base_dir, configs, variation_class, parameters, general_pa
     config_transient_files = []
 
     logger.debug(f"Variation {variation_class.__name__} completed successfully")
-    return configs, input_files, campaign_transient_files, config_transient_files
+    return (configs, input_files, campaign_transient_files, config_transient_files,
+            variation.get_read_files())
 
 
 #: Config sections whose local plugin sources a campaign cannot RUN without. A module named
@@ -380,7 +451,8 @@ def _stage_query_documents(runner, query, expose):
         expose(staged, container_path)
 
 
-def _run_input_files_query(query, vast_dir, *, image_project=None, image_project_tag=None):
+def _run_input_files_query(query, vast_dir, *, image_project=None, image_project_tag=None,
+                           digests=None):
     """Ask the simulator's own image which files a world is made of.
 
     A world is not one file -- it is the YAML, whatever it ``extends``, the MJCF that chain
@@ -397,6 +469,8 @@ def _run_input_files_query(query, vast_dir, *, image_project=None, image_project
     A path that is neither under the mount nor under the campaign directory arrived with the
     image (a packaged world's meshes) and is dropped rather than staged, because copying it
     would put a second, diverging copy of an installed asset into the campaign.
+
+    *digests* collects ``{container name: digest}`` of the image that answered.
     """
     runner = _make_container_runner(query.spec, image_project=image_project,
                                     image_project_tag=image_project_tag,
@@ -415,6 +489,8 @@ def _run_input_files_query(query, vast_dir, *, image_project=None, image_project
                 CONFIG_MOUNT  # pylint: disable=import-outside-toplevel
             expose(vast_dir, CONFIG_MOUNT)
         runner.run(query.command, lines.append)
+        if digests is not None:
+            digests[query.spec.container_name()] = aux_image_digest(query.spec, runner)
     except subprocess.CalledProcessError as exc:
         # The container's own words, not the runner's exit status. ``CalledProcessError``
         # renders as "returned non-zero exit status N" and nothing else, and the failure this
@@ -1048,7 +1124,8 @@ def _query_key(query) -> str:
 def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
                                scenario_parameters=None, *,
                                image_project=None, image_project_tag=None,
-                               container_queries: bool = True):
+                               container_queries: bool = True, aux_images=None,
+                               aux_digests=None):
     """Resolve every configuration's ``sim`` block, and stage the worlds they name.
 
     Runs **after** the variation loop, because that is the first point at which a
@@ -1072,6 +1149,10 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
     not: a ``sim:`` path that no backend accepts is a mistake worth failing composition for,
     while a backend that merely cannot be imported here must not break a campaign that never
     mentions it (validation reports that properly elsewhere).
+
+    *aux_images* collects ``{container name: image}`` of each query's container, which the
+    composition result carries, and *aux_digests* the digest each ran, which a cache hit is
+    checked against (:func:`_cached_entry_is_current`).
     """
     from robovast.common.simulators import backend_name  # pylint: disable=import-outside-toplevel
     from robovast.common.simulators import flatten_sim_block, merge_sim_block, sim_input_files
@@ -1114,10 +1195,12 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
         key = _query_key(query)
         if key in answers:
             return answers[key]
+        if aux_images is not None and getattr(query, "spec", None) is not None:
+            aux_images[query.spec.container_name()] = query.spec.image
         try:
             answers[key] = _run_input_files_query(
                 query, vast_dir, image_project=image_project,
-                image_project_tag=image_project_tag)
+                image_project_tag=image_project_tag, digests=aux_digests)
         except BaseException:
             query_failed.append(True)
             raise
@@ -1575,7 +1658,14 @@ COMPOSITION_ONLY_EXECUTION_KEYS = frozenset({"scenario_file", "run_files", "gene
 # 10: a configuration's staged files are addressed at the config mount rather than under a
 # per-configuration directory, and an entry carries its RESOLVED sim block -- so one written
 # by 9 replays container paths that no longer exist.
-_CACHE_FORMAT_VERSION = 10
+# 11: an entry carries the image of each auxiliary container its composition ran
+# (``aux_container_images``), which a hit hands to the campaign's image fixer -- one written
+# by 10 cannot say which helper images its configurations came from.
+# 12: an entry carries the digest of each of those images and the files its composition read
+# beyond the key (:func:`_cached_entry_is_current`), without which a hit cannot be checked.
+# 13: each configuration carries its ``.vast`` block and the files its variations read
+# (``_read_files``), both part of its identity; an entry from 12 carries neither.
+_CACHE_FORMAT_VERSION = 13
 
 
 def _build_generate_cache_key(
@@ -1588,6 +1678,7 @@ def _build_generate_cache_key(
     tolerate_infeasible: bool = False,
     image_project: str | None = None,
     image_project_tag: str | None = None,
+    image_pins: dict | None = None,
 ) -> CacheKey:
     """Build a FileCache2 CacheKey covering every input that affects generate_scenario_variations.
 
@@ -1595,6 +1686,9 @@ def _build_generate_cache_key(
     ``relpath(file, vast_dir)`` rather than basename, preventing collisions
     between different files that share the same name.
     """
+    from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
+        default_image_project, default_image_tag)
+
     key = CacheKey()
 
     # Cache format version — bumped whenever the stored structure changes.
@@ -1605,11 +1699,13 @@ def _build_generate_cache_key(
     key.add("tolerate_infeasible", tolerate_infeasible)
 
     # Same reason: the composed data carries the *resolved* family image refs, so an entry
-    # composed against one project must not satisfy a request for another. Without this a
-    # dev run against a second registry would silently reuse the first campaign's images —
-    # the one failure mode a per-campaign override must not have.
-    key.add("image_project", image_project or "")
-    key.add("image_project_tag", image_project_tag or "")
+    # composed against one project must not satisfy a request for another. The key holds
+    # the project and tag the refs are resolved with -- the campaign's own when it names
+    # one, the environment's otherwise, exactly as resolve_family_image falls back -- so a
+    # deployment moved to another project or tag composes afresh too, not only a campaign
+    # that overrides them.
+    key.add("image_project", image_project or default_image_project())
+    key.add("image_project_tag", image_project_tag or default_image_tag())
 
     # .vast file itself
     key.add_file(variation_file, base_dir=vast_dir)
@@ -1649,7 +1745,51 @@ def _build_generate_cache_key(
     }))
     key.add("variation_entrypoints_hash", hash_variation_entrypoints(all_variation_names))
 
+    # A replay's recorded digests (``image_pins``) replace the project in resolving `family:`
+    # refs, so an entry composed from the project's tags must never satisfy a replay, and one
+    # composed from one record's digests never another's. Added only for a replay, so a
+    # fresh launch's key is what it is without them.
+    if image_pins is not None:
+        key.add("image_pins", json.dumps(dict(image_pins), sort_keys=True))
+
     return key
+
+
+def _file_sha256(path: str) -> str:
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def _read_file_hashes(paths) -> dict:
+    """``{absolute path: sha256}`` of *paths*, for an entry's ``read_files``."""
+    return {path: _file_sha256(path) for path in sorted(set(paths))}
+
+
+def _cached_entry_is_current(entry: dict, *, image_project=None,
+                             image_project_tag=None) -> bool:
+    """Whether what a cached composition read beyond its key is unchanged.
+
+    The key is built before composing, from the ``.vast`` alone; which helper images run and
+    which further files are read (a map's image, a world's parents) is known only after. The
+    entry records both, and a hit is served only while each file hashes the same and each
+    helper image resolves to the digest it ran.
+    """
+    from .variation.container_runner import \
+        ContainerSpec  # pylint: disable=import-outside-toplevel
+    for path, digest in (entry.get("read_files") or {}).items():
+        if not os.path.isfile(path) or _file_sha256(path) != digest:
+            logger.debug("cached composition read %s, which has changed", path)
+            return False
+    recorded = entry.get("aux_image_digests") or {}
+    for name, image in sorted((entry.get("aux_container_images") or {}).items()):
+        current = aux_image_digest(ContainerSpec(image=image), image_project=image_project,
+                                   image_project_tag=image_project_tag,
+                                   purpose="the composition cache")
+        if recorded.get(name) != current:
+            logger.debug("cached composition ran %s as %s, which is now %s",
+                         image, recorded.get(name), current)
+            return False
+    return True
 
 
 def _result_to_transport(result: dict) -> dict:
@@ -1660,14 +1800,12 @@ def _result_to_transport(result: dict) -> dict:
     byte-for-byte identical to a cached one. Per-config ``_config_files`` /
     ``_config_transient_files`` ``(rel, path)`` tuples become tagged dicts (source
     files keep their absolute path; artifacts store the path relative to
-    ``output_dir``); ephemeral fields (``_output_dir``, ``_transient_files``,
-    ``_config_block``) are dropped.
+    ``output_dir``); ephemeral fields (``_output_dir``, ``_transient_files``) are dropped.
     """
     transport = copy.deepcopy(result)
     transport["_transient_files"] = []
     transport.pop("_output_dir", None)
     for cfg in transport.get("configs", []):
-        cfg.pop("_config_block", None)
         storable = []
         for rel, path in cfg.get("_config_files", []):
             if os.path.isabs(rel):
@@ -1715,7 +1853,8 @@ def _result_from_transport(data: dict, output_dir) -> dict:
 
 def _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback,
                       tolerate_infeasible=False, image_project=None,
-                      image_project_tag=None, container_queries=True, should_stop=None):
+                      image_project_tag=None, container_queries=True, should_stop=None,
+                      image_pins=None):
     """Compose a ``plugins:``-declaring .vast in an isolated subprocess.
 
     The worker leads ``sys.path`` with the project's ``.robovast_plugins`` so the
@@ -1773,6 +1912,8 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
                 # campaign set it last.
                 "image_project": image_project,
                 "image_project_tag": image_project_tag,
+                # A replay's recorded digests, for the same reason as the project above.
+                "image_pins": image_pins,
                 "result_path": result_path,
             }, f)
 
@@ -1814,13 +1955,19 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
     return _result_from_transport(transport, output_dir)
 
 
-def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True, isolate_plugins=True, tolerate_infeasible=False, image_project=None, image_project_tag=None, container_queries=True, should_stop=None):
+def generate_scenario_variations(variation_file, progress_update_callback=None, variation_classes=None, output_dir=None, use_cache=True, isolate_plugins=True, tolerate_infeasible=False, image_project=None, image_project_tag=None, container_queries=True, should_stop=None, image_pins=None):
     """Generate all scenario variation configs from a .vast file.
 
     ``image_project`` / ``image_project_tag`` select which project the RoboVAST image
     family resolves from for *this* campaign (``None`` = the process environment's).
     They only affect ``family:`` refs; a container image the ``.vast`` states is
     untouched.
+
+    ``image_pins`` is a replay's ``{container or role: digest}`` from the launch record it
+    replays. Given, every ``family:`` ref in the containers resolves to its container's
+    recorded digest and never to the project (see
+    :func:`~robovast.common.execution.resolve_family_images_in_containers`), and the cache
+    key includes it, so a replay never reuses a composition resolved from tags.
 
     ``tolerate_infeasible`` controls what happens when a variation raises
     :class:`~.variation.base_variation.VariationInfeasibleError` (a specific
@@ -2047,9 +2194,12 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             tolerate_infeasible=tolerate_infeasible,
             image_project=image_project,
             image_project_tag=image_project_tag,
+            image_pins=image_pins,
         )
         _cached = _cache_meta.get_json(_cache_key)
-        if _cached is not None:
+        # Checking a hit fixes the helper images it names, as a started helper's would be.
+        if _cached is not None and _cached_entry_is_current(
+                _cached, image_project=image_project, image_project_tag=image_project_tag):
             logger.debug("Cache HIT for generate_scenario_variations (%s)", variation_file)
             # Restore the whole output_dir from the tarball when the caller wants it.
             if output_dir is not None:
@@ -2077,11 +2227,15 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # GUI classes are skipped (headless callers discard them). The worker itself
     # writes the cache, so the next build hits the fast path above without forking.
     if should_isolate:
-        return _compose_isolated(variation_file, output_dir, use_cache, progress_update_callback,
-                                 tolerate_infeasible, image_project=image_project,
-                                 image_project_tag=image_project_tag,
-                                 container_queries=container_queries,
-                                 should_stop=should_stop)
+        isolated = _compose_isolated(variation_file, output_dir, use_cache,
+                                     progress_update_callback, tolerate_infeasible,
+                                     image_project=image_project,
+                                     image_project_tag=image_project_tag,
+                                     container_queries=container_queries,
+                                     should_stop=should_stop, image_pins=image_pins)
+        # The worker's helpers were started, or its hit checked, through this process's
+        # factory, which fixes their images.
+        return isolated
 
     # About to compose (cache miss, or caching disabled). Ensure any variation-plugin
     # packages the .vast declares in ``plugins:`` are installed into the workspace's
@@ -2100,12 +2254,18 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     config_transient_files = []
     #: Auxiliary containers a variation needed while composing, by container name.
     aux_containers = set()
+    #: The image of every auxiliary container this composition started -- a variation's and a
+    #: configuration's world query -- by container name. See ``aux_container_images`` below.
+    aux_images = {}
+    #: The digest each of those ran, by container name.
+    aux_digests = {}
+    #: Source files variations read that the cache key did not cover.
+    read_files = []
+    key_run_files = set(run_files)
 
     if output_dir is None:
         temp_path = tempfile.TemporaryDirectory(prefix="robovast_variation_")
         output_dir = temp_path.name
-
-    general_parameters = parameters.get('general', {})
 
     # Get scenario parameters once (same for all configurations)
     scenario_param_dict = get_scenario_parameters(scenario_file)
@@ -2113,7 +2273,19 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
 
     campaign_input_files.extend(analysis_files)
 
+    def _steps(block):
+        # The same reading of `variations` as _get_variation_classes: anything but a list is none.
+        listed = block.get('variations')
+        return len(listed) if isinstance(listed, list) else 0
+
+    steps_total = sum(_steps(c) for c in configurations)
+    steps_done = 0
+    if steps_total:
+        progress_update_callback(_STEP_LINE.format(done=0, total=steps_total))
+
     for config in configurations:
+        block_end = steps_done + _steps(config)
+        block_read_files = []
         if variation_classes is None:
             # Read variation classes from the variation file
             variation_classes_and_parameters = _get_variation_classes(config, vast_dir)
@@ -2161,9 +2333,11 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 # ran rather than what a caller predicted it would need. A composition that
                 # cost a helper image should be able to say so.
                 aux_containers.add(container_spec.container_name())
+                aux_images[container_spec.container_name()] = container_spec.image
             try:
-                result, var_input_files, var_campaign_transient, var_config_transient = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
-                                                                                                          variation_parameters, general_parameters, progress_update_callback, scenario_file, output_dir,
+                (result, var_input_files, var_campaign_transient, var_config_transient,
+                 var_read_files) = execute_variation(os.path.dirname(variation_file), current_configs, variation_class,
+                                                                                                          variation_parameters, progress_update_callback, scenario_file, output_dir,
                                                                                                           container_runner=container_runner)
             except (VariationInfeasibleError, VariationConfigError, VariationFailed) as exc:
                 # Name the config block and the .vast line here -- neither execute_variation
@@ -2192,10 +2366,17 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 progress_update_callback(f"Variation pipeline stopped at {variation_class.__name__} - {named_exc}")
                 current_configs = []
                 break
+            else:
+                if container_spec is not None:
+                    aux_digests[container_spec.container_name()] = aux_image_digest(
+                        container_spec, container_runner)
             finally:
                 if container_runner is not None:
                     container_runner.close()
             duration = round(time.monotonic() - t0, 3)
+
+            read_files.extend(var_read_files)
+            block_read_files.extend(var_read_files)
 
             # Validate and collect variation input files
             for vf in var_input_files:
@@ -2231,10 +2412,23 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                 c["_variations"].append(entry)
 
             current_configs = result
+            steps_done += 1
+            progress_update_callback(_STEP_LINE.format(done=steps_done, total=steps_total))
 
+        if steps_done < block_end:
+            # The pipeline stopped early, so this block's remaining variations will not run.
+            steps_done = block_end
+            progress_update_callback(_STEP_LINE.format(done=steps_done, total=steps_total))
+
+        # A file under output_dir was generated, and what generated it is keyed already.
+        block_read_files = sorted({
+            p for p in block_read_files
+            if not os.path.abspath(p).startswith(os.path.abspath(output_dir) + os.sep)})
         for c in current_configs:
             c["_config_name"] = config.get("name")
             c["_config_block"] = config
+            # Hashed into the configuration's identity (compute_config_identifier).
+            c["_read_files"] = block_read_files
 
         configs.extend(current_configs)
 
@@ -2279,7 +2473,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                                existing_scenario_parameters,
                                image_project=image_project,
                                image_project_tag=image_project_tag,
-                               container_queries=container_queries)
+                               container_queries=container_queries,
+                               aux_images=aux_images, aux_digests=aux_digests)
 
     # Extract execution parameters from execution section
     #
@@ -2287,9 +2482,11 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # downstream -- the container plan, the image builds, the run environment -- reads
     # one already-complete picture instead of each re-asking the backend and risking a
     # different answer. The campaign always wins; a backend fills in what was left out.
+    from robovast.common.config import recording_config  # pylint: disable=import-outside-toplevel
     from robovast.common.simulators import apply_backend  # pylint: disable=import-outside-toplevel
     execution_section = apply_backend(parameters.get('execution', {}) or {},
-                                      base_dir=os.path.dirname(variation_file))
+                                      base_dir=os.path.dirname(variation_file),
+                                      recording=recording_config(parameters.get('recording')))
     # And immediately resolve the ``family:`` refs a backend (or the default) contributed,
     # so the campaign data carries concrete images from here on. The project/tag arrive as
     # arguments rather than being read from the environment here: this runs in the
@@ -2299,7 +2496,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         resolve_family_images_in_containers  # pylint: disable=import-outside-toplevel
     from robovast.common.config import DEFAULT_SHM_SIZE  # pylint: disable=import-outside-toplevel
     resolve_family_images_in_containers(execution_section.get('containers'),
-                                        project=image_project, tag=image_project_tag)
+                                        project=image_project, tag=image_project_tag,
+                                        pins=image_pins)
     execution_params = {
         # A COPY minus what composition consumes itself -- deliberately not a whitelist.
         # The backend reads this dict and nothing else, so a key missing here is a key the
@@ -2315,7 +2513,6 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         # configuration -- a 25-trial sweep looks like 5 -- right where an agent decides whether
         # it can afford to start.
         "runs": execution_section.get('runs', 1),
-        "runs_per_job": execution_section.get('runs_per_job', 1),
         # Defaulted here as well as on the model, because the two are reached by different
         # routes: `load_config` validates against the model and then hands composition the
         # RAW yaml, so a model default cannot arrive here on its own. Same constant, so the
@@ -2345,8 +2542,24 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
         # on-disk cache untouched -- and a cache hit reports it just as truly, since which
         # helper images a sweep needs is a property of the .vast and not of this run.
         "aux_containers": sorted(aux_containers),
+        # Every helper this composition started, with the image it named and the digest it
+        # ran, for the same two crossings. A hit is served only while each still resolves to
+        # that digest (:func:`_cached_entry_is_current`).
+        "aux_container_images": dict(sorted(aux_images.items())),
+        "aux_image_digests": dict(sorted(aux_digests.items())),
+        # What the cache key could not name before composing: files a variation read (a map's
+        # image) and the worlds configurations resolved to, both checked on a hit. A file
+        # under output_dir was generated, and what generated it is keyed already.
+        "read_files": _read_file_hashes(
+            [p for p in read_files
+             if not os.path.abspath(p).startswith(os.path.abspath(output_dir) + os.sep)]
+            + [os.path.join(vast_dir, rel) for rel in run_files
+               if rel not in key_run_files and os.path.isfile(os.path.join(vast_dir, rel))]),
         "_output_dir": os.path.abspath(output_dir),
         "execution": execution_params,
+        # The `recording:` block as written, or None. Not underscore-prefixed for the same
+        # reason: the backend derives the run's RECORD_* environment from it.
+        "recording": parameters.get('recording'),
         "created_at": datetime.now().isoformat()
     }
 

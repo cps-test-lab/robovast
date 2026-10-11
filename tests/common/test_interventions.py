@@ -17,7 +17,6 @@ The three properties that define the feature, one test each:
 * with no ledger, outcomes are byte-identical to what they were before it existed.
 """
 
-import os
 from pathlib import Path
 
 import pytest
@@ -72,21 +71,20 @@ def test_a_resultless_run_of_a_killed_job_is_killed_not_unknown(campaign):
 
 
 def test_a_finished_run_of_a_killed_job_keeps_its_real_verdict(campaign):
-    """The packed-job case: a kill must never overwrite measurement that exists.
+    """A kill must never overwrite measurement that exists.
 
-    With ``runs_per_job > 1`` a job's earlier runs routinely complete before anyone stops
-    it. Marking those ``killed`` would delete real results — which is why ``killed``
-    replaces ``unknown`` and only ``unknown``.
+    A run can finish, verdict written, before its stop lands. Marking it ``killed`` would
+    delete a real result — which is why ``killed`` replaces ``unknown`` and only ``unknown``.
     """
     _run(campaign, "cfgA", "0", xml=_PASS_XML, job_index=0)
-    _run(campaign, "cfgA", "1", xml=_FAIL_XML, job_index=0)
-    _run(campaign, "cfgA", "2", job_index=0)  # the one actually in flight
-    record_intervention(campaign, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-0",
-                      job_name="batch-0-job-0", source="mcp", detail="wedged")
+    _run(campaign, "cfgA", "1", job_index=1)  # the one actually in flight
+    for index in (0, 1):
+        record_intervention(campaign, kind=KIND_KILLED, job_dir=f"_jobs/batch-0/job-{index}",
+                            job_name=f"batch-0-job-{index}", source="mcp", detail="wedged")
 
     statuses = {o["run_id"]: o["status"] for o in read_run_outcomes(campaign / "cfgA",
                                                                    campaign)}
-    assert statuses == {0: "passed", 1: "failed", 2: "killed"}
+    assert statuses == {0: "passed", 1: "killed"}
 
 
 def test_no_ledger_leaves_outcomes_exactly_as_they_were(campaign):
@@ -210,38 +208,17 @@ def test_a_killed_run_is_counted_apart_from_the_failures(campaign):
     assert read_run_counts(campaign)["num_killed"] == 1
 
 
-@pytest.mark.skipif(not os.environ.get("ROBOVAST_TEST_PG_DSN"),
-                    reason="ROBOVAST_TEST_PG_DSN is not set")
-def test_run_view_exposes_the_kill_and_its_reason(tmp_path):
-    """SQL is how results are read, so the kill has to be filterable and explained there.
-
-    The reading path is Postgres now: the campaign's own record is mirrored into the
-    central index by the ingest, and ``run_view`` is a view over it. What is pinned is
-    unchanged -- a killed run is selectable by ``status = 'killed'`` and carries the
-    operator's reason -- but it only reaches SQL if the ingest mirrors the store, so the
-    campaign is ingested here rather than queried off a file.
-
-    Its own campaign directory, not the module fixture's: one index holds every campaign,
-    so the id has to be unique or a re-run reads a previous one's rows.
-    """
+def test_run_view_exposes_the_kill_and_its_reason(campaign):
+    """SQL is how results are read, so the kill has to be filterable and explained there:
+    a killed run is selectable by ``status = 'killed'`` and carries the operator's reason,
+    read from the campaign's own record through ``run_view``."""
     from robovast.common.store import STORE_FILENAME, CampaignStore
-    from robovast.results_processing import campaign_ingest, index_query, index_views
     from robovast.results_processing.data_query import query_data_db
 
-    psycopg = pytest.importorskip("psycopg")
-    dsn = os.environ["ROBOVAST_TEST_PG_DSN"]
-    schema = "interventions_run_view_test"
-    os.environ["ROBOVAST_INDEX_DSN"] = f"{dsn} options=-csearch_path={schema}"
-    with psycopg.connect(dsn, autocommit=True) as setup:
-        setup.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
-        setup.execute(f"CREATE SCHEMA {schema}")
-
-    campaign_id = "killed-run-view-2026-08-13-120000"
-    campaign = tmp_path / campaign_id
     _run(campaign, "cfgA", "0", xml=_PASS_XML, job_index=0)
     _run(campaign, "cfgA", "1", job_index=1)
-    record_intervention(campaign, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-1", job_name="cfgA/1",
-                      source="mcp", detail="never converged")
+    record_intervention(campaign, kind=KIND_KILLED, job_dir="_jobs/batch-0/job-1",
+                        job_name="cfgA/1", source="mcp", detail="never converged")
 
     with CampaignStore(campaign / STORE_FILENAME) as store:
         cid = store.create_campaign("c", {}, mode="batch")
@@ -251,21 +228,12 @@ def test_run_view_exposes_the_kill_and_its_reason(tmp_path):
                                  status="evaluated", result_dir="cfgA")
         store.record_runs(unit, read_run_outcomes(campaign / "cfgA", campaign))
 
-    try:
-        with index_query.open_index(readonly=False) as conn:
-            campaign_ingest.ingest_campaign(conn, str(campaign), campaign_id)
-            index_views.create_views(conn)
-
-        rows = query_data_db(campaign,
-                             "SELECT run_id, status, failure_message FROM run_view "
-                             f"WHERE campaign_id = '{campaign_id}' "
-                             "AND status = 'killed'")["rows"]
-        assert len(rows) == 1
-        assert rows[0]["run_id"] == 1
-        assert rows[0]["failure_message"] == "manually stopped via mcp: never converged"
-    finally:
-        with psycopg.connect(dsn, autocommit=True) as teardown:
-            teardown.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+    rows = query_data_db(campaign,
+                         "SELECT run_id, status, failure_message FROM run_view "
+                         "WHERE status = 'killed'")["rows"]
+    assert len(rows) == 1
+    assert rows[0]["run_id"] == 1
+    assert rows[0]["failure_message"] == "manually stopped via mcp: never converged"
 
 
 # -- probes: the same ledger, a different consequence ---------------------------------------------

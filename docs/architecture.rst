@@ -21,7 +21,7 @@ bindings:
 
 * the **service** HTTP endpoints (:mod:`robovast.service.app`, FastAPI, OpenAPI
   at ``/docs``);
-* the **client** :class:`robovast.service.client.RobovastClient`;
+* the **client** :func:`robovast.service.client.RobovastClient`;
 * the **MCP tools** and **``vast`` CLI** commands, which wrap the client.
 
 Campaign status reuses :class:`robovast.client.status.Status` verbatim — the live state
@@ -30,8 +30,8 @@ where the campaign runs.
 
 .. _architecture-distributions:
 
-Four distributions, layered by audience
----------------------------------------
+Distributions, layered by audience
+----------------------------------
 
 The contract above is one thing; what you have to install to use it is another. RoboVAST
 ships as separate distributions so each audience installs what it needs and — the part
@@ -55,16 +55,28 @@ that matters — can decline what it does not.
    * - ``robovast-cluster``
      - the service implementation (Kubernetes), its cluster-config plugins, the deploy and operator
        commands
-     - ``kubernetes``, ``boto3``, ``google-cloud-storage``
+     - ``kubernetes``, ``bcrypt``
    * - ``robovast-nav`` / ``robovast-sim-roqsim``
      - navigation variation types and panels; the roqsim simulator backend
      - per package
+   * - ``robovast-decode``
+     - tables from a campaign's records: an mcap reader that follows a file as it is
+       written, ROS 2 message definitions from the recording itself, ``tf2``-exact pose
+       resolution, a run's own CSV and JSONL files typed from their values, the ``runs``
+       table from ``campaign.db``, parquet tables under the campaign's ``.cache/``; the
+       ``robovast-decode`` command
+     - ``mcap``, ``rosbags``, ``pyarrow`` -- pure Python, no ROS
+   * - ``robovast-data``
+     - SQL over campaign directories, and a campaign's data as pandas: the tables a query
+       names built on first use, the campaign's record, the views over both; ``Campaign``,
+       ``Corpus``, ``open_data`` for a notebook
+     - ``duckdb``, ``pandas``
 
-**The dependency direction is the design.** ``robovast-client`` depends on nothing of
-ours, ``robovast`` depends on it, and ``robovast-cluster`` depends on ``robovast``.
-``robovast`` must never depend on ``robovast-cluster`` — that edge back is what would make
-the graph cyclic, and it is why it cannot be offered as an extra. Anywhere that installs it
-needs its own step.
+**The dependency direction is the design.** ``robovast-client`` and ``robovast-decode``
+depend on nothing of ours, ``robovast-data`` depends on the decoder alone, ``robovast``
+depends on all three, and ``robovast-cluster`` depends on ``robovast``. ``robovast`` must
+never depend on ``robovast-cluster`` — that edge back is what would make the graph cyclic,
+and it is why it cannot be offered as an extra. Anywhere that installs it needs its own step.
 
 They share **one import namespace**: ``robovast/``, ``robovast/service/`` and
 ``robovast/execution/`` carry no ``__init__.py`` in any distribution, so they are PEP 420
@@ -91,9 +103,11 @@ campaigns' own volume and the workspace (plugins installed) — so it hosts the 
 directly instead of staging the project out and launching a second process to do
 it. ``stop`` and live status are therefore in-process operations the service
 exposes over the interface, not a network hop to a controller. Two things a
-campaign still runs as their own Kubernetes workloads, because each needs to be
-one: the scenario/postprocessing **Jobs**, and — only for variations that declare
-one — a per-campaign **auxiliary-container pod** the driver execs into.
+campaign runs as their own Kubernetes workloads, because each needs to be
+one: the scenario **Jobs**, and — only for variations that declare
+one — a per-campaign **auxiliary-container pod** the driver execs into. Postprocessing
+is not one of them: it runs in the service process, beside the campaign on the results
+volume.
 
 .. _stopping-a-campaign:
 
@@ -103,7 +117,7 @@ reads it through two primitives and nothing else: ``wait_for_stop`` replaces the
 every poll loop, so a wait ends the instant the flag is set rather than at the end of
 whichever interval it was in, and ``raise_if_stopped`` ends the campaign at the boundary
 between two steps. Below the execution layer — pip, the composition worker, the
-conversion — the same thing is a ``should_stop`` predicate
+postprocessing pipeline — the same thing is a ``should_stop`` predicate
 (:func:`~robovast.execution.control_server.stop_checker`) and the helpers in
 :mod:`robovast.common.stop`, which kill a running subprocess's whole process group.
 
@@ -153,7 +167,7 @@ Which work a stop lands on, and what it leaves:
        run existed yet
    * - ``finishing``, ``importing``, ``postprocessing``
      - postprocessing
-     - the pipeline between steps; the conversion's process group, or its Jobs
+     - the pipeline, between its steps
      - ``finished`` with the reason on ``postprocessing_error`` and no derived data
    * - ``sharing``
      - share
@@ -169,7 +183,7 @@ running campaign is a property of the implementation, answered in its own
 ``_shutdown_running_campaigns``: ``ClusterService`` leaves its Jobs running, because they
 outlive any one service process and the next one adopts them
 (:doc:`cluster_execution`). Stopping a campaign is ``stop``; exiting the service
-is not, and it never was a good way to say it — the cooperative stop persists a
+is not — the cooperative stop persists a
 terminal ``outcome.json``, and a campaign that has recorded an ending is one no
 successor will pick up again.
 
@@ -184,42 +198,48 @@ the phase survives a service restart instead of reconstructing as an ambiguous
 waiter, cleanup's live-set) counts ``"stopped"`` as done.
 
 A stop that arrives once the runs are **over** — during postprocessing — ends differently,
-and both halves of the difference matter. It is not reached by the service's teardown (which
-is label-scoped to ``jobgroup=scenario-runs`` so that it cannot cancel a shared image
-build, and the postprocessing Job is ``jobgroup=postprocessing``), so the wait polls the
-flag itself: ``await_job`` deletes the Job — which makes a Job this process only
-*re-attached* to stoppable as well. And the campaign is **not** ``"stopped"`` — its runs all
-finished and their results are complete, so it ends ``"finished"`` with the reason on
-``postprocessing_error`` and no derived data, exactly as a postprocessing *failure* does,
-because in both cases what is missing is only the derived data and only a re-run supplies
-it. ``stop`` says which of the two stops it performed in its reply, and the reason is
-recorded as a cancellation rather than through the failure account: no failure log is
-authored, because a stop is not a fault.
+and both halves of the difference matter. Postprocessing runs in the service process, so no
+teardown reaches it and none is needed: ``stop`` sets the flag for the
+postprocessing scope (:func:`~robovast.execution.control_server.stop_scope_for_phase` picks
+the scope from the phase) and returns without touching any workload, and the pipeline reads
+the flag itself. Each caller of
+:func:`~robovast.results_processing.postprocessing.run_postprocessing` hands it
+``should_stop=stop_checker(state)`` — the campaign-end chain (``_chain_postprocessing`` in
+the builder, which the service's campaign thread runs), and a re-run through ``run_postprocessing`` or an import, which are tracked campaigns while
+they last. The predicate is read before each of the campaign's own steps, after the last of
+them, and between the campaign-end table build and the ``run_health`` grading, and a step
+whose plugin declares a ``should_stop`` parameter is handed it to poll mid-flight. Whichever
+check sees the flag returns ``(False, POSTPROCESSING_CANCELLED)``.
 
-What a cancelled postprocess leaves is bounded by design rather than by luck. The rosbag
-conversion — the long step, and the one a stop is usually aimed at — is written to
-survive being killed: a bag records itself as converted only once its handlers have
-finished, and every output is rewritten rather than appended, so an interrupted bag is
-simply redone. The steps after it (the index ingest, the metadata, the provenance record)
-run in the postprocessing pod, so a stop landing during the ingest interrupts it — and
-that is survivable for the reason the ingest is written with ``autocommit``: :func:`campaign_ingest.ingest_campaign`
-clears a campaign's rows before writing them, so a re-run replaces a partial load rather
-than doubling it. An ingest handed a directory that holds no campaign at all — neither
-``campaign.db`` nor a single run directory — is refused *before* that clear, so a wrong
-path cannot empty a campaign's rows and then record the emptiness as its answer: the
-registry's entry is what separates "ingested and measured nothing" from "never ingested",
-and a query trusts it to make that distinction.
+And the campaign is **not** ``"stopped"`` — its runs all finished and their results are
+complete, so it ends ``"finished"`` with the reason on ``postprocessing_error`` and no
+provenance record, exactly as a postprocessing *failure* does, because in both cases what is
+missing is only the derived data and only a re-run supplies it. The caller tells the two apart
+by the flag (``state.postprocessing_stop_requested``), not by the message. ``stop`` says which
+of the two stops it performed in its reply, and the reason is recorded as a cancellation
+rather than through the failure account: no failure log is authored, because a stop is not a
+fault.
 
-What is never left is a campaign that *claims* derived data it does not have. The
-provenance record is written last, after the ingest, precisely so that its presence means
-every step succeeded — so a cancelled campaign has none, reads as not postprocessed, and
-asks for the re-run that settles it.
+What a cancelled postprocess leaves is bounded by the check points rather than by luck. A
+step is never interrupted by the pipeline, only not started, so a step that declares no
+``should_stop`` runs to its end before the stop is seen. The campaign-end table build is not
+interrupted either — the check after it is what ends the pass — and nothing it wrote needs
+undoing: each table file is written to a temporary name and renamed into place, and
+``.cache/MANIFEST.json`` is replaced whole under a lock, so a table is either cataloged for a
+run or not built for it, and the next query that names it builds what is missing.
 
-Winding down is a race against uvicorn's graceful-shutdown deadline, so the signal
-handler raises a process-wide flag (:mod:`robovast.common.shutdown`) *before* the
-clock starts, and the layers that would otherwise fight the teardown consult it. The
-SSE streams do not *wait* for their
-next pull either: a watchdog closes the stream the moment shutdown is announced and
+What no cancelled pass leaves is a campaign that *claims* derived data it does not have. The
+provenance record (``_transient/postprocessing.yaml``) is written last, after the table build
+and ``run_health``, precisely so that its presence means every step ran — so a cancelled
+campaign has none, reads as not postprocessed, and asks for the re-run that settles it. Its
+tables stay queryable in the meantime: a query builds what it names from the records whether
+or not the campaign has been postprocessed.
+
+Winding down is a race against uvicorn's graceful-shutdown deadline, and an SSE stream
+only ends when its client disconnects, so every stream polls uvicorn's own
+``should_exit`` (probed through ``app.state.should_exit``), which its signal handler sets
+*before* the clock starts. Nor does a stream *wait* for its next pull: a watchdog closes
+the stream the moment shutdown is announced and
 abandons the worker thread, because a pull that returns after the deadline gets its
 response task canceled and the cancellation logged as an "Exception in ASGI
 application" traceback with the server already gone.
@@ -273,10 +293,6 @@ Both are produced where the backend already renders a per-job manifest, by the s
 hooks ``apply_backend`` calls -- so a backend cannot answer one thing at composition and
 another at dispatch.
 
-That is also why the packer groups work items by their resolved block: containers start once
-per job and are not restarted between packed items, so a job that mixed two worlds would run
-the second configuration against the first one's compiled model.
-
 Asking the simulator a question
 -------------------------------
 
@@ -287,7 +303,7 @@ and container specs, so the long-lived service carries no MuJoCo). A backend the
 by returning a **question**, :class:`~robovast.common.simulators.ContainerQuery`: a command and
 the image to run it in, whose one line of JSON RoboVAST reads.
 
-Four rules make those answers trustworthy, and each of them was a bug first:
+Four rules make those answers trustworthy:
 
 * **In the image the campaign runs.** Which world a ref even names depends on what is
   *installed*, so a query answered in a fixed base image describes a different world -- or none,
@@ -297,13 +313,13 @@ Four rules make those answers trustworthy, and each of them was a bug first:
   a second copy would be free to disagree with it.
 * **An unanswerable question says so.** ``WorldQueryUnavailable`` names which reason it is -- no
   backend, an unbuilt ``build:<tag>``, no container runner here, a command that failed. A
-  pre-check that logged this at debug and carried on was indistinguishable from a check that
-  passed, which is how a misspelled plugin key reached the container after the image pull.
+  pre-check that logged this at debug and carried on would be indistinguishable from a check
+  that passed, and a misspelled plugin key would first surface in the container.
 * **Half an answer beats none.** A simulator that exits non-zero having still *printed* a payload
   answered what it could, and that payload is taken. A world whose model does not compile in the
   image (a ``*_ros`` world described where the colcon-packaged bridge does not resolve) can still
-  say which plugin keys it has -- that half needs no build -- and discarding the reply cost the
-  campaign a check it could have had. The rule is generic: nothing here knows which half was lost,
+  say which plugin keys it has -- that half needs no build -- and discarding the reply would
+  cost the campaign a check it could have had. The rule is generic: nothing here knows which half was lost,
   because the simulator says so in the payload's own ``errors``, and each half that goes unchecked
   is warned about by name.
 * **A container runner is not implied.** The query runs a container, and in-cluster a container
@@ -321,6 +337,14 @@ image identity in :mod:`robovast.service.image_catalog`, the cache the ``image_c
 read too, and all uncached plugins of one world are asked in one exec. Its findings are advice by
 design: a docstring-published key list can be incomplete, so the finding states what the catalog
 shows rather than a verdict the check cannot make.
+
+And one more: the state a trial starts from. The describe the check asks for resets the world it
+built, as a run does before each trial, and the answer carries ``warnings`` -- what that state holds
+that will not stop the world from loading but is likely to make a run misbehave, in the simulator's
+own ``{check, message, hint}`` (roqsim: two bodies placed inside one another, which the contact
+solver flings apart on the first steps). Each becomes advice carrying the simulator's words, because
+the simulator does not refuse it either; nothing here knows which checks exist. A reset that raises
+comes back as ``errors.reset`` and is an error, since no run of that world reaches its first step.
 
 One function runs every such query --
 :func:`robovast.common.config_generation.describe_world_payload` -- because the two callers
@@ -394,8 +418,8 @@ imported in a process that may have no kubeconfig. Reaching for one belongs insi
 
 That indirection is what lets the cluster implementation ship as its own distribution,
 ``robovast-cluster`` (``src/robovast_cluster/``), rather than as part of the core. An
-install without it carries no ``kubernetes``, ``boto3`` or ``google-cloud-storage`` at
-all, and still validates, composes, stores workspaces and processes results. Declining
+install without it carries no ``kubernetes`` at all, and still validates, composes, stores
+workspaces and processes results. Declining
 it is a supported configuration for everything but running a service.
 
 .. _refuse-by-name:
@@ -499,9 +523,8 @@ scenario* logs to a file inside the container and the result carries ``log_path`
 of that output.
 
 **A running campaign is never a target.** There is no code path from this operation to a
-job's container or pod. An earlier draft made exec'ing a live campaign "safe" by annotating
-its log; that was an admission the operation was wrong rather than a fix. To inspect a live
-stack, the caller starts that stack in its own exec container.
+job's container or pod. To inspect a live stack, the caller starts that stack in its own exec
+container.
 
 **One container, so there is no state to manage.** At most one exists at a time, under a
 fixed name (``robovast-exec``). That removes
@@ -517,11 +540,13 @@ passed — ``ExecRequest`` has no timeout field — and the result reports which
 so a ``timed_out`` result names its own remedy.
 
 The cluster-specific half is a small protocol (``ExecRunner``): ``KubeExecRunner`` runs an aux
-pod plus ``pods/exec``. Everything
+pod plus ``pods/exec``. Its ``exec_in`` captures a command's output once it is over;
+``stream_in`` relays a command's lines while it runs and stops on a predicate, which is what a
+tap on a live job is built on (:mod:`robovast.service.tap`). Everything
 else — validation, staging, limits, the lifetime state machine — is shared, as are the
 pod primitives both in-cluster users need (``wait_pod_ready``, ``wait_pod_gone``,
-``exec_stream`` in ``robovast.execution.cluster_execution.kube_client``; they live in ``common`` because the execution
-engine may not import ``robovast.service``).
+``exec_stream`` in ``robovast.execution.cluster_execution.kube_client``; they live beside the
+execution engine because it may not import ``robovast.service``).
 
 **The diagnostic stages the way a run stages.** In-cluster, ``/config`` is written as a
 staged tree on the service's disk and fetched from its data plane by an init container on
@@ -642,9 +667,25 @@ over HTTP:
    * - ``PUT /data/campaigns/{id}/outputs``
      - a pod's whole ``/out``, delivered once, extracted into the campaign
    * - ``GET /data/campaigns/{id}/archive``
-     - the campaign, whole or narrowed to what a postprocessing pod reads
+     - the whole campaign's records, never its ``.cache/`` table cache
    * - ``GET``/``PUT /data/staged/{slot}``
      - the scratch trees a build, exec or auxiliary pod is handed and hands back
+   * - ``GET /data/campaigns/{id}/live``
+     - a run's tables as it records, as server-sent events -- the one route here that is
+       not a tar
+
+**A run's tables as it records, from where the bytes land.** The live route is on the data
+plane for the same reason the deliveries are: this is the process the appends reach.
+:class:`robovast.service.live.LiveCampaigns` keeps one decoder watcher per campaign somebody
+is reading (:mod:`robovast_decode.live`), each on a daemon thread over an inotify watch of
+the campaign directory, so a pod's delivery extracted by this very process wakes the watcher
+like any other write, and no second process has to be told. The watcher writes what it
+decodes as parquet parts the manifest names, so a query during the run reads the same rows
+the stream carries. A reader is a bounded queue: one that falls behind is dropped with the
+reason rather than buffered, and a watcher nobody reads is kept warm for the next reader
+until its campaign is over, then stopped. ``runs.live`` -- no ``test.xml`` in the run's
+directory, no terminal record for the campaign, read from the tree by existence -- is what
+says whether there is anything to follow; a run that is not live gets ``eof`` at once.
 
 **A tar, rather than a file API.** One stream is one request, so a pod's entire output
 tree costs one round trip instead of one per file; and a tar carries executable bits and
@@ -741,20 +782,96 @@ background** and shows up in the campaign view as a live ``postprocessing`` phas
 
 .. _database-or-address-space:
 
-What goes in the database, and what stays a file
-------------------------------------------------
+The campaign directory is the database
+--------------------------------------
+
+A campaign's **records** are its source of truth: each run's bags under ``<run>/rosbag2/``,
+``test.xml``, ``behaviors.jsonl`` and the per-run CSV/JSONL files a scenario or a step
+writes; each job's ``logs/rosout_bag/`` (``/rosout`` and ``/clock``), ``system*.log`` and the
+monitor's ``resource_usage_<container>.csv`` / ``system_usage_<container>.csv``; and
+``campaign.db``, the store the controller writes as the campaign runs. There is no second
+database beside them. SQL is answered over the directory itself:
+
+* **Tables are parquet files in** ``<campaign>/.cache/``, cataloged by
+  ``.cache/MANIFEST.json`` — per table and run, the files, their schema, and the reason when
+  a run has none. The decoder distribution ``robovast-decode`` builds them from the records:
+  pure Python over ``mcap``, ``rosbags`` and ``pyarrow``, a custom message type decoded from
+  the definition embedded in the bag, so no ROS install, no image and no Docker. A topic it
+  cannot decode is a row in the ``_recording`` table naming the topic, its type and why.
+* **A table is built for a run the first time something names it, and kept** — a SQL
+  query (the tables its statement names, narrowed to the runs its top-level ``WHERE``
+  restricts them to by ``config_name``/``run_id`` equality or ``IN``), a notebook's
+  ``table()``, or the campaign-end pass of postprocessing. A finished run's entry is final;
+  a run still going is looked at again, which is why SQL works while a campaign runs. A run
+  followed as it records (:mod:`robovast_decode.live`) has its tables written in parts the
+  manifest names with a ``live`` stamp, read as they land and merged into one file when the
+  run is done.
+* **A finished campaign's table is compacted into one file** (:mod:`robovast_decode.compact`): the
+  final run files merged, rows unchanged and in run order, and each compacted run's entry kept,
+  naming no file of its own. A compacted run written again has its own file, and a view reads
+  that run from there and every other from the compacted file; the next compaction folds it back in.
+  A bulk build gives each worker process its own run's entries and merges what they entered,
+  so the manifest is written a few times a build rather than several times a run.
+* **Queries run in-process on DuckDB** (:mod:`robovast_data.engine`), over views defined
+  per query from the manifest, never from a directory listing — so a table being rewritten
+  is seen whole or not at all.
+
+The ``rosbags_*`` entries of ``results_processing.postprocessing`` configure the decoder
+(frames, topics, what is required) and run nothing: they are written into
+``_execution/tables.yaml`` when the campaign is launched and again at postprocessing, and the
+decoder reads its configuration from there.
+
+**The cache is disposable.** Deleting ``.cache/`` loses nothing but the time to build it
+again, and every surface that clears it relies on exactly that: ``vast campaign tables
+clear``, the MCP ``clear_campaign_tables``, ``DELETE /campaigns/{id}/tables``, the admin
+page's table-cache entry, and ``force`` on a postprocessing re-run. A share archive carries
+the records and never ``.cache/``. A download carries the top-level cache's manifest and
+table files (``campaign_archive.download_skip``), so it opens without building anything;
+wherever it lands, an entry another decoder version wrote is not current there and is built
+again from the records, and ``--raw`` leaves the cache out altogether.
+
+.. _data-contract:
+
+The data contract
+^^^^^^^^^^^^^^^^^
+
+What a reader addresses is public and versioned; where it is stored is private and free to
+change. The public part — the **data contract**, numbered by ``robovast_decode.DATA_CONTRACT``
+and reported by ``describe`` — is the table names, the column names and types, the views and
+``runs``, reached through ``robovast-data``, SQL, the HTTP routes and the MCP tools, and the
+export's layout (``export.json``, the records, ``tables/<name>.parquet``). The private part is
+``.cache/`` — its layout, ``MANIFEST.json``, the parts a live run writes, how a frame is found
+— and the recordings' own formats: a change there bumps the decoder's version and the cache
+rebuilds, and nothing outside notices. No documentation, example, notebook or route names a
+``.cache`` path.
+
+Two rules keep the public part stable while the private part moves:
+
+* **Columns follow the message definition, never the recording.** A field declared as an
+  array is one ``LIST`` column; a sequence of messages is one ``LIST`` column per leaf field,
+  aligned by index; a byte array is a ``BLOB``. A table's schema is a function of the
+  recorded types and the contract number, so every run of a campaign shares it and a column
+  exists whether or not any message had an element for it.
+* **Bulk data is addressed, never copied into rows.** An image or a point cloud is read from
+  the recording by run, topic and time; ``_recording`` names the topic and says so.
+
+A change to a name or a type a reader addresses moves the contract number, with a changelog
+entry naming the tables; a compatibility view under the old name is added where one can be.
+
+What goes in a table, and what stays a file
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 A campaign writes a lot of artifacts, and each is reachable in exactly one of two ways:
-as rows in a database, or as a file through the :ref:`one address space
+as rows a query reads, or as a file through the :ref:`one address space
 <file-address-space>`. The rule deciding which:
 
-   An artifact belongs **in the database** when it is a *per-entity record you filter,
+   An artifact belongs **in a table** when it is a *per-entity record you filter,
    aggregate, or join across runs* — and stays **a file** when it is a *whole document
    read once*.
 
 "One row" is not the test; *aggregatable* is. A campaign's ``_execution/execution.yaml``
 is a single document, but its contents (which robovast, which image) are exactly what one
-compares *across* campaigns — and the SQL interface can attach several campaigns at once —
+compares *across* campaigns — and one query can read several campaigns at once —
 so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
 
 .. list-table::
@@ -764,35 +881,40 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
    * - Artifact
      - Home
    * - each run's ``test.xml``
-     - DB — ``campaign.run`` (per-run record, counted constantly)
+     - Table — ``campaign.run`` (per-run record, counted constantly)
    * - each job's ``sysinfo.yaml``
-     - DB — ``campaign.job``; "did the slow runs share a host?" is a join
-   * - per-run metric CSVs
-     - DB — one index table per CSV stem, after postprocessing
+     - Table — ``campaign.job``; "did the slow runs share a host?" is a join
+   * - per-run CSV/JSONL files
+     - Table — one per file stem, built for a run when a query names it
    * - ``_execution/execution.yaml``
-     - DB — provenance columns on ``campaign.campaign`` (+ ``execution_json``)
+     - Table — provenance columns on ``campaign.campaign`` (+ ``execution_json``)
    * - ``_transient/postprocessing.yaml``
-     - DB — the index's ``postprocessing_steps``; the file stays, as the PROV-O input
+     - Table — ``postprocessing_steps``, a campaign-level table written by postprocessing;
+       the file stays, as the PROV-O input
    * - the ``.vast``
      - Both — ``campaign.config_json`` for effective values, the file for authored intent
    * - each configuration's ``_config/sim.config`` and ``_config/sut.config``
      - Both — the file is what each channel was given, a whole document a person reads when
-       replaying a cell by hand. Its values also reach the DB, as ``campaign.unit``'s
+       replaying a cell by hand. Its values also reach the tables, as ``campaign.unit``'s
        ``channels_json`` and the ``param_*`` columns built from it, because a factor nobody
        can filter or group by is a factor the campaign varied and no query can see. The file
        is written by the **composer** and the column by the **controller**, from one reader
        (``read_config_channels``), so the two cannot say different things
    * - ``_execution/outcome.json``
      - File — the campaign's terminal status, read by ``get_campaign_status``
+   * - ``_execution/importing.json``
+     - File — present only while an import of the campaign is under way, or after the
+       process importing it died: a tree that carries it reconstructs as a failed import,
+       whatever the archived ``outcome.json`` beside it says
    * - ``_execution/interventions.json``
      - File — what was done to a campaign's runs *other than running them*, keyed by job
        artifact dir, each entry tagged ``kind`` (``killed`` — ``stop_job``; ``probed`` — a
        live read; ``invalid`` — the runner discarded the trial after a container restarted
        under it) and ``source`` naming the actor (``webui``/``mcp``/``cli`` for a person,
        ``runner`` for the campaign itself — the ledger is not only human acts).
-       It *becomes* DB content: ``read_run_outcome`` turns a **kill** into
+       It *becomes* table content: ``read_run_outcome`` turns a **kill** into
        ``campaign.run.status = 'killed'`` for the runs it cut short, while a **probe** becomes
-       the separate ``runs.probed`` column in the index — orthogonal on purpose, since a
+       the separate ``runs.probed`` column — orthogonal on purpose, since a
        probed run can still pass. The file stays because the two writers differ — the **service**
        records the kill, the **controller** writes ``campaign.db``, and a SQLite file
        shared between them would be a race. It exists only for a campaign somebody
@@ -801,168 +923,130 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
      - File — how the campaign was *asked for*; a whole document, read once by a
        retrigger. Its ``config_filter`` / requested ``runs`` are comparable across
        campaigns ("which of these were pilots?"), so by the rule above they are a
-       candidate for lifting onto the ``campaign`` row later, exactly as
-       ``execution.yaml``'s were. Nothing aggregates them yet, so nothing is lifted.
+       candidate for lifting onto the ``campaign`` row. Nothing aggregates them yet, so
+       nothing is lifted.
    * - ``_transient/configurations.yaml``
      - File — already duplicated into ``campaign.unit``; a second copy would drift
    * - ``run_log`` (the merged per-run log)
-     - DB — one row per log *event*, with ``sim_time``, container, node, severity. Built by
-       postprocessing from the container streams **joined with** ``/rosout``: the two carry
-       the same events (473 of 521 on a measured campaign), so concatenating them would
-       report most of a run twice. ``rosout`` itself is *not* a second table -- it is a
-       source of this one, selected with ``WHERE source = 'rosout'``. See
-       :ref:`merged-run-log`.
+     - Table — one row per log *event*, with ``sim_time``, container, node, severity and
+       ``in_window``. Derived by the decoder from the job's container streams **joined
+       with** the ``/rosout`` of its infra bag: the two carry largely the same events, so
+       concatenating them would report most of a run twice. ``rosout`` itself is *not* a
+       second table a reader needs -- it is a source of this one, selected with
+       ``WHERE source = 'rosout'``. See :ref:`merged-run-log`.
    * - ``resource_usage`` (per-container CPU/memory)
-     - DB — one row per container per process name per ~1 s tick, with ``timestamp``,
-       ``in_window``, ``cpu_percent``, ``memory_rss_bytes``. Built by postprocessing from the
+     - Table — one row per container per process name per ~1 s tick, with ``timestamp``,
+       ``in_window``, ``cpu_percent``, ``memory_rss_bytes``. Derived by the decoder from the
        job's ``resource_usage_<container>.csv``, which stay the record of what was sampled.
-       In the DB because it answers a question about a *result*: the backend gives a job fixed
+       A table because it answers a question about a *result*: the backend gives a job fixed
        cores, so a stack held at that ceiling is a competing explanation for what a run did,
        and ruling that out means joining it to ``runs.available_cpus`` and to the behaviour
-       itself (``run_validity_view`` answers the ceiling half directly).
-       Unlike ``run_log``, a packed job's ticks are **partitioned** between its runs rather
-       than shared — another run's CPU is not this run's. See :ref:`per-run-resource-usage`.
+       itself (``run_validity_view`` answers the ceiling half directly, from
+       ``system_usage``). See :ref:`per-run-resource-usage`.
    * - ``system.log``, ``controller.log``
-     - File + the log tools — the raw bytes, and the **live** case is the point of reading
-       them: a campaign is not in the index while it runs. The tools reduce them on read
-       (``min_severity``, ``summarize`` — see :ref:`mcp-liveness`). What *is* stored is the
-       derived, time-aligned ``run_log`` above; the files stay the record of what was
+     - File + the log tools — the raw bytes, read live and reduced on read
+       (``min_severity``, ``summarize`` — see :ref:`mcp-liveness`). What a table holds is
+       the derived, time-aligned ``run_log`` above; the files stay the record of what was
        actually printed
 
-Two consequences worth stating. A **file** is never *also* a table: putting
-``configurations.yaml`` in the DB would create a second source of truth for the resolved
-configuration list. And a **document in a cell** is not a queryable artifact:
+Two consequences worth stating. A **file** is never *also* a table of the same thing:
+putting ``configurations.yaml`` in a table would create a second source of truth for the
+resolved configuration list. And a **document in a cell** is not a queryable artifact:
 ``campaign.config_json`` holds the whole ``.vast``, which exceeds the per-cell limit and
-comes back truncated, so it is queried through the index's JSON operators
-(``config_json::jsonb -> 'execution' ->> 'image'``; the index is Postgres, which has no
-SQLite ``json_extract``) or the ``config_view`` rows — never ``SELECT config_json``.
+comes back truncated, so it is queried through DuckDB's JSON operators
+(``config_json::JSON -> 'execution' ->> 'image'``) or the ``config_view`` rows — never
+``SELECT config_json``.
 
 Querying results
 ----------------
 
-Per-run metrics are consolidated into the central results index (one
-table per CSV stem) plus a ``runs`` **dimension table** — per-run
-``status``/``duration_s`` and each varied parameter as a ``param_*`` column, on whichever
-channel it was written (:ref:`channel-param-columns`).
-That ``runs`` table is the analytics-wide *view* over ``campaign.db``'s ``run``
-table (the operational source of truth for per-run outcomes, written live from
-each ``test.xml``); see :ref:`the store schema <campaign-store>`. The MCP
-``run_data`` plugin exposes read-only **SQL**
-(``query_campaign_data_sql`` + ``describe_campaign_data``), with ``campaign.db``
-attached as schema ``campaign`` — so ``campaign.run`` is queryable for raw
-pass/fail even before postprocessing ingests the campaign. Joining ``runs`` to any
-metric table on ``(config_name, run_id)`` answers "how does *<param>* affect
-*<metric>*" in one query. Analysis notebooks read the same tables through
-:mod:`robovast.common.analysis.db`, which scopes a table to the notebook's ``DATA_DIR`` (see
-:ref:`evaluation-reading-results`).
+A query sees, per campaign in scope, every table as a view over its parquet files; a
+``runs`` **dimension table** — per-run ``status``/``duration_s`` and each varied parameter
+as a ``param_*`` column, on whichever channel it was written
+(:ref:`channel-param-columns`) — computed from ``campaign.db``'s ``run`` table (the
+operational source of truth for per-run outcomes, written live from each ``test.xml``; see
+:ref:`the store schema <campaign-store>`); and ``campaign.db`` itself as the schema
+``campaign`` (``campaign.campaign``, ``campaign.unit``, ``campaign.run``, ``campaign.job``,
+``campaign.batch``, ``campaign.node``, ``campaign.container_failure``). The MCP tools
+``query_campaign_data_sql`` and ``describe_campaign_data`` expose it as read-only SQL.
+Joining ``runs`` to any metric table on ``(config_name, run_id)`` answers "how does
+*<param>* affect *<metric>*" in one query. Several campaigns are one query: each view is the
+union of theirs, with ``campaign_id`` in every row.
 
-**Not versioned, because it is derived.** The metrics store carries no schema version and no
-migration ladder — the deliberate difference from ``campaign.db``, whose
+**What a query may touch** is one ``SELECT`` and the campaigns' table files. The statement is
+checked on DuckDB's own parse; external access is off except for the campaigns'
+``.cache/tables/`` directories; the configuration is locked; and a query that runs past its
+time is interrupted. Two macros keep SQL portable: ``PERCENTILE(value, p)`` with ``p`` in
+0..100, and ``REGEXP(pattern, value)`` as a search.
+
+Analysis notebooks read the same tables through the ``robovast-data`` distribution —
+:func:`robovast_data.open_data` scopes a campaign, configuration or run to the notebook's
+``DATA_DIR`` and returns pandas frames from ``table()`` and ``sql()`` (see
+:ref:`evaluation-reading-results`). The same engine answers there, so a table built by a
+notebook is the table the service reads, and the reverse.
+
+**Not migrated, because it is derived.** The table cache carries a version
+(``MANIFEST_VERSION`` in :mod:`robovast_decode.tables`) and no migration ladder — the
+deliberate difference from ``campaign.db``, whose
 :data:`~robovast.common.store.SCHEMA_VERSION` does carry one. The store is *authored*: written
 as the campaign runs, and the only record of what happened, so an old one must be upgraded in
-place. The metrics are *derived*: postprocessing rebuilds them from the run directories, which
-keep their CSV/JSONL, so the upgrade path is to run postprocessing again — which re-executes no
-trial, and needs neither ROS nor the campaign's execution image, since only the ``rosbags_*`` →
-CSV step does and everything after it is plain Python. A migration here would be code
-maintained to reproduce what the ingest already does.
+place. The tables are *derived* from records the campaign keeps, so a manifest of another
+version is refused with the instruction to clear the cache, and clearing it is the whole
+upgrade: every table is built again, by the installed decoder, the next time it is named. A
+migration here would be code maintained to reproduce what a build already does.
 
-A version would not gate reads anyway, because it is too coarse to answer the question a reader
-actually has. What gates a query is whether the columns are there, which the reader checks
-directly.
+**Views carry the joins, so a caller cannot omit one.** ``run_view`` (one row per run:
+config, status, duration, params, search round, host record, plus one run-less row per unit
+that produced no run) and ``config_view`` (the ``.vast`` as one row per key) are queried
+unqualified, beside ``container_failure_view``, ``run_validity_view`` and
+``pose_track_view`` (:mod:`robovast_data.views`, :mod:`robovast_data.record`). They exist
+because a forgotten join does not raise — ``run_id`` is unique only *within* a
+configuration, so a query filtering on ``run_id`` alone silently returns rows from every
+configuration and averages across them. Making the join part of the schema removes that
+failure mode rather than documenting it. A view declares which tables it reads, so a query
+naming ``pose_track_view`` builds the pose tables it needs. They are defined afresh for every
+query from what the campaigns in scope hold, so a view gaining a column needs no migration
+and no re-postprocessing: the next query has it.
 
-**Two flat views carry the joins, so a caller cannot omit one.** ``run_view`` (one row per
-run: config, status, duration, params, search round, host record) and ``config_view`` (the ``.vast`` as
-one row per key) are objects in the index, queried unqualified. They exist because a
-forgotten join does not raise — ``run_id`` is unique only *within* a configuration, so a
-query filtering on ``run_id`` alone silently returns rows from every configuration and
-averages across them. Making the join part of the schema removes that failure mode rather
-than documenting it. Each is created ``WITH (security_invoker = true)``, so the row-level
-security on the tables underneath applies to whoever queries the view rather than to its
-owner — without it an unscoped ``FROM run_view`` answers with every campaign's runs.
-
-Every ingest rebuilds them (:func:`index_views.create_views`), because which views the index
-can support depends on which tables it holds: the first campaign to record a probe is what
-brings the view over it. Where an underlying table is missing, ``run_view`` keeps its column
-set and reports NULL for the host and ``batch`` columns — one query shape whatever the index
-holds, with "not recorded" reading as NULL rather than as a broken query. A view gaining a
-column therefore needs no migration and no re-postprocessing of the campaigns it serves: the
-next ingest of any campaign rebuilds the views, and every campaign already in the index has
-the column.
-
-**One index is shared by every campaign, so its DDL is serialized.** Two postprocessing runs
-can be rebuilding the views, or creating the table a stem needs, at the same time, and none
-of the spellings that look safe are: ``IF NOT EXISTS`` checks the catalog and then creates,
-a ``DROP`` before a ``CREATE`` leaves a window between them, and ``CREATE AGGREGATE`` and
-``CREATE POLICY`` have neither. The writer that loses such a race is refused with a duplicate
-key on ``pg_type`` — a message naming neither the relation nor the concurrency — so every
-``CREATE``/``DROP``/``ALTER`` against the index is issued under one session-level advisory
-lock (:func:`index_schema.ddl_lock`), and the paths that hold it ask what is missing first,
-so an ingest with nothing to change takes no lock at all. A table's creation, its new columns
-and its widenings (:func:`index_schema.ensure_table`) are decided from the column verdicts
-read again *under* the lock, not from the read that found DDL necessary: decided from that
-earlier read, a writer that queued behind another could retype a column the other had just
-widened back to the narrower type it saw, or create over a table that now exists and record
-its own verdicts over the ones it was built with. The first read is safe to act on only when
-it says nothing needs to change, because a verdict only ever widens. The view rebuild is one
-transaction as well as locked: a reader that arrives mid-rebuild waits for the swap instead
-of being told ``run_view`` does not exist, which would read as a campaign with no runs.
-
-**The ingest session trades durability for speed, because the index is derived.**
-:func:`campaign_ingest.ingest_campaign` turns ``synchronous_commit`` off on its connection for
-the length of the ingest and puts the connection's own value back afterwards. Each of the
-ingest's autocommitted statements then returns without waiting for its WAL flush; a crash of
-the database server can lose the last commits before it, but cannot corrupt the index or
-apply a commit in part. Nothing but the ingest writes that way, and what it can lose is
-rebuilt from the campaign's files by ingesting them again. The ingest ends by running
-``ANALYZE`` on every table it cleared or wrote (:func:`index_schema.analyze_tables`), so the
-first queries over a campaign's fresh rows are planned with statistics that describe them
-rather than with whatever autovacuum last recorded — or, for a table the ingest just created,
-with none.
-
-``describe_campaign_data`` lists both views first and carries the canonical query for each
+``describe_campaign_data`` lists the views first and carries the canonical query for each
 question a caller is likely to ask — the per-run lookup, a configuration's parameters, how
 a metric was produced. That is deliberate: the replacement for a tool has to be discoverable
-from the tool output an assistant already reads, not only from this page.
+from the tool output an assistant already reads, not only from this page. It builds nothing:
+each table is listed with its ``kind``, how many of its runs it is built for, and its
+columns once it is built for one.
 
 **Columns are typed from the data, not left as text.** A CSV yields only strings, so an
-untyped ingest makes every comparison lexicographic — ``ORDER BY timestamp`` puts
+untyped read makes every comparison lexicographic — ``ORDER BY timestamp`` puts
 ``"10.022"`` before ``"9.5"``, shuffling a trajectory and producing a path length that is
-wrong by a factor rather than an error. So ingest infers a type per column
-(:mod:`robovast.results_processing.csv_types`): a column whose every non-empty value is a
-number becomes ``INTEGER``/``REAL`` and is stored numerically, and everything else stays
-``TEXT`` verbatim. The rule is deliberately strict — one ``n/a`` demotes the column, and
+wrong by a factor rather than an error. So the decoder infers a type per column
+(:mod:`robovast_decode.types`): a column whose every non-empty value is a
+number becomes an integer or a double and is stored numerically, and everything else stays
+text verbatim. The rule is deliberately strict — one ``n/a`` demotes the column, and
 ``"007"`` is text, because a zero-padded identifier must keep its text.
 ``param_*`` columns are typed the same way from their resolved values.
-``describe_campaign_data`` reports each column as ``"name TYPE"``, which is what tells a
-caller whether a column can be ordered directly or needs ``CAST(col AS REAL)``.
+``describe_campaign_data`` reports each column as ``"name TYPE"`` (``INTEGER``, ``REAL``,
+``TEXT``), which is what tells a caller whether a column can be ordered directly or needs
+``CAST(col AS DOUBLE)``.
 
 **A non-finite value is a measurement, so it is stored as one.** A range with no return, a
 path length for a trial where no path came back, a ratio with no denominator: these reach
-the ingest as CSV text (``inf``, ``nan``) and as Python floats, from a ``.jsonl`` file or
-from the campaign record's own parameters. ``REAL`` is ``double precision``, which holds
-``Infinity``, ``-Infinity`` and ``NaN`` natively, so the column stays numeric and ``NULL``
-is left to mean that nothing was measured. A container is JSON-encoded with
-``allow_nan=False`` and each non-finite float written as the string ``"inf"``, ``"-inf"`` or
-``"nan"``: Python's ``json`` otherwise writes ``Infinity``, ``-Infinity`` and ``NaN``,
-which JSON has no tokens for and which Postgres refuses when the column is cast — failing
-the **whole query** rather than the row that holds one. The ``*_json`` columns mirrored from
-``campaign.db`` are re-encoded the same way on their way into the index.
+the decoder as CSV text (``inf``, ``nan``) and as Python floats, from a ``.jsonl`` file or
+from the campaign record's own parameters. A double holds ``Infinity``, ``-Infinity`` and
+``NaN`` natively, so the column stays numeric and ``NULL`` is left to mean that nothing was
+measured. A container is JSON-encoded with ``allow_nan=False`` and each non-finite float
+written as the string ``"inf"``, ``"-inf"`` or ``"nan"``: Python's ``json`` otherwise writes
+``Infinity``, ``-Infinity`` and ``NaN``, which JSON has no tokens for and which a JSON reader
+refuses — failing the **whole query** rather than the row that holds one.
 
-**The declaration never outlives the evidence.** A column is declared by the first run that
-writes it, but the evidence is every run — a later one can turn an ``INTEGER`` column real,
-or a numeric column textual. A stale declaration is not cosmetic: a schema claiming ``REAL``
-over a column holding one ``'n/a'`` makes ``AVG()`` return a plausible wrong number (SQLite
-reads the text as 0) and ``MAX()`` return the text itself — the original bug wearing a
-different hat. So after the last run is ingested, any table whose verdict moved is rebuilt
-with the corrected types and its values carried over (``_retype_table``), which also
-normalizes a mixed column so every row in it is text. Only affected tables are touched, so
-the usual case rebuilds nothing.
-
-Because a type alone cannot say "numeric except in the runs that failed", such a column is
-also recorded in the index's ``_column_notes`` and surfaced by ``describe_campaign_data``
-as ``column_notes`` on the owning table — postprocessing logs a warning too, but no SQL
-caller ever reads that log. The note names the fix (exclude the text rows, e.g.
-``WHERE col GLOB '[0-9-]*'``) because ``CAST`` alone would silently read them as 0.
+**The type a query sees is every run's evidence.** Each run's file is typed from that run's
+values, and a table's view reads the runs' files by column name (``union_by_name``), so the
+column takes the type every run's values fit: an integer column in one run and a double in
+another reads as a double, and a column that is text in any run reads as text in all of them.
+A stale declaration is not cosmetic — a column claiming a number over a run holding ``'n/a'``
+would make ``AVG()`` return a plausible wrong number — so no run's verdict is allowed to
+speak for another's. ``column_notes`` on a table in ``describe_campaign_data`` carry what a
+type cannot say about a column's meaning (:mod:`robovast_data.notes`): which clock a pose
+table's ``timestamp`` is on, what a derived table's column counts.
 
 Run view (web panel framework)
 ------------------------------
@@ -980,7 +1064,7 @@ three:
   rather than in the UI, so the served list and the view cannot disagree; a campaign that
   declares the type itself keeps its own entry. The frontend normalizes the result against each
   panel type's registry defaults (``frontend/ui/src/lib/panels/parsePanels.ts``).
-* **Registry + host** — panel plugins self-register (``frontend/ui/src/lib/dashboard/registry.ts``);
+* **Registry + host** — panel plugins self-register (``frontend/ui/src/lib/panels/registry.ts``);
   ``PanelHost`` resolves each spec's anchor/size to CSS and mounts the component. Adding a
   panel is one ``registerPanel`` call.
 * **Shared panel kit** — ``@robovast/panel-kit`` (``frontend/panel-kit/``) holds the panel contract
@@ -998,12 +1082,15 @@ three:
   rest subscribe. It is an external store, so the ~display-rate ``t`` updates while playing
   don't re-render the tree.
 * **Data seam** — ``DataProvider`` (declared in ``frontend/panel-kit/src/dataProvider.ts``, implemented
-  by ``dbDataProvider`` in ``frontend/ui/src/lib/dashboard/dataProvider.ts``) is how a panel gets
-  rows/frames by table + time, decoupled from transport. Today it reads one run's rows from
-  the index through the existing ``query``/``describe`` endpoints, plus the dedicated
+  by ``dbDataProvider`` in ``frontend/ui/src/lib/panels/dataProvider.ts``) is how a panel gets
+  rows/frames by table + time, decoupled from transport. It reads one run's rows through the
+  ``query``/``describe`` endpoints, plus the dedicated
   ``costmap`` endpoint for grids. The interface (``nearest`` / ``series`` / ``timeRange`` /
-  ``has`` / ``fetchRun``) is shaped so a future ``liveDataProvider`` over a live topic buffer
-  drops in without touching any panel.
+  ``has`` / ``fetchRun``) names no transport, so a panel reads a finished run and one still
+  recording alike. For a recording run the host's ``LiveDataProvider`` extends it with
+  ``subscribeLive``: the rows that land after the history a query gave, over one live
+  subscription per run (``frontend/ui/src/lib/panels/liveFeed.ts``). The extension is the
+  host's, not the kit's, so a panel that wants those rows asks ``isLiveProvider`` first.
 
 **Camera delivery.** A recorded video is the one panel input that never passes through the data
 seam: the panel resolves a ``videos`` row to a URL (``DataProvider.runFileUrl``) and puts it in a
@@ -1029,15 +1116,18 @@ a caller's viewpoint, so its key would be a camera pose and a time and would nev
 no cache, no thread, one synchronous ``POST`` that returns the image or the reason. That second
 part matters as much as the first — an asynchronous render would have to stash its failure
 somewhere the caller could find later, which is exactly the in-memory dictionary that makes a
-failed scene build visible to nothing but ``get_run_scene_status``.
+failed scene build visible to nothing but ``get_run_scene_status``. A render is still *kept*,
+under a fresh name the response's ``Content-Location`` carries: not for reuse, but so a caller
+can pass it on by address. The store is bounded by age and count rather than cached, and pruned
+each time a render is kept.
 
 **Costmap delivery.** A grid needs a table of its own. The generic topic flatten packs an
 array field into one cell and the read path caps a cell at 2 KB, so a run view reading SQL
 could never get a frame out whole, and the flattened table carries none of the geometry a
-frame has to be drawn against. The ``rosbags_costmap_to_csv`` handler
-(:class:`robovast.results_processing.data.rosbags_process.CostmapToCsvHandler`) instead
-decodes each grid once during postprocessing and re-encodes it compactly — int8 cells
-zlib-compressed, base64 in a ``costmaps`` table row with the pose/geometry metadata. The
+frame has to be drawn against. The decoder's ``costmaps`` handler
+(:class:`robovast_decode.handlers.Costmaps`, fed every ``nav_msgs/msg/OccupancyGrid`` topic)
+instead decodes each grid once, when the table is built, and re-encodes it compactly — int8
+cells zlib-compressed, base64 in a ``costmaps`` table row with the pose/geometry metadata. The
 ``/campaigns/{id}/costmap`` endpoint (``robovast_nav``'s ``CostmapEndpoint``, a
 ``robovast.service_endpoints`` plugin — it is *not* a core interface operation) delivers the
 frame nearest a time **untruncated**; the browser inflates it with the native
@@ -1068,7 +1158,7 @@ The interface surface
 ---------------------
 
 The operation contract (Phase 0 + workspaces + postprocessing shown; data-query
-lives in the ``run_data`` MCP plugin):
+lives in the ``results`` MCP plugin):
 
 * **Workspaces** — ``create_workspace`` / ``list_workspaces`` / ``get_workspace``
   / ``delete_workspace`` / ``create_upload``. A workspace's *files* are not separate
@@ -1095,14 +1185,17 @@ lives in the ``run_data`` MCP plugin):
   ``upload_to_share`` is a per-campaign launch flag on the request, not a separate
   operation) / ``get_status`` / ``list_campaigns`` / ``list_jobs`` / ``get_job_log``
   / ``stop`` / the ``/archive`` stream. ``list_jobs`` + ``get_job_log`` are the **live per-job** view
-  (the current batch's execution units and a single running job's log); ``ClusterService``
-  implements them over the campaign's Kubernetes Jobs + ``read_namespaced_pod_log``,
-  merging **every** container the job runs into one append-only
-  stream through the shared ``common.log_tail.MergedLogBuffer``, since a job is not one
-  container: the ROS shape gives the simulator and the system under test their own, and
-  on the cluster those are *native sidecars*, which live in ``spec.initContainers`` and
-  are found via ``cluster_execution.kube_client.pod_workload_containers``. They report live state only; the persisted per-run logs remain
-  part of the campaign result data, served by ``get_campaign_logs`` unchanged.
+  (the current batch's execution units and a job's log). ``list_jobs`` lists the campaign's
+  Kubernetes Jobs, whose sim and SUT containers are *native sidecars* in
+  ``spec.initContainers``, found via ``cluster_execution.kube_client.pod_workload_containers``.
+  ``get_job_log`` is ``ServiceBase``'s (:mod:`robovast.service.job_log`): it reads the job's
+  ``logs/system*.log`` files in the campaign directory, which grow while the job runs because
+  the pod's file agent delivers their growth as it happens. It returns **rows** (one per log
+  event, every container of the job in one stream) after an opaque cursor, and its SSE stream
+  pushes new rows as the files change. The campaign's own log is served the same way by
+  ``get_campaign_logs`` (:mod:`robovast.service.campaign_log`): rows after a cursor, read
+  from the phase files under its ``_execution/``, with ``phase``, ``min_level`` and ``grep``
+  applied in the read.
   ``GET /campaigns/events`` is a **browser-only** Server-Sent-Events transport over
   the same ``list_campaigns`` pull (the same server-side-loop idiom as the campaign
   log stream, so there is no second enumeration to drift): it pushes the full list on
@@ -1125,13 +1218,13 @@ lives in the ``run_data`` MCP plugin):
   ``*_panels_source`` visualization editor). Both overwrite the edited block in the
   campaign's own ``_config/<name>.vast`` in place. ``run_postprocessing`` dispatches the
   re-run in the background and returns at once (watch the campaign view for progress).
-* **Data query** (MCP ``run_data``) — ``describe_campaign_data`` /
+* **Data query** (MCP ``results``) — ``describe_campaign_data`` /
   ``query_campaign_data_sql``.
 
 **New disk-consuming work is admitted against a free-space reserve.** ``create_campaign``,
-``retrigger_campaign``, ``build_image``, ``create_archive_upload``, ``import_campaign`` and
-``run_postprocessing`` each call ``ServiceBase._admit_storage`` first (``ClusterService``'s
-own ``build_image`` and ``run_postprocessing`` call it too). It reads
+``retrigger_campaign``, ``create_archive_upload``, ``import_campaign``,
+``run_postprocessing``, ``build_campaign_tables`` and ``create_export`` each call
+``ServiceBase._admit_storage`` first, and so does ``ClusterService.build_image``. It reads
 ``ResourceUsage.storage_refusal``, which ``resource_usage`` computes once from the
 ``disk`` and ``results`` readings it already takes (:mod:`robovast.service.storage_reserve`), so the
 refusal and the meters are one measurement. With the reserve set to ``0`` nothing is read; a
@@ -1147,9 +1240,8 @@ So the admission queue asks a space gate before each drain
 (``AdmissionController(space_gate=...)``), which measures the filesystem the campaigns land
 on with ``robovast.common.disk_reserve.disk_shortfall`` -- on a node-directory deployment,
 the node's own disk. While it is short, nothing is created: every waiting campaign's refusal
-reads ``waiting for disk space: ...`` in its log and on its ``stage``, the no-progress
-deadline treats it as queued, and a postprocessing Job that times out waiting says so rather
-than that the cluster was full. Jobs already running go on and deliver -- the reserve is the
+reads ``waiting for disk space: ...`` in its log and on its ``stage``, and the no-progress
+deadline treats it as queued. Jobs already running go on and deliver -- the reserve is the
 room their results land in -- and admission resumes by itself once space is freed. Stop and
 delete are never guarded: they are what free space.
 
@@ -1181,9 +1273,8 @@ published dataset's config? — does not arise rather than being answered.
 
 **``family:<member>`` mirrors ``build:<tag>``.** Both are symbolic refs core resolves late
 from context the author does not hold, and both fail loudly if one reaches a container spec
-unresolved. The alternative considered was a rewrite pass that matched family
-repositories in already-concrete refs and moved them to another project. It was
-rejected: it needs a
+unresolved. A rewrite pass that matched family repositories in already-concrete refs and
+moved them to another project would need a
 whitelist of names to match, and anything a whitelist can match by mistake it can
 *redirect* by mistake — a campaign's own ``sut`` image silently pulled from somewhere the
 author never named. A prefix marker cannot do that, because writing it is a request.
@@ -1205,18 +1296,17 @@ exist *before* composition (the images are what the campaign then runs in). So
 ``extract_build_specs`` calls ``apply_backend`` itself, and therefore has to resolve what that
 contributes itself: ``image_project`` rides ``CreateCampaignRequest`` → ``RunOptions`` →
 ``_start_build_images`` / ``_resolve_built_images`` → ``extract_build_specs``.
-Missing this was asymmetric, which is what hid it: a container taking the default member was
-resolved on the composition path, so ``sut`` and ``scenario`` built correctly while the one
-container declaring a ``backend:`` carried ``family:robovast-roqsim`` into its Dockerfile's
-``FROM``. Docker read that as repository ``family``, tag ``robovast-roqsim``, and the campaign
-died in BuildKit with a registry ``insufficient_scope`` — a credentials error three layers from
-the cause. ``generate_dockerfile`` now refuses either prefix outright, so the promise that an
+Getting this wrong is asymmetric and so hard to see: a container taking the default member is
+resolved on the composition path either way, and only a container declaring a ``backend:``
+would carry ``family:robovast-roqsim`` into its Dockerfile's ``FROM``, which Docker reads as
+repository ``family``, tag ``robovast-roqsim`` — a registry credentials error three layers from
+the cause. ``generate_dockerfile`` refuses either prefix outright, so the promise that an
 unresolved ref fails loudly holds for a build and not only for a pod spec.
 
 Resolving into the campaign data — rather than at each point of use — is what makes
-``_execution/execution.yaml`` record a concrete image. Postprocessing reads that record to
-choose the image it deserializes rosbags in, so a symbolic ref surviving there would be a
-``family:`` string handed to Kubernetes as an image name.
+``_execution/execution.yaml`` record a concrete image. That record is the campaign's
+provenance and is lifted onto the ``campaign`` row, so a symbolic ref surviving there would
+tell every later reader a ``family:`` string instead of the image the runs ran in.
 
 **Where an image lives is the implementation's answer, not a caller's.** Everything above is
 about the *recipe* — which containers build and what their inputs hash to. Where the resulting
@@ -1236,14 +1326,14 @@ written once, and asked of the store rather than assumed. Two rules the ABC carr
   allowed out, rather than a rule to remember at each return.
 
 **One reader, several policies.** Four things ask a campaign's records which image it ran, and
-they want different answers: a re-run needs bytes it can obtain *elsewhere*, a cache needs
-anything that identifies bytes (a bare local id will do), postprocessing needs something it can
-run *here* and is right to accept a mutable tag, and the publication gate asks whether an
-outsider could obtain or rebuild them. Each of those is correct for its question.
+they want different answers: a re-run needs the digest its launch recorded for every image, a
+cache needs anything that identifies bytes (a bare local id will do), postprocessing needs
+something it can run *here* and is right to accept a mutable tag, and the publication gate asks
+whether an outsider could obtain or rebuild them. Each of those is correct for its question.
 
-They used to re-derive the record separately, with the precedence baked into each — and drifted,
-visibly: the publication gate called a campaign opaque that the retrigger pre-flight called
-pinnable, about one file on one disk. So ``campaign_image_record`` reads the record once and
+Re-deriving the record separately, with the precedence baked into each, drifts: the
+publication gate and the retrigger pre-flight come to disagree about one file on one disk.
+So ``campaign_image_record`` reads the record once and
 returns facts with no verdict attached, and each policy stays with the caller that owns it. The
 two predicates the policies differ on — ``image_is_pullable`` against ``image_identifies_bytes``,
 which differ by exactly the bare-local-id case — are named rather than spelled out at each site.
@@ -1272,7 +1362,7 @@ concurrent with the build itself — at submit. A campaign that builds inherits 
 those fire points are on the build and not on the caller.
 
 The **family** images are warmed from a different place and for a different reason:
-``vast cluster setup`` / ``upgrade``, which is both the moment every node is cold for the
+``vast cluster setup`` / ``vast service upgrade``, which is both the moment every node is cold for the
 whole family — a tag bump or a moved project means the next campaign pays a full pull of
 ``robovast-roqsim``, the largest image there is — and the moment it is free, since the pod is
 being restarted anyway so nothing is mid-campaign. It resolves from the caller's own
@@ -1314,9 +1404,8 @@ Three properties of the **Job** shape, and each replaces machinery rather than a
 * **Idempotent by name.** The Job name is derived from the image ref, so a duplicate create is
   a 409 meaning "already warming". No in-process record, and a service restart changes nothing —
   the same trick ``build_id_for`` uses to make a resubmit idempotent.
-* **It terminates itself.** ``ttlSecondsAfterFinished`` is *not* sufficient, and assuming it was
-  would have reproduced a bug this codebase already paid for: TTL starts only once a Job is
-  terminal, and with ``backoffLimit: 0`` a pod wedged in ``ImagePullBackOff`` leaves both
+* **It terminates itself.** ``ttlSecondsAfterFinished`` is *not* sufficient: TTL starts only
+  once a Job is terminal, and with ``backoffLimit: 0`` a pod wedged in ``ImagePullBackOff`` leaves both
   counters at zero and the Job ``active`` forever. That is precisely why the build path carries a
   ``blocked``-phase probe. A prewarm has nobody watching it, so it gets
   ``activeDeadlineSeconds`` instead of a watcher.
@@ -1341,7 +1430,7 @@ campaign-completion hook — the first is the placement limit below, and the sec
 prewarmed copy just as readily. Warming at view time is no better, since ``AuxPodSession``
 creates a pod with that image immediately anyway and a second pod would race the same pull for
 no gain. So the honest answer is that this particular latency needs multi-node warming rather
-than another fire point — which the family DaemonSet now provides for a campaign that ran a
+than another fire point — which the family DaemonSet provides for a campaign that ran a
 family image directly, and still does not for one that built its own.
 
 Two further things it deliberately does not do. It does **not** fire on the restart branch of
@@ -1374,9 +1463,11 @@ unpinned ref and warns, rather than refusing a mutable default outright so that 
 campaign runs is always pinned by its author. That rule aims at the right thing from the
 wrong layer: it makes every ``.vast`` carry a registry-specific string, which is how a
 shipped example comes to pin a private registry only one site could pull. What makes a run
-reproducible is the digest captured *from* it (``pullable_digest`` /
-``_capture_image_digest``, replayed by ``from_campaign``) — a fact about what happened, not
-an intention recorded beforehand.
+reproducible is the digests its launch fixed for every image it runs, before any of its pods
+existed, and recorded in ``_execution/launch.yaml`` — a fact about what ran, not an intention
+recorded beforehand. A launch whose digests cannot be read is refused, and every replay
+(``from_campaign``, and the adoption of a running campaign after a restart) runs the recorded
+digests and resolves nothing again.
 
 The default tag is ``latest`` and not this installation's version. Deriving it reads well
 and is wrong: it assumes every version has a published tag, and CI publishes semver tags

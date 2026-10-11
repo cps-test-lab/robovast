@@ -5,8 +5,10 @@
 The archive is streamed rather than refused, has one top-level entry named for the campaign,
 and answers a missing campaign with 404.
 
-``_postproc/`` is excluded alongside ``.cache``: it is postprocessing's staging area, not part
-of the campaign, and shipping it would make an archive's size depend on when it was taken.
+It carries the campaign's built tables -- the top-level ``.cache/`` manifest and table files,
+never the cache's exports or locks, nor a run's own ``.cache`` -- so it opens without building
+anything; ``?raw=true`` is the records alone, without the tables and what postprocessing
+recorded producing.
 """
 
 import tarfile
@@ -46,12 +48,21 @@ def _env(monkeypatch, tmp_path):
                                                     encoding="utf-8")
     (root / "_execution").mkdir()
     (root / "_execution" / "execution.yaml").write_text("runs: 1\n", encoding="utf-8")
-    # Both excluded, and for different reasons: `.cache` is postprocessing's hash cache and
-    # `_postproc` its staging tree.
-    (root / ".cache").mkdir()
-    (root / ".cache" / "hashes.json").write_text("{}", encoding="utf-8")
-    (root / "_postproc").mkdir()
-    (root / "_postproc" / "scratch.csv").write_text("a,b\n", encoding="utf-8")
+    (root / ".cache" / "tables" / "poses").mkdir(parents=True)
+    (root / ".cache" / "tables" / "poses" / "_compacted-0.parquet").write_bytes(b"PAR1")
+    (root / ".cache" / "MANIFEST.json").write_text("{}", encoding="utf-8")
+    (root / ".cache" / ".lock").write_text("", encoding="utf-8")
+    (root / ".cache" / "exports" / "e1").mkdir(parents=True)
+    (root / ".cache" / "exports" / "e1" / "export.tar.gz").write_bytes(b"x")
+    (root / "cfg" / "0" / ".cache").mkdir(parents=True)
+    (root / "cfg" / "0" / ".cache" / "render.html").write_text("x", encoding="utf-8")
+    (root / "cfg" / "0" / "test.xml").write_text("<t/>", encoding="utf-8")
+    # What postprocessing produced: its record naming one output, and the metadata.
+    (root / "_transient").mkdir()
+    (root / "_transient" / "postprocessing.yaml").write_text(
+        "entries:\n- output: ../cfg/0/derived.csv\n  plugin: command\n", encoding="utf-8")
+    (root / "cfg" / "0" / "derived.csv").write_text("a\n1\n", encoding="utf-8")
+    (root / "metadata.yaml").write_text("x: 1\n", encoding="utf-8")
     with TestClient(build_app(transport)) as client:
         yield client
 
@@ -74,11 +85,27 @@ def test_the_service_streams_a_campaign_from_its_results_root(env):
     assert f"{_CAMPAIGN}/_config/campaign.vast" in names
 
 
-def test_postprocessing_scratch_is_left_out(env):
-    """``.cache`` and ``_postproc`` are staging, not campaign content."""
+def test_the_archive_carries_the_built_tables_and_nothing_else_of_the_cache(env):
     names = _members(env.get(Routes.campaign_archive(_CAMPAIGN)).content)
-    assert not [n for n in names if "/.cache" in n or "/_postproc" in n], \
-        f"staging directories were shipped in the archive: {sorted(names)}"
+    cache = sorted(n for n in names if "/.cache" in n)
+    assert cache == [f"{_CAMPAIGN}/.cache", f"{_CAMPAIGN}/.cache/MANIFEST.json",
+                     f"{_CAMPAIGN}/.cache/tables", f"{_CAMPAIGN}/.cache/tables/poses",
+                     f"{_CAMPAIGN}/.cache/tables/poses/_compacted-0.parquet"], cache
+    assert f"{_CAMPAIGN}/cfg/0/derived.csv" in names
+    assert f"{_CAMPAIGN}/_transient/postprocessing.yaml" in names
+
+
+def test_raw_is_the_records_without_the_tables_or_what_postprocessing_produced(env):
+    resp = env.get(Routes.campaign_archive(_CAMPAIGN), params={"raw": "true"})
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-disposition"] == \
+        f'attachment; filename="{_CAMPAIGN}.raw.tar.gz"'
+    names = _members(resp.content)
+    assert not [n for n in names if "/.cache" in n], sorted(names)
+    for derived in ("cfg/0/derived.csv", "_transient/postprocessing.yaml", "metadata.yaml"):
+        assert f"{_CAMPAIGN}/{derived}" not in names, derived
+    assert f"{_CAMPAIGN}/cfg/0/test.xml" in names
+    assert f"{_CAMPAIGN}/_config/campaign.vast" in names
 
 
 def test_an_unknown_campaign_is_a_404(env):

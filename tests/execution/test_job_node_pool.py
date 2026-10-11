@@ -147,8 +147,7 @@ def _launch_runner(monkeypatch, campaign_data, admission=None):
         create_namespaced_secret=lambda namespace, body: None)
     r._ensure_k8s_initialized = lambda: None
     r._write_job_param_files = lambda out_dir, campaign_root=None: None
-    r._build_jobs = lambda: [types.SimpleNamespace(index=0, items=[]),
-                             types.SimpleNamespace(index=1, items=[])]
+    r._build_jobs = lambda: [types.SimpleNamespace(index=0), types.SimpleNamespace(index=1)]
     r._jobs_already_done = lambda jobs, root: set()
     r.create_job_manifest = lambda job, total, node_figures=None: {"job": job.index}
     r._job_sizing = lambda job, total, node_figures=None: JobSizing(2.0, MIB)

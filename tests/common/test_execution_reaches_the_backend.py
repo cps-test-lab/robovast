@@ -38,7 +38,6 @@ _DECLARED = {
     "timeout": 321,
     "simulation": "some.module:Class",
     "mode": "ros2",
-    "runs_per_job": 2,
     "shm_size": "256Mi",
     # Read by the cluster runner to decide whether a reservation is declared or measured;
     # it must ARRIVE, or a calibrated campaign would silently run fixed.
@@ -46,6 +45,10 @@ _DECLARED = {
     # Read by the cluster to confine jobs to one registered node; it must arrive, or a
     # pinned campaign would silently use the whole pool.
     "kubernetes": {"jobs": {"node": "bench-a"}},
+    # Read by the cluster runner from the raw block for every job's pod.
+    "run_as_user": 4321,
+    "pre_command": "/config/files/pre.sh",
+    "post_command": "/config/files/post.sh",
 }
 
 #: Carried, but not an ``ExecutionConfig`` field -- ``containers`` is rewritten by
@@ -64,7 +67,7 @@ def _project(tmp_path):
     declared = yaml.safe_dump(_DECLARED, default_flow_style=False, sort_keys=True)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent("""\
-        version: 4
+        version: 7
         metadata: {name: seam}
         configuration:
         - name: base

@@ -4,10 +4,16 @@ Renders the browser scene descriptor (`scene.json` + `scene.bin`, plus `tex_<i>.
 roqsim exports — via the `roqsim-export-web` CLI or the `MujocoSim` adapter's
 `ROQSIM_SCENE_EXPORT_DIR` hook. Any simulator that emits the same descriptor renders here too;
 the format is owned by roqsim (`roqsim/export_web.py`), the reference loader is this one.
+The descriptor states `format: "roqsim.web_scene"` and a `version`; the loader refuses another
+format or a version newer than `SCENE_VERSION`, naming both, and reads an unstamped one as version 1.
 
 - `sceneLoader.ts` — descriptor → three.js `Group`, plus an imperative animation API:
   `jointMap[name](value)` for hinge/slide joints and `basePose(body, pos, quat)` for world-frame
   body poses.
+- `motionSource.ts` — what a run's *motion* looks like to a viewer: a time base plus named joint
+  and pose tracks, pushed into the scene model as the sink. `rowMotion.ts` is the source over a
+  run's `sim_poses` / `joint_states` rows, windowed around the clock and paged at the query's row
+  cap, following a run still recording through a reader the panel adapts its data provider to.
 - `sceneModelCache.ts` — parsed models leased per viewer mount and parked on release, keyed by the
   content-addressed descriptor URL, so a remount on the same world skips the fetch and the rebuild.
 - `sceneTf.ts` — TF-chain composition (`map -> odom -> base_link`) for data sources that deliver

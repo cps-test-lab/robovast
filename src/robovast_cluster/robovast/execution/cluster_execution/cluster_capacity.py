@@ -102,7 +102,7 @@ def headroom() -> "Tuple[float, int]":
     in the requests admission subtracts, the tenants the reserve protects are counted once
     already.
     """
-    from robovast.common.quantity import to_bytes, to_cores  # noqa: PLC0415
+    from robovast_decode.quantity import to_bytes, to_cores  # noqa: PLC0415
 
     raw_cpu = (os.environ.get(HEADROOM_CPU_ENV) or "").strip() or DEFAULT_HEADROOM_CPU
     raw_mem = (os.environ.get(HEADROOM_MEMORY_ENV) or "").strip() or DEFAULT_HEADROOM_MEMORY
@@ -350,10 +350,10 @@ class ClusterBudgetProvider:
         **Disk is charged as the scheduler charges it, which cpu here is not.** A pod's
         effective request is the larger of its workload containers' sum and its largest
         one-shot init container, and for cpu and memory the init term is small enough to
-        drop. For disk it is the whole figure: a postprocessing pod stages its campaign in
-        an init container, whose request is the size of that campaign, while its workload
-        container asks for a floor. Summing workload containers alone would report the
-        node's disk as free while the scheduler holds it for that pod.
+        drop. For disk it is the whole figure: a pod that stages its inputs in an init
+        container requests their size there, while its workload container asks for a floor.
+        Summing workload containers alone would report the node's disk as free while the
+        scheduler holds it for that pod.
         """
         core = self._core_api_factory()
         pods = core.list_pod_for_all_namespaces(

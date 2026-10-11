@@ -14,20 +14,21 @@ Visual artifact egress over MCP (video and rasters)
 ---------------------------------------------------
 
 **Motivation.** Analysis over MCP is increasingly driven by an LLM. Quantitative
-questions are well served: per-run metrics are consolidated into
-the central results index and queried with read-only SQL
+questions are well served: a campaign's tables are built from its records on first use
+and queried with read-only SQL
 (``describe_campaign_data`` / ``query_campaign_data_sql``), and
 a campaign's author-declared charts are exposed as Vega-Lite specs by
 ``list_campaign_plots`` (from ``visualization.results.data_browser.plots`` in the snapshot ``.vast``).
 
-What is **not** reachable is any raster or video output. ``read_file`` deliberately
-refuses binary content (it would be mangled, not read), so ``rosbags_to_webm``
-recordings and rendered PNG plots cannot travel to the model — the bytes *are*
-addressable over HTTP and with ``vast files get``, but nothing turns them into MCP
-image content. ``list_campaign_plots`` + SQL covers
-*charts* (declarative specs the client renders), not *pixels*: a trajectory
-overlay, a costmap, or a landing-scatter image cannot be seen. For a
-robotics-simulation tool this is the main remaining analysis gap — 5000 rows of
+What is **not** reachable is video, or a rendered raster. One frame of a recorded camera
+is: ``get_camera_frame`` returns it as MCP image content, as ``draw_config`` and
+``get_simulation_screenshot`` return their pictures. ``read_file`` deliberately hands a binary
+back as a ``url`` rather than its bytes (they would be mangled, not read), so a
+``rosbags_to_webm`` recording as a whole and a rendered PNG plot cannot travel to the model —
+the bytes *are* addressable over HTTP and with ``vast files get``, but nothing turns them into
+MCP image content. ``list_campaign_plots`` + SQL covers *charts* (declarative specs the client
+renders), not *pixels*: a trajectory overlay, a costmap, or a landing-scatter image cannot be
+seen. For a robotics-simulation tool this is the main remaining analysis gap — 5000 rows of
 poses is not how a human notices a robot driving into a wall.
 
 **Open questions** (to decide, not yet decided):
@@ -35,8 +36,8 @@ poses is not how a human notices a robot driving into a wall.
 * Should the model receive images as MCP image content, and for which artifacts?
 * Is video better delivered as a short-lived artifact/link than inline, given
   size?
-* ``draw_config`` and ``get_simulation_screenshot`` already return images as MCP
-  image content — is that the pattern to generalize, or is a campaign-level
+* ``draw_config``, ``get_simulation_screenshot`` and ``get_camera_frame`` already return
+  images as MCP image content — is that the pattern to generalize, or is a campaign-level
   artifact route the right home?
 
 
@@ -67,7 +68,7 @@ cheap 90%: the failure being fixed is forgetting, not being unable.
 Server-rendered figures (optional)
 ----------------------------------
 
-A machine-readable figure layer **now exists**: a campaign's ``visualization.results.data_browser.plots``
+A machine-readable figure layer **exists**: a campaign's ``visualization.results.data_browser.plots``
 declare ``{title, query, vega_lite}`` entries, surfaced over MCP by
 ``list_campaign_plots`` and over the service by ``GET
 /campaigns/{id}/plots``. The web UI can render those Vega-Lite specs directly, and
@@ -92,7 +93,8 @@ it.
 Finished items are not kept here: they are described where they are implemented — the file
 address space in :ref:`file-address-space`, the SQL results surface in :ref:`mcp-analysis`
 and :ref:`database-or-address-space`, the HTTP route table in :ref:`http-api`, telling a
-wedged run from a slow one in :ref:`mcp-liveness`, and campaign discovery plus the
+wedged run from a slow one in :ref:`mcp-liveness`, a run's log and tables read live as it
+records in :ref:`merged-run-log` and :ref:`run-view-live`, and campaign discovery plus the
 non-blocking image build in :ref:`campaign-discovery` and :ref:`campaign-building-phase`.
 The numbering below is historical and deliberately not compacted, so a note elsewhere
 referring to "item 9" still means item 9.
@@ -114,55 +116,17 @@ easier to lose than the code.
   ``/image-builds/{id}/log`` is not. A second handle on the status would have been a
   second way to ask the same question.
 
-**3b. Log patterns are computed on read, never joinable.** Telling a hanging run from a
-healthy one landed (:ref:`mcp-liveness`): the status carries ``progress_age_s`` and a
-``stalled`` verdict against the declared per-run budget, and the log tools take
-``min_severity`` and ``summarize`` so a flood of one message costs one line instead of
-thousands. Deliberately, **nothing derived from a log is stored** — the counts are
-recomputed per call, which is what keeps them out of competition with the tables in
-:ref:`database-or-address-space`.
 
-That is the right split for the *liveness* question and the wrong one for the
-*analysis* question. Normalized pattern plus count is an aggregate, so by that same
-rule it should be a table, joinable to ``run_view`` — "which failed runs share a
-warning pattern?" is a query nobody can currently write, and it is the question that
-turns a flaky sweep into a diagnosis. The raw lines stay files regardless; one TEXT
-column is not queryable data.
-
-The open part is the ingest path, and it is genuinely open. It must work on a **live**
-campaign, where ``data.db`` does not exist yet and ``campaign.db``'s writer does not
-tail container logs, and the run's own output exists only in pod logs, which no
-in-campaign writer sees. A live ingest point is the thing to design.
-
-The post-hoc half of this **shipped** as ``run_log`` (see :ref:`merged-run-log`): every
-container's output joined with ``/rosout``, on the run's own playback clock, as a table
-joinable to ``runs``. So "which failed runs share a warning pattern?" is now one query, and
-``search_run_logs`` asks it across runs and campaigns. What remains open is exactly the
-*live* ingest above — ``run_log`` is written by postprocessing, so a running campaign still
-has only its streams.
-
-(The earlier text here claimed ``rosout`` was already a DB table. It never was: the CSV is
-written to the **job** directory, which the index ingest does not glob. That gap is what
-``run_log`` closes.)
-
-* A campaign that ran and passed reported ``runs: {completed: 0, total: 0}`` in its
-  ``_execution/outcome.json`` while ``test.xml`` recorded ``errors=0 failures=0`` and
-  every postprocessed artifact was present -- the campaign-level counters were never
-  populated. **Traced** to the backend's ``count_run_artifacts`` answering ``None``,
-  which made ``_start_progress_poller`` return early, so nothing ever wrote the counters
-  and a live campaign also published a ``progress`` that could not move.
-  ``ExecutionBackend.count_run_artifacts`` now counts the per-run ``test.xml`` files under
-  the campaign root, where a run's results land, and a backend that genuinely cannot
-  count is logged rather than passed over. What is still unverified is whether a search's
-  per-batch record and the campaign row's aggregate agree with those counters over
-  a multi-batch run -- that aggregate is where a sweep's flakiness rate would be read
-  from, so it wants one deliberate check before it is trusted. (The ``Status.batch_history``
-  this used to name is gone; the per-batch record now lives in ``campaign.db``'s ``batch``
-  and ``unit`` tables, read by ``read_batch_objectives``.)
+**9. A search's per-batch record is not checked against the run counters.**
+Whether a search's per-batch record (``campaign.db``'s ``batch`` and ``unit`` tables,
+read by ``read_batch_objectives``) and the campaign row's aggregate agree with the run
+counters ``ExecutionBackend.count_run_artifacts`` produces over a multi-batch run is
+unverified. That aggregate is where a sweep's flakiness rate would be read from, so it
+wants one deliberate check before it is trusted.
 
 **10. The cloud instance-type commands are untested.**
-``get_instance_type_command`` is now wired into the generated entrypoint, so a run records
-the node's instance type in its ``sysinfo.yaml`` (and thence ``main.runs.instance_type``).
+``get_instance_type_command`` runs in the generated entrypoint, so a run records the
+node's instance type in its ``sysinfo.yaml`` (and thence ``runs.instance_type``).
 Only the bare-metal implementations have actually run: ``rke2`` and ``minikube`` return
 ``uname -m``, which is verifiable locally. The **GCP and Azure** commands query a cloud
 metadata service —
@@ -176,9 +140,9 @@ metadata service —
 
 — and neither has been exercised on a real node. Both fail *quietly*: ``curl -s`` on a
 wrong URL, a changed response shape, or a blocked metadata endpoint yields an empty string,
-which records exactly like the old hardcoded empty. So a green campaign proves nothing;
-verify by running one on each provider and checking ``SELECT DISTINCT instance_type FROM
-runs`` is a machine type rather than ``NULL``. The API versions in particular age: Azure's
+which records exactly like a provider that reports no instance type. So a green campaign
+proves nothing; verify by running one on each provider and checking ``SELECT DISTINCT
+instance_type FROM runs`` is a machine type rather than ``NULL``. The API versions in particular age: Azure's
 ``api-version`` is pinned in the URL.
 
 .. _future-dev-loop:
@@ -249,29 +213,27 @@ stream tar, which nginx cannot produce — so this is ``/results`` alone.
 Scheduling: what admission still does not do
 ---------------------------------------------
 
-Per-node budgets and in-campaign calibration were the open items here and both now ship --
-:ref:`cluster-admission` and :ref:`cluster-node-calibration` describe what they do and
-the measurements behind them. What follows is what is still open, and why each was left.
+Per-node budgets and in-campaign calibration are described in :ref:`cluster-admission` and
+:ref:`cluster-node-calibration`. What follows is what is still open, and why each was left.
 
 **The drain loop is O(pending x nodes) under a global lock.** ``AdmissionController.drain``
-forces a fresh cluster reading (``BUDGET_TTL_S`` is bypassed on this path), then asks
-``sizing_for_node`` for every pending item against every candidate node -- and that callback
-renders a full Job manifest each time, uncached -- and then creates Jobs, all while holding the
-one lock every campaign needs. Every campaign thread does this every two seconds. At the ~1435
-jobs a large campaign submits, on four nodes, that is roughly 5700 manifest renders per drain.
-It is invisible on a small bare-metal cluster and will not be on a large or managed one, where
-listing every pod in every namespace at that cadence also meets the client's own QPS throttle
-and reads as a campaign stalling. In order of value: memoize the per-node sizing for the life
+takes a fresh cluster reading (``BUDGET_TTL_S`` is bypassed on this path), then, holding the
+one lock every campaign needs, asks ``sizing_for_node`` for every pending item against every
+candidate node -- and that callback renders a full Job manifest each time, uncached -- and
+creates Jobs. Every campaign thread does this every two seconds, so a drain renders one
+manifest per pending job per candidate node. It is invisible on a small bare-metal cluster and
+will not be on a large or managed one, where listing every pod in every namespace at that
+cadence also meets the client's own QPS throttle and reads as a campaign stalling. In order of value: memoize the per-node sizing for the life
 of a calibration; let ``drain`` honour the budget TTL, or share one reading across the drains
 in a tick; move ``create()`` outside the lock, recording the reservation under it.
 
 **The two callbacks are why the lock has to be reentrant.** ``submit`` takes
 ``sizing_for_node`` and ``accepts_node``, and ``drain`` calls them with the lock held. That
-breaks the module's own "values in, values out" contract, and it has already cost a live
-campaign: a callback that asked the queue anything deadlocked it, silently, until the
-no-progress deadline called the campaign stalled. Making the lock reentrant removed the
-deadlock; the coupling is still there, and ``_node_figures`` carries a "must never ask the
-queue" warning that only code review enforces.
+breaks the module's own "values in, values out" contract: with a plain lock, a callback that
+asks the queue anything deadlocks it, silently, until the no-progress deadline calls the
+campaign stalled. The reentrant lock prevents the deadlock, not the coupling, and
+``_node_figures`` carries a "must never ask the queue" warning that only code review
+enforces.
 
 The shape that removes it is a **``NodeView`` value** -- ``{node_id: JobSizing}`` plus the set
 of nodes this owner may use -- computed by the caller and handed in before each drain. Then no
@@ -282,7 +244,7 @@ tick instead of once per (item, node), which is also the fix above. Separately,
 scheduler: the queue stores an object it never reads, purely because it is the only thing
 whose lifetime is the campaign's rather than the batch's. An owner-scoped registry outside the
 queue would hold it together with the probe bookkeeping, and would make ``cancel(owner)`` mean
-one thing -- the probe leak fixed in 2026-08 fell through exactly that seam.
+one thing.
 
 **Three constants are a nav2 trial's dimensions, and should be derived.**
 
@@ -292,12 +254,13 @@ one thing -- the probe leak fixed in 2026-08 fell through exactly that seam.
   discarded**. It should come from ``execution.timeout``.
 * ``container_cpu_profile`` takes its percentiles over the container's **whole lifetime**, not
   over the trial: it is the one reader of ``resource_usage_<container>.csv`` that meets the
-  raw artifact, and ``in_window`` is added later by postprocessing. With nav2's short bring-up
+  raw artifact, and ``in_window`` is added only when the decoder builds the
+  ``resource_usage`` table. With nav2's short bring-up
   against a 150 s trial this is roughly right. For a stack with a five-minute bring-up and a
   60 s trial, the p95 measures bring-up and the node is calibrated for the wrong thing.
 
 **Cloud.** :ref:`cluster-cloud-limits` records what does not hold on managed Kubernetes. The
-growth ceiling now reaches the service pod, because ``setup`` asks the provider and records the
+growth ceiling reaches the service pod, because ``setup`` asks the provider and records the
 answer in the deployment's environment; what is still open is that the recording **ages**, so a
 resized node pool needs an ``upgrade`` before admission knows. Reading the autoscaler's maximum
 from the API server instead -- the ``cluster-autoscaler-status`` ConfigMap names each node
@@ -322,7 +285,7 @@ Per-job GPU usage, and why device-wide sampling is not it
 **Motivation.** A campaign records what each run cost in CPU and memory — sampled at 1 Hz per
 process per container and consolidated into the ``resource_usage`` table (see
 :ref:`merged-run-log` for the sibling log path). Since simulation cameras render on the GPU
-(:ref:`cluster-gpu`), the same question is now open for the device: how much of it did *this
+(:ref:`cluster-gpu`), the same question is open for the device: how much of it did *this
 job* use? That is what decides whether ``--gpu-replicas`` can be raised, and it is the one
 figure a GPU campaign cannot currently produce.
 
@@ -375,44 +338,32 @@ sixteenth.
 
 **Design work already done, worth keeping when this is finalised.**
 
-* **Process-level and system-level are different kinds of metric and want different tables.**
-  ``resource_usage`` is per-process by contract, and putting a device figure in it as a
+* **A device figure goes in** ``system_usage``, **never in** ``resource_usage``.
+  ``resource_usage`` is per-process by contract, and a device figure written into it as a
   synthetic ``__gpu__`` process would surface in the web UI's process list
   (``frontend/ui/src/lib/campaignDetails.ts``) and be aggregated by ``advice.USAGE_SQL``
-  (:mod:`robovast.results_processing.advice`) as though it were one. A sibling
-  ``system_usage`` table is the right shape, and the split should be structural so later
-  metrics of either kind have an obvious home.
-* **Make the new table column-generic.** CSV → index already is: any ``*.csv`` in a run
-  directory becomes a table, columns are the union of row keys and types are inferred
-  (``GenerateDataDb`` in :mod:`robovast.results_processing.postprocessing_plugins`, typing in
-  :mod:`robovast.results_processing.csv_types`), including ``ALTER TABLE`` for a column that
-  first appears in a later run. Only the sampler-CSV → per-run-CSV step is not:
-  :mod:`robovast.results_processing.resource_usage` names its columns in five places (its two
-  fieldname tuples, ``read_container_csv``'s row tuple, ``Tick.processes``, and the ``grouped``
-  accumulator). A slicer that carries every non-key column through verbatim would make a new
-  metric a one-line change in the sampler and nothing else — and would be the thing
-  process-level sampling could later migrate onto.
-* **Reuse the sampler and the slicing helpers.** One daemon should write both files:
-  :mod:`robovast.execution.data.monitor_resources` can derive the sibling path from its
-  ``argv[1]``, which leaves both entrypoint scripts — and the launch contract pinned by
-  ``tests/execution/test_resource_monitor_output_path.py`` — untouched. Per-run splitting,
-  ``in_window`` and the clock conversion all come from
-  :mod:`robovast.results_processing.run_slices`; its ``container_of`` is deliberately the one
-  place per-container artifact names are inverted, so a new filename is registered there.
-* **A probe registry, not a special case.** A probe is a callable returning
-  ``{metric: value}`` whose availability is decided once at startup, so an unavailable probe
-  contributes no columns and costs nothing. The GPU probe's availability test is
-  ``/dev/nvidiactl`` plus ``nvidia-smi`` on ``PATH`` — which is exactly the right gate without
-  configuration, because the container toolkit injects both per container: a CPU-only sidecar
-  has neither and simply does not sample.
+  (:mod:`robovast.results_processing.advice`) as though it were one. ``system_usage`` is the
+  container-level sibling the same sampler writes (``system_usage_<container>.csv``, one row
+  per tick), and the decoder passes its columns through typed from what is found
+  (:mod:`robovast_decode.system_usage`), so a new counter there is a change to the sampler
+  and nothing else. Per-run splitting, ``in_window`` and the clock conversion come from
+  :mod:`robovast_decode.run_slices`, whose ``container_of`` is the one place per-container
+  artifact names are inverted.
+* **A GPU probe is one more probe.** The sampler's container-level figures come from probes
+  (:mod:`robovast.execution.data.monitor_resources`, ``PROBES``), each a callable returning
+  ``{metric: value}`` whose availability ``start_probes`` decides once at startup, so an
+  unavailable probe contributes no columns and costs nothing. The GPU probe's availability
+  test is ``/dev/nvidiactl`` plus ``nvidia-smi`` on ``PATH`` — which is exactly the right gate
+  without configuration, because the container toolkit injects both per container: a
+  CPU-only sidecar has neither and simply does not sample.
 * **Sample the device at 5 s, not 1 Hz.** 26 ms per call is 2.6% of a core per container at
   1 Hz, ~42% across sixteen concurrent GPU jobs — overhead charged to the very node whose
   throughput the GPU work exists to improve. GPU memory of a running renderer is near
   constant, so 5 s loses little. The existing loop already sleeps in 0.1 s increments to keep
   SIGTERM prompt, so the slower cadence has to be a tick counter rather than a longer sleep.
 * **Emit** ``""`` **for a missing value, never** ``"N/A"``. One non-numeric value demotes its
-  whole column to ``TEXT`` campaign-wide (``csv_types.value_type``); an empty string becomes
-  ``NULL`` and contributes no type evidence. ``nvidia-smi`` returns ``[N/A]`` and
+  whole column to ``TEXT`` campaign-wide (``robovast_decode.types.value_type``); an empty
+  string becomes ``NULL`` and contributes no type evidence. ``nvidia-smi`` returns ``[N/A]`` and
   ``[Not Supported]`` for unsupported fields on some cards.
 * **If a device figure is ever recorded anyway**, record the concurrent GPU process count with
   it. Counting the device's processes needs no PID matching, and it is what turns an

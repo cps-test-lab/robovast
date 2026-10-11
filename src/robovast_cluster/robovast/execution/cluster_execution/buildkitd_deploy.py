@@ -262,7 +262,7 @@ def checked_quantity(value: str, *, kind: str, name: str) -> str:
     typo leaves a half-built deployment rather than failing the command that made it. ``name``
     is the setting the operator wrote, not the keyword this module calls it.
     """
-    from robovast.common.quantity import to_bytes, to_cores  # noqa: PLC0415
+    from robovast_decode.quantity import to_bytes, to_cores  # noqa: PLC0415
 
     parsed = to_cores(value) if kind == "cpu" else to_bytes(value)
     if parsed is None or parsed <= 0:
@@ -282,7 +282,7 @@ def _fitted_requests(cpu_request: str, memory_request: str,
     came to change, and a ceiling below the reservation says the reservation was too big for
     this node. Reported, because it changes what admission counts.
     """
-    from robovast.common.quantity import to_bytes, to_cores  # noqa: PLC0415
+    from robovast_decode.quantity import to_bytes, to_cores  # noqa: PLC0415
 
     for name, request, limit, parse in (
             ("cpu", cpu_request, cpu_limit, to_cores),

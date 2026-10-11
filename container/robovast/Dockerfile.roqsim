@@ -33,7 +33,7 @@
 # the remote, so a branch default serves the tree from the first build forever (see the caching
 # note below). build.sh and CI resolve their own ref to a sha and pass it, overriding this.
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
-ARG ROQSIM_REF=f08dda192aab4fdd3b68d23e540d2db0cf5f69ca
+ARG ROQSIM_REF=86667204b710a51831cdc1bdeda2700d071c6528
 
 # Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
 # declared before the FIRST FROM in the file, or it is out of scope and the base name resolves
@@ -241,10 +241,13 @@ sys.exit(1 if found else 0)'
 # scenario-execution dependency is deliberately not declared (see its pyproject) -- this image already
 # carries that as a colcon package under /ws, and a pip'd copy from PyPI would be a different, older
 # project sitting on the same sys.path.
+#
+# `roqsim[ipc]` for the control socket `roqsim sim` serves by default; without pyzmq it serves none.
+# The requirement is met by the base image's python3-zmq.
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     pip install --break-system-packages \
         "mujoco>=3.0" \
-        /opt/roqsim/roqsim \
+        "/opt/roqsim/roqsim[ipc]" \
         /opt/roqsim/roqsim_assets \
         /opt/roqsim/roqsim_sensors \
         /opt/roqsim/roqsim_mobile \
@@ -255,7 +258,6 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
         /opt/roqsim/roqsim_scenes \
         /opt/roqsim/roqsim_nav \
         /opt/roqsim/roqsim_walker \
-        /opt/roqsim/roqsim_webctrl \
         /opt/roqsim/scenario_execution_roqsim
 
 # The learned-policy platforms: quadruped + humanoid, which pull CPU torch (several hundred MB

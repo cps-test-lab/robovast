@@ -26,235 +26,22 @@ serve.
 """
 
 import logging
-import time
+from collections import Counter
+from typing import Optional
+from urllib.parse import urlencode
 
 from fastmcp import FastMCP
 
-from robovast.client.status import (HEALTH_NEXT_STEP, STALL_NEXT_STEP, budget_positions,
-                                    error_findings, stall_report, stopping_soon_report)
-from robovast.common.log_summary import DEFAULT_TOP
+from robovast.client.campaign_report import status_report
+from robovast.client.image_report import build_status_report
+from robovast.client.service_report import resource_usage_report
+from robovast.execution.wait_exit import CampaignWaitExit, ImageWaitExit
 from robovast.mcp_server import results_resolver, service_access
 from robovast.mcp_server.lacks import lacks
-from robovast.mcp_server.service_access import NO_SERVICE, error_result
 from robovast.service.interface import Routes
+from robovast_decode.log_summary import DEFAULT_TOP
 
 logger = logging.getLogger(__name__)
-
-
-def _binding_budget(st):
-    """The budget row closest to exhausting and its share, or ``None`` when none is usable.
-
-    The campaign stops at whichever criterion fires first, so the closest one is the only
-    one describing a moment this campaign will actually reach; any other describes a moment
-    it never will.
-
-    Read through :func:`budget_positions`, so a ``time`` budget reports where the search is
-    now rather than where it was when the last round closed.
-
-    The single implementation of that rule on this side: :func:`_progress_from_status` takes
-    the share from here and the status dict takes the row, so the reported progress and the
-    criterion it is named against cannot disagree. The web UI's ``ringBudget`` (lib/eta.ts)
-    applies the same rule to draw the ring, and ``campaignEtaSeconds`` expresses it in time
-    units where "fires first" is the *smaller* duration -- a change to any of the three must
-    be made looking at the other two.
-    """
-    best, best_share = None, -1.0
-    for b in budget_positions(st):
-        if b.current is None or not b.limit:
-            continue
-        share = max(0.0, min(1.0, b.current / b.limit))
-        if share > best_share:
-            best, best_share = b, share
-    return None if best is None else (best, best_share)
-
-
-def _progress_from_status(st) -> float | None:
-    """Overall progress in ``[0, 1]``, or ``None`` when it cannot be known honestly.
-
-    - **batch** mode: ``completed / total`` — the total is known up front.
-    - **search** mode: the loop ends when a stopping criterion fires, so progress is
-      the closest criterion, ``max(current / limit)`` over the ``budget``. A search's
-      per-batch run ratio is deliberately **not** used — it would read as overall
-      completion when it is only progress through one batch of an open-ended search.
-
-    The search case is :func:`_binding_budget`'s share -- see there for the rule and for the
-    two other readers that must agree with it.
-
-    Returns ``None`` (never a misleading number) when a search has no usable budget
-    value yet.
-    """
-    if st.budget:
-        binding = _binding_budget(st)
-        return binding[1] if binding else None
-    mode = (st.mode or "").lower()
-    if mode in ("", "batch") and st.runs and st.runs.total:
-        return max(0.0, min(1.0, st.runs.completed / st.runs.total))
-    return None
-
-
-#: How many batches of the objective trajectory ride along on a status read. Bounded on purpose:
-#: this is an agent's context, which is the scarce resource here, and the useful signal for "is it
-#: still improving?" is the recent shape plus the level already reached — which the window's first
-#: `best_so_far` still carries. The whole history is queryable from `campaign.db` once the campaign
-#: ends; this is the live read.
-OBJECTIVE_HISTORY_WINDOW = 20
-
-
-def _attach_objective_history(result: dict, client, campaign_id: str) -> None:
-    """Add a search's objective trajectory to a status dict, in place.
-
-    On ``get_campaign_status`` rather than behind a tool of its own, and that is a deliberate
-    reversal. The first design put it in a separate ``get_search_progress`` on the grounds that a
-    per-batch array does not belong on a polled payload — true of the HTTP status, which every
-    campaign card fetches every 1.5s, and false here: this is an occasional agent call, and the
-    tooling steers agents to ``vast campaign wait`` rather than to polling it. Meanwhile a second tool has to
-    be *discovered*, and an agent that must remember to make a follow-up call does not make it —
-    which is the same lesson ``_wait_next_step`` exists for.
-
-    ``batches_since_improvement`` is a FACT, not a verdict. Whether a flat stretch means "converged"
-    is only RoboVAST's to say when the campaign declared a ``no_improvement`` criterion — and then
-    ``budget`` already carries that criterion's progress and the campaign will stop itself. Same
-    rule as ``stalled: None`` when no timeout is declared: no verdict is possible, which is not the
-    same as "healthy".
-
-    Best-effort: a service that cannot answer leaves the status untouched rather than failing the
-    read, because the trajectory is a bonus on a call whose job is the phase.
-    """
-    try:
-        history = client.get_search_history(campaign_id)
-    except Exception:  # noqa: BLE001 - a status read must not fail over its garnish
-        return
-    if history.unavailable:
-        # Named rather than silent: "several objectives, so there is no scalar to trend" is a
-        # different fact from "this search has found nothing", and an absent field reads as the
-        # second one.
-        if history.unavailable == "multi_objective":
-            result["objective_history_unavailable"] = history.unavailable
-        return
-    batches = [b for b in history.batches if b.n_scored]
-    if not batches:
-        return
-    best = batches[-1].best_so_far
-    since = 0
-    for b in reversed(batches):
-        if b.best_so_far != best:
-            break
-        since += 1
-    result["objective_name"] = history.objective_name
-    result["objective_direction"] = history.direction
-    # Rounds completed since the best last MOVED, so the round that set it does not count itself.
-    result["batches_since_improvement"] = max(0, since - 1)
-    window = batches[-OBJECTIVE_HISTORY_WINDOW:]
-    omitted = len(batches) - len(window)
-    if omitted:
-        result["objective_history_omitted"] = omitted
-    result["objective_history"] = [b.model_dump() for b in window]
-
-
-def _status_to_dict(campaign_id: str, backend, st) -> dict:
-    """Render a controller :class:`Status` into the MCP status dict.
-
-    Faithful to both batch and search campaigns: run counts are **batch-scoped**
-    (``batch_runs_*``) and ``progress`` is computed mode-aware (see
-    :func:`_progress_from_status`), while the search-only fields (best objective,
-    budget, batches done, stop reason) are surfaced when present.
-    """
-    result: dict = {
-        "campaign_id": campaign_id,
-        "backend": backend,
-        "status": st.phase,
-        "mode": st.mode,
-        "batch_runs_done": st.runs.completed if st.runs else 0,
-        "batch_runs_total": st.runs.total if st.runs else 0,
-        # Two distinct outcomes, because a run can deliver nothing *or* deliver a
-        # failing trial, and reporting only the former made a sweep with a failed
-        # trial look clean. See RunProgress.
-        "batch_runs_no_result": st.runs.no_result if st.runs else 0,
-        "batch_runs_failed": st.runs.failed if st.runs else 0,
-        # Whether the two counts above are final for this batch, because 0 alone cannot
-        # say. They are written once, when the batch's verdicts are tallied, so a poll
-        # partway through a batch that had already lost runs reads 0 -- which is also what
-        # a batch that lost nothing reads. Reported beside them rather than left to the
-        # docstring: a caller that has not read the docstring is exactly the caller that
-        # misreads the number.
-        "batch_outcomes_counted": bool(st.runs.outcomes_counted) if st.runs else False,
-        "progress": _progress_from_status(st),
-    }
-    # How long the campaign has held this phase. A phase alone cannot separate slow
-    # from wedged: an image build and a build that will never finish both read
-    # "building", and a pre-run step that hangs is otherwise invisible until someone
-    # notices the run count has not moved.
-    if getattr(st, "phase_since", None):
-        result["phase_age_s"] = round(max(0.0, time.time() - st.phase_since), 1)
-    # Progress age and the stall verdict, derived once in the status contract so the
-    # CLI monitor and this tool cannot disagree about whether a run is wedged.
-    result.update(stall_report(st))
-    # The early-stop verdict, from the same contract and for the same reason: an agent weighing
-    # `progress: 0.67` against a flat objective has to know whether the search will actually
-    # spend the rest of its budget. `_attach_objective_history` reports
-    # `batches_since_improvement` as a FACT and declines to judge it -- correctly, since the
-    # judgement is only RoboVAST's to make when the campaign declared a criterion. When it did,
-    # this is that judgement.
-    result.update(stopping_soon_report(st))
-    # Only when a running job's simulator reported one, but then always: an error-level finding
-    # is what stops `vast campaign wait` (exit 5), so a reader of this tool has to be shown the same thing
-    # the waiter was. Warnings are deliberately absent -- they never end a wait, and a field that
-    # is populated on healthy campaigns is one readers learn to skip. ``get_job_state`` has them.
-    findings = error_findings(st)
-    if findings:
-        result["health_findings"] = [f.model_dump() for f in findings]
-        result["health_next_step"] = HEALTH_NEXT_STEP
-    # Beside the findings and only with them: a check that reached no verdict matters precisely
-    # when something else did fire, because that is when a reader starts treating the rest of the
-    # run as fine. On its own it is noise on every healthy campaign.
-    if findings and st.health_skipped:
-        result["health_checks_not_run"] = list(st.health_skipped)
-    # Only when it happened, but then always, and NOT gated on a finding: a campaign running on
-    # fewer machines than the cluster has is slower than its plan and says so nowhere else while
-    # it runs. It is a fact about the campaign, not a diagnostic about a job, so it is reported
-    # on its own rather than beside the health block.
-    if st.nodes_skipped:
-        result["nodes_skipped"] = dict(st.nodes_skipped)
-    # Only when it happened, but then always: a killed run is inside ``no_result``, so
-    # without this the count reads as a run that vanished on its own rather than one
-    # somebody deliberately ended — and the reader goes looking for a fault there is none.
-    if st.runs and st.runs.killed:
-        result["batch_runs_killed"] = st.runs.killed
-    # Same rule, and the sharper case: an invalidated run may have written a PASSING
-    # verdict against a container that had lost its state. Silence here would leave a
-    # reader counting it among the results.
-    if st.runs and st.runs.invalid:
-        result["batch_runs_invalid"] = st.runs.invalid
-    if st.batches_done:
-        result["batches_done"] = st.batches_done
-    if st.best_objective is not None:
-        result["best_objective"] = st.best_objective
-    if st.budget:
-        # Through budget_positions, so a `time` row reports where the search is now rather than
-        # where it was when the last round closed.
-        result["budget"] = [b.model_dump() for b in budget_positions(st)]
-        # Which criterion `progress` is a share OF. A bare 0.67 does not say whether that is
-        # runs, rounds, evaluations or seconds, and an agent should not have to re-derive the
-        # max to find out -- nor guess, since the answer changes which criterion it should
-        # weigh a stall or a flat objective against.
-        binding = _binding_budget(st)
-        if binding is not None:
-            result["progress_of"] = binding[0].kind or binding[0].label
-    if st.stop:
-        result["stop"] = st.stop
-    if st.error:
-        result["error"] = st.error
-    # Postprocessing is a separate fact from ``phase`` on purpose (see Status): a
-    # campaign whose runs all passed but whose postprocessing failed stays
-    # ``finished``, because the runs are the deliverable. That only works if the fact
-    # is *reported* — folded into ``stage`` it reads like a progress note, and a
-    # campaign with no metrics at all looks as green as a complete one.
-    result["postprocessed"] = st.postprocessed
-    if st.postprocessing_error:
-        result["postprocessing_error"] = st.postprocessing_error
-    if st.share_error:
-        result["share_error"] = st.share_error
-    return result
 
 
 def _wait_next_step(campaign_id: str) -> str:
@@ -271,7 +58,7 @@ def _wait_next_step(campaign_id: str) -> str:
     only who holds the wait differs, and the caller is the wrong place to hold it.
     """
     return (f"run in the background: vast campaign wait {campaign_id} "
-            f"(exit 0 finished, 1 failed/stopped, 4 stalled and still running)")
+            f"({CampaignWaitExit.summary()})")
 
 
 def start_campaign(config_filter: str = "", runs: int = 0,
@@ -279,6 +66,7 @@ def start_campaign(config_filter: str = "", runs: int = 0,
                    workspace_id: str = "", config_path: str = "",
                    campaign_name: str = "", upload_to_share: bool = False,
                    description: str = "", priority: int = 0,
+                   image_project_tag: str = "",
                    from_campaign: str = "", force: bool = False) -> dict:
     """**Run the experiment.** Launches a campaign in containers and returns immediately.
 
@@ -296,17 +84,19 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             project. There is no server-side "current project".
         from_campaign: Re-run a past campaign from its own record: a NEW campaign, source
             untouched, **taking no other argument but ``force``** — the record supplies them,
-            so a pilot stays a pilot. Re-expands, so stochastic generators redraw. Refused
-            when its pre-flight blocks (an image no host here can drive, a config no ladder
-            carries); ``get_campaign_summary``'s ``retrigger`` key says so beforehand and
-            costs nothing.
+            so a pilot stays a pilot. Runs exactly the image digests the source recorded,
+            resolving none again. Re-expands, so stochastic generators redraw. Refused when
+            its pre-flight blocks; ``get_campaign_summary``'s ``retrigger`` key says so
+            beforehand. A source recording no digest for something it runs is refused even
+            with ``force``: ``create_workspace(from_campaign=...)`` rebuilds it to launch
+            afresh.
         force: Re-run despite a blocking pre-flight axis, for one you have decided you
             understand. With ``from_campaign`` only — a workspace launch has no pre-flight
             to override.
         priority: Which campaign the cluster queue admits first: higher first, ``0`` normal,
             negative last. Orders what is queued; never stops a running run. Cluster only.
         config_path: Which ``.vast``, when the workspace holds several.
-        config_filter: Glob selecting which configurations to run.
+        config_filter: Glob selecting which configurations to run; comma-separate several.
         runs: Runs per configuration; ``0`` uses the ``.vast`` value.
         campaign_name: Override the name; the id becomes ``<name>-<timestamp>``.
         upload_to_share: Deliver a raw archive to the configured share when it finishes.
@@ -314,6 +104,10 @@ def start_campaign(config_filter: str = "", runs: int = 0,
             ``provenance:``. Refused by default: nothing in the results could then say what
             ran. Prefer fixing it — add ``provenance: {source, revision}`` there, or declare
             ``system_packages`` and drop the image so robovast builds it. Exemption recorded.
+        image_project_tag: Tag the RoboVAST ``family:`` images are taken at, this run only
+            (``vast workspace run --image-project-tag``). Pin a release (``2.2.0``) for a run
+            that must be reproducible; default is the service's, often a floating ``latest``.
+            An image the ``.vast`` names is run as written.
         description: **Set this every time.** One line (≤200 chars) saying what the run is
             *for* — what tells two same-day ids apart. Good: "pilot: 5 reps DWB vs MPPI on
             open_space, new inflation radius".
@@ -323,114 +117,64 @@ def start_campaign(config_filter: str = "", runs: int = 0,
         ``from_campaign`` launch (``campaign_id`` is the NEW one). Plus ``note`` when the
         launch was accepted but will not do what was asked, or ``{error}``.
     """
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": NO_SERVICE}
-        # Some clients HTML-escape prompt text, and the entity would be stored verbatim.
-        # Decoded before the length check so the description is measured as the text that
-        # will actually be stored.
-        from robovast.mcp_server.client_text import unescape_client_text
-        from robovast.service.interface import DESCRIPTION_MAX_LEN, CreateCampaignRequest
-        description = unescape_client_text(description)
-        # Checked here rather than left to the request model's validator: this returns
-        # the actionable "shorten it and call again" instead of a pydantic traceback
-        # string, and it refuses before anything is launched.
-        if len(description) > DESCRIPTION_MAX_LEN:
-            return {"error": f"description is {len(description)} characters; the limit "
-                             f"is {DESCRIPTION_MAX_LEN} — shorten it to one line"}
-        if force and not from_campaign:
-            # Refused rather than ignored: what it overrides is the re-run pre-flight, so on a
-            # workspace launch it would name a policy this call never consults.
-            return {"error": "force overrides the re-run pre-flight, which only a "
-                             "from_campaign launch has — drop it, or name the campaign to "
-                             "re-run."}
-        if from_campaign:
-            # Named rather than dropped: a retrigger takes these from what the source
-            # campaign recorded, so accepting them here would answer a different question
-            # than the caller asked and look like it had worked.
-            supplied = [name for name, value in (
-                ("workspace_id", workspace_id), ("config_path", config_path),
-                ("config_filter", config_filter), ("runs", runs),
-                ("campaign_name", campaign_name), ("upload_to_share", upload_to_share),
-                ("description", description),
-                ("priority", priority)) if value]
-            if supplied:
-                return {"error":
-                        f"from_campaign={from_campaign!r} replays what that campaign "
-                        f"recorded, so {', '.join(supplied)} cannot be set at the same time "
-                        f"— drop them, or start from a workspace instead. The retriggered "
-                        f"campaign's description is derived from the source's."}
-            ref = client.retrigger_campaign(from_campaign, force)
-            out = {"campaign_id": ref.campaign_id, "retriggered_from": from_campaign,
-                   "next_step": _wait_next_step(ref.campaign_id)}
-            if ref.note:
-                out["note"] = ref.note
-            return out
-        ref = client.create_campaign(CreateCampaignRequest(
-            workspace_id=workspace_id, config_path=config_path,
-            config_filter=config_filter, campaign_name=campaign_name,
-            description=description,
-            # Pass the "unset" value through instead of substituting 1: the service maps a
-            # non-positive count to None and falls back to the .vast's execution.runs,
-            # which is what this tool documents. Substituting 1 here silently shrank every
-            # campaign started without an explicit count to one run per configuration — a
-            # 25-trial sweep finished "successfully" with 5 trials.
-            runs=runs if runs and runs > 0 else 0,
-            allow_opaque_image=allow_opaque_image, priority=priority,
-            upload_to_share=upload_to_share))
-        out = {"campaign_id": ref.campaign_id,
+    client = service_access.require_service()
+    # Some clients HTML-escape prompt text, and the entity would be stored verbatim.
+    # Decoded before the length check so the description is measured as the text that
+    # will actually be stored.
+    from robovast.mcp_server.client_text import unescape_client_text
+    from robovast.service.interface import DESCRIPTION_MAX_LEN, CreateCampaignRequest
+    description = unescape_client_text(description)
+    # Checked here rather than left to the request model's validator: this returns
+    # the actionable "shorten it and call again" instead of a pydantic traceback
+    # string, and it refuses before anything is launched.
+    if len(description) > DESCRIPTION_MAX_LEN:
+        return {"error": f"description is {len(description)} characters; the limit "
+                         f"is {DESCRIPTION_MAX_LEN} — shorten it to one line"}
+    if force and not from_campaign:
+        # Refused rather than ignored: what it overrides is the re-run pre-flight, so on a
+        # workspace launch it would name a policy this call never consults.
+        return {"error": "force overrides the re-run pre-flight, which only a "
+                         "from_campaign launch has — drop it, or name the campaign to "
+                         "re-run."}
+    if from_campaign:
+        # Named rather than dropped: a retrigger takes these from what the source
+        # campaign recorded, so accepting them here would answer a different question
+        # than the caller asked and look like it had worked.
+        supplied = [name for name, value in (
+            ("workspace_id", workspace_id), ("config_path", config_path),
+            ("config_filter", config_filter), ("runs", runs),
+            ("campaign_name", campaign_name), ("upload_to_share", upload_to_share),
+            ("description", description),
+            ("priority", priority), ("image_project_tag", image_project_tag)) if value]
+        if supplied:
+            return {"error":
+                    f"from_campaign={from_campaign!r} replays what that campaign "
+                    f"recorded, so {', '.join(supplied)} cannot be set at the same time "
+                    f"— drop them, or start from a workspace instead. The retriggered "
+                    f"campaign's description is derived from the source's."}
+        ref = client.retrigger_campaign(from_campaign, force)
+        out = {"campaign_id": ref.campaign_id, "retriggered_from": from_campaign,
                "next_step": _wait_next_step(ref.campaign_id)}
         if ref.note:
             out["note"] = ref.note
         return out
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-
-
-def _campaign_next_step(result: dict) -> str:
-    """What to do about the campaign state just reported, or "" when nothing is obvious.
-
-    The same reason :func:`_status_next_step` exists for builds: a caller reads this to
-    decide, and leaving that decision to be *remembered* is the defect
-    :data:`~robovast.client.status.STALL_NEXT_STEP` is written against. Empty when the
-    campaign is simply progressing, per AGENTS.md: a hint on every reply is a field callers
-    learn to skip.
-
-    Ordered cheapest-first where a stall is reported, because the untainted options come
-    before anything that perturbs the run.
-    """
-    findings = result.get("health_findings") or []
-    if findings:
-        # Before the stall verdict deliberately: a finding names a fault class ("sim time is not
-        # advancing") where a stall says only "nothing finished in time", and it is true within a
-        # minute of the fault rather than one declared budget later.
-        first = findings[0]
-        return (f"{first.get('job_name', '')}: {first.get('check', '')} — "
-                f"{first.get('detail', '')}. Next: {STALL_NEXT_STEP}")
-    if result.get("stalled") is True:
-        return result.get("stall_reason", "")
-    if result.get("status") == "finished" and result.get("postprocessed") is False:
-        # A campaign can finish green and still have nothing derived; saying "finished"
-        # alone sends the caller looking for results that were never written.
-        #
-        # But "postprocessed is false" covers two states that need opposite actions, and
-        # collapsing them told a reader the wrong one. A step that RAISES leaves the
-        # campaign not-postprocessed while the steps beside it already derived their data
-        # and loaded it: measured on such a campaign, one plugin of four failed and 10252
-        # pose rows, its logs and its behaviour tree were all queryable. Reporting "there
-        # are no CSVs" there is simply false, and it invites re-running everything to
-        # recover what is already there.
-        error = result.get("postprocessing_error")
-        if error:
-            return (f"finished, but postprocessing reported an error: {error}. What the "
-                    f"steps that DID succeed derived is already loaded and queryable "
-                    f"(describe_campaign_data); run_postprocessing re-runs the failed "
-                    f"step without re-running any trial")
-        return ("finished, but postprocessing did not run: nothing was derived from the "
-                "runs yet, so only the campaign's own record (run_view, campaign.*) will "
-                "answer. run_postprocessing fixes that without re-running trials")
-    return ""
+    ref = client.create_campaign(CreateCampaignRequest(
+        workspace_id=workspace_id, config_path=config_path,
+        config_filter=config_filter, campaign_name=campaign_name,
+        description=description,
+        # Pass the "unset" value through instead of substituting 1: the service maps a
+        # non-positive count to None and falls back to the .vast's execution.runs,
+        # which is what this tool documents. Substituting 1 here silently shrank every
+        # campaign started without an explicit count to one run per configuration — a
+        # 25-trial sweep finished "successfully" with 5 trials.
+        runs=runs if runs and runs > 0 else 0,
+        allow_opaque_image=allow_opaque_image, priority=priority,
+        upload_to_share=upload_to_share, image_project_tag=image_project_tag))
+    out = {"campaign_id": ref.campaign_id,
+           "next_step": _wait_next_step(ref.campaign_id)}
+    if ref.note:
+        out["note"] = ref.note
+    return out
 
 
 def get_campaign_status(campaign_id: str) -> dict:
@@ -449,27 +193,20 @@ def get_campaign_status(campaign_id: str) -> dict:
     runs, or a batch queued for capacity). Judge ``progress_age_s`` yourself.
 
     ``health_findings`` — ``error``-level reports a running job's own **simulator** made about
-    itself; what ends a ``vast campaign wait`` (exit 5), and it needs no declared timeout.
+    itself; what ends a ``vast campaign wait`` early, and it needs no declared timeout.
     ``get_job_state`` is the fuller read.
 
-    ``postprocessed`` — ``status: "finished"`` does not imply results: the runs are the
-    deliverable, so a campaign whose postprocessing failed still finishes, with
-    ``postprocessing_error``, no CSVs and nothing queryable. ``run_postprocessing`` fixes that
-    without re-running anything.
+    ``postprocessed`` — ``finished`` does not imply the campaign-end pass ran: one whose
+    postprocessing failed still finishes, with ``postprocessing_error``; its tables still
+    build on first use, and ``run_postprocessing`` reruns the pass without re-running anything.
 
-    **On a search**, three more fields answer "is it still improving, or am I burning compute?" —
-    which ``best_objective`` alone cannot, one number not saying whether it moved.
-    ``objective_history`` is one row per batch (the most recent 20) carrying that round's
-    ``min``/``max``/``mean`` and the ``best_so_far`` after it, and ``batches_since_improvement``
-    counts the rounds since the best last moved. Read the SPREAD, not just the best: a flat
-    best-so-far with a wide range means the search is still exploring, while a range that has
-    collapsed onto the best value means it is re-sampling one region and further batches will buy
-    little. Live during the run — the only route on the cluster, where SQL reads a
-    snapshot published only when the campaign ends.
-
-    Weigh it against ``budget`` before acting: a ``no_improvement`` or ``target_objective``
-    criterion may already be about to stop the search, and pre-empting a criterion the campaign
-    declared is how a search gets killed one batch before it would have converged. A search that
+    **On a search**, ``objective_history`` (one row per batch, the most recent 20:
+    ``min``/``max``/``mean`` and ``best_so_far``) and ``batches_since_improvement`` say whether
+    it is still improving, which ``best_objective`` alone cannot. Read the spread: a flat best
+    with a wide range is still exploring; a range collapsed onto the best is re-sampling one
+    region and further batches buy little. Live during the run. Weigh it against ``budget``: a
+    ``no_improvement`` or ``target_objective`` criterion may be about to stop it, and
+    pre-empting a declared criterion kills a search one batch before it converges; one that
     declares neither is one only you can stop.
 
     Args:
@@ -506,102 +243,97 @@ def get_campaign_status(campaign_id: str) -> dict:
         (``run_view.status``/``passed``) remains the authority on that run; this aggregate
         is a convenience, and this flag says when it is one worth having.
     """
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": NO_SERVICE}
-        st = client.get_status(campaign_id)
-        result = _status_to_dict(campaign_id, "service", st)
-        result["stage"] = st.stage or ""  # a live marker string, not a log tail
-        if (st.mode or "").lower() == "search":
-            _attach_objective_history(result, client, campaign_id)
-        next_step = _campaign_next_step(result)
-        if next_step:
-            result["next_step"] = next_step
-        return result
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    client = service_access.require_service()
+    return status_report(client, campaign_id)
 
 
 @lacks(job_name="for one job's log use get_job_log")
-def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
+def get_campaign_log(campaign_id: str, limit: Optional[int] = None, offset: int = 0,
                      grep: str = "", tail: int = 0, min_severity: str = "",
                      summarize: bool = False, top: int = DEFAULT_TOP,
                      phase: str = "", hide_shutdown: bool = True) -> dict:
-    """What is the campaign doing? Its infrastructure log, in phases.
+    """What is the campaign doing? Its infrastructure log, as rows, phase by phase.
 
     **On a stalled or failed run, start with ``summarize=True``** — filtering cannot
     diagnose a flood, because the flood *is* the finding.
 
-    Phases, concatenated under ``===== PHASE =====`` dividers and **all returned by
-    default**: ``build`` (where a campaign that failed before it ever ran explains itself),
-    ``plugin install``, ``variation``, ``run`` (the controller),
-    ``postprocessing``. A build is large and comes first, so on a campaign that has run,
-    narrow instead of paging: ``phase="run"``, or ``phase="build", summarize=True``.
+    Phases, in the order they ran and **all read by default**: ``import``, ``build``,
+    ``plugin install``, ``variation``, ``run`` (the controller), ``postprocessing``,
+    ``share``, ``tables``. A build is large and comes first, so on a campaign that has run,
+    narrow: ``phase="run"``, or ``phase="build", summarize=True``. A row reads
+    ``[PHASE] <time> <LEVEL> <logger>: <message>``.
 
     Args:
         campaign_id: The id from ``start_campaign``.
-        limit: Maximum lines to return. Ignored with ``summarize``.
-        offset: First line to return (for paging the matches).
-        hide_shutdown: Stop at each run's scenario verdict — default true, and normally what
-            you want: past it a run is only tearing down, and the lifecycle/TF errors that
-            produces are noise. Applied first, so the other filters describe the trial;
+        limit: Maximum lines to return (default 200). Refused with ``summarize``.
+        offset: First line to return (for paging the matches). Refused with
+            ``summarize``.
+        hide_shutdown: Stop at each run's scenario verdict (past it a run only tears down);
             ``shutdown_dropped`` says what it cut.
-        grep: Keep lines matching this regex (case-insensitive), before offset/limit.
-        tail: Keep only the last N of what survived the filters. Ignored with ``summarize``.
-        min_severity: ``"warn"`` or ``"error"``, by RoboVAST's own classifier — the same
-            definition the campaign status uses, so prefer it to a severity ``grep``.
-        summarize: Return distinct **patterns with counts** instead of lines — timestamps,
-            coordinates and ids are normalized so equal shapes group.
+        grep: Keep rows whose message or logger matches this regex (case-insensitive).
+        tail: Keep only the last N lines of what survived. Refused with ``summarize``.
+        min_severity: ``"warn"`` or ``"error"``: a row's own level, else the keyword
+            classifier; prefer it to a severity ``grep``.
+        summarize: Distinct **patterns with counts** instead of lines; timestamps,
+            coordinates and ids normalized so equal shapes group.
         top: With ``summarize``, maximum patterns (``0`` = all).
         phase: Read only one phase. Empty and ``"all"`` both read every phase.
 
     Returns:
         Lines: ``{file_name, phases, total_lines, matched_lines, returned_lines, offset,
-        content, dropped, shutdown_dropped, truncated}``. With ``summarize``: the same minus
+        content, shutdown_dropped, truncated}``. With ``summarize``: the same minus
         ``content``/``returned_lines``/``offset``/``truncated``, plus ``{patterns,
         patterns_total, severity_counts}``, each pattern ``{pattern, count, severity,
-        example}``. Or ``{error}``. ``phases`` always lists every section as ``{name, lines,
-        included}``, so what a read left out is stated.
-
-        ``total_lines`` is the log, ``matched_lines`` what survived the filters,
-        ``returned_lines`` this page (``offset``/``limit`` page through what ``tail``
-        left, which is all of ``matched_lines`` unless ``tail`` cut) —
-        ``total_lines == matched_lines + dropped + shutdown_dropped``. ``truncated``
-        says this page is not all of what matched, whether ``tail`` or the page window cut
-        it.
+        example}``. Or ``{error}``. ``phases`` lists every phase the log has as
+        ``{name, included}``, plus ``rows`` for an included one, so what a read left out is
+        stated. ``phase``, ``grep`` and ``min_severity`` are applied by the service as it
+        reads: ``total_lines`` is what they kept, ``matched_lines`` what survived
+        ``hide_shutdown``, ``returned_lines`` this page —
+        ``total_lines == matched_lines + shutdown_dropped``. ``truncated`` says this page
+        is not all of what matched.
     """
+    from robovast.client.tail import format_campaign_log_row  # noqa: PLC0415
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
+    from robovast.service.campaign_log import phase_filter  # noqa: PLC0415
+    from robovast_decode.log_summary import SEVERITIES, severity_rank  # noqa: PLC0415
 
-    # Ask the service, which knows where this campaign's log actually lives: its
-    # results tree, which is not on this filesystem when the service runs on another
-    # host. Reading the local results dir here reported an empty log for every such
-    # campaign. The local disk path stays as the serviceless fallback so an archived
-    # results tree is still readable with no service running.
+    if summarize:
+        paging = [f"{name}={value}" for name, value in
+                  (("limit", limit), ("offset", offset), ("tail", tail)) if value]
+        if paging:
+            raise ValueError(
+                f"{', '.join(paging)} cannot be combined with summarize=True: a summary "
+                f"returns patterns, not lines, so there is no page to size or window to "
+                f"move. Drop {'them' if len(paging) > 1 else 'it'}, or drop summarize to "
+                f"read lines.")
+    if limit is None:
+        limit = _CAMPAIGN_LOG_PAGE
+    # The shared severity vocabulary (``warn``/``error``), so this control means what it
+    # means on every log tool; the read takes the level it names.
+    min_level = _SEVERITY_LEVEL[SEVERITIES[severity_rank(min_severity)]] \
+        if min_severity else None
+    wanted = phase_filter(phase)
+    # Ask the service, which knows where this campaign's log actually lives: its results
+    # tree, which is not on this filesystem when the service runs on another host. With no
+    # service, an archived results tree on this host is read through the same reader.
     client = service_access.service_client()
     if client is not None:
-        try:
-            # The service pages by *byte* offset; this tool pages by lines, so take
-            # the whole text (offset 0) and slice lines below, as before.
-            text = client.get_campaign_logs(campaign_id, offset=0).text
-        except Exception as e:  # noqa: BLE001
-            return {"error": str(e)}
+        chunk = client.get_campaign_logs(campaign_id, phase=wanted, min_level=min_level,
+                                         grep=grep or None)
+        rows, present = chunk.rows, chunk.phases
     else:
-        from robovast.common.campaign_logs import assemble_log_from_dir  # noqa: PLC0415
-        try:
-            campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
-            text, _, _ = assemble_log_from_dir(campaign_dir, offset=0, eof=True)
-        except ValueError as e:
-            return {"error": str(e)}
-    try:
-        text, phases = _select_phases(text, phase)
-    except ValueError as e:
-        return {"error": str(e)}
-    try:
-        view = view_log(text, grep=grep, tail=tail, min_severity=min_severity,
-                        summarize=summarize, top=top, hide_shutdown=hide_shutdown)
-    except ValueError as e:
-        return {"error": str(e)}
+        from robovast.service.campaign_log import read_rows  # noqa: PLC0415
+        campaign_dir = results_resolver.resolve_campaign_path(campaign_id)
+        read = read_rows(campaign_dir, final=True, phase=wanted, min_level=min_level,
+                         grep=grep or None)
+        rows, present = read.rows, read.phases
+    counts = Counter(row.phase for row in rows)
+    phases = [{"name": name, "included": wanted is None or name == wanted,
+               **({"rows": counts[name]} if wanted is None or name == wanted else {})}
+              for name in present]
+    text = "".join(format_campaign_log_row(row) + "\n" for row in rows)
+    view = view_log(text, tail=tail, summarize=summarize, top=top,
+                    hide_shutdown=hide_shutdown)
     name = f"{campaign_id} (infrastructure log)"
     if summarize:
         # ``offset``/``lines`` page through lines and have no meaning over grouped
@@ -610,29 +342,25 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
                 "patterns_total": view["patterns_total"],
                 "severity_counts": view["severity_counts"],
                 "matched_lines": view["matched"],
-                "total_lines": view["lines_total"], "dropped": view["dropped"],
+                "total_lines": view["lines_total"],
                 **_shutdown_report(view)}
     all_lines = view["content"].splitlines()
     selected = all_lines[offset:offset + limit]
     # Three counts, because they answer three different questions and collapsing any two
-    # of them hides a cut: ``total_lines`` is the log (the same figure a summary reports,
-    # so the two shapes cannot disagree about how long it is), ``matched_lines`` is what
-    # survived the filters, and ``returned_lines`` is this page. ``offset``/``limit`` page
-    # through what ``tail`` left, which is ``matched_lines`` unless ``tail`` cut. They tie
-    # out:
-    # total_lines == matched_lines + dropped + shutdown_dropped.
+    # of them hides a cut: ``total_lines`` is what the read returned (the same figure a
+    # summary reports, so the two shapes cannot disagree about how long it is),
+    # ``matched_lines`` is what survived ``hide_shutdown``, and ``returned_lines`` is this
+    # page. ``offset``/``limit`` page through what ``tail`` left, which is
+    # ``matched_lines`` unless ``tail`` cut. They tie out:
+    # total_lines == matched_lines + shutdown_dropped.
     result = {
         "file_name": name,
         "phases": phases,
         "total_lines": view["lines_total"],
-        # What the filters kept, not what this page holds: with ``tail`` the two differ,
-        # and reporting the page size here said a 50-line tail of a 5000-line log had
-        # fifty matching lines -- which also broke the tie-out below.
         "matched_lines": view["matched"],
         "returned_lines": len(selected),
         "offset": offset,
         "content": "\n".join(selected),
-        "dropped": view["dropped"],
         # Whether this page is all of what matched. ``tail`` cuts before the page window
         # does, so without this a read that asked for the last N lines could not tell N
         # from "N is all there was".
@@ -651,52 +379,17 @@ def get_campaign_log(campaign_id: str, limit: int = 200, offset: int = 0,
     return result
 
 
-def _select_phases(text: str, phase: str) -> "tuple[str, list[dict]]":
-    """Narrow an assembled campaign log to *phase*; also describe every phase present.
+#: Lines ``get_image_build_log`` keeps when the caller names no ``tail`` and reads lines.
+_BUILD_LOG_TAIL = 200
 
-    Returns ``(text, phases)`` where ``phases`` names each section with its line count
-    and whether this read includes it — so a section that was left out is *reported*,
-    which is the same contract ``view_log`` keeps for the lines it filters.
+#: Lines one ``get_campaign_log`` page returns when the caller names no ``limit``.
+_CAMPAIGN_LOG_PAGE = 200
 
-    ``phase=""`` reads **every** phase, ``"all"`` is its explicit synonym, and a phase
-    name includes only that one. ``BUILD`` is included, not held back as an aside —
-    shared, content-addressed work rather than this campaign's narrative — because a
-    campaign still waiting for its image has no other section, and holding it back
-    answers "what is this campaign doing?" with nothing at all. Narrowing is the
-    caller's move (``phase="run"``), made with the same controls every other log tool
-    has, rather than a default that decides for them.
+#: The level the campaign log read filters at for each severity a caller may name. The
+#: read ranks a stamped row by its level and an unstamped one by the keyword classifier,
+#: which is what ``min_severity`` means on every other log tool.
+_SEVERITY_LEVEL = {"other": None, "warn": "WARNING", "error": "ERROR"}
 
-    Raises:
-        ValueError: *phase* is not a known phase — a silently ignored selector would
-            read as "that phase produced nothing".
-    """
-    from robovast.common.campaign_logs import (INFRA_PHASES, phase_banner,  # noqa: PLC0415
-                                               split_phases)
-
-    known = {name.lower(): name for name, _ in INFRA_PHASES}
-    wanted = phase.strip().lower()
-    if wanted and wanted != "all" and wanted not in known:
-        raise ValueError(
-            f"unknown phase {phase!r}; use one of "
-            f"{', '.join(sorted(known))} — or 'all'")
-
-    out, phases = [], []
-    for name, section in split_phases(text):
-        if not name:
-            out.append(section)  # pre-divider remainder; never dropped
-            continue
-        # Empty and "all" both mean every phase; only a named one narrows.
-        included = not wanted or wanted == "all" or name.lower() == wanted
-        # Content lines only — the banner is a divider, not log output — so the count is
-        # what a caller would actually receive for this phase.
-        body = section.replace(phase_banner(name), "", 1)
-        phases.append({"name": name, "lines": len(body.strip("\n").splitlines()),
-                       "included": included})
-        if included:
-            out.append(section)
-    # The sections tile the input, so an all-included read returns it byte for byte:
-    # asking for the log must not change how many lines the log has.
-    return "".join(out), phases
 
 
 def list_campaign_jobs(campaign_id: str) -> dict:
@@ -752,15 +445,8 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         a ``detail`` when the cluster has said why — a node another campaign is holding,
         or a rate-limited pull — which is a reason, not a fault: it starts on its own.
     """
-    client = service_access.service_client()
-    if client is None:
-        return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
-                         "a tunnel before starting MCP); live job listing is served "
-                         "by the service"}
-    try:
-        return client.list_jobs(campaign_id).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    client = service_access.require_service()
+    return client.list_jobs(campaign_id).model_dump()
 
 
 def _shutdown_report(view: dict) -> dict:
@@ -809,11 +495,11 @@ def get_job_state(campaign_id: str, job_name: str) -> dict:
     """Where is one **running** job right now? Call this before its log on a wedge: a log says what
     is *repeating*, this says where the run *is*.
 
-    Three reads, each from the tool that owns the record, in the container that runs it:
-    ``scenario`` (which action the behaviour tree is in and for how long -- usually the sentence
-    that names the fault), ``simulator`` (its own findings, clock and poses) and ``resources``
-    (newest sample per process: a deadlock at 0% CPU vs a spin at 100%). Perturbs nothing and
-    records nothing.
+    Three reads: ``scenario`` (which action the behaviour tree is in and for how long -- usually
+    the sentence that names the fault), folded from the run's own ``behaviors`` tables;
+    ``simulator`` (its own findings, clock and poses) and ``resources`` (newest sample per
+    process: a deadlock at 0% CPU vs a spin at 100%), each from the tool that owns the record,
+    in the container that runs it. Perturbs nothing and records nothing.
 
     Args:
         campaign_id: The id from ``start_campaign``.
@@ -823,13 +509,8 @@ def get_job_state(campaign_id: str, job_name: str) -> dict:
         ``{job_name, status, scenario, simulator, resources, unavailable}``, or ``{error}``. An
         unreadable section is **absent**, with ``unavailable`` saying which and why.
     """
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": NO_SERVICE}
-        return client.get_job_state(campaign_id, job_name).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return service_access.error_result(e)
+    client = service_access.require_service()
+    return client.get_job_state(campaign_id, job_name).model_dump()
 
 
 def exec_in_job(campaign_id: str, job_name: str, command: str,
@@ -840,9 +521,10 @@ def exec_in_job(campaign_id: str, job_name: str, command: str,
     same configuration and perturbs nothing, and a fault that does **not** reproduce there is
     itself the finding that sends you here (contention, a particular draw, a long warm-up).
 
-    **This marks the run as probed** (``runs.probed`` in the results index), recorded before the command
-    runs. Confirming a cause is the point; making a wedged run go green is not -- the fix belongs
-    in the ``.vast`` and the number to a clean relaunch, with this run dropped.
+    **This marks the run as probed** (``runs.probed`` in the campaign's tables), recorded
+    before the command runs. Confirming a cause is the point; making a wedged run go green
+    is not -- the fix belongs in the ``.vast`` and the number to a clean relaunch, with this
+    run dropped.
 
     Args:
         campaign_id: The id from ``start_campaign``.
@@ -853,60 +535,108 @@ def exec_in_job(campaign_id: str, job_name: str, command: str,
     Returns:
         ``{exit_code, stdout, stderr, timed_out, limit_s, limit_source}``, or ``{error}``.
     """
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": NO_SERVICE}
-        result = client.exec_in_job(campaign_id, job_name, command, container, source="mcp")
-        return result.model_dump()
-    except Exception as e:  # noqa: BLE001
-        return service_access.error_result(e)
+    client = service_access.require_service()
+    result = client.exec_in_job(campaign_id, job_name, command, container, source="mcp")
+    return result.model_dump()
 
 
-def get_job_log(campaign_id: str, job_name: str, offset: int = 0,
+#: Longest a tap collects before this tool answers. A tool call holds its caller for the
+#: whole of it, so the bound is far under the service's own; a reader who wants longer follows
+#: the ``stream_url`` in the answer instead.
+_TAP_TOOL_MAX_S = 30
+
+
+def tap_job(campaign_id: str, job_name: str, selection: list[str] | None = None,
+            max_seconds: int = 10) -> dict:
+    """Follow what a **running** job's simulator publishes *now*, for a few seconds: its own
+    following command runs in the job's simulation container and the lines are collected.
+
+    ROS shape: ``ros2 topic echo`` of the selected topics; an empty selection is ``ros2 topic
+    list``; ``"csv"`` in the selection gives one value per line. roqsim has no tap (its
+    recording is the live view).
+
+    **Marks the run as probed**, as ``exec_in_job`` does. One tap per job at a time.
+
+    Args:
+        campaign_id: The id from ``start_campaign``.
+        job_name: A running ``job_name`` from ``list_campaign_jobs``.
+        selection: Topic names, or none for the topic list.
+        max_seconds: How long to collect; capped at 30 here.
+
+    Returns:
+        ``{lines, count, exit_code, timed_out, max_seconds, stream_url}`` (the tap as
+        server-sent events, for longer), or ``{error}``.
+    """
+    client = service_access.require_service()
+    if max_seconds < 1:
+        raise ValueError("max_seconds is at least 1")
+    seconds = min(int(max_seconds), _TAP_TOOL_MAX_S)
+    names = list(selection or [])
+    lines: list = []
+    end = None
+    for item in client.tap_job(campaign_id, job_name, names, max_seconds=seconds,
+                               source="mcp"):
+        if hasattr(item, "exit_code"):
+            end = item
+            break
+        lines.append(item.line)
+    query = "?" + urlencode({"job_name": job_name, "selection": ",".join(names),
+                             "max_seconds": seconds})
+    return {"lines": lines, "count": len(lines),
+            "exit_code": None if end is None else end.exit_code,
+            "timed_out": bool(end is not None and end.timed_out),
+            "max_seconds": seconds,
+            "stream_url": service_access.web_url(client, Routes.job_tap(campaign_id) + query)}
+
+
+def _job_log_text(rows: list) -> str:
+    """*rows* as the lines their containers wrote, each tagged ``[<container>]`` when the job
+    runs more than one, so the log view's filters read what a person would."""
+    multi = len({r["container"] for r in rows}) > 1
+    lines = []
+    for row in rows:
+        head = f"[{row['container']}] " if multi else ""
+        if row["wall_ts"] is not None:
+            level = row["level"] or "INFO"
+            head += f"[{level}] [{row['wall_ts']:.6f}] [{row['node'] or row['container']}]: "
+        lines.append(head + row["message"])
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def get_job_log(campaign_id: str, job_name: str, cursor: str = "",
                 grep: str = "", tail: int = 0, min_severity: str = "",
                 summarize: bool = False, top: int = DEFAULT_TOP,
                 hide_shutdown: bool = True) -> dict:
-    """What is one job doing, or what did it do? Its containers' stdout/stderr.
+    """What is one job doing, or what did it do? Its containers' output, as it is written.
 
     **This is what a stalled status points at. Call it with ``summarize=True`` first:**
     a wedged run repeats one message thousands of times, which summarizes to one line.
 
-    A **finished** job is served as readily as a running one -- its output is durable
-    either way. Every container is merged into one stream, tagged ``[<container>]``.
+    A **finished** job is served as readily as a running one: both are read from the job's
+    log files in the campaign. Every container is in one stream, tagged ``[<container>]``.
 
     Args:
         campaign_id: The id from ``start_campaign``.
         job_name: A ``job_name`` from ``list_campaign_jobs``.
-        offset: **Byte** offset to resume from — pass back the previous call's
-            ``next_offset`` to poll incrementally. It indexes the *unfiltered* stream, so
-            filtering never breaks a poll loop.
+        cursor: Pass back the previous call's ``cursor`` to read only what arrived since.
+            It marks the *unfiltered* log, so filtering never breaks a poll loop.
         hide_shutdown, grep, tail, min_severity, summarize, top: The filters
             ``get_campaign_log`` documents, applied in that order.
 
     Returns:
-        Lines: ``{text, next_offset, eof, lines, matched_lines, lines_total, dropped,
+        Lines: ``{text, cursor, eof, lines, matched_lines, lines_total, dropped,
         shutdown_dropped, truncated}``. With ``summarize``: the same minus ``text``,
         plus ``{patterns, patterns_total, severity_counts}``. Or ``{error}``.
         ``lines`` is this chunk, ``matched_lines`` what the filters kept before ``tail``.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
-    client = service_access.service_client()
-    if client is None:
-        return {"error": "no robovast-service reachable (bring up a 'vast serve' or "
-                         "a tunnel before starting MCP); live job logs are served "
-                         "by the service"}
-    try:
-        chunk = client.get_job_log(campaign_id, job_name, offset).model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-    try:
-        view = view_log(chunk.get("text", ""), grep=grep, tail=tail,
-                        min_severity=min_severity, summarize=summarize, top=top,
-                        hide_shutdown=hide_shutdown)
-    except ValueError as e:
-        return {"error": str(e)}
-    return _log_response(chunk, view, report_shutdown=True)
+    client = service_access.require_service()
+    chunk = client.get_job_log(campaign_id, job_name, cursor).model_dump()
+    view = view_log(_job_log_text(chunk["rows"]), grep=grep, tail=tail,
+                    min_severity=min_severity, summarize=summarize, top=top,
+                    hide_shutdown=hide_shutdown)
+    return _log_response({"cursor": chunk["cursor"], "eof": chunk["eof"]}, view,
+                         report_shutdown=True)
 
 
 def stop_campaign(campaign_id: str) -> dict:
@@ -925,15 +655,10 @@ def stop_campaign(campaign_id: str) -> dict:
     Returns:
         ``{campaign_id, stopped, status, note}`` or ``{error}``.
     """
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": NO_SERVICE}
-        res = client.stop(campaign_id)
-        return {"campaign_id": campaign_id, "stopped": res.ok,
-                "status": "stopping", "note": res.message}
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    client = service_access.require_service()
+    res = client.stop(campaign_id)
+    return {"campaign_id": campaign_id, "stopped": res.ok,
+            "status": "stopping", "note": res.message}
 
 
 def stop_job(campaign_id: str, job_name: str, reason: str = "") -> dict:
@@ -953,16 +678,11 @@ def stop_job(campaign_id: str, job_name: str, reason: str = "") -> dict:
         ``{campaign_id, job_name, stopped, note}`` or ``{error}``.
     """
     from robovast.mcp_server.client_text import unescape_client_text
-    try:
-        client = service_access.service_client()
-        if client is None:
-            return {"error": NO_SERVICE}
-        res = client.stop_job(campaign_id, job_name,
-                              unescape_client_text(reason) or None, "mcp")
-        return {"campaign_id": campaign_id, "job_name": job_name,
-                "stopped": res.ok, "note": res.message}
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    client = service_access.require_service()
+    res = client.stop_job(campaign_id, job_name,
+                          unescape_client_text(reason) or None, "mcp")
+    return {"campaign_id": campaign_id, "job_name": job_name,
+            "stopped": res.ok, "note": res.message}
 
 
 def get_resource_usage() -> dict:
@@ -988,13 +708,8 @@ def get_resource_usage() -> dict:
     already busy with across every campaign, so free cores behind a long queue are not as
     free as they look.
     """
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
-    try:
-        return client.resource_usage().model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    client = service_access.require_service()
+    return resource_usage_report(client)
 
 
 def _build_wait_next_step(build_id: str, builds: dict | None, cached: bool,
@@ -1025,7 +740,7 @@ def _build_wait_next_step(build_id: str, builds: dict | None, cached: bool,
         return ("every image is built — start_campaign(...) to run it, or "
                 "exec_in_container(...) to look inside it")
     return (f"run in the background: vast image wait {' '.join(ids)} --interval 5 "
-            f"(exit 0 built, 1 failed). A builder pod that cannot start -- its own image "
+            f"({ImageWaitExit.summary()}). A builder pod that cannot start -- its own image "
             f"unpullable, or nowhere to schedule it -- fails within a minute rather than "
             f"hanging; get_image_build_status says which")
 
@@ -1080,56 +795,25 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
         and ``cached_builds`` is the per-container answer. Nothing else answers that question
         without a ``build_id`` already in hand.
     """
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
+    client = service_access.require_service()
     from robovast.service.interface import BuildImageRequest
-    try:
-        ref = client.build_image(BuildImageRequest(
-            workspace_id=workspace_id, config_path=config_path,
-            container=container or None))
-        return {"build_id": ref.build_id, "tag": ref.tag, "cached": ref.cached,
-                "builds": ref.builds,
-                "cached_builds": getattr(ref, "cached_builds", {}) or {},
-                "next_step": _build_wait_next_step(
-                    ref.build_id, ref.builds, ref.cached,
-                    getattr(ref, "cached_builds", None))}
-    except Exception as e:  # noqa: BLE001
-        return error_result(e)
-
-
-def _status_next_step(status) -> str:
-    """What to do about the build state just reported.
-
-    Four phases, four different actions, and the caller is here *because* it is deciding
-    between them: a build still running wants a wait rather than a second build; a *blocked*
-    one wants neither, since its pod is not running and its inputs are not the problem; a
-    failed one wants the diagnosis rather than a retry of identical inputs; a finished one
-    wants the run.
-    """
-    if status.phase == "blocked":
-        # Not done, but telling the caller to wait is what wasted its time last: the builder
-        # pod cannot start, so no amount of waiting or rebuilding produces an image, and
-        # get_image_build_log has nothing in it either.
-        return ("the build pod cannot start -- read error_detail above; it names the image "
-                "or the capacity at fault. Nothing in the project's build: section is "
-                "involved, and the build fails on its own shortly if this does not clear")
-    if not status.done:
-        return (f"run in the background: vast image wait {status.build_id} --interval 5 "
-                f"(exit 0 built, 1 failed)")
-    if status.phase == "failed":
-        return (f"read error_detail above, then "
-                f"get_image_build_log(build_id='{status.build_id}', summarize=True) "
-                f"for the builder's own output")
-    return ("the image is ready — start_campaign(...) to run it, or "
-            "exec_in_container(...) to look inside it")
+    ref = client.build_image(BuildImageRequest(
+        workspace_id=workspace_id, config_path=config_path,
+        container=container or None))
+    return {"build_id": ref.build_id, "tag": ref.tag, "cached": ref.cached,
+            "builds": ref.builds,
+            "cached_builds": getattr(ref, "cached_builds", {}) or {},
+            "next_step": _build_wait_next_step(
+                ref.build_id, ref.builds, ref.cached,
+                getattr(ref, "cached_builds", None))}
 
 
 def get_image_build_status(build_id: str) -> dict:
     """Poll an image build. ``error_detail`` says what to change.
 
-    ``error_detail`` names the ``phase`` (apt / pip / base-image / source-build /
-    base-pull / push / resource / builder-pod), the offending ``entry``, a ``message``,
+    ``error_detail`` names the ``phase`` (base-pull / base-image / apt / pip /
+    source-build / build / push / resource / builder / builder-pod), the offending
+    ``entry``, a ``message``,
     and ``fixable_by`` — ``agent`` (a ``.vast`` edit fixes it) or ``infra`` (no edit
     will). Read this before reaching for the builder log.
 
@@ -1142,8 +826,10 @@ def get_image_build_status(build_id: str) -> dict:
                   build on. Adding it to ``python_packages`` papers over that --
                   re-pin ``execution.containers.<name>.image`` instead.
 
-    ``builder-pod`` names no field: the *builder* could not start, so no rebuild helps.
-    Phase ``blocked`` is that, before it is terminal.
+    ``builder`` and ``builder-pod`` name no field: the build daemon was unreachable, or
+    the *builder* could not start, so no ``.vast`` edit helps. Phase ``blocked`` is the
+    latter, before it is terminal. ``build`` is a failure no other phase matched; the log
+    tail says which field.
 
     Args:
         build_id: One id from ``build_experiment_image`` — its ``build_id``, or any value
@@ -1154,23 +840,12 @@ def get_image_build_status(build_id: str) -> dict:
         ``{error}``. ``next_step`` is the command for the phase reported — this tool is
         polled precisely while deciding what to do next, so the answer says it.
     """
-    client = service_access.service_client()
-    if client is None:
-        return {"error": "no robovast-service reachable"}
-    try:
-        s = client.get_image_build_status(build_id)
-        out = {"build_id": s.build_id, "tag": s.tag, "phase": s.phase,
-               "done": s.done, "cached": s.cached, "image_ref": s.image_ref,
-               "next_step": _status_next_step(s)}
-        if s.error is not None:
-            out["error_detail"] = s.error.model_dump()
-        return out
-    except Exception as e:  # noqa: BLE001
-        return error_result(e)
+    client = service_access.require_service()
+    return build_status_report(client, build_id)
 
 
 def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
-                        tail: int = 200, min_severity: str = "",
+                        tail: Optional[int] = None, min_severity: str = "",
                         summarize: bool = False, top: int = DEFAULT_TOP) -> dict:
     """The raw builder log. **Read ``get_image_build_status`` first** — its
     ``error_detail`` usually contains the whole story; come here for more.
@@ -1190,7 +865,7 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
             which indexes the unfiltered stream.
         grep, tail, min_severity, summarize, top: The filters ``get_campaign_log``
             documents; ``grep="x509|denied"`` is the usual registry-failure read.
-            ``tail`` defaults to 200 here, not 0.
+            ``tail`` defaults to 200 here, not 0, and is refused with ``summarize``.
 
     Returns:
         Lines: ``{text, next_offset, eof, lines, matched_lines, lines_total, dropped,
@@ -1200,18 +875,12 @@ def get_image_build_log(build_id: str, offset: int = 0, grep: str = "",
         severity_counts}``. Or ``{error}``.
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
-    client = service_access.service_client()
-    if client is None:
-        return {"error": "no robovast-service reachable"}
-    try:
-        chunk = client.get_image_build_log(build_id, offset)
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
-    try:
-        view = view_log(chunk.text, grep=grep, tail=tail,
-                        min_severity=min_severity, summarize=summarize, top=top)
-    except ValueError as e:
-        return {"error": str(e)}
+    if tail is None:
+        tail = 0 if summarize else _BUILD_LOG_TAIL
+    client = service_access.require_service()
+    chunk = client.get_image_build_log(build_id, offset)
+    view = view_log(chunk.text, grep=grep, tail=tail,
+                    min_severity=min_severity, summarize=summarize, top=top)
     return _log_response({"next_offset": chunk.next_offset, "eof": chunk.eof}, view)
 
 
@@ -1238,15 +907,16 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
     **At most one container exists at a time**, so ``reused: false`` means a fresh one and
     whatever the previous ran is gone; ``stop_container`` ends it. A started scenario logs
     to ``log_path`` *inside* the container, not ``stdout`` — read it with a follow-up
-    ``command="tail -200 <log_path>"``. Reuse keys on the image *ref*, which does not change
-    when a floating tag is re-pushed — so ``fresh`` is how you ask whether new bytes landed.
+    ``command="tail -200 <log_path>"``. Reuse keys on the image ref, so ``fresh`` is how you
+    ask whether a re-pushed floating tag's bytes landed.
 
     Args:
         command: Shell command; pipes and ``&&`` work. Empty needs ``config_name``.
         workspace_id, config_path: A workspace and which ``.vast`` in it.
         campaign_id: An existing campaign's ``_config/`` as the project — exactly one
             source, this or ``workspace_id``. A running campaign's container is never touched.
-        config_name: Stage this config. Omitted always means the bare image.
+        config_name: One configuration the ``.vast`` expands to, as
+            ``preview_configurations`` names it — not a file. Omitted: the bare image.
         container: ``scenario`` (default), ``simulation``, ``sut``, or an ad-hoc name.
             Naming one this campaign lacks lists the ones it has.
         keep_alive: Leave the container running for follow-up calls.
@@ -1261,25 +931,17 @@ def exec_in_container(command: str = "", workspace_id: str = "", config_path: st
     """
     from robovast.mcp_server.log_view import view_log  # noqa: PLC0415
     from robovast.service.interface import ExecRequest  # noqa: PLC0415
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
-    try:
-        result = client.exec_in_container(ExecRequest(
-            command=command, workspace_id=workspace_id, config_path=config_path,
-            campaign_id=campaign_id, config_name=config_name,
-            keep_alive=keep_alive,
-            container=container, fresh=fresh))
-    except Exception as e:  # noqa: BLE001
-        return error_result(e)
+    client = service_access.require_service()
+    result = client.exec_in_container(ExecRequest(
+        command=command, workspace_id=workspace_id, config_path=config_path,
+        campaign_id=campaign_id, config_name=config_name,
+        keep_alive=keep_alive,
+        container=container, fresh=fresh))
     out = result.model_dump()
     # Trim through the same filter the log tools use, so "the last N lines" and the
     # dropped accounting mean one thing across the surface.
     for stream in ("stdout", "stderr"):
-        try:
-            view = view_log(out.get(stream) or "", tail=tail)
-        except ValueError as e:
-            return {"error": str(e)}
+        view = view_log(out.get(stream) or "", tail=tail)
         out[stream] = view.get("content", "")
         if view.get("truncated"):
             out[f"{stream}_truncated"] = True
@@ -1300,13 +962,8 @@ def stop_container() -> dict:
 
     Nothing held reports ``stopped: false``, which is an empty result rather than an error.
     """
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
-    try:
-        return client.stop_exec_container().model_dump()
-    except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+    client = service_access.require_service()
+    return client.stop_exec_container().model_dump()
 
 
 # -- Plugin class ------------------------------------------------------------
@@ -1319,6 +976,7 @@ _TOOLS = [
     get_job_log,
     get_job_state,
     exec_in_job,
+    tap_job,
     stop_campaign,
     stop_job,
     get_resource_usage,

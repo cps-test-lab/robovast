@@ -34,7 +34,7 @@ def _compose(tmp_path, source_rel, scenario_rel="scenario.osc"):
     parent.write_text("a: 1\n")
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent(f"""\
-        version: 4
+        version: 7
         metadata: {{name: reserved}}
         configuration:
         - name: only
@@ -58,6 +58,7 @@ def _compose(tmp_path, source_rel, scenario_rel="scenario.osc"):
     "scenario.config",          # what the entrypoint reads parameters from by default
     "sim.overrides.yaml",       # what the simulator reads its overrides from
     "monitor_resources.py",     # what the run measures itself with
+    "mcap_writethrough.yaml",   # what the run's recorders read their storage settings from
     "job-0.params.yaml",        # a per-job document, matched as a pattern
 ])
 def test_a_file_the_run_owns_may_not_be_staged_over(tmp_path, reserved):

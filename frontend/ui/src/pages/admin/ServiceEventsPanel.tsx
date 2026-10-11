@@ -50,6 +50,13 @@ function EventRow({ event }: { event: ServiceEvent }) {
             · HTTP {String(event.payload.status)}
           </Typography>
         ) : null}
+        {/* The identical refusals the service counted instead of recording since the last
+            row of this one; the count is what says the caller is still trying. */}
+        {typeof event.payload?.repeated === 'number' && event.payload.repeated > 0 ? (
+          <Typography variant="caption" color="text.secondary">
+            · {String(event.payload.repeated)} identical before it
+          </Typography>
+        ) : null}
       </Stack>
       {event.message ? (
         // The service's own words, in the same monospace treatment a failure gets everywhere
