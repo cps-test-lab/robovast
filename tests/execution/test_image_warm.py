@@ -114,6 +114,13 @@ def _api_exception(status):
     return e
 
 
+def _config(pull_secret_name=""):
+    """A cluster config whose registry names *pull_secret_name* (``""``: none configured)."""
+    from robovast.execution.cluster_config.base_config import RegistryConfig
+    return types.SimpleNamespace(
+        get_registry_config=lambda: RegistryConfig(pull_secret_name=pull_secret_name))
+
+
 # ---------------------------------------------------------------------------
 # the manifest collects itself
 # ---------------------------------------------------------------------------
@@ -373,7 +380,7 @@ def test_an_unreachable_cluster_does_not_fail_a_finished_deployment(monkeypatch)
                         "load_kube_config",
                         lambda ctx=None: (_ for _ in ()).throw(RuntimeError("no cluster")))
 
-    assert image_warm.warm_family_images("ns1", None) == []
+    assert image_warm.warm_family_images("ns1", None, cluster_config=_config()) == []
 
 
 def _submit_stubs(cs, monkeypatch, batch, base_image="",
@@ -523,10 +530,30 @@ def test_warming_the_family_declares_one_daemonset_with_the_pull_secret(monkeypa
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: types.SimpleNamespace(
         read_namespaced_secret=lambda name, ns: object()))
 
-    assert image_warm.warm_family_images("ns1", None) == refs
+    assert image_warm.warm_family_images("ns1", None, cluster_config=_config()) == refs
     assert apps.images == refs
     assert (apps.applied["spec"]["template"]["spec"]["imagePullSecrets"]
             == [{"name": "robovast-registry-push"}])
+
+
+def test_warming_the_family_uses_the_configured_pull_secret(monkeypatch):
+    """The warm pods pull the images every campaign pod pulls, so they take the credential
+    from the same resolution: a configured pull Secret wins, even where the Secret setup
+    creates is absent."""
+    from robovast.execution.cluster_execution import image_warm
+    apps = _Apps()
+    monkeypatch.setattr(image_warm, "family_refs_to_warm", lambda: ["ghcr.io/x/robovast:1"])
+    monkeypatch.setattr("robovast.execution.cluster_execution.kube_client."
+                        "load_kube_config", lambda ctx=None: None)
+    monkeypatch.setattr("kubernetes.client.AppsV1Api", lambda: apps)
+    monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: types.SimpleNamespace(
+        read_namespaced_secret=lambda name, ns: (_ for _ in ()).throw(
+            _api_exception(404))))
+
+    assert image_warm.warm_family_images(
+        "ns1", None, cluster_config=_config("site-pull")) == ["ghcr.io/x/robovast:1"]
+    assert (apps.applied["spec"]["template"]["spec"]["imagePullSecrets"]
+            == [{"name": "site-pull"}])
 
 
 def test_an_upgrade_refreshes_the_existing_daemonset_instead_of_standing_up_a_second(monkeypatch):
@@ -542,7 +569,7 @@ def test_an_upgrade_refreshes_the_existing_daemonset_instead_of_standing_up_a_se
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: types.SimpleNamespace(
         read_namespaced_secret=lambda name, ns: object()))
 
-    assert image_warm.warm_family_images("ns1", None) == ["ghcr.io/x/robovast:1"]
+    assert image_warm.warm_family_images("ns1", None, cluster_config=_config()) == ["ghcr.io/x/robovast:1"]
     assert apps.created == []
     assert [name for name, _ns, _m in apps.patched] == [WARM_DAEMONSET_NAME]
 
@@ -560,7 +587,7 @@ def test_a_public_registry_warms_without_a_credential(monkeypatch):
         read_namespaced_secret=lambda name, ns: (_ for _ in ()).throw(
             _api_exception(404))))
 
-    assert image_warm.warm_family_images("ns1", None) == ["ghcr.io/x/robovast:1"]
+    assert image_warm.warm_family_images("ns1", None, cluster_config=_config()) == ["ghcr.io/x/robovast:1"]
     assert "imagePullSecrets" not in apps.applied["spec"]["template"]["spec"]
 
 
@@ -577,7 +604,7 @@ def test_a_daemonset_that_cannot_be_declared_does_not_fail_the_deployment(monkey
     monkeypatch.setattr("kubernetes.client.CoreV1Api", lambda: types.SimpleNamespace(
         read_namespaced_secret=lambda name, ns: object()))
 
-    assert image_warm.warm_family_images("ns1", None) == []
+    assert image_warm.warm_family_images("ns1", None, cluster_config=_config()) == []
 
 
 def test_an_empty_family_is_an_error_rather_than_an_empty_daemonset(monkeypatch):
