@@ -1109,7 +1109,7 @@ The built-in panels:
 
 **Scenario parameters** (``parameters``) — what the trial is given, as YAML, and nothing
 else. Not the ``_``-prefixed keys a variation writes for other readers (``_map_file``,
-``_path``, ``_goal_parameter_name``), and not a preview of each factor's value list with this
+``_path``, ``_slot_bindings``), and not a preview of each factor's value list with this
 configuration's value marked: both would restate in a second notation what the ``.vast`` in
 the next column already says, and the column is too narrow to spend on that.
 

@@ -1066,29 +1066,20 @@ def image_build(workspace_id, config_path, wait):  # pylint: disable=redefined-o
         _echo_target(target)
         ref = client.build_image(BuildImageRequest(
             workspace_id=workspace_id, config_path=config_path))
-        # Report every container, not just the one the handle happens to name. Both lines
-        # below say more than `ref.tag`: a project building two images would otherwise print
-        # one cache-hit line for the scenario image and never mention the other — a reader
-        # could not tell whether the second was covered, still building, or absent. The
-        # per-container verdict is in `cached_builds`; the aggregate `ref.cached` is their
-        # conjunction, so a cache-hit line means every image, which is what it reads as.
-        cached_builds = getattr(ref, "cached_builds", None) or {}
-        for name in sorted(cached_builds):
-            if cached_builds[name]:
+        # Report every container, not just the one the handle happens to name: a project
+        # may build several images, and each has its own cache verdict in `cached_builds`.
+        for name in sorted(ref.cached_builds):
+            if ref.cached_builds[name]:
                 click.echo(f"✓ image 'build:{name}' already up to date (cache hit)")
-        if ref.cached:
-            if not cached_builds:      # a service predating the per-container verdicts
-                click.echo(f"✓ image 'build:{ref.tag}' already up to date (cache hit)")
-            return
         # Wait only on what is actually building. Waiting on a cache hit is harmless but
         # says "building" about an image that is already there.
-        pending = {name: bid for name, bid in (ref.builds or {}).items()
-                   if not cached_builds.get(name)}
-        ids = list(pending.values()) or list((ref.builds or {}).values()) or [ref.build_id]
+        pending = {name: bid for name, bid in ref.builds.items()
+                   if not ref.cached_builds.get(name)}
+        if not pending:
+            return
+        ids = list(pending.values())
         for name, bid in sorted(pending.items()):
             click.echo(f"building 'build:{name}' (build_id={bid}) ...")
-        if not pending:
-            click.echo(f"building 'build:{ref.tag}' (build_id={' '.join(ids)}) ...")
         if not wait:
             click.echo(f"started; wait with 'vast image wait {' '.join(ids)}'")
             return

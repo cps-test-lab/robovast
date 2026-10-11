@@ -102,18 +102,16 @@ def record(payload, path):
 
 
 def clear(payload, path):
-    """Drop a campaign once a tool reports it is genuinely over.
+    """Drop a campaign once `stop_campaign` reports it stopped.
 
-    Abandoning a campaign deliberately (`stop_campaign`) counts as settling it: what this
-    hook objects to is leaving one unattended in silence, not choosing to end it.
+    Abandoning a campaign deliberately counts as settling it: what this hook objects to is
+    leaving one unattended in silence, not choosing to end it. A refused stop (`stopped`
+    false) settles nothing.
     """
     response = _tool_response(payload)
     campaign_id = str(response.get("campaign_id") or
                       (payload.get("tool_input") or {}).get("campaign_id") or "")
-    if not campaign_id:
-        return
-    finished = bool(response.get("done")) or bool(response.get("ok"))
-    if not finished:
+    if not campaign_id or response.get("stopped") is not True:
         return
     data = _live(_read(path))
     if data.pop(campaign_id, None) is not None:

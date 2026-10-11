@@ -336,7 +336,12 @@ Where the numbers come from
 Nothing is remembered between deployments. Capacity is measured each cycle from what the nodes
 advertise, minus bound pod requests, minus the per-node headroom
 (``ROBOVAST_NODE_HEADROOM_CPU`` / ``ROBOVAST_NODE_HEADROOM_MEMORY``, set on the service
-Deployment). Calibration is measured per campaign and deliberately never inherited by the next
+Deployment). Free disk is the smaller of ``allocatable - requested`` and what the kubelet measures
+free on the node's filesystem less its own ``evictionHard`` ``nodefs.available`` threshold (read
+from the node's ``configz``, the kubelet's 10% default where it states none): a node's disk also
+holds images and logs no pod requested, and a job placed by requests alone could fill it past the
+threshold and be evicted. A node whose disk cannot be read keeps the request figure. Calibration
+is measured per campaign and deliberately never inherited by the next
 one — figures taken under one campaign's contention describe a load the next never meets.
 
 That is also why there is no cached per-node factor anywhere: a container's cost per simulated

@@ -347,6 +347,64 @@ def test_stop_job_reports_a_refusal_as_an_error(monkeypatch):
     assert "not running" in res["error"]
 
 
+def test_a_refused_stop_is_an_error_not_a_stopping_campaign(monkeypatch):
+    """A campaign that is already over is refused by the service; the tool says so instead
+    of reporting it as stopping."""
+    from robovast.service.interface import ActionResult
+
+    class _Refusing(_FakeClient):
+        def stop(self, campaign_id):
+            return ActionResult(ok=False, message=f"campaign {campaign_id} is already over")
+
+    monkeypatch.setattr(service_access, "service_client", lambda: _Refusing())
+    res = execution.stop_campaign("svc-campaign-1")
+    assert res == {"error": "campaign svc-campaign-1 is already over"}
+
+
+def test_a_job_stop_the_service_declines_is_an_error(monkeypatch):
+    from robovast.service.interface import ActionResult
+
+    class _Declining(_FakeClient):
+        def stop_job(self, campaign_id, job_name, reason=None, source="api"):
+            return ActionResult(ok=False, message=f"campaign {campaign_id} is not running here")
+
+    monkeypatch.setattr(service_access, "service_client", lambda: _Declining())
+    res = execution.stop_job("svc-campaign-1", "cfgA/0")
+    assert res == {"error": "campaign svc-campaign-1 is not running here"}
+
+
+def _tap_client(base_url):
+    class _Tapping(_FakeClient):
+        def tap_job(self, campaign_id, job_name, selection, max_seconds, source):
+            yield SimpleNamespace(line="/odom")
+            yield SimpleNamespace(exit_code=0, timed_out=False)
+
+        def version(self):
+            return SimpleNamespace(web_base="")
+
+    client = _Tapping()
+    if base_url:
+        client.base_url = base_url
+    return client
+
+
+def test_a_tap_links_its_stream_when_an_origin_is_known(monkeypatch):
+    client = _tap_client("http://127.0.0.1:8800")
+    monkeypatch.setattr(service_access, "service_client", lambda: client)
+    res = execution.tap_job("svc-campaign-1", "cfgA/0", max_seconds=1)
+    assert res["lines"] == ["/odom"] and res["exit_code"] == 0
+    assert res["stream_url"].startswith("http://127.0.0.1:8800/")
+
+
+def test_a_tap_with_no_origin_omits_the_stream_url(monkeypatch):
+    """No origin means no usable link, so the field is absent rather than empty."""
+    client = _tap_client("")
+    monkeypatch.setattr(service_access, "service_client", lambda: client)
+    res = execution.tap_job("svc-campaign-1", "cfgA/0", max_seconds=1)
+    assert res["lines"] == ["/odom"]
+    assert "stream_url" not in res
+
+
 def test_stop_job_without_a_service_says_so(monkeypatch):
     monkeypatch.setattr(service_access, "service_client", lambda: None)
     assert "error" in execution.stop_job("svc-campaign-1", "cfgA/0")
