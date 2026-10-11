@@ -72,8 +72,8 @@ def _plugin(name):
 
 
 def test_a_plugin_named_after_any_core_campaign_route_is_skipped(tmp_path, monkeypatch):
-    """Every segment a core route owns is reserved, not only the ones somebody listed: a
-    plugin registered under one would sit behind the core route and never answer."""
+    """Every segment a core route owns is reserved: a plugin registered under one would sit
+    behind the core route and never answer."""
     class _EP:
         def __init__(self, name):
             self.name, self.value, self._obj = name, f"mod:{name}", _plugin(name)
