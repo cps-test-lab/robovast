@@ -1253,7 +1253,8 @@ blocked for a minute, which is long enough for a registry blip to clear and shor
 not to be a hang. ``fixable_by`` is ``infra`` and ``error_detail.phase`` is
 ``builder-pod``: nothing about the project's ``build:`` section is involved, and the
 message names which image could not be pulled (the ``robovast-sidecar`` init container, or
-the BuildKit builder) or which resource no node could satisfy. **Neither waiting nor
+the BuildKit builder), which resource no node could satisfy, or that the ``context-fetch``
+init container exceeded its memory limit. **Neither waiting nor
 rebuilding helps** — the two things a caller would otherwise try.
 * ``get_image_build_log`` — the raw builder log for deep dives, while the build exists.
 

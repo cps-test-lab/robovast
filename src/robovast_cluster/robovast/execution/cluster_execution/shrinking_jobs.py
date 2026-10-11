@@ -36,8 +36,7 @@ what a size is (:attr:`ShrinkingJobs.make_items`); this class owns the rest:
 * **Other failures are not retried.** A Job that failed for any other reason fails the work
   with that reason; shrinking would only hide it. So does a pod that cannot start, among
   them one stuck behind an init container that was OOM-killed
-  (:func:`~.cluster_execution.wedged_init_container_reasons`): its Job reads active, and
-  without that it would be waited for until the work is stopped.
+  (:func:`~.cluster_execution.pod_wedged_init_container`), once its grace is spent.
 """
 
 from __future__ import annotations
@@ -48,8 +47,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence
 
 from .admitted_jobs import AdmittedJobs, running_jobs
-from .cluster_execution import (blocked_and_contended_reasons, oom_killed_job_forensics,
-                                wedged_init_container_reasons)
+from .cluster_execution import oom_killed_job_forensics
 
 logger = logging.getLogger(__name__)
 
@@ -115,15 +113,6 @@ class ShrinkingJobs:
         #: One line per level taken back, for the caller's log.
         self.shrinks: List[str] = []
 
-    def _read_blocked(self):
-        """What :class:`AdmittedJobs` reads as blocked, plus a pod stuck behind an init
-        container that was OOM-killed: its Job reads active and nothing else would end it."""
-        blocked, contended = blocked_and_contended_reasons(self.core_api, self.namespace,
-                                                           self.label_selector)
-        wedged = wedged_init_container_reasons(self.core_api, self.namespace,
-                                               self.label_selector)
-        return {**wedged, **blocked}, contended
-
     def _owner(self, level: int) -> str:
         return f"{self.owner_prefix}/g{level}"
 
@@ -145,7 +134,7 @@ class ShrinkingJobs:
             list_remaining=lambda names: running_jobs(self.batch_api, self.namespace,
                                                       self.label_selector, names,
                                                       on_status=record),
-            read_blocked=self._read_blocked, clock=self.clock)
+            clock=self.clock)
         state.tracker.submit([(i.name, i.sizing, i.create) for i in items.values()],
                              **self.submit_kwargs(level))
         logger.info("%s level %d: %d job(s) for %d unit(s)", self.owner_prefix, level,

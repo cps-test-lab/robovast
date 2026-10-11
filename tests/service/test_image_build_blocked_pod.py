@@ -200,6 +200,25 @@ def test_a_buildkit_pull_failure_names_the_public_registry_not_the_sidecar(cs, m
     assert "robovast-sidecar" not in err.message
 
 
+def test_a_build_pod_wedged_behind_an_oom_killed_context_fetch_fails_naming_it(cs,
+                                                                              monkeypatch):
+    """The kubelet starts nothing after a one-shot init container it recorded OOMKilled,
+    and the pod stays Pending: a pod that cannot start, and not an image pull."""
+    oom = types.SimpleNamespace(
+        name="context-fetch", last_state=None, restart_count=0,
+        state=types.SimpleNamespace(
+            waiting=None, terminated=types.SimpleNamespace(reason="OOMKilled",
+                                                           exit_code=0)))
+    _wire(cs, monkeypatch, _pod(init=[oom], age_s=BLOCKED_GRACE_SECONDS + 1))
+    _record(cs)
+
+    status = cs.get_image_build_status(BUILD)
+    assert status.phase == "failed"
+    assert "init container context-fetch" in status.error.message
+    assert "memory limit" in status.error.message
+    assert "could not be pulled" not in status.error.message
+
+
 def test_an_unschedulable_pod_reports_capacity_not_an_image(cs, monkeypatch):
     _wire(cs, monkeypatch, _pod(
         conditions=[types.SimpleNamespace(
