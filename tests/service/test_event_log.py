@@ -381,6 +381,7 @@ def test_the_route_serves_the_newest_page_on_request(tmp_path):
 def test_the_route_refuses_a_cursor_and_newest_together(tmp_path):
     """Two readings of the record that cannot both be answered: neither may be ignored."""
     client = _refusing_client(tmp_path)
-    refused = client.get("/admin/events", params={"newest": "true", "since": 3})
-    assert refused.status_code == 400, refused.text
-    assert "since" in refused.json()["detail"]
+    for since in (3, 0):
+        refused = client.get("/admin/events", params={"newest": "true", "since": since})
+        assert refused.status_code == 400, refused.text
+        assert "since" in refused.json()["detail"]
