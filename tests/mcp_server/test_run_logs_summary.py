@@ -109,3 +109,21 @@ def test_a_search_of_one_campaign_does_not_count_the_others_rows(campaigns):
         _CAMPAIGNS[0], summarize=True, min_severity="error")
     assert result["lines_total"] == _ROWS_PER_CAMPAIGN
     assert result["severity_counts"]["error"] == _ROWS_PER_CAMPAIGN
+
+
+@pytest.mark.parametrize("group_by_run", [True, False])
+def test_a_campaign_that_could_not_be_searched_is_an_error_not_an_empty_result(
+        campaigns, group_by_run):
+    """An empty rollup reads as "no run logged this"; for a campaign nobody could read,
+    that is a wrong answer that looks right."""
+    out = run_logs.search_run_logs("camp-nope", grep="boom", group_by_run=group_by_run)
+    assert set(out) == {"error"}
+    assert "camp-nope" in out["error"]
+
+
+def test_a_search_that_read_one_campaign_still_names_the_one_it_could_not(campaigns, tmp_path):
+    (tmp_path / "results" / "camp-2026-07-16-140000").mkdir()
+    out = run_logs.search_run_logs("^camp-", campaign_regex=True, grep="boom")
+    assert "error" not in out
+    assert {s["campaign_id"] for s in out["campaigns"]} == set(_CAMPAIGNS)
+    assert [s["campaign_id"] for s in out["campaigns_skipped"]] == ["camp-2026-07-16-140000"]

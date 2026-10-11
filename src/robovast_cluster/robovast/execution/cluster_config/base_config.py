@@ -78,7 +78,7 @@ class RegistryConfig:
         # "push it" rather than "push a built image": each caller's opener has already
         # named the image, so repeating it reads as a stutter in both compositions.
         return ("this cluster has nowhere to push it. RoboVAST runs its own "
-                "registry in the service pod, reached over the service's own Ingress, and "
+                "registry in the robovast pod, reached over the service's own Ingress, and "
                 "this service's registry prefix is unset. If the service is published, "
                 "'vast service upgrade' re-bakes the prefix from the live Ingress; if "
                 "it is not published at all, re-run 'vast cluster setup' with "
