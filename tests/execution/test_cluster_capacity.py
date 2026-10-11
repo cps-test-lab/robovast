@@ -96,6 +96,31 @@ def test_free_is_allocatable_minus_committed_minus_headroom(monkeypatch):
     assert b.free_memory == (16 - 4) * 1024 * MIB - 2 * 1024 * MIB   # default 2Gi
 
 
+def _build_node(node):
+    from robovast.execution.cluster_execution.node_placement import (BUILD_NODE_LABEL,
+                                                                     LABEL_VALUE)
+    node.metadata.labels[BUILD_NODE_LABEL] = LABEL_VALUE
+    return node
+
+
+def test_the_reserve_is_held_on_the_build_node_and_nowhere_else(monkeypatch):
+    """The transient work it protects runs on the build node -- the daemon is pinned there
+    and the aux and exec pods prefer it -- so every other node offers its whole size, and a
+    small node is not the one a probe cannot fit for a reserve it never needed."""
+    p, _ = _provider([_build_node(_node("big", cpu="96")), _node("small", cpu="12")], [],
+                     monkeypatch)
+    free = {n.node_id: n.free_cpu for n in p.budget().nodes}
+    held = {c.node_id: c.cpu for c in p.capacities()}
+    assert free == {"node-big": pytest.approx(95), "node-small": pytest.approx(12)}
+    assert held == free, "both readings agree, as preflight and drain must"
+
+
+def test_with_no_build_node_the_reserve_stays_on_every_node(monkeypatch):
+    """No node named as the build node means the transient work can land anywhere."""
+    p, _ = _provider([_node("a", cpu="8"), _node("b", cpu="8")], [], monkeypatch)
+    assert [n.free_cpu for n in p.budget().nodes] == [pytest.approx(7), pytest.approx(7)]
+
+
 def test_native_sidecars_count(monkeypatch):
     """Kubernetes adds a restartPolicy:Always init container's requests to the pod total, and
     so does the scheduler -- missing them would over-admit by a whole simulator."""
