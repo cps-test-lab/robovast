@@ -418,7 +418,7 @@ def _materialize_work_order(client, campaign_id: str, workspace_name: str):
     click.echo("")
     click.echo("This will NOT validate until every marker is resolved, which is deliberate: a "
                "partly-migrated config that loaded would run a different experiment.")
-    # The workspace is on the service, so the check is the service's: a local `vast config
+    # The workspace is on the service, so the check is the service's: a local `vast configuration
     # validate` needs the file on this disk and the core installed.
     click.echo(f"  next: resolve them in {result.config_path}, then 'vast workspace validate "
                f"{result.workspace_id} {result.config_path}'")
