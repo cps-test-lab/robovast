@@ -148,10 +148,9 @@ SHM_SQL = """
 #: One ``resource_usage`` row is a process, and RSS counts a shared page once per process, so
 #: summing a tick over a stack of forty ROS nodes -- sharing libraries, and a Fast DDS
 #: shared-memory segment mapped into each of them -- multiplies what the container actually
-#: holds. Measured on one basic_nav campaign: summed RSS peaked at 5147 MIB in a container
-#: running comfortably inside a 2944 MIB limit, whose largest single process held 1014 MIB.
-#: Sizing from that would have told its author to reserve 2.3x what the run needed, on every
-#: job of every sweep.
+#: holds, and can report a multiple of the limit for a container running comfortably inside
+#: it. Sizing from that would tell its author to reserve that multiple, on every job of
+#: every sweep.
 #:
 #: Absent for a campaign recorded before the probe existed -- a missing table or an empty
 #: result, both of which the caller falls back from rather than treating as zero.
