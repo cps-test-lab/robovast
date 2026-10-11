@@ -67,9 +67,9 @@ venv/.robovast_installed: Makefile pyproject.toml src/robovast_nav/pyproject.tom
 	# editable install the one that survives.
 	# `notebooks` is named even though the `test` extra happens to carry the same five
 	# packages: a dev venv runs `vast serve`, and the Explorer's notebook endpoint is
-	# 503 without that toolchain. Depending on the test extra for it meant the service's
-	# capability rode on why the *suite* needs nbformat -- a coincidence, and one that
-	# reads like an accident the moment either list is edited.
+	# 503 without that toolchain. Depending on the test extra for it would make the
+	# service's capability ride on why the *suite* needs nbformat -- a coincidence, and one
+	# that reads like an accident the moment either list is edited.
 	. venv/bin/activate && pip install -e .[docs,test,notebooks] \
 		&& pip install -e src/robovast_nav \
 		&& pip install -e src/robovast_sim_roqsim \
