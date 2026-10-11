@@ -243,12 +243,13 @@ class ResourcesConfig(BaseModel):
     #:   and clipping is not proportional, so a search proposing harder configurations can
     #:   exceed it -- ``run_validity_view.quota_bound`` says when that happened.
     #: * The **simulator and scenario** are not under test and should split. The simulator's
-    #:   peak-to-mean ratio is roughly 18 (measured: 0.34 cores sustained, 5.98 at its
-    #:   startup burst), so there is no honest single number: reserving the peak costs more
-    #:   than the un-tuned campaign did, and capping at the sustained figure clips a burst
-    #:   that changes nothing the robot experiences. Realtime pacing already normalises what
-    #:   the simulated world looks like, and ``runs.clock_map_*`` records per run whether it
-    #:   kept pace -- so the guard that makes a soft limit safe here is already in the data.
+    #:   peak-to-mean ratio can be an order of magnitude (a fraction of a core sustained,
+    #:   several at its startup burst), so there is no honest single number: reserving the
+    #:   peak costs more than leaving the container un-tuned, and capping at the sustained
+    #:   figure clips a burst that changes nothing the robot experiences. Realtime pacing
+    #:   already normalises what the simulated world looks like, and ``runs.clock_map_*``
+    #:   records per run whether it kept pace -- so the guard that makes a soft limit safe
+    #:   here is already in the data.
     #:
     #: The reservation is what the cluster packs by, so lowering it is what buys concurrency;
     #: the limit only decides when the kernel starts throttling.
@@ -798,7 +799,8 @@ RESERVED_ENV_NAMES = frozenset({
     'OUTPUT_DIR', 'SCENARIO_OUTPUT_DIR', 'RUN_OUTPUT_DIR', 'OUTPUT_RESULT_PER_SCENARIO',
     # what the run executes, and with what
     'SCENARIO_FILE', 'SCENARIO_PARAMETER_FILE', 'SCENARIO_EXECUTION_PARAMETERS',
-    'SCENARIO_MODE', 'SIMULATION', 'CONTAINER_NAME', 'ROBOVAST_CONTAINER_COMMAND',
+    'SCENARIO_MODE', 'SCENARIO_USE_SIM_TIME', 'SIMULATION', 'CONTAINER_NAME',
+    'ROBOVAST_CONTAINER_COMMAND',
     # hooks the campaign declares by their own keys, not by env
     'PRE_COMMAND', 'POST_COMMAND',
     # logging derived from the .vast
@@ -1013,6 +1015,10 @@ class ExecutionConfig(BaseModel):
     # ticks the SimulationInterface in its spin loop). ``base`` forces the non-ROS CLI
     # (scenario_execution) even when ros2 is on PATH -- for pure non-ROS scenarios (e.g. growth_sim).
     mode: str = "auto"
+    # Whether the ROS runner is started with ``use_sim_time``, so a scenario's durations run on
+    # /clock. ROS shape only; unset, the simulator backend answers, and with no backend to
+    # answer the campaign must state it (robovast.common.simulators.scenario_use_sim_time).
+    use_sim_time: Optional[bool] = None
     # Size of the pod's shared ``/dev/shm``. One tmpfs is mounted into every container of
     # the run, which is what lets ROS 2's default Fast DDS use its shared-memory transport
     # across the scenario / sut / simulation boundary.

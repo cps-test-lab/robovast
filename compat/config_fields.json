@@ -424,6 +424,11 @@
       "Union[int, NoneType]"
     ],
     [
+      "use_sim_time",
+      false,
+      "Union[bool, NoneType]"
+    ],
+    [
       "<extra>",
       false,
       "forbid"

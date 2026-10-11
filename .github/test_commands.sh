@@ -9,9 +9,8 @@ ORIGINAL_DIR=$(pwd)
 
 # `make venv` is the only install that carries every distribution in this repo: the CLI is
 # split across robovast, robovast-client and robovast-cluster, so `poetry install` -- which
-# names none of the siblings -- yields a `vast` missing whole command groups. This script
-# used to run under `poetry run` and could therefore only ever see part of the surface it
-# claims to test.
+# names none of the siblings -- yields a `vast` missing whole command groups, so this script
+# runs in the venv rather than under `poetry run`.
 if [ ! -f "$ORIGINAL_DIR/venv/bin/activate" ]; then
     echo "❌ No venv found. Run 'make venv' first."
     exit 1
@@ -80,9 +79,8 @@ commands=(
 # Test each command
 for cmd in "${commands[@]}"; do
     echo "Testing: $cmd --help"
-    # Checked inline rather than through $? afterwards: `set -e` above already aborts the
-    # script on a non-zero exit, so the old `if [ $exit_code -ne 0 ]` branch was unreachable
-    # and the failure message it holds could never print.
+    # Checked inline rather than through $? afterwards: `set -e` above would abort the
+    # script on a non-zero exit before a later check could print its message.
     if ! $cmd --help; then
         echo "❌ Error: $cmd --help failed"
         exit 1

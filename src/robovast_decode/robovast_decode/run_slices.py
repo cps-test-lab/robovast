@@ -34,10 +34,10 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import List, Optional, Tuple
 
 from . import clock_map
-from .junit import read_test_result
+from .junit import read_test_result, trial_window
 from .layout import MAIN_CONTAINER
 
 #: ``system.log`` / ``resource_usage_main.csv`` / ``system_usage_main.csv`` — the main
@@ -125,20 +125,6 @@ class RunSlice:
         return in_window(wall, self.start_epoch, self.end_epoch)
 
 
-def describe_missing(label: str, items: Sequence[str], noun: str = "run(s)",
-                     limit: int = 5) -> str:
-    """``"; <label> N <noun>: a, b, c (+2 more)"`` — or ``""`` when there are none.
-
-    Truncated because these lists are unbounded (a broken campaign degrades in every run),
-    and a message that grows with the campaign stops being read at all.
-    """
-    if not items:
-        return ""
-    shown = ", ".join(items[:limit])
-    more = f" (+{len(items) - limit} more)" if len(items) > limit else ""
-    return f"; {label} {len(items)} {noun}: {shown}{more}"
-
-
 def _read_window(run_dir: Path) -> Tuple[Optional[float], Optional[float]]:
     """The run's trial window from its ``test.xml``, or ``(None, None)``.
 
@@ -149,10 +135,7 @@ def _read_window(run_dir: Path) -> Tuple[Optional[float], Optional[float]]:
         result = read_test_result(run_dir)
     except (FileNotFoundError, ValueError, OSError):
         return None, None
-    start = result.get("start_epoch")
-    if start is None:
-        return None, None
-    return start, start + (result.get("duration_sec") or 0.0)
+    return trial_window(result)
 
 
 def run_slice(job_dir: str, config_name: str, run_dir, clock: clock_map.ClockMap,

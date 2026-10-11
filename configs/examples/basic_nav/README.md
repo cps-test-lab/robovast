@@ -2,8 +2,13 @@
 
 One nav2 navigation trial, run on **two simulators** — Gazebo and roqsim (MuJoCo) — so they can be
 compared directly. A TurtleBot 4 navigates the nav2 **Depot** world to a per-configuration goal with
-nav2 + AMCL. Same world, same map, same nav2 params, same ROS graph (down to the ground-truth
-`turtlebot4_base_link_gt` frame), so roqsim is a drop-in replacement for Gazebo.
+nav2 + AMCL. Same world, same map, same nav2 params, same ROS graph nav2 sees, and the same
+ground-truth table, so roqsim is a drop-in replacement for Gazebo.
+
+Ground truth is the `ground_truth_poses` table in both halves, in the world frame and on sim time:
+roqsim writes it from its own recording (the robot's body), Gazebo from the
+`turtlebot4_base_link_gt` frame its world publishes on `/tf`. The analysis reads that table and
+never asks which simulator ran.
 
 ## Files
 
@@ -13,7 +18,7 @@ basic_nav_roqsim.vast     # three containers: roqsim, a vanilla nav2 SUT, the sc
 scenario_gazebo.osc    # Gazebo bring-up + the measurement half
 scenario_roqsim.osc       # nav2-only bring-up (remote, into the SUT) + the same measurement half
 world/
-  depot_nav2.yaml      # the roqsim world: Depot + TB4 + ROS bridge + ground-truth frame
+  depot_nav2.yaml      # the roqsim world: Depot + TB4 + ROS bridge
 files/                 # mounted at /config/files, shared by both halves
   nav2_params.yaml     #   nav2 planner/controller/AMCL/BT — pinned via params_file:=
   depot.yaml/.pgm      #   the nav2 Depot occupancy map — pinned via map:=
@@ -44,8 +49,8 @@ looks clean while nav2 goes on planning against a dead sim.
 
 Gazebo spawns the TB4 at world `(-8, 0)` and AMCL seeds at the map origin, so `map = world + (8, 0)`.
 `world/depot_nav2.yaml` reproduces exactly this. The same map-frame goals (`x ≈ 21`) and the same
-`turtlebot4_base_link_gt` convention (the world pose, labelled `map`; analysis shifts it `+8 m` in x)
-therefore apply to both halves.
+ground truth (the world pose, which analysis shifts `+8 m` in x to reach the map frame) therefore
+apply to both halves.
 
 ## What the Config tab shows
 

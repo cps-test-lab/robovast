@@ -14,7 +14,9 @@ and a restart is exactly when they are most worth having.
 
 import time
 
-from robovast.service.event_log import EventLog
+import pytest
+
+from robovast.service.event_log import EventLog, EventLogUnreadable
 
 
 def _log(tmp_path):
@@ -50,6 +52,19 @@ def test_events_come_back_oldest_first_because_a_reader_is_resuming(tmp_path):
     assert seqs == sorted(seqs)
 
 
+def test_latest_answers_the_end_of_the_record_not_its_beginning(tmp_path):
+    """A reader opening the record wants what just happened; a cursor at zero answers the
+    oldest page instead once the record is longer than one."""
+    log = _log(tmp_path)
+    for i in range(5):
+        log.append("x", message=str(i))
+    tail = log.latest(limit=2)
+    assert [e.message for e in tail] == ["3", "4"]
+    # Same order as a cursor read, so a reader starting here resumes with ``read``.
+    log.append("x", message="5")
+    assert [e.message for e in log.read(since=tail[-1].seq)] == ["5"]
+
+
 def test_a_payload_round_trips_so_a_kind_can_carry_its_own_fields(tmp_path):
     """`kind` is open and `payload` is free-form: adding an event type must not be a migration."""
     log = _log(tmp_path)
@@ -67,7 +82,28 @@ def test_an_unwritable_location_does_not_take_the_caller_with_it(tmp_path):
     blocked.write_text("not a directory")
     log = EventLog(blocked / "events.db")
     log.append("x", message="dropped")          # must not raise
-    assert log.read() == []
+
+
+def test_a_log_that_cannot_open_is_an_error_to_a_reader_not_an_empty_record(tmp_path):
+    """Absent data and a failed lookup are different answers.
+
+    An empty page reads as "nothing happened", which a log that never opened cannot know.
+    """
+    blocked = tmp_path / "afile"
+    blocked.write_text("not a directory")
+    log = EventLog(blocked / "events.db")
+    with pytest.raises(EventLogUnreadable):
+        log.read()
+    with pytest.raises(EventLogUnreadable):
+        log.latest()
+
+
+def test_a_failed_query_is_an_error_to_a_reader(tmp_path):
+    log = _log(tmp_path)
+    log.append("x", message="kept")
+    log._connect().execute("DROP TABLE event")  # pylint: disable=protected-access
+    with pytest.raises(EventLogUnreadable, match="could not be read"):
+        log.read()
 
 
 def test_the_table_is_bounded_so_a_mounted_volume_cannot_fill(tmp_path, monkeypatch):
@@ -350,3 +386,36 @@ def test_a_heartbeat_is_not_kept(tmp_path):
     notifier.stop_heartbeat()
     assert pushed, "the beat never fired, so this proves nothing about what it records"
     assert log.read() == []
+
+
+def test_the_route_serves_the_newest_page_on_request(tmp_path):
+    """What the admin panel asks for: the tail, with the cursor to resume from."""
+    client = _refusing_client(tmp_path)
+    for name in ("a", "b", "c"):
+        client.post(f"/campaigns/{name}/retrigger")
+    every = client.get("/admin/events", params={"limit": 1000}).json()["events"]
+    assert len(every) >= 3
+
+    body = client.get("/admin/events", params={"newest": "true", "limit": 2}).json()
+    assert [e["seq"] for e in body["events"]] == [e["seq"] for e in every[-2:]]
+    assert body["next_seq"] == every[-1]["seq"]
+
+
+def test_the_route_refuses_a_cursor_and_newest_together(tmp_path):
+    """Two readings of the record that cannot both be answered: neither may be ignored."""
+    client = _refusing_client(tmp_path)
+    for since in (3, 0):
+        refused = client.get("/admin/events", params={"newest": "true", "since": since})
+        assert refused.status_code == 400, refused.text
+        assert "since" in refused.json()["detail"]
+
+
+def test_the_route_answers_a_log_it_cannot_read_with_an_error(tmp_path):
+    """The panel shows the error the route returns; an empty page would read "Nothing recorded
+    yet" over a broken log."""
+    (tmp_path / "ws" / "events.db").mkdir(parents=True)
+    client = _refusing_client(tmp_path)
+    for params in ({}, {"newest": "true"}):
+        answer = client.get("/admin/events", params=params)
+        assert answer.status_code == 503, answer.text
+        assert "event log" in answer.json()["detail"]
