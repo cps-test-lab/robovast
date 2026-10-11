@@ -38,6 +38,9 @@ _DECLARED = {
     "timeout": 321,
     "simulation": "some.module:Class",
     "mode": "ros2",
+    # Read by scenario_env for the runner's clock; unset, a ROS campaign with no backend is
+    # refused, so it must arrive.
+    "use_sim_time": True,
     "shm_size": "256Mi",
     # Read by the cluster runner to decide whether a reservation is declared or measured;
     # it must ARRIVE, or a calibrated campaign would silently run fixed.

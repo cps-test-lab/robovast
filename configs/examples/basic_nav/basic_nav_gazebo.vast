@@ -109,6 +109,8 @@ execution:
       resources:
         cpu: 8
   mode: ros2
+  # Wall time: the scenario starts Gazebo itself, so there is no /clock before it runs.
+  use_sim_time: false
   runs: 5
   scenario_file: scenario_gazebo.osc
   run_files:

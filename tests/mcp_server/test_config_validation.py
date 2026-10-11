@@ -516,3 +516,17 @@ def test_the_recorder_check_runs_through_validate_project_file(tmp_path):
     report = validate_project_file(str(vast))
     assert report["valid"] is False
     assert [p["stage"] for p in report["problems"]] == ["recording"]
+
+
+def test_a_ros_campaign_whose_clock_nobody_can_name_is_refused(tmp_path):
+    """No simulator backend says whether /clock is published, so the campaign must."""
+    from robovast.common.config_validation import _scenario_clock_problems
+    execution = {"mode": "ros2", "containers": {"scenario": {"image": "x:1"}},
+                 "scenario_file": "s.osc"}
+    problems = _scenario_clock_problems({"execution": execution}, str(tmp_path))
+    assert [p["field"] for p in problems] == ["execution.use_sim_time"]
+    assert "execution.use_sim_time is required" in problems[0]["message"]
+    assert _scenario_clock_problems(
+        {"execution": {**execution, "use_sim_time": False}}, str(tmp_path)) == []
+    assert _scenario_clock_problems(
+        {"execution": {**execution, "mode": "base"}}, str(tmp_path)) == []

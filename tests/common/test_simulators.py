@@ -492,3 +492,66 @@ def test_the_recording_block_reaches_the_backend_on_every_route():
     assert overlay["env"]["STUB_RATE"] == "25.0"
     # And its absence is a block, not an error: the backend is told there is none.
     assert "STUB_RATE" not in apply_backend(_execution("ros2", stage="s"))["_backend_env"]
+
+
+# -- the scenario's clock -------------------------------------------------------------------
+
+class ClockBackend(StubBackend):
+    """A simulator that publishes /clock in the ROS shape, as roqsim's bridge does."""
+
+    def publishes_clock(self, cfg, execution):
+        return True
+
+
+@pytest.fixture
+def _clock_backend(monkeypatch):
+    import robovast.common.simulators as mod
+    backends = {"stub": StubBackend, "rosonly": RosOnlyBackend, "clock": ClockBackend}
+    monkeypatch.setattr(mod, "resolve_backend", lambda name, base_dir="": backends[name]())
+
+
+def _clock_env(execution):
+    return scenario_env({"execution": apply_backend(execution)})["SCENARIO_USE_SIM_TIME"]
+
+
+@pytest.mark.usefixtures("_clock_backend")
+def test_a_simulator_that_publishes_clock_runs_the_scenario_on_it():
+    ex = {"mode": "ros2", "containers": {"simulation": {"backend": "clock", "stage": "s"}}}
+    assert _clock_env(ex) == "true"
+
+
+@pytest.mark.usefixtures("_clock_backend")
+def test_the_campaign_overrides_the_backends_answer():
+    ex = {"mode": "ros2", "use_sim_time": False,
+          "containers": {"simulation": {"backend": "clock", "stage": "s"}}}
+    assert _clock_env(ex) == "false"
+
+
+@pytest.mark.usefixtures("_clock_backend")
+def test_a_backend_that_cannot_say_is_refused_unless_the_campaign_states_it():
+    ex = {"mode": "ros2", "containers": {"simulation": {"backend": "rosonly"}}}
+    with pytest.raises(ValueError, match="backend 'rosonly' does not say"):
+        _clock_env(ex)
+    assert _clock_env({**ex, "use_sim_time": True}) == "true"
+
+
+def test_a_ros_campaign_with_no_backend_must_state_its_clock():
+    ex = {"mode": "ros2", "containers": {"scenario": {"image": "a"}}}
+    with pytest.raises(ValueError, match="execution.use_sim_time is required: no simulator backend"):
+        _clock_env(ex)
+    assert _clock_env({**ex, "use_sim_time": False}) == "false"
+    assert _clock_env({**ex, "use_sim_time": True}) == "true"
+
+
+@pytest.mark.usefixtures("_clock_backend")
+@pytest.mark.parametrize("mode", ["base", "auto"])
+def test_the_stepped_shape_runs_on_its_own_step_clock(mode):
+    """scenario-execution's SimulationClock, not ROS time: nothing to pass, and a
+    use_sim_time set there would be ignored, so it is refused."""
+    ex = {"mode": mode, "containers": {"scenario": {"image": "a"}}}
+    assert _clock_env(ex) == "false"
+    if mode == "base":
+        assert _clock_env({"mode": "base", "containers": {
+            "simulation": {"backend": "clock", "stage": "s"}}}) == "false"
+    with pytest.raises(ValueError, match="applies to the ROS shape"):
+        _clock_env({**ex, "use_sim_time": True})
