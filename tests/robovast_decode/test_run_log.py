@@ -7,7 +7,6 @@ The numbers in the docstrings come from a real three-container campaign,
 574 rows with 473 matched and **zero** events present twice.
 """
 
-
 import pytest
 
 from robovast_decode import run_log

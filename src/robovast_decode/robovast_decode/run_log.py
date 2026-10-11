@@ -153,7 +153,6 @@ class MergeStats:
     containers: List[str] = field(default_factory=list)
 
 
-
 def container_of(filename: str) -> Optional[str]:
     """The container a ``system*.log`` belongs to, or ``None`` if it is not one.
 

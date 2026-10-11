@@ -95,7 +95,6 @@ class ScanStats:
     unreadable: List[str] = field(default_factory=list)
 
 
-
 class Sample(NamedTuple):
     """One row of the monitor's CSV: a process at an instant, plus that instant's shm pool.
 
