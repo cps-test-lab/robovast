@@ -1285,14 +1285,14 @@ def test_a_node_its_probe_can_never_fit_is_left_out_with_the_reason(monkeypatch,
     from robovast.execution.cluster_execution import kubernetes_backend as kb
     from robovast.execution.cluster_execution.node_admission import Capacity, JobSizing
 
-    MIB = 1024 ** 2
+    mib = 1024 ** 2
     claimed, skipped, submitted = [], {}, []
     runner = kb.BatchJobRunner()
     runner.campaign = "camp-2026-01-01-000000"
     runner._batch_tag = "batch-0"
     runner._probes = {}
-    capacities = {"big": Capacity(cpu=95.0, memory=64000 * MIB, node_id="big"),
-                  "small": Capacity(cpu=10.35, memory=64000 * MIB, node_id="small")}
+    capacities = {"big": Capacity(cpu=95.0, memory=64000 * mib, node_id="big"),
+                  "small": Capacity(cpu=10.35, memory=64000 * mib, node_id="small")}
     runner.admission = types.SimpleNamespace(
         calibration=lambda campaign, cls: types.SimpleNamespace(
             claim_probe=lambda node_id, key: claimed.append(node_id) or True,
@@ -1305,7 +1305,7 @@ def test_a_node_its_probe_can_never_fit_is_left_out_with_the_reason(monkeypatch,
     monkeypatch.setattr(runner, "_probe_node_ids", lambda total: ["big", "small"],
                         raising=False)
     monkeypatch.setattr(runner, "_job_sizing",
-                        lambda job, total: JobSizing(11.1, 5184 * MIB), raising=False)
+                        lambda job, total: JobSizing(11.1, 5184 * mib), raising=False)
     monkeypatch.setattr(runner, "_campaign_node_id", lambda: None, raising=False)
     monkeypatch.setattr(runner, "_probe_owner", lambda: "owner", raising=False)
     monkeypatch.setattr(runner, "create_job_manifest",
