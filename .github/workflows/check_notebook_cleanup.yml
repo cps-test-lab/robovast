@@ -3,7 +3,6 @@ name: Check notebook cleanup
 on:
   pull_request:
     branches:
-      - devel
       - main
       - next
 
