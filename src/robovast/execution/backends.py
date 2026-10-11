@@ -194,6 +194,16 @@ class ExecutionBackend(ABC):
         cluster held for the campaign -- its node calibration and its place in the queue.
         """
 
+    def table_builder(self, campaign_root: str, should_stop=None):  # noqa: ARG002
+        """What builds the campaign-end pass's tables where the runs ran, or ``None``.
+
+        ``None`` by default: the tables are built in the process that postprocesses. The
+        :class:`KubernetesBackend` answers with a builder that builds them in parts, one Job
+        each, sized like the system under test (``cluster_execution.table_jobs``). Asked
+        before :meth:`finalize_campaign`, while the campaign's calibration is still held.
+        """
+        return None
+
     def read_build_lock(self, image: str) -> dict:  # noqa: ARG002 - backend-specific
         """The build lock inside *image*, for a backend that can read one without a runtime.
 

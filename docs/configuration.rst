@@ -1163,7 +1163,7 @@ Simulation backend passed to scenario-execution as ``--simulation <module:Class>
 A ``simulation`` backend can also be combined with the **ROS** runner (see ``mode`` below): when
 ``mode: ros2`` is set, the ROS runner ticks the ``SimulationInterface`` inside its spin loop, so a
 step-based simulation runs alongside the ROS behaviours that drive it (a simulation that publishes
-``/clock`` becomes the time source).
+``/clock`` becomes the time source under ``use_sim_time: true``, below).
 
 mode
 ^^^^
@@ -1185,7 +1185,46 @@ ROS runner in an image that ships ROS.
 
    execution:
      mode: ros2
+     use_sim_time: true    # MySimulation publishes /clock on step()
      simulation: my_pkg.my_module:MySimulation
+
+.. _scenario-clock:
+
+use_sim_time
+^^^^^^^^^^^^
+
+**Type:** Boolean
+
+**Required:** In the ROS shape (``mode: ros2``), unless the simulator backend answers it
+
+Which clock a scenario's durations -- ``wait elapsed()``, ``timeout()``, a measurement window --
+run on. scenario-execution keeps a second clock, host time, for its kill deadlines and for
+waiting on a simulator, whatever this says.
+
+**ROS shape** (``mode: ros2``)
+   ``true`` starts the ROS runner with ``use_sim_time``, so the durations run on ``/clock``: a
+   simulator paced slower or faster than real time takes the scenario with it. ``false`` runs
+   them on wall time. Unset, the simulator backend answers whether its simulator publishes
+   ``/clock`` (roqsim does, through its ROS 2 bridge), and a campaign with no backend, or with
+   one that cannot say, is refused at validation until it states the value. Under ``true`` the
+   runner waits for ``/clock`` before the scenario starts and fails the run when none comes --
+   so a scenario that starts the simulator itself (a ``ros_launch`` of Gazebo, say) states
+   ``false``.
+**Stepped shape** (``mode: base``)
+   The non-ROS runner measures the durations on the simulation's own step clock (step count
+   times ``dt``) when a ``simulation`` is stepped, and on wall time otherwise. There is no ROS
+   time to choose, so the key is refused here.
+``mode: auto``
+   Refused as well: which runner starts is only decided inside the container. The ROS runner
+   runs the durations on wall time, the non-ROS one as in the stepped shape.
+
+This is independent of ``recording.ros2.use_sim_time``, which stamps the run's bag.
+
+.. code-block:: yaml
+
+   execution:
+     mode: ros2
+     use_sim_time: false   # the scenario launches the simulator itself
 
 run_as_user
 ^^^^^^^^^^^
@@ -1591,14 +1630,14 @@ limit only decides when the kernel starts throttling. Which means:
   over-reserving for. ``run_validity_view`` says per run whether it held — ``quota_bound``
   for this ceiling, ``contended`` for other work taking cores it had not reserved.
 - The **simulator and scenario** are not under test and **may** split, once it has been
-  validated at the concurrency the campaign will actually run at — see the two costs below,
-  both of which scale with concurrency rather than showing up in a single run. Measured on the shipped
-  ``basic_nav`` example, the simulator uses **0.34 cores sustained and peaks at 5.98** where
-  the world's geometry compiles — a ratio of ~18, so there is no honest single number.
-  Reserving the peak costs more than an un-tuned campaign did; capping at the sustained figure
-  clips a burst that changes nothing the robot experiences. What makes the soft limit safe is
-  already recorded: realtime pacing normalises what the simulated world looks like, and
-  ``runs.clock_map_*`` says per run whether the simulator kept pace.
+  validated at the concurrency the campaign will actually run at — see the two costs below, both
+  of which scale with concurrency rather than showing up in a single run. A simulator can
+  sustain a fraction of a core and peak at several where the world's geometry compiles — a ratio
+  of an order of magnitude, so there is no honest single number. Reserving the peak costs more
+  than leaving the simulator un-tuned; capping at the sustained figure clips a burst that changes
+  nothing the robot experiences. What makes the soft limit safe is already recorded: realtime
+  pacing normalises what the simulated world looks like, and ``runs.clock_map_*`` says per run
+  whether the simulator kept pace.
 
 .. code-block:: yaml
 
@@ -1609,8 +1648,8 @@ limit only decides when the kernel starts throttling. Which means:
        sut:                                          # under test: do not split
          resources: {cpu: 3, memory: 640Mi}
 
-The size of the win depends on the world: the same simulator peaks at 5.98 cores in
-``basic_nav``'s depot and 0.78 in ``nav_search``'s empty room, so the two examples reserve
+The size of the win depends on the world: the same simulator peaks far higher in
+``basic_nav``'s depot than in ``nav_search``'s empty room, so the two examples reserve
 different figures and gain differently from the split.
 
 **What a split costs, and why it is a mode rather than a default.** Two things follow from
@@ -1637,11 +1676,11 @@ campaign that used it. The counters say per run whether it bit (``quota_bound``,
 ``clock_map_*``); they cannot make two runs' conditions equal after the fact.
 
 **The system under test's ceiling is set from a pilot**, which is the assumption to keep in
-view. Clipping is not proportional — measured here, 0.5% of ticks above the limit cost 22% of
-the runs, because clipped work queues rather than vanishing. A campaign that searches toward
-harder configurations can therefore exceed the peak a pilot measured, and the cells that do so
-are the interesting ones. ``quota_bound`` is what says it happened; do not read the headroom as
-a guarantee.
+view. Clipping is not proportional — a fraction of a percent of ticks above the limit can cost a
+large share of the runs, because clipped work queues rather than vanishing. A campaign that
+searches toward harder configurations can therefore exceed the peak a pilot measured, and the
+cells that do so are the interesting ones. ``quota_bound`` is what says it happened; do not read
+the headroom as a guarantee.
 
 **These figures are declarations, not a permanent shape.** Per-node sizing measures each
 container on the machine it is about to run on and lowers the reservation to what it needs
@@ -1771,10 +1810,11 @@ to ``--topics`` and an entry starting with ``^`` is a regex for ``-e``; ``exclud
 ``--exclude-regex``, ``exclude_types`` is ``--exclude-topic-types`` and ``use_sim_time`` is
 ``--use-sim-time``. ``use_sim_time: true`` is what every campaign that reads its tables in sim
 seconds wants (see :ref:`one clock per run <run-clock>`); the default is rosbag2's own,
-``false``. Hidden topics are always admitted (``--include-hidden-topics``): an action's
-``/<name>/_action/feedback`` and ``status`` are hidden, rosbag2 drops a hidden topic even when
-``topics`` names it, and the ``action_<name>_feedback``/``_status`` tables are read from
-exactly those.
+``false``. It stamps the bag only; the clock a scenario's own durations run on is
+:ref:`execution.use_sim_time <scenario-clock>`. Hidden topics are always admitted
+(``--include-hidden-topics``): an action's ``/<name>/_action/feedback`` and ``status`` are
+hidden, rosbag2 drops a hidden topic even when ``topics`` names it, and the
+``action_<name>_feedback``/``_status`` tables are read from exactly those.
 
 ``roqsim`` is the simulator's own recording (``<run>/roqsim_bag``): the capture rate, and which
 tracks it holds as patterns over ``<entity>/<body-or-joint>`` — ``robot/**`` is all of an entity,

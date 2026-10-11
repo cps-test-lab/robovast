@@ -10,7 +10,8 @@ degraded campaign still builds and says what was wrong, and that the tables come
 import pyarrow.parquet as pq
 import yaml
 
-from robovast_decode.build import available_tables, build
+from robovast_decode.build import available_tables, build, settled
+from robovast_decode.tables import read_manifest
 
 from .conftest import make_campaign
 
@@ -171,3 +172,28 @@ def test_every_run_can_have_its_derived_tables(tmp_path):
     for name in ("run_log", "scenario_timestamps", "resource_usage", "system_usage",
                  "run_clock"):
         assert tables[name]["runs"] == 1, name
+
+
+def test_a_derived_table_built_while_the_job_still_records_is_not_final(tmp_path):
+    """The job goes on logging after the run's verdict, through the containers' shutdown, so
+    a derived table built in between is taken again once the job's recording is closed."""
+    campaign = make_campaign(tmp_path / "nav-2026-01-01-00000000")
+    logs = campaign / "_jobs" / "job-0" / "logs"
+    metadata = logs / "rosout_bag" / "metadata.yaml"
+    closed = metadata.read_text()
+    metadata.unlink()
+    (logs / "system.log").write_text("[INFO] [1700000000.5] [entrypoint]: up\n")
+    build(str(campaign), tables=["run_log"])
+
+    def entry():
+        return read_manifest(str(campaign))["tables"]["run_log"]["runs"]["cfg/0"]
+    assert not entry()["complete"]
+    assert not settled(str(campaign), "run_log", entry())
+
+    metadata.write_text(closed)
+    with open(logs / "system.log", "a", encoding="utf-8") as fh:
+        fh.write("[INFO] [1700000001.5] [entrypoint]: shutting down\n")
+    before = entry()["rows"]
+    assert build(str(campaign), tables=["run_log"]).built["run_log"] == ["cfg/0"]
+    assert entry()["complete"] and entry()["rows"] == before + 1
+    assert settled(str(campaign), "run_log", entry())

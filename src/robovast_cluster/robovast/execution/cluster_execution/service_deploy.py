@@ -59,9 +59,9 @@ SERVICE_PORT = DEFAULT_PORT
 #: Large on purpose, and not a value to tidy down. ``ClusterService.__init__`` resumes every
 #: interrupted campaign *before* ``vast serve`` binds the port (see
 #: ``ClusterService.resume_interrupted_campaigns``), so a service that comes up owing work does
-#: not answer ``/healthz`` until that resume returns. Under the liveness probe alone -- 15 s of
-#: grace, then three 20 s strikes -- a restart with live campaigns was SIGKILLed at ~75 s, every
-#: time, forever: each attempt was killed mid-restore and the next one started over.
+#: not answer ``/healthz`` until that resume returns. Under the liveness probe alone, a restart
+#: owing more resume work than its grace would be SIGKILLed mid-restore every time, and each
+#: next attempt would start over.
 #:
 #: A startupProbe is the mechanism that fits: Kubernetes suspends BOTH liveness and readiness
 #: until it passes, so a slow start stops reading as a hung one without weakening the
@@ -626,10 +626,9 @@ def _service_manifest(namespace, ingress_class=""):
         "spec": {
             "type": "ClusterIP",
             "selector": {"app": SERVICE_NAME},
-            # One port. The registry's `/v2` used to be the second one here; it now
-            # answers on the store pod's Service (:mod:`.store_pod`), which is what the
-            # Ingress rule points at. The published hostname and every image ref built
-            # from it are unchanged -- one Ingress may front two Services.
+            # One port. The registry's `/v2` answers on the store pod's Service
+            # (:mod:`.store_pod`), which is what the Ingress rule points at -- one Ingress
+            # may front two Services under one published hostname.
             "ports": [
                 {"port": SERVICE_PORT, "targetPort": "http", "name": "http"},
             ],
@@ -2075,6 +2074,14 @@ def service_manifests(namespace="default", image=None, env=None,
         if not any(e["name"] == var for e in env):
             env = [*env, {"name": var, "value": os.environ.get(var, "").strip()}]
 
+    # How many runs a table-building part starts with, carried and parsed the same way.
+    from .table_jobs import RUNS_PER_PART_ENV, runs_per_part  # pylint: disable=import-outside-toplevel
+
+    runs_per_part()
+    if not any(e["name"] == RUNS_PER_PART_ENV for e in env):
+        env = [*env, {"name": RUNS_PER_PART_ENV,
+                      "value": os.environ.get(RUNS_PER_PART_ENV, "").strip()}]
+
     # The pod's timezone (see _host_timezone), carried unconditionally for the same reason
     # as the family env above: "" is UTC to libc -- what an unset TZ already means.
     if not any(e["name"] == "TZ" for e in env):
@@ -2233,9 +2240,8 @@ def _resolve_data_node(core, *, workspaces_storage_class="",
     from .node_placement import (  # pylint: disable=import-outside-toplevel
         DATA_NODE_LABEL, resolve_placement)
 
-    # Only the workspaces class matters now: both volumes left in this pod (workspaces and
-    # results) are backed by it. The registry's class used to be ANDed in here and moved
-    # to the store pod with the registry itself.
+    # Only the workspaces class matters: both volumes in this pod (workspaces and results)
+    # are backed by it. The registry's volume belongs to the store pod.
     node_local = not workspaces_storage_class
     if not node_local:
         return {}

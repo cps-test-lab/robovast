@@ -55,13 +55,16 @@ used — the shape is *derived*, not a second key to keep consistent with the fi
 **Stepped** (``mode: base``)
    scenario-execution owns the loop and calls ``step()``, so the simulator runs **in the
    scenario's process** — ``simulation`` and ``scenario`` resolve to one container. Time
-   advances only when the behaviour tree ticks, which makes a run exactly reproducible.
-   This is the shape a trial with no ROS in it wants.
+   advances only when the behaviour tree ticks, which makes a run exactly reproducible, and a
+   scenario's durations run on that step clock. This is the shape a trial with no ROS in it
+   wants.
 
 **ROS** (``mode: ros2``)
    The simulator runs on its own, publishes ``/clock``, and the scenario observes it over
    ROS — so it gets its own container. No ``SimulationInterface`` is involved, which is
-   why a simulator that has none fits here unchanged.
+   why a simulator that has none fits here unchanged. A scenario's durations run on
+   ``/clock`` or on wall time as :ref:`execution.use_sim_time <scenario-clock>` says, which
+   the backend's ``publishes_clock`` answers when the campaign leaves it unset.
 
 ``mode: auto`` is refused when a backend is declared: ``auto`` is resolved *inside* the
 container by testing whether ``ros2`` is on ``PATH``, so the same ``.vast`` would get a
@@ -174,6 +177,15 @@ Hooks, all optional except as noted:
 ``records_scene_state(cfg, execution)``
    Whether runs record the simulator state a ``scene3d`` panel replays -- the recording the
    decoder reads into ``sim_poses``, ``joint_states``, ``sim_recording`` and ``sim_entities``.
+``publishes_clock(cfg, execution)``
+   Whether the simulator publishes ``/clock`` in the ROS shape, which starts scenario-execution
+   with ``use_sim_time``. ``None`` (the default) means the backend cannot say, and a campaign
+   using it must state ``execution.use_sim_time``. roqsim answers ``True``.
+``ground_truth(cfg, execution)``
+   Where a run's :ref:`ground_truth_poses <ground-truth-table>` come from, as the decoder's
+   ``ground_truth`` entry, or ``None`` -- the default -- for a simulator that records nothing
+   of its own, whose ground truth is the ``*_gt`` frame its world publishes on ``/tf``. roqsim
+   answers ``{table: sim_poses, entity_kind: robot}``: the robots' bodies in its recording.
 ``default_panels(cfg, execution)``
    Run-view panels this backend contributes, as ``{<type>: <props>}`` entries — the panel
    that replays a recorded scene state, for a backend that records one; ``[]`` otherwise.
@@ -564,9 +576,9 @@ container is: it is handed the campaign's files at ``/config`` (the command name
 there, not by its path on the host), and its image reference must be one a registry can serve
 -- a ``family:`` ref is resolved for the ``docker run`` fallback ``vast configuration
 generate`` uses, and deliberately left symbolic for the cluster factory, whose aux Pod names
-its containers after the spec's image. Both were once missing here and the query could not
-run at all: it asked for an image called ``family``, and once past that it was given a world
-path relative to a directory the container did not have.
+its containers after the spec's image. Without either, the query cannot run at all: it would
+ask for an image called ``family``, or be given a world path relative to a directory the
+container does not have.
 
 **Transport is the world's, not the campaign's.** RoboVAST passes no middleware flags at
 all: which topics a world speaks, under which namespace (``ros2_bridge``, whose config
@@ -576,9 +588,20 @@ YAML. A campaign runner configuring a simulator's middleware would be reaching a
 down; ``--headless`` and ``--pacing`` are the only two the deployment owns.
 
 So a world a ``mode: ros2`` campaign runs **must** declare its own ``ros2_bridge``, plus
-``sim_interfaces`` if the scenario touches entities. Opening such a world by hand where no
+``sim_interfaces`` if the scenario uses scenario-execution's ``osc.sim`` actions (the
+``simulation_interfaces`` services). Opening such a world by hand where no
 bridge is installed is ``roqsim sim <world> --no-communication``, which strips the transport
 plugins, so declaring them costs the world nothing.
+
+roqsim's own control socket is not middleware but part of the deployment: ``roqsim sim``
+serves it, and roqsim's own ``osc.roqsim`` entity actions (``entity_call``,
+``entity_monitor``, ``entity_near``, ``entity_moved``, ...) reach the simulator through it, so
+they need neither ``sim_interfaces`` nor a ROS bridge. In ``mode: ros2`` the two run in separate
+containers, so the backend sets ``ROQSIM_CONTROL=ipc:///ipc/roqsim-control.sock`` in both, on
+the ``/ipc`` directory every container of the job mounts; roqsim's default, a socket in the run
+directory, would sit under ``/out`` in the simulator's container alone. ``mode: base`` sets
+nothing: the scenario reaches the simulator in its own process. A campaign's own
+``execution.env`` still wins, as for every backend variable.
 
 Building the image from your own roqsim
 ```````````````````````````````````````

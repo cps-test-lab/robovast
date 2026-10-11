@@ -418,7 +418,10 @@ def _materialize_work_order(client, campaign_id: str, workspace_name: str):
     click.echo("")
     click.echo("This will NOT validate until every marker is resolved, which is deliberate: a "
                "partly-migrated config that loaded would run a different experiment.")
-    click.echo(f"  next: edit {result.config_path}, then 'vast configuration validate'")
+    # The workspace is on the service, so the check is the service's: a local `vast configuration
+    # validate` needs the file on this disk and the core installed.
+    click.echo(f"  next: resolve them in {result.config_path}, then 'vast workspace validate "
+               f"{result.workspace_id} {result.config_path}'")
 
 
 
@@ -532,7 +535,7 @@ def wait(campaign, interval, timeout):
         click.echo(
             f"{campaign}: the campaign is STILL RUNNING and nothing is waiting on it now. "
             f"When you are done diagnosing, background `vast campaign wait {campaign}` again, or "
-            f"end it with stop_campaign.", err=True)
+            f"end it with `vast campaign stop {campaign}`.", err=True)
         if finding is not None:
             # A check the simulator says it did NOT run, reported here and only here in the wait:
             # this exit means one check fired, and a reader is entitled to know which others

@@ -144,6 +144,30 @@ def test_the_process_probe_spawns_nothing_of_its_own():
     assert '[ "$pid" = "$PPID" ]' in probe
 
 
+def test_a_probe_into_a_pod_that_is_gone_reads_as_nothing_running(monkeypatch, staged):
+    """``exec_stream`` reports a vanished pod or container as ``ExecTargetGone``, so that is
+    what the probe has to recognise -- a ``404`` ``ApiException`` never reaches it."""
+    from robovast.common.errors import ExecTargetGone
+    from robovast.execution.cluster_execution import kube_client
+
+    def gone(*_args, **_kwargs):
+        raise ExecTargetGone("could not open an exec stream: HTTP 404")
+
+    monkeypatch.setattr(kube_client, "exec_stream", gone)
+    assert _runner(staged).held_workload_running() is False
+
+
+def test_a_probe_that_cannot_be_answered_is_not_read_as_idle(monkeypatch, staged):
+    from robovast.execution.cluster_execution import kube_client
+
+    def refused(*_args, **_kwargs):
+        raise RuntimeError("could not open an exec stream: HTTP 403: forbidden")
+
+    monkeypatch.setattr(kube_client, "exec_stream", refused)
+    with pytest.raises(RuntimeError):
+        _runner(staged).held_workload_running()
+
+
 def test_the_probe_threshold_treats_zero_as_idle():
     import inspect
     assert "count > 0" in inspect.getsource(KubeExecRunner.held_workload_running)
