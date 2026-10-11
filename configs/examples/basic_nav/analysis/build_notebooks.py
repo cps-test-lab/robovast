@@ -18,8 +18,8 @@ dir -- before every cell is executed and exported to HTML.
 **These are deliberately basic.** They exist to exercise the results explorer across the
 three deployment shapes (local / cluster / cluster --attach), so they lean on what every
 run writes itself -- ``test.xml``, and ``behaviors.jsonl`` from scenario_execution -- and
-degrade to a printed note rather than a traceback when richer data (the ``poses`` table
-built from the recorded transforms) is absent. A notebook that fails on missing data cannot tell you whether the *deployment* is
+degrade to a printed note rather than a traceback when richer data (the ``ground_truth_poses``
+table) is absent. A notebook that fails on missing data cannot tell you whether the *deployment* is
 broken, which is the entire question here.
 """
 
@@ -194,23 +194,19 @@ else:
 
 
 POSES_IF_PRESENT = """\
-# Trajectory, from the `poses` table: built from each run's recorded transforms the first
-# time it is read. Optional on purpose: a run that recorded no poses must not hide the
-# tables above.
+# Trajectory, from the `ground_truth_poses` table: where the robot WAS, not where it believed
+# it was, in the world frame. The same table on both simulators -- roqsim's own recording, or
+# Gazebo's ground-truth TF frame -- built the first time it is read. Optional on purpose: a run
+# that recorded no ground truth must not hide the tables above.
 from robovast_data import open_data
 
 try:
-    poses = open_data(DATA_DIR).table('poses')
+    poses = open_data(DATA_DIR).table('ground_truth_poses')
 except Exception as exc:  # noqa: BLE001 - optional data; say so and carry on
     poses = None
-    note(f'no poses table ({type(exc).__name__}: {exc})')
+    note(f'no ground_truth_poses table ({type(exc).__name__}: {exc})')
 
 if poses is not None and not poses.empty:
-    # Several frames are recorded (odom, amcl, ground truth). Ground truth is the one
-    # worth plotting: it is where the robot WAS, not where it believed it was.
-    gt = [f for f in poses['frame'].unique() if str(f).endswith('_gt')]
-    if gt:
-        poses = poses[poses['frame'] == gt[0]]
     fig, ax = plt.subplots(figsize=(7, 7))
     key = next((c for c in ('config_name', 'run_id') if poses[c].nunique() > 1), None)
     if key:
@@ -230,7 +226,7 @@ if poses is not None and not poses.empty:
     plt.tight_layout()
     plt.show()
 elif poses is not None:
-    note('the poses table has no rows here')
+    note('the ground_truth_poses table has no rows here')
 """
 
 
@@ -295,7 +291,7 @@ def main():
     here = pathlib.Path(__file__).resolve().parent
     for name, nb in NOTEBOOKS.items():
         path = here / name
-        path.write_text(json.dumps(nb, indent=1) + "\n", encoding="utf-8")
+        path.write_text(json.dumps(nb, indent=1, sort_keys=True) + "\n", encoding="utf-8")
         print(f"wrote {path.relative_to(here.parent)}")
 
 

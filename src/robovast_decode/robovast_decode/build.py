@@ -47,6 +47,7 @@ table a watcher rebuilds whole as the run goes carries the same stamp and is lef
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -55,11 +56,12 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 import yaml
 
-from . import run_slices
+from . import ground_truth, run_slices
 from .authored import RaggedFile, read_rows, run_files, to_arrow, with_yaw
 from .decode import SIDECAR_NAME, channel_type, decode_bag, segments, undecodable_tables
 from .derived import DERIVED, INPUTS, JobRun, derive_job
 from .framing import Channel, McapTail, has_footer, summary_channels
+from .ground_truth import GROUND_TRUTH
 from .handlers import Videos
 from .layout import YAML_LOADER, job_links, run_dirs
 from .registry import INFRA_BAG, ROQSIM_BAG, SCENARIO_BAG, narrow, plan_for
@@ -76,7 +78,7 @@ CAMPAIGN_TABLES = frozenset({"run_health", "postprocessing_steps"})
 
 #: Tables built from a campaign's records rather than read from a file of that name: a run's
 #: data file claiming one is refused, since its rows and the built ones would be one table.
-DERIVED_TABLES = frozenset({RECORDING_TABLE, "runs", *CAMPAIGN_TABLES, *DERIVED})
+DERIVED_TABLES = frozenset({RECORDING_TABLE, "runs", GROUND_TRUTH, *CAMPAIGN_TABLES, *DERIVED})
 RECORDING_FIELDS = ["recording", "topic", "type", "messages", "bytes", "table", "reason"]
 
 _ATTEMPT = re.compile(r"^rosbag2(?:_\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2})?$")
@@ -265,12 +267,20 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
     campaign_id = os.path.basename(campaign_dir)
     wanted_runs = set(runs) if runs is not None else None
     derived_wanted = [t for t in DERIVED if tables is None or t in tables]
+    truth = (ground_truth.source_of(config)
+             if tables is None or GROUND_TRUTH in tables else None)
     wanted_tables = None
+    # Tables built only because the ground truth reads them: not the caller's to be told of.
+    truth_inputs: List[str] = []
     if tables is not None:
-        # The derived tables are built after the recordings, from the job's inputs.
-        wanted_tables = [t for t in tables if t not in DERIVED]
+        # The derived tables are built after the recordings, from the job's inputs, and the
+        # ground truth after them, from the pose table its source names.
+        wanted_tables = [t for t in tables if t not in DERIVED and t != GROUND_TRUTH]
         if derived_wanted:
             wanted_tables += [t for t in INPUTS if t not in wanted_tables]
+        if truth is not None:
+            truth_inputs = [t for t in ground_truth.inputs(truth) if t not in wanted_tables]
+            wanted_tables += truth_inputs
     groups = plugin_groups(config)
     report = BuildReport()
     all_runs = find_runs(campaign_dir)
@@ -288,8 +298,14 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
     if derived_wanted:
         _build_derived(campaign_dir, campaign_id, selected, derived_wanted,
                        (config or {}).get("containers"), force, report, catalog)
+    if truth is not None:
+        for run in selected:
+            with run_lock(campaign_dir, run.key):
+                _build_ground_truth(campaign_dir, campaign_id, run, truth, force, report,
+                                    catalog, demanded=tables is not None)
     if wanted_tables is not None:
-        report.unknown = [t for t in wanted_tables if t not in known_tables]
+        report.unknown = [t for t in wanted_tables
+                          if t not in known_tables and t not in truth_inputs]
     return report
 
 
@@ -470,6 +486,44 @@ def _derive_run(campaign_dir: str, campaign_id: str, run: Run, tables: List[str]
                                   complete=complete, known=True)
 
 
+def _build_ground_truth(campaign_dir: str, campaign_id: str, run: Run, source: dict,
+                        force: bool, report: BuildReport, catalog, demanded: bool) -> None:
+    """One run's ``ground_truth_poses`` from the table *source* names; the caller holds its
+    lock. Current against its inputs' entries, and final once they are.
+
+    Unless *demanded*, a run whose records do not give the source table has none, as
+    :func:`available_tables` lists it.
+    """
+    manifest = catalog.read()
+    runs = {t: manifest.get("tables", {}).get(t, {}).get("runs", {}).get(run.key) or {}
+            for t in ground_truth.inputs(source)}
+    if not demanded and not runs[source["table"]]:
+        return
+    sources = {f"table:{t}": entry.get("rows", 0) for t, entry in runs.items()}
+    # The source itself, so an entry built from another source is not current.
+    sources["source:" + json.dumps(source, sort_keys=True)] = 0
+    entry = manifest.get("tables", {}).get(GROUND_TRUTH, {}).get("runs", {}).get(run.key)
+    if not force and _entry_current(entry, sources) and entry.get("complete"):
+        report.skipped.setdefault(GROUND_TRUTH, []).append(run.key)
+        return
+    complete = all(e.get("complete") for e in runs.values())
+    rows, reason = ground_truth.derive(
+        campaign_dir, manifest, run.key, source,
+        {"campaign_id": campaign_id, "config_name": run.config_name, "run_id": run.run_id})
+    if rows is not None:
+        rel = run_table_path(campaign_dir, GROUND_TRUTH, run.config_name, run.run_id)
+        write_table(campaign_dir, rel, rows)
+    with catalog.update() as fresh:
+        if rows is not None:
+            record_run_table(fresh, GROUND_TRUTH, run.key, files=[rel], rows=rows.num_rows,
+                             schema=rows.schema, sources=sources, complete=complete)
+            report.built.setdefault(GROUND_TRUTH, []).append(run.key)
+        else:
+            record_run_absent(fresh, GROUND_TRUTH, run.key, sources=sources,
+                              complete=complete, reason=reason, known=True)
+            report.failed.setdefault(GROUND_TRUTH, {})[run.key] = reason
+
+
 def _build_derived(campaign_dir: str, campaign_id: str, selected: List[Run],
                    tables: List[str], containers, force: bool, report: BuildReport,
                    catalog) -> None:
@@ -625,6 +679,7 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
     """
     campaign_dir = os.path.abspath(campaign_dir)
     groups = plugin_groups(config)
+    truth = ground_truth.source_of(config)
     manifest = read_manifest(campaign_dir)
     wanted = set(runs) if runs is not None else None
     all_runs = find_runs(campaign_dir)
@@ -641,6 +696,8 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
             keys.setdefault(table, set()).add(run.key)
         for table in DERIVED:
             keys.setdefault(table, set()).add(run.key)
+        if run.key in keys.get(truth["table"], ()):
+            keys.setdefault(GROUND_TRUTH, set()).add(run.key)
     out: Dict[str, dict] = {}
     for table, table_keys in keys.items():
         entries = manifest.get("tables", {}).get(table, {}).get("runs", {})

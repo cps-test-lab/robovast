@@ -20,8 +20,9 @@ Writes ``nav_metrics.csv`` beside each run -- the ``nav_metrics`` table. The sea
 reads it and so do the analysis notebooks -- one place computes a metric, which is what keeps
 the number in a figure the same as the number a search optimised.
 
-It reads the run's tables through :mod:`robovast_data`: the pose table, the recorded
-``/clearance`` and ``/collision`` topics, and ``nav2_behaviors`` where the run has it.
+It reads the run's tables through :mod:`robovast_data`: ``ground_truth_poses`` (where the robot
+truly was, in the world frame), the recorded ``/clearance`` and ``/collision``
+topics, and ``nav2_behaviors`` where the run has it.
 
 **This reads clearance; it does not compute it.** Deriving minimum clearance from recorded
 poses and footprint radii is the wrong layer, and wrong three ways: the closest approach
@@ -98,11 +99,11 @@ def _true(value) -> bool:
     return str(value).strip().lower() in ('true', '1', '1.0')
 
 
-def _metrics_for_run(run_dir: Path, poses_table: str, gt_frame: str, goal) -> dict | None:
+def _metrics_for_run(run_dir: Path, poses_table: str, goal) -> dict | None:
     tables = _RunTables(run_dir)
     if poses_table not in tables.present:
         return None
-    poses = [r for r in tables.rows(poses_table) if gt_frame in str(r.get('frame') or '')]
+    poses = tables.rows(poses_table)
     if not poses:
         # No ground-truth track: nothing here can be computed, and a row of zeros would be
         # indistinguishable from a robot that never moved.
@@ -160,15 +161,15 @@ def _metrics_for_run(run_dir: Path, poses_table: str, gt_frame: str, goal) -> di
 
 
 class NavMetrics(BasePostprocessingPlugin):
-    """Derive ``nav_metrics.csv`` per run from the pose table and the recorded oracles.
+    """Derive ``nav_metrics.csv`` per run from its ground truth and the recorded oracles.
 
     A run that already has its file is left as it is unless *force*: a run's recording does
     not change once the run has ended.
     """
 
     def __call__(self, results_dir: str, config_dir: str,
-                 poses: str = 'poses', file: str = 'nav_metrics.csv',
-                 gt_frame: str = '_gt', goal_x: float = 2.5, goal_y: float = 0.0,
+                 poses: str = 'ground_truth_poses', file: str = 'nav_metrics.csv',
+                 goal_x: float = 2.5, goal_y: float = 0.0,
                  force: bool = False, **kwargs) -> Tuple[bool, str]:
         del config_dir  # every input is per-run: clearance is recorded, not derived
         written = skipped = missing = no_clearance = 0
@@ -182,7 +183,7 @@ class NavMetrics(BasePostprocessingPlugin):
             if not force and out.exists():
                 skipped += 1
                 continue
-            metrics = _metrics_for_run(run_dir, poses, gt_frame, (goal_x, goal_y))
+            metrics = _metrics_for_run(run_dir, poses, (goal_x, goal_y))
             if metrics is None:
                 missing += 1
                 continue
@@ -201,7 +202,7 @@ class NavMetrics(BasePostprocessingPlugin):
         # would otherwise look like one whose cells all happened to score the same -- which
         # is exactly what a search would then optimise.
         if missing:
-            note += f"; {missing} run(s) had no '{gt_frame}' pose track"
+            note += f"; {missing} run(s) had no ground-truth track in {poses}"
         if no_clearance:
             note += (f"; {no_clearance} run(s) recorded no /clearance -- is clearance_monitor "
                      f"in the world and the topic recorded (recording.ros2.topics)?")

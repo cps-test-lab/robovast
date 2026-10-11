@@ -276,6 +276,14 @@ class RoqsimBackend(SimulatorBackend):
     def records_scene_state(self, cfg, execution: dict) -> bool:
         return True
 
+    def ground_truth(self, cfg, execution: dict) -> dict:
+        """The robots' bodies in the run's own recording, which :meth:`env` always asks for.
+
+        Taken inside the simulator on its own clock, so a world needs no ground-truth frame,
+        and a stepped run with no ROS at all has ground truth as well.
+        """
+        return {"table": "sim_poses", "entity_kind": "robot"}
+
     def default_panels(self, cfg, execution: dict) -> list:
         """The 3D scene, always -- for the same reason :meth:`env` asks for the recording.
 
