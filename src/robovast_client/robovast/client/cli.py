@@ -36,6 +36,7 @@ from importlib.metadata import entry_points
 import click
 
 from robovast.client.errors import handle_cli_exception
+from robovast.client.lazy_group import plugin_load_failure
 from robovast.client.logging_config import (get_logger, setup_default_logging,
                                             setup_logging)
 from robovast.client.service_target import echo_target as _echo_target
@@ -1245,30 +1246,32 @@ def _core_installed() -> bool:
         return False
 
 
-def load_plugins():
-    """Dynamically load all VAST CLI plugins from entry points."""
+def load_plugins() -> dict[str, str]:
+    """Load every ``robovast.cli_plugins`` entry point onto the root ``vast`` group.
+
+    An entry point exists only where the distribution declaring it is installed, so an
+    absent distribution contributes nothing and is not reported. One that is registered
+    but fails to load is a broken install: it is warned about on stderr so ``vast`` still
+    starts, and returned as ``{entry point name: reason}`` so a caller answering from the
+    command tree can refuse rather than answer from part of it.
+    """
     # Map of long plugin names to their short aliases. Every other group is named after
     # what it acts on, and none of those names is long enough to want a short form.
     aliases = {
         'configuration': 'config',
     }
-    try:
-        eps = entry_points(group='robovast.cli_plugins')
-
-        for ep in eps:
-            try:
-                # Load the entry point (should return a Click group or command)
-                plugin_group = ep.load()
-                # Add it as a subcommand to the main CLI
-                cli.add_command(plugin_group, name=ep.name)
-
-                # Add short alias if defined
-                if ep.name in aliases:
-                    cli.add_command(plugin_group, name=aliases[ep.name])
-            except Exception as e:
-                click.echo(f"Warning: Failed to load plugin '{ep.name}': {e}", err=True)
-    except Exception as e:
-        click.echo(f"Warning: Failed to load plugins: {e}", err=True)
+    failures: dict[str, str] = {}
+    for ep in entry_points(group='robovast.cli_plugins'):
+        try:
+            plugin_group = ep.load()
+        except Exception as e:  # noqa: BLE001 - reported and returned, never dropped
+            failures[ep.name] = plugin_load_failure(ep, e)
+            click.echo(f"Warning: Failed to load plugin '{ep.name}': {e}", err=True)
+            continue
+        cli.add_command(plugin_group, name=ep.name)
+        if ep.name in aliases:
+            cli.add_command(plugin_group, name=aliases[ep.name])
+    return failures
 
 
 def main():

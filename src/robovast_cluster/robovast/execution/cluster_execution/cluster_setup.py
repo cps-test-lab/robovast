@@ -621,7 +621,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # campaign would pay a full pull of robovast-roqsim before running anything. Last,
     # and fire-and-forget, because setup has already succeeded by this point.
     from .image_warm import warm_family_images  # pylint: disable=import-outside-toplevel
-    warm_family_images(namespace, kube_context)
+    warm_family_images(namespace, kube_context, cluster_config=cluster_config)
     return {
         "data_node": data_placement.node if data_placement else None,
         "data_source": data_placement.source if data_placement else None,

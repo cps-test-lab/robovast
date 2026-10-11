@@ -85,3 +85,38 @@ def test_get_plugin_details_refuses_an_unknown_group_as_a_group():
     # The verdict the listing reaches, so the two tools cannot disagree about which
     # groups exist.
     assert "unknown plugin group" in list_plugins(group="robovast.variation_typos")["error"]
+
+
+def _with_broken_variation(monkeypatch):
+    """``robovast.variation_types`` as installed, plus one registered plugin that cannot load."""
+    import types
+
+    from robovast.mcp_server.plugins import plugin_metadata
+    real = plugin_metadata.entry_points
+
+    def load():
+        raise ImportError("no module named pkg")
+    broken = types.SimpleNamespace(name="Broken", value="pkg.broken:Broken", load=load,
+                                   dist=None)
+    monkeypatch.setattr(
+        plugin_metadata, "entry_points",
+        lambda group: [*real(group=group), *([broken] if group == "robovast.variation_types"
+                                             else [])])
+
+
+def test_a_plugin_that_fails_to_load_is_listed_with_why(monkeypatch):
+    """Not as a plugin without a docstring: a registered entry point exists only where its
+    distribution is installed, so this is a broken install and the row says so."""
+    _with_broken_variation(monkeypatch)
+    rows = {p["name"]: p for p in list_plugins("robovast.variation_types")["plugins"]}
+    assert "ImportError" in rows["Broken"]["load_error"]
+    assert "doc" not in rows["Broken"]
+    assert "load_error" not in rows["ParameterVariationList"]
+
+
+def test_details_of_a_plugin_that_fails_to_load_are_an_error(monkeypatch):
+    """An answer without ``parameters`` reads as "this plugin takes none"."""
+    _with_broken_variation(monkeypatch)
+    result = get_plugin_details("robovast.variation_types", "Broken")
+    assert "could not be loaded" in result["error"]
+    assert "ImportError" in result["error"]
