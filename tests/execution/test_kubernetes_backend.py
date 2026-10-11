@@ -405,6 +405,112 @@ def test_an_oom_killed_scenario_container_is_dropped_with_its_own_log(monkeypatc
     assert captured["log_tail"] == "current\n"
 
 
+_NO_MARKER = {
+    "detail": "NoDoneMarker: container robovast ended (Error, exit 1) without writing its "
+              "done marker",
+    "containers": [dict(
+        _SUT_CRASH["containers"][0], container="robovast", role="scenario", restart_count=0,
+        exit_code=1, signal=None, signal_name=None, log="current",
+        detail="container robovast ended (Error, exit 1) without writing its done marker")],
+    "node": "a-node", "pod_name": "rrroqs-x-0-pod", "witness": "uploader",
+}
+
+
+def _marker_answers(monkeypatch, answer, ended=None):
+    """Patch the ended-scenario candidates to *ended* and the marker check to *answer*;
+    returns the pods asked about."""
+    asked = []
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend.scenario_ended_job_forensics",
+        lambda core, ns, label, job_names=None: dict(
+            {"rrroqs-x-0": _NO_MARKER} if ended is None else ended))
+
+    def check(namespace, pod_name, witness):
+        asked.append((pod_name, witness))
+        return answer
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend.scenario_done_marker_written",
+        check)
+    return asked
+
+
+def test_a_scenario_container_that_ended_without_its_marker_is_dropped(monkeypatch, tmp_path):
+    """The uploader and the file agent wait for a marker that never comes, so the pod would
+    run to its deadline. The trial is dropped at once, with the container's own log."""
+    import json
+
+    runner = _restart_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")], {},
+        remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
+    runner._MARKER_CHECK_GRACE_SECONDS = 0
+    asked = _marker_answers(monkeypatch, False)
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+
+    assert asked[0] == ("rrroqs-x-0-pod", "uploader")
+    assert runner.k8s_batch_client.deleted == ["rrroqs-x-0"]
+    captured, = json.loads(
+        (tmp_path / "_execution" / "container_failures.json").read_text())
+    assert captured["container"] == "robovast" and captured["exit_code"] == 1
+    assert captured["log_tail"] == "current\n"
+    entry, = json.loads((tmp_path / "_execution" / "interventions.json").read_text())
+    assert entry["kind"] == "invalid" and entry["runs"] == ["cfgA/0"]
+    assert "container robovast ended (Error, exit 1)" in entry["detail"]
+
+
+def test_a_scenario_that_wrote_its_marker_is_left_to_deliver(monkeypatch):
+    """A finished run's upload can outlast any fixed wait; the marker says it is one, and a
+    pod found holding it is not asked again."""
+    runner = BatchJobRunner()
+    runner._batch_tag = "b"
+    runner.namespace = "ns"
+    runner.k8s_client = object()
+    runner._MARKER_CHECK_GRACE_SECONDS = 0
+    asked = _marker_answers(monkeypatch, True)
+    for _ in range(3):
+        assert runner._scenarios_ended_without_marker("sel", ["rrroqs-x-0"]) == {}
+    assert asked == [("rrroqs-x-0-pod", "uploader")]
+
+
+def test_an_unanswered_marker_check_is_asked_again_rather_than_acted_on(monkeypatch):
+    runner = BatchJobRunner()
+    runner._batch_tag = "b"
+    runner.namespace = "ns"
+    runner.k8s_client = object()
+    runner._MARKER_CHECK_GRACE_SECONDS = 0
+    asked = _marker_answers(monkeypatch, None)
+    for _ in range(2):
+        assert runner._scenarios_ended_without_marker("sel", ["rrroqs-x-0"]) == {}
+    assert len(asked) == 2
+
+
+def test_the_marker_is_asked_for_only_after_the_grace(monkeypatch):
+    runner = BatchJobRunner()
+    runner._batch_tag = "b"
+    runner.namespace = "ns"
+    runner.k8s_client = object()
+    asked = _marker_answers(monkeypatch, False)
+    assert runner._scenarios_ended_without_marker("sel", ["rrroqs-x-0"]) == {}
+    assert asked == []
+    runner._scenario_ended_seen = {"rrroqs-x-0-pod": 0.0}
+    assert runner._scenarios_ended_without_marker("sel", ["rrroqs-x-0"]) == {
+        "rrroqs-x-0": _NO_MARKER}
+
+
+def test_a_restart_record_wins_over_the_marker_question(monkeypatch, tmp_path):
+    """A job both checks report is dropped once, under the restart's reason."""
+    import json
+
+    runner = _restart_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
+        {"rrroqs-x-0": _SUT_CRASH}, remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
+    runner._MARKER_CHECK_GRACE_SECONDS = 0
+    _marker_answers(monkeypatch, False)
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+
+    entry, = json.loads((tmp_path / "_execution" / "interventions.json").read_text())
+    assert entry["detail"] == _SUT_CRASH["detail"]
+
+
 def test_a_job_is_invalidated_only_once(monkeypatch, tmp_path):
     """A restart is reported on every poll until the pod is gone, and deleting a Job is
     asynchronous -- so without the guard one crash is recorded on every pass."""

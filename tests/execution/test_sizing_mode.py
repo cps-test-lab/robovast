@@ -643,6 +643,28 @@ def test_a_probe_that_lost_a_container_fails_the_campaign(monkeypatch):
     assert r.freed == [("n1", "probe-a")] and not r._probes
 
 
+def test_a_probe_whose_scenario_ended_without_its_marker_fails_the_campaign(monkeypatch):
+    """Its uploader would wait for the marker until the deadline, holding the node, and the
+    probe would be reported only as not completing. Every run would meet the same fault."""
+    from robovast.execution.backends import CampaignConfigError
+
+    detail = ("NoDoneMarker: container robovast ended (Error, exit 1) without writing its "
+              "done marker")
+    ended = {"probe-a": {"detail": detail, "containers": [], "node": "n1",
+                         "pod_name": "a-probe-pod", "witness": "uploader"}}
+    r = _sweep_runner(monkeypatch, {})
+    r._MARKER_CHECK_GRACE_SECONDS = 0
+    monkeypatch.setattr(kb, "scenario_ended_job_forensics",
+                        lambda core, ns, label, job_names=None: ended)
+    monkeypatch.setattr(kb, "scenario_done_marker_written", lambda ns, pod, witness: False)
+    with pytest.raises(CampaignConfigError) as raised:
+        _sweep(r)
+    message = str(raised.value)
+    assert "n1" in message and "robovast" in message and "exit 1" in message
+    assert r.captured and r.deleted == ["probe-a"]
+    assert r.freed == [("n1", "probe-a")] and not r._probes
+
+
 def test_the_sweep_asks_only_about_this_batch_probes(monkeypatch):
     """The label selector is campaign-wide and finished Jobs linger, so an unscoped answer
     re-reports an earlier batch's restart to every batch that follows."""
