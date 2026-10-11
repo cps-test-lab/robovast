@@ -26,11 +26,7 @@ schemas to answer one question, and an empty argument already means "all of them
 everywhere else on this surface.
 """
 
-import logging
-
 from fastmcp import FastMCP
-
-logger = logging.getLogger(__name__)
 
 
 # -- Config schema -----------------------------------------------------------
@@ -50,21 +46,43 @@ def get_config_schema() -> dict:
 
 # -- CLI help ----------------------------------------------------------------
 
-_CLI_LOADED = False
+_CLI_FAILURES: dict[str, str] | None = None
 
 
 def _root_group():
-    """Return the root ``vast`` click group with plugin subcommands attached."""
-    global _CLI_LOADED  # pylint: disable=global-statement  (loaded once per process)
+    """Return the root ``vast`` click group with plugin subcommands attached.
+
+    Raises ``RuntimeError`` naming each CLI plugin that is registered but failed to load:
+    the tree without it would answer a listing, a search or an unknown-command refusal as
+    though that group did not exist. A distribution that is not installed registers no
+    entry point, so it is absent from the tree and not a failure.
+    """
+    global _CLI_FAILURES  # pylint: disable=global-statement  (loaded once per process)
     from robovast.client import cli as cli_module  # pylint: disable=import-outside-toplevel
 
-    if not _CLI_LOADED:
-        try:
-            cli_module.load_plugins()
-        except Exception:  # noqa: BLE001 - a broken plugin must not hide the rest
-            logger.debug("load_plugins() failed while building CLI reference.", exc_info=True)
-        _CLI_LOADED = True
+    if _CLI_FAILURES is None:
+        _CLI_FAILURES = cli_module.load_plugins()
+    if _CLI_FAILURES:
+        broken = "; ".join(f"{name!r} ({why})" for name, why in sorted(_CLI_FAILURES.items()))
+        raise RuntimeError(
+            "the vast command tree is incomplete; registered CLI plugins that could not be "
+            f"loaded: {broken}. Reinstall the distribution named, then restart this server.")
     return cli_module.cli
+
+
+def _subcommand(group, ctx, name: str, path: str):
+    """*group*'s subcommand *name*, ``None`` when it offers none by that name.
+
+    Raises ``RuntimeError`` for one the group lists but could not load, which is a broken
+    install rather than an unknown name.
+    """
+    sub = group.get_command(ctx, name)
+    if sub is None and name in group.list_commands(ctx):
+        why = getattr(group, "load_failures", {}).get(name, "no reason recorded")
+        raise RuntimeError(
+            f"{path} {name!r} is registered but could not be loaded ({why}). Reinstall the "
+            "distribution named, then restart this server.")
+    return sub
 
 
 def _resolve_command(command: str):
@@ -81,7 +99,8 @@ def _resolve_command(command: str):
     ctx = click.Context(cmd, info_name="vast")
     walked = ["vast"]
     for part in command.split():
-        sub = cmd.get_command(ctx, part) if isinstance(cmd, click.Group) else None
+        sub = (_subcommand(cmd, ctx, part, " ".join(walked))
+               if isinstance(cmd, click.Group) else None)
         if sub is None:
             if isinstance(cmd, click.Group):
                 offers = ", ".join(sorted(cmd.list_commands(ctx))) or "(none)"
@@ -108,9 +127,7 @@ def _command_tree() -> list[dict]:
             return
         visited.add(id(cmd))
         for name in sorted(cmd.list_commands(ctx)):
-            sub = cmd.get_command(ctx, name)
-            if sub is None:
-                continue
+            sub = _subcommand(cmd, ctx, name, prefix)
             path = f"{prefix} {name}".strip()
             out.append({"command": path, "help": sub.get_short_help_str(limit=120)})
             _walk(sub, click.Context(sub, info_name=name, parent=ctx), path)
