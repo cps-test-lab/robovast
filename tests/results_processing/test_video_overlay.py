@@ -106,7 +106,7 @@ def run_dir(tmp_path):
                              "spawn_pose": {"position": {"x": 2.0, "y": 1.0},
                                             "orientation": {"yaw": 0.3}}}],
             },
-            "_goal_parameter_name": "goal",
+            "_slot_bindings": {"goal": "goal"},
             "_objects_parameter_name": "objects",
             "_path": [{"x": 0.0, "y": 0.0}, {"x": 3.0, "y": 2.0}],
             "sim": {"instances": [{"name": "crate", "pose": {"x": 2.0, "y": 1.0},

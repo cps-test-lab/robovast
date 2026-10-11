@@ -36,7 +36,6 @@ from urllib.parse import urlencode
 from fastmcp import FastMCP
 
 from robovast.mcp_server import service_access
-from robovast.mcp_server.service_access import NO_SERVICE
 
 logger = logging.getLogger(__name__)
 
@@ -153,10 +152,7 @@ def delete_campaign(campaign_id: str | list[str]) -> dict:
         ``{results: [{campaign_id, outcome, ok, message}]}`` or ``{error}``.
     """
     from robovast.service.interface import DeleteCampaignsRequest
-    client = service_access.service_client()
-    if client is None:
-        return {"error": f"{NO_SERVICE}. The campaign lives with the service, not "
-                          "on this host."}
+    client = service_access.require_service()
     ids = [campaign_id] if isinstance(campaign_id, str) else list(campaign_id)
     if not ids or not all(ids):
         return {"error": "campaign_id is required to delete a campaign."}
@@ -216,10 +212,7 @@ def get_campaign_download(campaign_id: str, raw: bool = False) -> dict:
         ``{error}``.
     """
     from robovast.service.interface import Routes, campaign_archive_query
-    client = service_access.service_client()
-    if client is None:
-        return {"error": f"{NO_SERVICE}. The campaign lives with the service, not "
-                          "on this host."}
+    client = service_access.require_service()
     # The route helper, not a second copy of the path: it exists so this link and the
     # endpoint serving it are one string.
     query = campaign_archive_query(raw)
@@ -264,10 +257,7 @@ def export_campaign(campaign_id: str, tables: list | None = None, format: str = 
         service declares an origin; or ``{error}``.
     """
     from robovast.service.interface import ExportRequest
-    client = service_access.service_client()
-    if client is None:
-        return {"error": f"{NO_SERVICE}. The campaign lives with the service, not "
-                          "on this host."}
+    client = service_access.require_service()
     request = ExportRequest(tables=list(tables) if tables is not None else None,
                             format=format, bags=bags, records=records)
     ref = client.create_export(campaign_id, request)

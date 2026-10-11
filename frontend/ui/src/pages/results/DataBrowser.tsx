@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import Editor from '@monaco-editor/react'
 import Alert from '@mui/material/Alert'
@@ -38,13 +38,6 @@ import '@/lib/monaco' // configures the Monaco loader + workers (SQL editor belo
 const DEFAULT_SQL = 'SELECT * FROM runs LIMIT 500'
 const NONE = '(none)'
 
-// A deep-link from the Explorer: run this SQL against the (already-selected) campaign. `nonce`
-// makes repeated identical requests re-apply.
-export interface SqlRequest {
-  sql?: string
-  nonce: number
-}
-
 // DataGrid toolbar without the density selector (Columns / Filters / Export / quick filter only).
 function DataGridToolbar() {
   return (
@@ -57,21 +50,19 @@ function DataGridToolbar() {
   )
 }
 
-// Results → Data browser: the web equivalent of `vast eval gui`. Browse a campaign's results
-// schema, run read-only SQL, chart it with Vega-Lite, and page through rows in a DataGrid. The
-// selected campaign is owned by the parent (shared with the Explorer).
+// Results → Data browser: browse a campaign's results schema, run read-only SQL, chart it with
+// Vega-Lite, and page through rows in a DataGrid. The selected campaign is owned by the parent
+// (shared with the Explorer).
 export function DataBrowser({
   campaignId,
   campaigns,
   onCampaignChange,
   refresh,
-  sqlRequest,
 }: {
   campaignId: string
   campaigns: CampaignSummary[]
   onCampaignChange: (campaignId: string) => void
   refresh: ResultsRefresh
-  sqlRequest?: SqlRequest
 }) {
   const [sqlBuffer, setSqlBuffer] = useState(DEFAULT_SQL)
   const [activeSql, setActiveSql] = useState(DEFAULT_SQL)
@@ -80,20 +71,10 @@ export function DataBrowser({
   const [color, setColor] = useState(NONE)
   const [mark, setMark] = useState<'point' | 'line' | 'bar' | 'boxplot'>('point')
 
-  // Only finished+postprocessed campaigns have the derived data this viewer queries.
-  // (The Results container already filters to these; kept defensive since `campaigns` is a prop.)
+  // The campaigns with results to query: recorded runs, or trials under way (`hasResults`). The
+  // Results container already filters to these; kept defensive since `campaigns` is a prop.
   // Newest-first is the service's order; filtering preserves it.
   const evalCampaigns = campaigns.filter(hasResults)
-
-  // Apply an Explorer deep-link: set the editor + run its query once per nonce.
-  const lastNonce = useRef<number>(-1)
-  useEffect(() => {
-    if (!sqlRequest || sqlRequest.nonce === lastNonce.current) return
-    lastNonce.current = sqlRequest.nonce
-    const sql = sqlRequest.sql ?? DEFAULT_SQL
-    setSqlBuffer(sql)
-    setActiveSql(sql)
-  }, [sqlRequest])
 
   const describe = useQuery({
     queryKey: ['describe', campaignId],
@@ -172,7 +153,7 @@ export function DataBrowser({
           value={evalCampaigns.some((c) => c.campaign_id === campaignId) ? campaignId : ''}
           disabled={!evalCampaigns.length}
           helperText={
-            evalCampaigns.length ? undefined : 'no finished, postprocessed campaign yet'
+            evalCampaigns.length ? undefined : 'no campaign has recorded a run yet'
           }
           onChange={(e) => {
             onCampaignChange(e.target.value)
