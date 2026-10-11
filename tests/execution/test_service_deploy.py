@@ -289,7 +289,7 @@ def test_deployment_runs_vast_serve_behind_the_front_on_one_port():
     assert volumes[front_deploy.SOCKET_VOLUME_NAME]["emptyDir"] == {"medium": "Memory"}
     assert volumes[front_deploy.FRONT_CONFIGMAP_NAME]["configMap"]["name"] == \
         front_deploy.FRONT_CONFIGMAP_NAME
-    # binds to the service account that can launch controllers
+    # binds to the service account whose Role drives the campaigns
     assert pod["serviceAccountName"] == sd.SERVICE_ACCOUNT
     # namespace threaded through every object
     assert all(m["metadata"].get("namespace", "ns1") == "ns1"

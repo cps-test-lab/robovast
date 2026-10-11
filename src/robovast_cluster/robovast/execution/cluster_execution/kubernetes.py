@@ -103,7 +103,15 @@ def delete_manifests(core_v1, manifests, namespace=None):
                     body=delete_options,
                 )
                 logger.debug(f"Deleted Pod/{name} from namespace {ns}")
-
+            elif kind == 'Deployment':
+                # Background propagation, so its ReplicaSet and pod go with it.
+                client.AppsV1Api().delete_namespaced_deployment(
+                    name=name,
+                    namespace=ns,
+                    body=client.V1DeleteOptions(grace_period_seconds=0,
+                                                propagation_policy="Background"),
+                )
+                logger.debug(f"Deleted Deployment/{name} from namespace {ns}")
             elif kind == 'Service':
                 core_v1.delete_namespaced_service(
                     name=name,
