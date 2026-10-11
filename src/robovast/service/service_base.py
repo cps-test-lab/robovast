@@ -3297,9 +3297,8 @@ class ServiceBase(RobovastInterface):
                            exc_info=True)
         try:
             state.set_phase(Phase.POSTPROCESSING)
-            # Through the seam every other caller uses, so the implementation decides HOW
-            # to postprocess. Running the pipeline here instead would run it in this process
-            # where the cluster postprocesses in a pod of its own.
+            # Through the seam every other caller uses -- a re-run and an import -- so a
+            # campaign's end is postprocessed exactly as asking for it later would be.
             ok, message = self._postprocess_campaign(
                 campaign_id, Path(results_dir) / campaign_id, state=state)
             if ok:
@@ -3494,6 +3493,15 @@ class ServiceBase(RobovastInterface):
         del campaign_id, job_name
         return ""
 
+    def _job_is_queued(self, campaign_id: str, job_name: str) -> bool:
+        """Whether *job_name* is a job of the campaign queued for capacity, not created yet.
+
+        Such a job has no directory and no log yet, and will have both. ``False`` for a
+        service that queues nothing of its own.
+        """
+        del campaign_id, job_name
+        return False
+
     def _job_log_dir(self, campaign_id: str, job_name: str) -> Tuple[Optional[Path], List[str]]:
         """``(job directory, runs placed in it)``, or ``(None, [])`` before it is known.
 
@@ -3513,7 +3521,10 @@ class ServiceBase(RobovastInterface):
             rel = self._job_artifact_hint(campaign_id, job_name)
         if not rel:
             # Before the first job starts there is no manifest yet: a run the campaign has
-            # is a job whose log does not exist yet, anything else is not a job of it.
+            # is a job whose log does not exist yet, as is a job queued for capacity;
+            # anything else is not a job of it.
+            if self._job_is_queued(campaign_id, job_name):
+                return None, []
             try:
                 run_dir = safe_join(campaign_dir, job_name)
             except UnsafePathError as exc:
@@ -5276,7 +5287,6 @@ class ServiceBase(RobovastInterface):
             return None
         return self._run_state_path(campaign_id, config_name, run_id, filename)
 
-    @abstractmethod
     @abstractmethod
     def _scene_runner_context(self, identity: dict, on_wait=None):
         """A zero-argument callable returning a context that yields the runner factory a scene

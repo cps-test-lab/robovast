@@ -641,6 +641,24 @@ def _origin_row(origin) -> tuple:
             origin.config_version_from, _json_or_none(origin.config_migration_steps))
 
 
+def _run_tallies(by_status: dict, composition_failed: int, no_sample: int) -> dict[str, int]:
+    """The run tallies both :meth:`CampaignStore.run_counts` and :func:`read_run_counts` return.
+
+    One definition, so the live reader and the read-only one cannot report different keys
+    for the same store.
+    """
+    return {
+        "num_runs": sum(by_status.values()),
+        "num_passed": by_status.get("passed", 0),
+        "num_failed": by_status.get("failed", 0),
+        "num_errors": by_status.get("error", 0),
+        "num_killed": by_status.get("killed", 0),
+        "num_invalid": by_status.get("invalid", 0),
+        "num_composition_failed": composition_failed,
+        "num_no_sample": no_sample,
+    }
+
+
 class CampaignStore:
     """Thin sqlite wrapper for recording a search campaign."""
 
@@ -1153,9 +1171,10 @@ class CampaignStore:
         """Pass/fail tallies for a campaign, from one ``GROUP BY`` over ``run``.
 
         Returns ``num_runs`` (all rows), ``num_passed``, ``num_failed`` (status
-        ``failed`` only), ``num_errors`` (status ``error``) and ``num_killed`` (a job an
-        operator stopped by hand). An ``unknown`` run counts toward ``num_runs`` but none
-        of the others, so the four may sum to < ``num_runs``.
+        ``failed`` only), ``num_errors`` (status ``error``), ``num_killed`` (a job an
+        operator stopped by hand) and ``num_invalid`` (a trial the runner threw away). An
+        ``unknown`` run counts toward ``num_runs`` but none of the others, so the five may
+        sum to < ``num_runs``.
 
         ``num_killed`` is reported apart from ``num_failed`` on purpose: a run somebody
         stopped says nothing about the system under test, and folding it into the failures
@@ -1179,7 +1198,6 @@ class CampaignStore:
             "JOIN batch b ON u.batch_id = b.id "
             "WHERE b.campaign_id = ? GROUP BY r.status", (campaign_id,)
         ).fetchall()
-        by_status = {row["status"]: row["n"] for row in rows}
         composition_failed = self._conn.execute(
             "SELECT COUNT(*) FROM unit u JOIN batch b ON u.batch_id = b.id "
             "WHERE b.campaign_id = ? AND u.status = 'composition_failed'",
@@ -1188,16 +1206,8 @@ class CampaignStore:
             "SELECT COUNT(*) FROM unit u JOIN batch b ON u.batch_id = b.id "
             "WHERE b.campaign_id = ? AND u.status = 'no_sample'",
             (campaign_id,)).fetchone()[0]
-        return {
-            "num_runs": sum(by_status.values()),
-            "num_passed": by_status.get("passed", 0),
-            "num_failed": by_status.get("failed", 0),
-            "num_errors": by_status.get("error", 0),
-            "num_killed": by_status.get("killed", 0),
-            "num_invalid": by_status.get("invalid", 0),
-            "num_composition_failed": composition_failed,
-            "num_no_sample": no_sample,
-        }
+        return _run_tallies({row["status"]: row["n"] for row in rows},
+                            composition_failed, no_sample)
 
 
 def read_campaign_mode(campaign_dir: str | Path) -> Optional[str]:
@@ -1364,16 +1374,7 @@ def read_run_counts(campaign_dir: str | Path) -> Optional[dict[str, int]]:
                 no_sample = 0
     except sqlite3.Error:
         return None  # no ``run`` table (v1) or unreadable store
-    by_status = {r[0]: r[1] for r in rows}
-    return {
-        "num_runs": sum(by_status.values()),
-        "num_passed": by_status.get("passed", 0),
-        "num_failed": by_status.get("failed", 0),
-        "num_errors": by_status.get("error", 0),
-        "num_killed": by_status.get("killed", 0),
-        "num_composition_failed": composition_failed,
-        "num_no_sample": no_sample,
-    }
+    return _run_tallies({r[0]: r[1] for r in rows}, composition_failed, no_sample)
 
 
 def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
