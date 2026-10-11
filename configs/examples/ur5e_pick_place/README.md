@@ -11,41 +11,28 @@ campaign asks how accurate perception has to be before the task stops working.
 vast workspace run ur5e_pick_place ur5e_pick_place.vast --push configs/examples/ur5e_pick_place
 ```
 
-4 noise levels × 5 repetitions = 20 trials, about two and a half minutes on an idle cluster.
+4 noise levels × 5 repetitions = 20 trials.
 
 ## What it measures
 
 The jaws open to about 87 mm around a 60 mm box, so there is roughly **13 mm of clearance per side**,
-and that is the error budget for detection, IK and execution together.
-
-Measured, pooled over 45 runs (three identical sweeps, 15 per level):
-
-| `position_stddev` | success | typical failure |
-| --- | --- | --- |
-| 0 mm  | 15/15 (100%) | — |
-| 8 mm  | 11/15 (73%)  | the grasp slips |
-| 16 mm | 8/15 (53%)   | the grasp slips |
-| 28 mm | 2/15 (13%)   | the jaws miss, close on nothing, or the goal cannot be planned |
-
-The decline is the result. An example where every cell passes would not show you where the edge is.
+and that is the error budget for detection, IK and execution together. Success is expected at the
+0 mm control and to fall as the noise grows: an example where every cell passes would not show
+where the edge is. Five repetitions per level are there to separate failure *rates*, because the
+outcome of one trial depends on the noise draw.
 
 ### Which axis of the error matters
 
-**The 3D error magnitude does not order the runs**, and that is the most transferable finding here.
-A run with 53.2 mm of total error succeeded; one with 20.2 mm failed. The axis is what matters, so
+**The 3D error magnitude does not order the runs.** The clearance bounds the error *across* the
+jaws; error *along* the approach axis fails the task by other routes and at a different scale. So
 the error is recorded per axis — `detect_error_y_m` across the jaws and `detect_error_z_m` along the
-approach — and each produces a different, recognisable failure:
+approach — and each produces a recognisable failure:
 
 | signature | across-jaw | approach | what happened |
 | --- | --- | --- | --- |
 | `lift:box_did_not_rise` | large | any | the jaws miss sideways, or catch an edge and lose it |
-| `close:jaws_closed_fully_empty` | **0.5 mm** | **19.7 mm** | they shut *above* the box, missing it entirely |
-| `descend:moveit_error_99999` | any | **36-48 mm** | the goal is below the bench, so MoveIt refuses to plan |
-
-The three largest approach-axis errors in the last sweep were all planner refusals: the robot believes
-the box is inside the table, and no plan reaches there. Meanwhile a 20.1 mm approach error succeeded
-outright when the lateral error was small. So the ~13 mm clearance bounds the **lateral** miss
-specifically; approach-axis error fails the task by different routes and at a different scale.
+| `close:jaws_closed_fully_empty` | small | large, upward | they shut *above* the box, missing it entirely |
+| `descend:moveit_error_99999` | any | large, downward | the goal is below the bench, so MoveIt refuses to plan |
 
 ## Reading `out.csv`
 
@@ -88,32 +75,28 @@ The factor is applied as a `sim:` override (`components.ur5e.object_detector.pos
 property of the world, so it needs no scenario parameter and no `.osc` plumbing. Its cells therefore
 show **no parameters** in `preview_configurations`, which is correct.
 
-## Things this cell learned the hard way
+## What an arm cell has to get right
 
-Each of these is a real failure that the campaign produced, and each is commented at the line that
-now prevents it. They are worth knowing before writing an arm cell of your own.
+Each of these is commented at the line that handles it, and each is worth knowing before writing an
+arm cell of your own.
 
-- **MoveIt only knows the robot.** With an empty planning scene, OMPL routed `shoulder_lift` the long
-  way round — the wraparound — and swept the arm straight through the bench. MuJoCo stopped it, the
-  servos saturated 5.59 rad from the commanded vector, and the bridge still reported the trajectory
+- **MoveIt only knows the robot.** With an empty planning scene OMPL may route a joint the long way
+  round and sweep the arm through the bench, while the bridge still reports the trajectory
   `SUCCEEDED`. The bench and bin are added as collision objects before the first plan.
-- **A free wrist roll changes which axis you grasp.** With the roll unconstrained the jaws closed
-  across the box's 100 mm diagonal against an 87 mm aperture and squirted it out sideways, 40 mm in
-  0.3 s, then shut on air. Pinned too tightly (0.05 rad), OMPL failed to solve at all.
-- **Start facing the work.** The model's own home points the arm away from the box, so every trial
-  opened with a 159° base swing and a 41 s approach. Setting `spawn_arm.home` cut that out and removed
-  the planner failures with it.
+- **Constrain the wrist roll, but not tightly.** Left free, the jaws can close across the box's
+  diagonal, which is wider than the aperture; pinned too tightly, OMPL finds no solution.
+- **Start facing the work.** The model's own home points the arm away from the box, so `spawn_arm.home`
+  sets one that does, which spares every trial a long base swing and the planner failures it brings.
 - **Neither bridge action means "arrived".** `FollowJointTrajectory` ends a trajectory on time, and
-  `GripperCommand` infers a grasp from a stall — the jaws here began moving *after* a 1.5 s pause had
-  already expired, so a fixed wait read them open and recorded that as the grasp. Every motion is
-  verified against measured `/joint_states` instead.
-- **Give the arm time to settle.** At a 4 s settle the arm still had 0.037 rad on a joint — about
-  17 mm at this radius, more than the whole clearance budget, before any noise was added. A sweep run
-  like that varies `position_stddev` while the arm's own lag decides the outcome.
+  `GripperCommand` infers a grasp from a stall, so every motion is verified against measured
+  `/joint_states` instead.
+- **Give the arm time to settle.** A residual joint error is magnified by the arm's reach, and an arm
+  that has not settled spends the clearance budget before any noise is added — the sweep would then
+  measure the arm's lag rather than the perception noise.
 - **Attach the carried box from what you know.** Laterally that is the tool pose (kinematics), not the
   stale detection; vertically it is the bench plus half the box, because the tool's own height carries
-  the arm's settle error. Getting either wrong made MoveIt refuse the lift with
-  `START_STATE_INVALID` and looked like a grasp failure.
+  the arm's settle error. Either one wrong makes MoveIt refuse the lift with `START_STATE_INVALID`,
+  which looks like a grasp failure.
 
-The through-line: **score from ground truth, never from the stack's own verdict.** Every one of these
-would have reported success. The verdict here is the box's true pose on `/tf`.
+The through-line: **score from ground truth, never from the stack's own verdict.** The verdict here
+is the box's true pose on `/tf`.

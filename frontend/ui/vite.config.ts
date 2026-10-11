@@ -10,12 +10,9 @@ import { fileURLToPath, URL } from 'node:url'
 // prefix rather than a shared /api mount.
 const SERVICE = process.env.ROBOVAST_SERVICE_URL ?? 'http://127.0.0.1:8800'
 
-// Every top-level path segment the service owns. This list was hand-maintained and had
-// drifted: `/results`, `/sources`, `/usage` and `/panel_types` were missing, so under
-// `npm run dev` the file browser, the editor's load and save, uploads, run-view artifacts,
-// the capacity meter and remote panel assets all failed against a service that was
-// answering them perfectly well in production. Whenever this changes, check it against
-// `Routes` in src/robovast/service/interface.py — the same table
+// Every top-level path segment the service owns. A prefix missing here fails only under
+// `npm run dev`, against a service that answers it in production, so whenever this changes
+// check it against `Routes` in src/robovast/service/interface.py — the same table
 // tests/service/test_route_docs.py holds the app to.
 //
 // Safe despite the SPA having its own /config page: navigation is **hash**-based
@@ -54,10 +51,10 @@ const VENDOR_CHUNKS: Record<string, string[]> = {
 function vendorChunk(id: string): string | undefined {
   // Vite's own virtual helpers — the preload helper every dynamic import calls, and the
   // modulepreload polyfill. They must be pinned somewhere always-loaded. Left unassigned,
-  // Rollup is free to park them in *any* chunk, and it chose `monaco`: the entry then
-  // statically imported the 3.9 MB editor to get a 1 kB helper, which put Monaco back on
-  // the critical path of a campaign list that never opens an editor. Measured, not
-  // assumed — the entry chunk's `imports` named it.
+  // Rollup may park them in *any* chunk -- `monaco` included, and then the entry statically
+  // imports the editor to get a 1 kB helper, which puts Monaco on the critical path of a
+  // campaign list that never opens an editor. The entry chunk's `imports` shows where they
+  // landed.
   if (id.includes('vite/preload-helper') || id.includes('vite/modulepreload-polyfill')) {
     return 'react'
   }
