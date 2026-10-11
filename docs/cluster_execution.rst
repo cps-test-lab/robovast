@@ -701,6 +701,60 @@ That removes the scenario Jobs and their pods with your kubeconfig (``-x`` conte
 ``vast campaign delete`` is what removes a campaign — through the service, so a delete
 never catches a campaign that is still running.
 
+.. _cluster-trial-outcomes:
+
+How a trial ends: its Job, its run, the campaign
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A scenario Job runs one trial, once (``backoffLimit: 0``). Three records say how it ended,
+and they answer different questions: the **Job** whether its pod completed, the **run's
+status** in ``run_view`` what the trial measured, and the campaign's run counts how many of
+each there were. Only the run's status is a result. It is read from the run's ``test.xml``
+and the intervention ledger, never from the Job, and a campaign carries on past a failed
+trial: one trial's outcome never stops the others.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 36 18 18
+
+   * - The trial
+     - Its Job
+     - Its run
+     - The campaign
+   * - The scenario reaches a verdict, and its test fails
+     - The scenario container exits with the runner's non-zero status after its post-run
+       has written the done marker; the uploader delivers ``/out`` and the Job ends
+       **Failed**. A passing trial's Job ends **Complete**.
+     - ``failed``, or ``error`` when ``test.xml`` records errors
+     - a failure (``num_failed``, or ``num_errors``)
+   * - The runner crashes or exits non-zero without a verdict
+     - The entrypoint's exit trap still writes the done marker, so what the run wrote is
+       delivered, and the Job ends **Failed**.
+     - ``unknown`` (no ``test.xml``)
+     - neither a pass nor a failure
+   * - The entrypoint fails before it starts the runner — a required tool or a pre- or
+       post-command missing, a recorder refusing its arguments
+     - No done marker is written, so the uploader waits for it and the Job fails at its
+       deadline (``DeadlineExceeded``, logged ``HARD-KILLED by activeDeadlineSeconds``).
+     - ``unknown``
+     - neither a pass nor a failure
+   * - The scenario container is OOM-killed
+     - The kill takes the post-run with it, so no done marker comes. The runner reads the
+       kill off the running pod, captures the container's log and **deletes** the Job at
+       once.
+     - ``invalid``
+     - outside pass rates (``num_invalid``)
+   * - A sidecar (simulator, system under test) crashes and is restarted
+     - The runner reads the restart off the pod and deletes the Job at once, as above.
+     - ``invalid``
+     - outside pass rates (``num_invalid``)
+
+``invalid`` is an infrastructure fault, not evidence about the system under test, and it
+overrides any verdict the trial wrote (:ref:`results-invalid`); what the container died of
+is in ``container_failure_view``. A **calibration probe** whose scenario container is
+OOM-killed or whose sidecar crashes stops the campaign at once, naming the container
+(:ref:`cluster-node-calibration`).
+
 
 Push notifications (ntfy)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^

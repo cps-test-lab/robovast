@@ -936,6 +936,10 @@ queryable live and the ``runs`` table and ``run_view`` are built from those
 rows rather than by re-parsing every ``test.xml`` — see
 :ref:`the campaign store schema <campaign-store>`.
 
+A run's status is never read from its Job. On a cluster a failed trial fails its Job too,
+and a Job can fail without a trial having failed; how each way a trial ends maps onto its
+Job and its status is in :ref:`cluster-trial-outcomes`.
+
 .. _stopping-one-job:
 
 A run somebody stopped: ``killed``
@@ -1004,6 +1008,8 @@ partial design, which is the one thing a summary must not leave unsaid.
 A campaign whose archive has no ``_transient`` cannot be checked this way, and says so in
 the log rather than reporting a complete design it cannot vouch for.
 
+
+.. _results-invalid:
 
 A trial the runner threw away: ``invalid``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
