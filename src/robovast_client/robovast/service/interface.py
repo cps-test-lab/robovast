@@ -3847,7 +3847,7 @@ class RobovastInterface(ABC):
         are unused — only the addressing fields matter.
         """
 
-    # -- postprocessing (editable, re-runnable; never mutates _config) ------
+    # -- postprocessing (editable, re-runnable) ------------------------------
 
     @abstractmethod
     def get_postprocessing(self, campaign_id: str) -> PostprocessingInfo:
@@ -3868,8 +3868,8 @@ class RobovastInterface(ABC):
     def update_postprocessing_source(
         self, request: UpdatePostprocessingSourceRequest
     ) -> PostprocessingSource:
-        """Persist an edited postprocessing block as a new `.vast` override
-        revision (validated; never mutates ``_config/``)."""
+        """Validate an edited postprocessing block and write it into the campaign's
+        ``_config/<name>.vast`` in place, replacing only that block."""
 
     @abstractmethod
     def run_postprocessing(self, request: RunPostprocessingRequest) -> ActionResult:
@@ -4181,9 +4181,9 @@ class RobovastInterface(ABC):
     def update_panels_source(
         self, request: UpdatePanelsSourceRequest
     ) -> PanelsSource:
-        """Persist an edited ``visualization:`` block as a new `.vast` override
-        revision (never mutates ``_config/``). The run view reloads its panels
-        from the effective `.vast` afterwards."""
+        """Write an edited ``visualization:`` block into the campaign's
+        ``_config/<name>.vast`` in place. The run view reloads its panels from it
+        afterwards."""
 
 
     @abstractmethod
