@@ -23,39 +23,6 @@ from kubernetes.utils import FailToCreateError
 logger = logging.getLogger(__name__)
 
 
-def get_kubernetes_client(context=None):
-    """Get a Kubernetes API client.
-
-    Args:
-        context: Kubernetes context name to use. ``None`` uses the active context.
-    """
-    from .kube_client import load_kube_config
-    try:
-        load_kube_config(context=context)
-        return client.CoreV1Api()
-    except Exception as e:
-        logger.error(f"Failed to create Kubernetes client: {str(e)}")
-        return None
-
-
-def check_pod_running(k8s_client, pod_name, namespace="default"):
-    """Check if transfer-pod exists, exit if not found"""
-    try:
-        pod = k8s_client.read_namespaced_pod(
-            name=pod_name,
-            namespace=namespace
-        )
-        # Check if pod is running
-        if pod.status.phase != "Running":
-            return False, f"Pod is not running (status: {pod.status.phase})"
-        return True, f"Pod '{pod_name}' is running"
-    except client.exceptions.ApiException as e:
-        if e.status == 404:
-            return False, f"Pod '{pod_name}' does not exist"
-        else:
-            return False, f"Error checking pod status: {str(e)}"
-
-
 def apply_manifests(k8s_client, manifests: list, namespace=None):
     """Apply Kubernetes manifests. If namespace is given, set it on each resource."""
     try:

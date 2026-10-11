@@ -27,6 +27,7 @@ The docs directory is resolved in this order:
    containing ``.rst`` files is found (works in development / editable installs).
 """
 
+import functools
 import importlib
 import inspect
 import json as _json
@@ -247,11 +248,13 @@ def _strip_inline_roles(text: str) -> str:
     return _INLINE_ROLE_RE.sub(_repl, text)
 
 
+@functools.lru_cache(maxsize=1)
 def _resolve_mcp_tools_directive() -> str:
     """Expand ``.. mcp-tools::`` into a plain-text listing of every registered tool.
 
     The same registry the Sphinx directive renders, so the page an agent reads through
-    ``search_docs`` lists what the server it is talking to registers.
+    ``search_docs`` lists what the server it is talking to registers. Built once: it loads
+    every plugin, this one included.
     """
     try:
         from robovast.mcp_server.registry import \
@@ -270,22 +273,18 @@ def _resolve_mcp_tools_directive() -> str:
 
 
 def _resolve_directives(text: str, base_dir: Path) -> str:
-    """Resolve autodoc, ``literalinclude``, ``mcp-tools``, and inline roles.
+    """Resolve autodoc, ``literalinclude``, and inline roles.
 
     Produces self-contained plain text: autodoc directives are expanded from
     live objects, ``literalinclude`` targets are embedded as code blocks (so
-    example snippets travel with the doc), tool listings are rendered, and
-    cross-reference roles are reduced to their display text. *base_dir* is the
-    directory the document lives in, used to resolve ``literalinclude`` paths.
+    example snippets travel with the doc), and cross-reference roles are reduced
+    to their display text. *base_dir* is the directory the document lives in, used
+    to resolve ``literalinclude`` paths. ``.. mcp-tools::`` is left for
+    :func:`_served` to expand.
 
     Raises:
         DirectiveUnresolved: for the first directive that cannot be expanded.
     """
-    def _replace_mcp_tools(m: re.Match) -> str:
-        return _resolve_mcp_tools_directive() + "\n"
-
-    text = _MCP_TOOLS_RE.sub(_replace_mcp_tools, text)
-
     lines = text.splitlines(keepends=True)
     result: list[str] = []
     i = 0
@@ -484,6 +483,8 @@ for _name, (_path, _kind, _from) in _sources.items():
         # Only robovast's own pages carry directives this resolver knows how to expand.
         _doc_content[_name] = _text
         if _from == "robovast":
+            # The tool listing is left for the first read: it loads every MCP plugin, and
+            # this module is one of them, still being imported here.
             try:
                 _doc_content[_name] = _resolve_directives(_text, _path.parent)
             except DirectiveUnresolved as _e:
@@ -575,6 +576,21 @@ def _listing_row(name: str, title: str, source: str = "") -> dict:
 
 
 # -- Tool functions ----------------------------------------------------------
+
+
+def _served(name: str, text: str) -> str:
+    """*text* of robovast page *name* with its ``.. mcp-tools::`` expanded.
+
+    A listing that cannot be built makes the page unresolved, as an import-time directive
+    does, so :func:`_refuse_unresolved` refuses it by name.
+    """
+    if not _MCP_TOOLS_RE.search(text):
+        return text
+    try:
+        return _MCP_TOOLS_RE.sub(lambda _m: _resolve_mcp_tools_directive() + "\n", text)
+    except DirectiveUnresolved as e:
+        _doc_unresolved[name] = str(e)
+        return text
 
 
 def _refuse_unresolved(name: str) -> None:
@@ -679,7 +695,8 @@ def search_docs(query: str = "", page: str = "", limit: int = _DEFAULT_EXCERPTS,
         # one they named would answer a question they did not ask.
         return {"error": upstream_error}
     titles = {**{n: _doc_meta[n] for n in _doc_files}, **{n: t for n, (t, _x) in upstream.items()}}
-    texts = {**_doc_content, **{n: x for n, (_t, x) in upstream.items()}}
+    texts = {**{n: _served(n, x) for n, x in _doc_content.items()},
+             **{n: x for n, (_t, x) in upstream.items()}}
 
     if page:
         if page not in texts:
@@ -806,8 +823,9 @@ class DocsPlugin:
                 raise ValueError(
                     f"Unknown documentation page {name!r}. Available: {available}"
                 )
+            content = _served(name, _doc_content[name])
             _refuse_unresolved(name)
-            return _doc_content[name]
+            return content
 
         # Register each page as a static resource so clients can discover them
         # without calling the search_docs tool first.
@@ -817,8 +835,9 @@ class DocsPlugin:
 
             def _make_resource(name: str, content: str):
                 def _resource_fn() -> str:
+                    served = _served(name, content)
                     _refuse_unresolved(name)
-                    return content
+                    return served
                 return _resource_fn
 
             mcp.resource(_uri, name=_title, description=f"RoboVAST docs: {_title}")(

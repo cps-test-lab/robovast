@@ -165,3 +165,21 @@ def test_runs_whose_columns_cannot_be_unified_are_left_and_reported(campaign):
     report = compact(str(campaign))
     assert "poses" in report.skipped
     assert compacted_runs(read_manifest(str(campaign)), "poses") == set()
+
+
+def test_a_list_column_is_dictionary_encoded_where_its_values_repeat(campaign):
+    """An encoding is set on a list column's values, so a compacted list of repeating values
+    is stored as a dictionary, as its run files were."""
+    build(str(campaign), tables=["poses"])
+    manifest = read_manifest(str(campaign))
+    for run in manifest["tables"]["poses"]["runs"].values():
+        path = os.path.join(cache_root(str(campaign)), run["files"][0])
+        rows = pq.read_table(path)
+        pq.write_table(rows.append_column("labels", pa.array([["a", "b"]] * rows.num_rows)), path)
+    compact(str(campaign))
+    entry = read_manifest(str(campaign))["tables"]["poses"]["campaign"]
+    metadata = pq.ParquetFile(os.path.join(cache_root(str(campaign)), entry["files"][0])).metadata
+    group = metadata.row_group(0)
+    (labels,) = [group.column(i) for i in range(group.num_columns)
+                 if group.column(i).path_in_schema == "labels.list.element"]
+    assert "RLE_DICTIONARY" in labels.encodings

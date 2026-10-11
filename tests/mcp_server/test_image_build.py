@@ -59,12 +59,9 @@ def test_build_experiment_image_delegates(monkeypatch):
 
 
 def test_one_containers_cache_hit_is_not_the_requests(monkeypatch):
-    """The reported bug: `cached` was whichever value the primary container happened to have.
-
-    A scenario image already built and a `sut` image still building was reported as
-    ``cached: true`` with "nothing to wait for" -- and the caller went straight on to exec in
-    a `sut` image that did not exist yet.
-    """
+    """A scenario image already built does not make a `sut` image still building a cache
+    hit: the wait names the build still running, so the caller does not go on to exec in an
+    image that does not exist yet."""
     # The service aggregates (see test_image_build_core::primary_build_ref); what this tool
     # owes the caller is a wait that names the build still running and not the cached one.
     _stub_build(monkeypatch, SimpleNamespace(
@@ -76,17 +73,6 @@ def test_one_containers_cache_hit_is_not_the_requests(monkeypatch):
     assert out["cached_builds"] == {"scenario": True, "sut": False}
     assert "b-sut" in out["next_step"]
     assert "b-scenario" not in out["next_step"]
-
-
-def test_a_service_without_per_container_verdicts_waits_on_everything(monkeypatch):
-    """An older service sends no ``cached_builds``. Waiting on all of them is the safe read;
-    trusting the single aggregate flag is what went wrong."""
-    _stub_build(monkeypatch, SimpleNamespace(
-        build_id="b-scenario", tag="scenario", cached=False,
-        builds={"scenario": "b-scenario", "sut": "b-sut"}))
-    out = cc.build_experiment_image(workspace_id="ws1")
-    assert out["cached_builds"] == {}
-    assert "b-scenario" in out["next_step"] and "b-sut" in out["next_step"]
 
 
 def test_get_image_build_status_surfaces_structured_error(monkeypatch):

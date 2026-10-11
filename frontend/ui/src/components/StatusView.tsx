@@ -386,8 +386,8 @@ function SearchHover({ campaignId, status }: { campaignId: string; status: Statu
         title="search"
         facts={[
           // First, and it names the number in the ring's hole. The hole carries no `%` (it does
-          // not fit -- see LABEL_FIELD), so a bare `67` there could be read as a count, which is
-          // exactly what it used to be before the ring measured a budget. This row is where the
+          // not fit -- see LABEL_FIELD), so a bare `67` there could be read as a count -- the
+          // round count the hole shows when nothing bounds the search. This row is where the
           // unit lives. Absent when nothing bounds the search, and then the hole shows the round
           // count that the next row names instead.
           {
@@ -444,11 +444,11 @@ type CardTab = 'jobs' | 'details' | 'log'
 
 /** The ring's geometry, in one place because these five numbers have to agree.
  *
- *  They did not. The label was sized independently of the band, and `67%` at 10px is about
- *  20px against a hole of `2 * (radius - stroke/2) * size/viewBox` = under 17px -- so the digits'
- *  outer edges sat on a saturated arc and lost their contrast against it, which is what a reader
- *  reported as the colour being too bright. The fix is arithmetic, not palette, and
- *  `ringLabelWidth` below is the assertion that keeps it so.
+ *  A label sized independently of the band overruns the hole -- `67%` at 10px is about 20px
+ *  against a hole of `2 * (radius - stroke/2) * size/viewBox` = under 17px -- so the digits'
+ *  outer edges sit on a saturated arc and lose their contrast against it, which reads as the
+ *  colour being too bright. The remedy is arithmetic, not palette, and `ringLabelWidth` below is
+ *  the assertion that keeps it so.
  *
  *  `labelField` is the opaque disc the label sits on. At these values it just fills the hole
  *  rather than covering any of the band, so it is insurance against a translucent surface or an
@@ -975,10 +975,9 @@ function JobsSection({
 }: {
   campaignId: string
   jobs: JobSummary[]
-  // Owned by StatusView, not here, because this section unmounts underneath the reader --
-  // whenever the tab is switched away, and formerly whenever the live set emptied. It is what
-  // makes a job's own log survive a trip to the Log tab and back, which is the whole answer to
-  // the tab bar costing the side-by-side view.
+  // Owned by StatusView, not here, because this section unmounts underneath the reader
+  // whenever the tab is switched away. It is what makes a job's own log survive a trip to the
+  // Log tab and back, which is the whole answer to the tab bar costing the side-by-side view.
   expanded: Set<string>
   onToggle: (jobName: string) => void
   onStopJob?: (job: JobSummary) => void
@@ -988,9 +987,9 @@ function JobsSection({
   // is exactly the one where a probe is both the reason nothing has started and the row that
   // falls off the end. There is at most one probe per node, so the runs lose nothing.
   const shown = nonRunsFirst(jobs).slice(0, JOBS_RENDER_CAP)
-  // The empty state is the reason this renders at all now. As a foldable section it simply
-  // vanished when the live set emptied -- which happens whenever no job is running. A TAB that vanished would take the tab bar's shape with it,
-  // and the selected tab out from under the reader, so the tab stays and says why it is empty.
+  // The live set empties whenever no job is running. A tab that vanished then would take the
+  // tab bar's shape with it, and the selected tab out from under the reader, so the tab stays
+  // and says why it is empty.
   if (!shown.length) {
     return (
       <Typography variant="caption" color="text.secondary" sx={{ display: 'block', p: 1 }}>

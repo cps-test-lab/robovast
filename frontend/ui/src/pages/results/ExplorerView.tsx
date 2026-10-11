@@ -207,7 +207,7 @@ export function ExplorerView({
 }
 
 // Right pane: the selected node's evaluation.visualization notebooks, executed for this node and
-// shown as HTML — the web equivalent of the desktop `vast eval gui`.
+// shown as HTML.
 function SelectionDetail(
   props: NodeProps & {
     tab: string
