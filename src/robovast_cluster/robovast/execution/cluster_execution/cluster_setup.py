@@ -663,21 +663,30 @@ def _node_data_locations(namespace, kube_context):
 
     from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
     from .service_deploy import SERVICE_NAME  # pylint: disable=import-outside-toplevel
-    from .store_pod import STORE_POD_NAME  # pylint: disable=import-outside-toplevel
+    from .store_pod import STORE_DEPLOYMENT_NAME  # pylint: disable=import-outside-toplevel
 
+    # The bare pod is the one cleanup also removes (BaseConfig.cleanup_cluster).
+    reads = (lambda: client.AppsV1Api().read_namespaced_deployment(
+                 STORE_DEPLOYMENT_NAME, namespace).spec.template.spec,
+             lambda: client.CoreV1Api().read_namespaced_pod(
+                 STORE_DEPLOYMENT_NAME, namespace).spec,
+             lambda: client.AppsV1Api().read_namespaced_deployment(
+                 SERVICE_NAME, namespace).spec.template.spec)
     paths = []
     try:
         load_kube_config(context=kube_context)
-        pod = client.CoreV1Api().read_namespaced_pod(STORE_POD_NAME, namespace)
-        for volume in (pod.spec.volumes or []):
-            if volume.host_path is not None and volume.host_path.path not in paths:
-                paths.append(volume.host_path.path)
-        dep = client.AppsV1Api().read_namespaced_deployment(SERVICE_NAME, namespace)
-        for volume in (dep.spec.template.spec.volumes or []):
-            if volume.host_path is not None and volume.host_path.path not in paths:
-                paths.append(volume.host_path.path)
     except Exception as e:  # noqa: BLE001 - a teardown must finish; it reports what it saw
         logger.debug("could not read this deployment's node directories: %s", e)
+        return paths
+    for read in reads:
+        try:
+            spec = read()
+        except Exception as e:  # noqa: BLE001 - absent is normal; a teardown must finish
+            logger.debug("could not read a node directory owner: %s", e)
+            continue
+        for volume in (spec.volumes or []):
+            if volume.host_path is not None and volume.host_path.path not in paths:
+                paths.append(volume.host_path.path)
     return [p for p in paths if p]
 
 

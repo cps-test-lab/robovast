@@ -1672,7 +1672,7 @@ def registry_ingress_defects(ingress) -> list:
         # the pods looks wrong -- so this is a defect to repair, not a variant to tolerate.
         defects.append(
             f"{registry_deploy.REGISTRY_INGRESS_PATH} still routes to the service pod; "
-            f"the registry now runs in the {store_pod.STORE_POD_NAME} pod")
+            f"the registry now runs in the {store_pod.STORE_DEPLOYMENT_NAME} pod")
     have = getattr(getattr(ingress, "metadata", None), "annotations", None) or {}
     missing = sorted(k for k, v in registry_deploy.REGISTRY_INGRESS_ANNOTATIONS.items()
                      if have.get(k) != v)
@@ -1764,25 +1764,19 @@ def verify_store_pod_infrastructure(namespace="default", kube_context=None,
     No pod at all is refused too: nothing but setup creates it, so its absence means the
     cluster is not set up.
     """
-    from kubernetes import client  # pylint: disable=import-outside-toplevel
-    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
-
     from . import store_pod  # pylint: disable=import-outside-toplevel
 
     _load_kube_config(kube_context)
-    try:
-        pod = client.CoreV1Api().read_namespaced_pod(store_pod.STORE_POD_NAME, namespace)
-    except ApiException as exc:
-        if exc.status != 404:
-            raise
+    pod = store_pod.read_live_store(namespace)
+    if pod is None:
         raise RuntimeError(
-            f"there is no {store_pod.STORE_POD_NAME} pod in namespace {namespace}, so the "
-            f"service has no registry to push to. 'vast cluster setup' "
-            f"creates it.") from exc
+            f"there is no {store_pod.STORE_DEPLOYMENT_NAME} Deployment in namespace "
+            f"{namespace}, so the service has no registry to push to. 'vast cluster setup' "
+            f"creates it.")
     remedy = "'vast cluster cleanup' then 'vast cluster setup', which recreates the pod"
     if store_pod.carries_an_object_store(pod):
         raise RuntimeError(
-            f"the {store_pod.STORE_POD_NAME} pod in namespace {namespace} carries an "
+            f"the {store_pod.STORE_DEPLOYMENT_NAME} pod in namespace {namespace} carries an "
             f"object-store container ({store_pod.OBJECT_STORE_CONTAINER_NAME}). Campaigns "
             f"live on the service's results volume, and nothing reads that store -- so every "
             f"campaign in it is one the service cannot see. Setup keeps an existing pod as "
@@ -1792,7 +1786,7 @@ def verify_store_pod_infrastructure(namespace="default", kube_context=None,
     missing = store_pod.missing_infrastructure(pod)
     if missing:
         raise RuntimeError(
-            f"the {store_pod.STORE_POD_NAME} pod in namespace {namespace} does not run "
+            f"the {store_pod.STORE_DEPLOYMENT_NAME} pod in namespace {namespace} does not run "
             f"{', '.join(missing)}. Setup keeps an existing pod as it is, so re-running "
             f"setup cannot add them; the remedy is {remedy}. Built images are rebuilt on "
             f"demand; the campaigns on the results volume are not touched.")
@@ -1820,7 +1814,7 @@ def _warn_if_registry_auth_is_not_live(pod, namespace, registry_authenticated):
         "cluster cleanup' then 'vast cluster setup'. Built images are rebuilt on demand, "
         "and campaigns are unaffected; the clients already hold the credential and will "
         "start using it the moment the registry asks.",
-        store_pod.STORE_POD_NAME, namespace)
+        store_pod.STORE_DEPLOYMENT_NAME, namespace)
 
 
 def published_host(namespace="default", kube_context=None):
