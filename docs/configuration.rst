@@ -1595,7 +1595,7 @@ limit only decides when the kernel starts throttling. Which means:
   of which scale with concurrency rather than showing up in a single run. A simulator can
   sustain a fraction of a core and peak at several where the world's geometry compiles — a ratio
   of an order of magnitude, so there is no honest single number. Reserving the peak costs more
-  than leaving the simulator untuned; capping at the sustained figure clips a burst that changes
+  than leaving the simulator un-tuned; capping at the sustained figure clips a burst that changes
   nothing the robot experiences. What makes the soft limit safe is already recorded: realtime
   pacing normalises what the simulated world looks like, and ``runs.clock_map_*`` says per run
   whether the simulator kept pace.
