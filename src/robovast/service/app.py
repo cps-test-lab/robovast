@@ -1124,7 +1124,7 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             how_to_change=settings_report.how_to_change())
 
     @app.get(Routes.ADMIN_EVENTS, response_model=ServiceEvents, tags=["admin"])
-    def get_service_events(since: int = 0, limit: int = 200,
+    def get_service_events(since: Optional[int] = None, limit: int = 200,
                            newest: bool = False) -> ServiceEvents:
         """What this service did, from cursor *since* -- durable across restarts.
 
@@ -1143,11 +1143,12 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         Not the same thing as ``/admin/log``, which is this process's recent stderr and dies
         with it. The events worth keeping are the ones a restart destroys.
         """
-        if newest and since:
+        if newest and since is not None:
             raise HTTPException(
                 status_code=400,
                 detail="since and newest=true are exclusive: newest reads the end of the "
                        "record, since resumes from a cursor")
+        since = since or 0
         try:
             rows = (_events.latest(limit=limit) if newest
                     else _events.read(since=since, limit=limit))

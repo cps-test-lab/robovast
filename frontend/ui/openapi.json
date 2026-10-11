@@ -5402,9 +5402,15 @@
             "name": "since",
             "required": false,
             "schema": {
-              "default": 0,
-              "title": "Since",
-              "type": "integer"
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
             }
           },
           {

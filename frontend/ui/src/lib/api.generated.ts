@@ -5416,7 +5416,7 @@ export interface operations {
     get_service_events_admin_events_get: {
         parameters: {
             query?: {
-                since?: number;
+                since?: number | null;
                 limit?: number;
                 newest?: boolean;
             };
