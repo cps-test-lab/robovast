@@ -34,8 +34,7 @@ for _tool in python3 stdbuf tee; do
 done
 
 # Everything this script prints -- `log` lines and bare `echo`s alike -- lands in the durable
-# artifact from here on. Previously only `log` lines were teed and the redirect sat further
-# down, so anything echoed before it reached the live log and never the file.
+# artifact from here on, so nothing echoed reaches the live log without reaching the file.
 #
 # `stdbuf -oL` unbuffers tee so the log panel sees lines as they are printed.
 exec > >(stdbuf -oL tee -a "${LOG_FILE}")
@@ -192,10 +191,8 @@ _pause() {
 # finishing early does not end the container's job; exiting would hand RoboVAST a restart, and a
 # restarted container invalidates the trial (`pod_restarted_containers`) whatever it died of.
 #
-# That is not hypothetical: the scenario-execution server exits cleanly the moment its client goes
-# away, which happens as the scenario ENDS -- while the main container is still finishing. So a
-# perfectly good run was failed by its own teardown order, every time, and the exit code said
-# `Completed (exit 0)` because nothing had gone wrong.
+# The scenario-execution server is such a workload: it exits cleanly the moment its client goes
+# away, which happens as the scenario ENDS -- while the main container is still finishing.
 #
 # Holding also keeps `_post_run` where it belongs. Reached early it kills this container's resource
 # monitor mid-run, so the CSV stops at the moment the workload happened to finish rather than at
@@ -262,11 +259,9 @@ run_child() {
 # A container that declares its own command runs THAT, with everything above already
 # done for it: the ROS overlay sourced, stdout teed into the job's log directory, and
 # the resource monitor running. Exec'ing the command directly as the container's
-# entrypoint skips all three. The ROS one is not a nicety: a colcon package like the MuJoCo bridge only reaches PYTHONPATH once
-# /opt/ros and /ws/install are sourced, so `roqsim sim --ros` died instantly with
-# "unknown plugin 'ros2_bridge'" while the scenario waited out its /scan timeout with
-# no log anywhere to say why. Any simulator backend would have hit the same wall, so
-# this belongs here and not in one backend's command string.
+# entrypoint skips all three. The ROS overlay is required: a colcon package such as a
+# simulator's ROS bridge reaches PYTHONPATH only once /opt/ros and /ws/install are sourced.
+# Any simulator backend needs that, so it belongs here and not in one backend's command string.
 if [ -n "${ROBOVAST_CONTAINER_COMMAND}" ]; then
     log "Starting container command: ${ROBOVAST_CONTAINER_COMMAND}"
     # Unquoted on purpose: the command arrives as one string and has to word-split.

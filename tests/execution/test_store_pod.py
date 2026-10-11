@@ -36,16 +36,32 @@ def test_every_provider_deploys_the_same_pod():
         azure.AzureClusterConfig, gcp.GcpClusterConfig)]
 
     assert all(m == manifests[0] for m in manifests)
-    pod = next(d for d in manifests[0] if d["kind"] == "Pod")
+    pod = {"spec": store_pod.store_pod_spec(manifests[0])}
     assert [c["name"] for c in pod["spec"]["containers"]] == list(
         store_pod.infrastructure_container_names())
     assert pod["spec"]["nodeSelector"] == {"n": "1"}
 
 
+def test_every_providers_readme_waits_on_the_deployment(tmp_path):
+    """The pod a Deployment runs has a generated name, so a manual setup waits on the rollout."""
+    from robovast.execution.cluster_config import azure, gcp, minikube, rke2
+
+    for cls in (rke2.Rke2ClusterConfig, minikube.MinikubeClusterConfig,
+                azure.AzureClusterConfig, gcp.GcpClusterConfig):
+        out = tmp_path / cls.__name__
+        out.mkdir()
+        cls().prepare_setup_cluster(str(out))
+        readme = "".join(p.read_text() for p in out.glob("README*.md"))
+
+        assert f"rollout status deployment/{store_pod.STORE_DEPLOYMENT_NAME}" in readme, cls
+        assert f"pod/{store_pod.STORE_DEPLOYMENT_NAME} " not in readme, cls
+
+
 def test_the_pod_carries_the_registry_and_nothing_else():
     """Campaigns are on the service's results volume; nothing here holds them."""
     docs = store_pod.attach_infrastructure([], "robotics")
-    pod = next(d for d in docs if d["kind"] == "Pod")
+    deployment = next(d for d in docs if d["kind"] == "Deployment")
+    pod = deployment["spec"]["template"]
     service = next(d for d in docs if d["kind"] == "Service")
 
     assert [c["name"] for c in pod["spec"]["containers"]] == list(
@@ -64,7 +80,7 @@ def test_a_published_registry_authenticates_and_still_probes(caplog):
     Ready and nothing in the message would mention authentication.
     """
     docs = store_pod.attach_infrastructure([], "robotics", registry_authenticated=True)
-    pod = next(d for d in docs if d["kind"] == "Pod")
+    pod = {"spec": store_pod.store_pod_spec(docs)}
     registry = next(c for c in pod["spec"]["containers"]
                     if c["name"] == registry_deploy.REGISTRY_CONTAINER_NAME)
     env = {e["name"]: e["value"] for e in registry["env"]}
@@ -85,7 +101,7 @@ def test_an_unpublished_registry_is_left_open_and_mounts_no_secret():
     """There is no route to it and no prefix to build into, so there is nothing to protect
     and no credential to invent."""
     docs = store_pod.attach_infrastructure([], "robotics")
-    pod = next(d for d in docs if d["kind"] == "Pod")
+    pod = {"spec": store_pod.store_pod_spec(docs)}
     registry = next(c for c in pod["spec"]["containers"]
                     if c["name"] == registry_deploy.REGISTRY_CONTAINER_NAME)
 
@@ -128,6 +144,103 @@ def test_no_ingress_class_leaves_a_gke_specific_key_off_every_other_cluster():
     assert registry_deploy.ingress_backend_annotations("nginx") == {}
 
 
+def test_the_pod_is_a_deployment_of_one_so_an_evicted_pod_comes_back():
+    """A bare pod the kubelet evicted stays Failed, leaving the registry Service without
+    endpoints. One replica, replaced only after the old pod is gone: the registry blobs take
+    one writer."""
+    docs = store_pod.attach_infrastructure([], "robotics")
+    deployment = next(d for d in docs if d["kind"] == "Deployment")
+    service = next(d for d in docs if d["kind"] == "Service")
+
+    assert not any(d["kind"] == "Pod" for d in docs)
+    assert deployment["metadata"]["name"] == store_pod.STORE_DEPLOYMENT_NAME
+    assert deployment["spec"]["replicas"] == 1
+    assert deployment["spec"]["strategy"] == {"type": "Recreate"}
+    assert (deployment["spec"]["selector"]["matchLabels"]
+            == deployment["spec"]["template"]["metadata"]["labels"]
+            == service["spec"]["selector"])
+
+
+def _cluster(monkeypatch, deployment=None, pod=None):
+    """An API server holding at most the store Deployment and a pod of the same name."""
+    from kubernetes import client as kclient
+
+    def answer(obj):
+        def read(self, name, namespace):
+            if obj is None:
+                raise kclient.exceptions.ApiException(status=404)
+            return obj
+        return read
+    monkeypatch.setattr(kclient, "AppsV1Api", lambda *a, **k: type(
+        "A", (), {"read_namespaced_deployment": answer(deployment)})())
+    monkeypatch.setattr(kclient, "CoreV1Api", lambda *a, **k: type(
+        "C", (), {"read_namespaced_pod": answer(pod)})())
+
+
+def test_the_live_store_is_the_deployments_pod_template(monkeypatch):
+    template = _pod("registry")
+    _cluster(monkeypatch, deployment=types.SimpleNamespace(
+        spec=types.SimpleNamespace(template=template)))
+
+    assert store_pod.read_live_store("default") is template
+
+
+def test_no_deployment_and_no_pod_is_no_live_store(monkeypatch):
+    _cluster(monkeypatch)
+
+    assert store_pod.read_live_store("default") is None
+
+
+def test_a_bare_pod_is_refused_rather_than_joined_by_a_deployment(monkeypatch):
+    """Both carry the Service's labels, so a Deployment beside the pod would put two
+    registries behind one Service, on the same volume."""
+    _cluster(monkeypatch, pod=_pod("registry"))
+
+    with pytest.raises(RuntimeError, match="nothing recreates") as excinfo:
+        store_pod.read_live_store("default")
+    assert "vast cluster cleanup" in str(excinfo.value)
+    assert "vast cluster setup" in str(excinfo.value)
+
+
+def test_a_bare_pod_is_refused_by_setup_without_a_placement(monkeypatch):
+    _cluster(monkeypatch, pod=_pod("registry"))
+
+    with pytest.raises(RuntimeError, match="bare pod"):
+        store_pod.refuse_a_pod_on_the_wrong_node("default", None)
+
+
+def test_cleanup_removes_a_bare_pod_too(monkeypatch):
+    """The bare-pod refusal names cleanup as its remedy, so cleanup has to remove it."""
+    from robovast.execution.cluster_config import rke2
+    from robovast.execution.cluster_execution import kube_client, kubernetes
+
+    deleted = []
+    monkeypatch.setattr(kube_client, "load_kube_config", lambda *a, **k: None)
+    monkeypatch.setattr(kubernetes, "delete_manifests",
+                        lambda core, docs, namespace=None: deleted.extend(docs))
+    rke2.Rke2ClusterConfig().cleanup_cluster(namespace="robotics")
+
+    names = {(d["kind"], d["metadata"]["name"]) for d in deleted}
+    assert ("Deployment", store_pod.STORE_DEPLOYMENT_NAME) in names
+    assert ("Pod", store_pod.STORE_DEPLOYMENT_NAME) in names
+
+
+def test_cleanup_deletes_the_deployment_with_its_pods(monkeypatch):
+    from kubernetes import client as kclient
+
+    from robovast.execution.cluster_execution import kubernetes
+
+    calls = []
+    monkeypatch.setattr(kclient, "AppsV1Api", lambda *a, **k: type("A", (), {
+        "delete_namespaced_deployment":
+            lambda self, name, namespace, body: calls.append((name, namespace, body))})())
+    kubernetes.delete_manifests(None, [{"kind": "Deployment", "metadata": {"name": "x"}}],
+                                namespace="robotics")
+
+    assert [(n, ns) for n, ns, _ in calls] == [("x", "robotics")]
+    assert calls[0][2].propagation_policy == "Background"
+
+
 def test_attaching_twice_changes_nothing():
     """Setup is re-runnable, and every provider renders its manifest fresh each time."""
     once = _rke2_docs()
@@ -151,24 +264,16 @@ def test_the_ingress_backend_names_the_store_service():
         "the cluster domain is site configuration, not something to write into source"
 
 
-def _pod(*names, node_selector=None, node_name="node-a"):
-    """A live pod as the API returns one: named containers and a placement."""
+def _pod(*names, node_selector=None):
+    """A live pod template as the API returns one: named containers and a placement."""
     containers = [types.SimpleNamespace(name=n, env=[]) for n in names]
     return types.SimpleNamespace(spec=types.SimpleNamespace(
-        containers=containers, node_selector=node_selector, node_name=node_name))
+        containers=containers, node_selector=node_selector))
 
 
 def _live(monkeypatch, pod):
-    from kubernetes import client as kclient
-
     monkeypatch.setattr(service_deploy, "_load_kube_config", lambda *a, **k: None)
-
-    def read(self, name, namespace):
-        if pod is None:
-            raise kclient.exceptions.ApiException(status=404)
-        return pod
-    monkeypatch.setattr(kclient, "CoreV1Api",
-                        lambda *a, **k: type("C", (), {"read_namespaced_pod": read})())
+    monkeypatch.setattr(store_pod, "read_live_store", lambda namespace: pod)
 
 
 def test_a_pod_lacking_a_container_is_named_not_guessed():

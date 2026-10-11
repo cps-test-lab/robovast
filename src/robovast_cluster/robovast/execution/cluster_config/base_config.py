@@ -133,10 +133,10 @@ class BaseConfig(object):
         return self._apply_pod_node_selector(docs, kwargs.get("control_node_labels"))
 
     def setup_cluster(self, **kwargs):
-        """Deploy the ``robovast`` pod (the registry) and its Service.
+        """Deploy the ``robovast`` Deployment (the registry) and its Service.
 
-        A live pod is kept as it is (``apply_manifests`` tolerates a 409), so a placement
-        the live pod does not match is refused before anything is applied rather than
+        A live Deployment is kept as it is (``apply_manifests`` tolerates a 409), so a
+        placement it does not match is refused before anything is applied rather than
         reported and never applied.
 
         Args:
@@ -160,12 +160,12 @@ class BaseConfig(object):
             apply_manifests(client.ApiClient(), iter(docs), namespace=namespace)
         except Exception as e:
             raise RuntimeError(
-                f"Error applying the {store_pod.STORE_POD_NAME} pod manifest: {e}") from e
-        logger.info("The %s pod (the registry) is deployed in namespace %s",
-                    store_pod.STORE_POD_NAME, namespace)
+                f"Error applying the {store_pod.STORE_DEPLOYMENT_NAME} manifest: {e}") from e
+        logger.info("The %s Deployment (the registry) is deployed in namespace %s",
+                    store_pod.STORE_DEPLOYMENT_NAME, namespace)
 
     def cleanup_cluster(self, **kwargs):
-        """Remove the ``robovast`` pod, its Service and the claims setup may have created.
+        """Remove the ``robovast`` Deployment, its Service and the claims setup may have created.
 
         The registry is re-derivable and goes with the pod. The campaigns are on the
         service's results volume, which this does not touch.
@@ -183,13 +183,17 @@ class BaseConfig(object):
 
         namespace = kwargs.get("namespace", "default")
         load_kube_config(context=kwargs.get("kube_context"))
+        # The bare pod too: setup refuses to create the Deployment beside one
+        # (store_pod.read_live_store), and this is the remedy that refusal names.
+        bare_pod = {"apiVersion": "v1", "kind": "Pod",
+                    "metadata": {"name": store_pod.STORE_DEPLOYMENT_NAME}}
         delete_manifests(
             client.CoreV1Api(),
             store_pod.infrastructure_claims(namespace)
-            + store_pod.attach_infrastructure([], namespace),
+            + store_pod.attach_infrastructure([], namespace) + [bare_pod],
             namespace=namespace)
         logger.debug("The %s pod is removed from namespace %s",
-                     store_pod.STORE_POD_NAME, namespace)
+                     store_pod.STORE_DEPLOYMENT_NAME, namespace)
 
     def prepare_setup_cluster(self, output_dir, **kwargs):
         """Write what a manual setup needs: the pod manifest and a README for this provider.
@@ -336,7 +340,7 @@ class BaseConfig(object):
 
     @staticmethod
     def _apply_pod_node_selector(yaml_objects, node_labels):
-        """Inject ``nodeSelector`` into all ``Pod`` objects.
+        """Inject ``nodeSelector`` into every ``Pod`` and every ``Deployment``'s pod template.
 
         Args:
             yaml_objects: Iterable of parsed YAML dicts (from ``yaml.safe_load_all``).
@@ -351,10 +355,17 @@ class BaseConfig(object):
         if not node_labels:
             return docs
         for doc in docs:
-            if doc and doc.get('kind') == 'Pod':
-                # Merged, not replaced. Two intents reach here -- the operator's node pool
-                # from `control.node_labels` and the placement label -- and replacing would
-                # silently drop whichever arrived first.
-                selector = doc.setdefault('spec', {}).setdefault('nodeSelector', {})
-                selector.update(node_labels)
+            if not doc:
+                continue
+            if doc.get('kind') == 'Pod':
+                pod = doc
+            elif doc.get('kind') == 'Deployment':
+                pod = doc.setdefault('spec', {}).setdefault('template', {})
+            else:
+                continue
+            # Merged, not replaced. Two intents reach here -- the operator's node pool
+            # from `control.node_labels` and the placement label -- and replacing would
+            # silently drop whichever arrived first.
+            selector = pod.setdefault('spec', {}).setdefault('nodeSelector', {})
+            selector.update(node_labels)
         return docs

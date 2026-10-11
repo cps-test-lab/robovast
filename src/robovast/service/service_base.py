@@ -3508,6 +3508,15 @@ class ServiceBase(RobovastInterface):
         del campaign_id, job_name
         return ""
 
+    def _job_is_queued(self, campaign_id: str, job_name: str) -> bool:
+        """Whether *job_name* is a job of the campaign queued for capacity, not created yet.
+
+        Such a job has no directory and no log yet, and will have both. ``False`` for a
+        service that queues nothing of its own.
+        """
+        del campaign_id, job_name
+        return False
+
     def _job_log_dir(self, campaign_id: str, job_name: str) -> Tuple[Optional[Path], List[str]]:
         """``(job directory, runs placed in it)``, or ``(None, [])`` before it is known.
 
@@ -3527,7 +3536,10 @@ class ServiceBase(RobovastInterface):
             rel = self._job_artifact_hint(campaign_id, job_name)
         if not rel:
             # Before the first job starts there is no manifest yet: a run the campaign has
-            # is a job whose log does not exist yet, anything else is not a job of it.
+            # is a job whose log does not exist yet, as is a job queued for capacity;
+            # anything else is not a job of it.
+            if self._job_is_queued(campaign_id, job_name):
+                return None, []
             try:
                 run_dir = safe_join(campaign_dir, job_name)
             except UnsafePathError as exc:
