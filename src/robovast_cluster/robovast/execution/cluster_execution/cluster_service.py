@@ -844,6 +844,17 @@ class ClusterService(ServiceBase):
         to order and a rank means something."""
         return True
 
+    def _table_builder(self, campaign_id, campaign_dir, state=None):
+        """Jobs on this cluster, sized from the campaign's record (``table_jobs``)."""
+        from robovast.execution.control_server import stop_checker  # noqa: PLC0415
+
+        from .table_jobs import cluster_pod_builder  # noqa: PLC0415
+        del campaign_id
+        return cluster_pod_builder(
+            str(campaign_dir), namespace=self.namespace, kube_context=self.kube_context,
+            cluster_config=self._cluster_config, admission=self._admission_controller,
+            should_stop=stop_checker(state))
+
     def _admit_scheduling(self, request) -> None:
         """Admit a rank or a hold: see :meth:`_queues_campaigns`."""
         del request
@@ -1349,6 +1360,15 @@ class ClusterService(ServiceBase):
         """
         del campaign_id
         return self._job_artifact_dir(job_name)
+
+    def _job_is_queued(self, campaign_id: str, job_name: str) -> bool:
+        """Whether the admission queue holds *job_name* as planned: admitted, no Job yet."""
+        from .node_admission import PLANNED
+
+        with self._admission_lock:
+            admission = self._admission
+        return admission is not None and \
+            admission.states(campaign_id).get(job_name) == PLANNED
 
     # -- image builds (in-cluster BuildKit Job) -----------------------------
 

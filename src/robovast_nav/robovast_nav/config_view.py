@@ -29,6 +29,7 @@ obstacle variation adds boxes along it -- and the reading of a resolved configur
 
 from robovast.common.scene_markers import (ConfigViewContribution, SceneMarker, read_pose,
                                            read_xy)
+from robovast.common.variation.base_variation import SLOT_BINDINGS
 
 from .object_shapes import get_object_type_from_model_path, get_obstacle_dimensions
 
@@ -57,24 +58,24 @@ def _as_list(value) -> list:
 def path_markers(config: dict) -> list[SceneMarker]:
     """The planned path, the start and goal poses, and any raster sample points.
 
-    Reads the *resolved destination* the variation recorded (``_goal_parameter_name``)
-    rather than guessing a name: the campaign chooses what its goal parameter is called,
-    and the desktop renderer that guessed drew nothing the moment an author picked a third.
+    The start and the goals are read from the scenario parameters the ``start`` and ``goal``
+    slots were written to (``_slot_bindings``), because the campaign names those parameters.
     """
     markers: list[SceneMarker] = []
     params = config.get("config") or {}
+    bindings = config.get(SLOT_BINDINGS) or {}
 
     points = [p for p in (read_xy(p) for p in (config.get("_path") or [])) if p]
     if points:
         markers.append(SceneMarker(kind="path", points=points, color=PATH_COLOR,
                                    label="planned path"))
 
-    start_pos, start_yaw = read_pose(params.get("start_pose"))
+    start_pos, start_yaw = read_pose(params.get(bindings.get("start")))
     if start_pos:
         markers.append(SceneMarker(kind="pose", pos=start_pos, yaw=start_yaw,
                                    color=START_COLOR, label="start"))
 
-    goals = _as_list(params.get(config.get("_goal_parameter_name")))
+    goals = _as_list(params.get(bindings.get("goal")))
     for i, goal in enumerate(goals):
         pos, yaw = read_pose(goal)
         if pos:

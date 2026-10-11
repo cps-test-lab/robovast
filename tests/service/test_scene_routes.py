@@ -154,10 +154,10 @@ def test_an_unrecorded_override_set_is_flagged_not_assumed(client, tmp_path):
     assert "carries no overrides" in body["note"]
 
 
-def test_the_scene_names_are_reserved_against_plugin_endpoints():
-    """A plugin endpoint called `scene` would shadow these routes silently."""
-    from robovast.service.endpoint_plugin import RESERVED_CAMPAIGN_ENDPOINTS
-    assert {"scene", "scene_assets"} <= RESERVED_CAMPAIGN_ENDPOINTS
+def test_the_scene_names_are_reserved_against_plugin_endpoints(client):
+    """A plugin endpoint called `scene` would sit behind these routes and never answer."""
+    from robovast.service.endpoint_plugin import core_campaign_segments
+    assert {"scene", "scene_assets"} <= core_campaign_segments(client.app.routes)
 
 
 def test_a_failed_build_reports_its_reason_instead_of_looking_unbuilt(client, monkeypatch, tmp_path):

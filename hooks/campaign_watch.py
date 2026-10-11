@@ -2,11 +2,10 @@
 """Never end a turn silently in the middle of a campaign.
 
 `start_campaign` returns as soon as the campaign is named and the campaign runs on for
-minutes, hours or days. `start_campaign` now hands back the command that waits for it
-(`vast campaign wait <id>`, backgrounded) — but nothing *forces* it to be run, and the
-reported bug was exactly an agent reading one status and stopping. This hook is the floor
-under that: the first attempt to end a turn with a campaign nobody is waiting for is
-blocked with the command to run.
+minutes, hours or days. `start_campaign` hands back the command that waits for it
+(`vast campaign wait <id>`, backgrounded), but nothing *forces* it to be run, and an agent
+can read one status and stop. This hook is the floor under that: the first attempt to end
+a turn with a campaign nobody is waiting for is blocked with the command to run.
 
 **Block once, then allow.** A sweep can legitimately run for days, and no in-session wait
 survives that (the service announces the end over ntfy instead). Blocking until done
@@ -25,13 +24,13 @@ Wired in this plugin's ``hooks/hooks.json`` as:
   Stop, SubagentStop                    -> check
 
 The tool matchers are patterns, not literals: the prefix is `mcp__<server-name>__`, and
-the server name is whatever the user typed in `claude mcp add`. Hardcoding `robovast`
-made the guard silently do nothing for anyone who chose another name -- installed,
-inert, and indistinguishable from working.
+the server name is whatever the user typed in `claude mcp add`, so a literal `robovast`
+would leave the guard inert for anyone who chose another name.
 """
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -40,6 +39,9 @@ from pathlib import Path
 # abandoned session must not greet the next one with a block about a campaign that ended
 # hours ago.
 STALE_AFTER_S = 6 * 3600
+
+# `vast`, by any path, then `campaign wait`; root options such as `-l DEBUG` may come between.
+_WAITER = re.compile(r"(?:^|[\s/;&|(])vast\s(?:.*\s)?campaign\s+wait\s")
 
 
 def _ledger_path(payload):
@@ -102,18 +104,16 @@ def record(payload, path):
 
 
 def clear(payload, path):
-    """Drop a campaign once a tool reports it is genuinely over.
+    """Drop a campaign once `stop_campaign` reports it stopped.
 
-    Abandoning a campaign deliberately (`stop_campaign`) counts as settling it: what this
-    hook objects to is leaving one unattended in silence, not choosing to end it.
+    Abandoning a campaign deliberately counts as settling it: what this hook objects to is
+    leaving one unattended in silence, not choosing to end it. A refused stop (`stopped`
+    false) settles nothing.
     """
     response = _tool_response(payload)
     campaign_id = str(response.get("campaign_id") or
                       (payload.get("tool_input") or {}).get("campaign_id") or "")
-    if not campaign_id:
-        return
-    finished = bool(response.get("done")) or bool(response.get("ok"))
-    if not finished:
+    if not campaign_id or response.get("stopped") is not True:
         return
     data = _live(_read(path))
     if data.pop(campaign_id, None) is not None:
@@ -126,21 +126,14 @@ def delegated(payload, path):
     Blocking in an MCP call is not the only correct way to see a campaign out, and it is
     the worse one for a long sweep: it occupies the conversation for as long as it runs.
     Backgrounding the CLI waiter frees the agent and still gets it notified when the
-    campaign lands. Left unrecognised, this hook stopped the turn precisely when the
-    agent had chosen the better mechanism — nagging about the right answer teaches the
-    wrong one.
+    campaign lands. Stopping the turn of an agent that chose it would teach the wrong
+    mechanism.
 
     Whichever campaign ids the command mentions are marked handed-off at *launch*, not at
     exit: that is the moment responsibility moves to the waiter.
     """
     command = str((payload.get("tool_input") or {}).get("command") or "")
-    # Matches `vast` + `wait`, not the full spelling. That is what let this survive both
-    # moves of the waiting verb (`vast exec wait` -> `vast wait` -> `vast campaign wait`)
-    # without a change: pinning the group would have stopped it recognising a correct
-    # waiter at each rename, and nagging an agent that chose the right mechanism teaches
-    # the wrong one. All three spellings still match, which is right -- an older install
-    # has an older one.
-    if "vast" not in command or "wait" not in command:
+    if not _WAITER.search(command):
         return
     data = _live(_read(path))
     handed = [cid for cid in data if cid in command]
@@ -161,9 +154,8 @@ def check(_payload, path):
     for cid in pending:
         data[cid]["warned"] = True
     _write(path, data)
-    # Every pending id, not just the first. Marking them all warned while naming one was
-    # silent data loss: start three campaigns, get told about one, and the other two are
-    # recorded as handled without anyone ever hearing of them.
+    # Every pending id, not just the first: all of them are marked warned here, so one left
+    # unnamed would be recorded as handled without anyone hearing of it.
     listed = ", ".join(pending)
     waits = "\n".join(f"    vast campaign wait {cid}" for cid in pending)
     plural = "campaigns were" if len(pending) > 1 else "campaign was"
@@ -233,9 +225,8 @@ def rearm(payload, path):
 
 
 #: What counts as busy-waiting: this many status reads of ONE campaign inside this
-#: window. Sized from what the record showed -- an agent polling every couple of seconds
-#: for twenty minutes -- and deliberately well above honest use. Checking a campaign a
-#: few times across a turn is not polling; the shape being caught is a loop.
+#: window, deliberately well above honest use. Checking a campaign a few times across a
+#: turn is not polling; the shape being caught is a loop.
 POLL_LIMIT = 5
 POLL_WINDOW_S = 300
 

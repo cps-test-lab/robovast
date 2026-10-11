@@ -21,13 +21,12 @@ from robovast.client import cli as client_cli
 
 
 class _Ref:
-    def __init__(self, tag, cached, builds, cached_builds=None):
+    def __init__(self, tag, cached, builds, cached_builds):
         self.tag = tag
         self.build_id = builds[tag]
         self.cached = cached
         self.builds = builds
-        if cached_builds is not None:
-            self.cached_builds = cached_builds
+        self.cached_builds = cached_builds
 
 
 @pytest.fixture
@@ -65,8 +64,8 @@ def test_every_cached_image_is_named(build):
 
 
 def test_a_building_sibling_is_not_hidden_by_a_cache_hit(build):
-    """The observed case. The scenario image was a hit and the expensive sut image was not;
-    only the hit was printed, so the sut looked absent rather than in progress."""
+    """The scenario image is a hit and the sut image is not: both are named, so the sut
+    reads as in progress rather than absent."""
     waited = build(_Ref("scenario", False, {"scenario": "b-scenario", "sut": "b-sut"},
                         {"scenario": True, "sut": False}))
     out = _run().output
@@ -80,12 +79,3 @@ def test_nothing_is_waited_on_when_everything_is_cached(build):
     waited = build(_Ref("scenario", True, {"scenario": "b-scenario"},
                         {"scenario": True}))
     assert waited == []
-
-
-def test_a_service_without_per_container_verdicts_still_reports_once(build):
-    """An older service sends no ``cached_builds``. One line about the handle's tag is all
-    that can honestly be said, and every id is waited on rather than a subset guessed."""
-    waited = build(_Ref("scenario", False, {"scenario": "b-scenario", "sut": "b-sut"}))
-    out = _run().output
-    assert "building 'build:scenario'" in out
-    assert sorted(waited) == ["b-scenario", "b-sut"]

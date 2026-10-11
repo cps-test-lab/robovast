@@ -144,7 +144,8 @@ function useLiveTail(
         setVersion((v) => v + 1)
         queryClient.invalidateQueries({ queryKey })
       }
-      // An error is followed by `eof`, which is handled above; the message is the feed's to show.
+      // An error is shown by the run view, which hears every table's events; this reader keeps
+      // what it has. A refusal is followed by `eof`, handled above.
     })
     // The binding and the columns are in the key.
     // eslint-disable-next-line react-hooks/exhaustive-deps

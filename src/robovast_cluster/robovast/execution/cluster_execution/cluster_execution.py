@@ -943,6 +943,33 @@ def restarted_job_reasons(k8s_core, namespace, label_selector, job_names=None) -
                                        job_names).items()}
 
 
+def wedged_init_container_reasons(k8s_core, namespace, label_selector) -> dict:
+    """Job name → ``"<reason>: <message>"`` for Jobs whose pod is stuck behind an init
+    container that ended ``OOMKilled``.
+
+    An init container a process was OOM-killed in can still succeed -- a fetch retries a
+    killed ``curl`` -- and the kubelet then records it ``OOMKilled``, neither starts the next
+    container nor fails the pod: it stays ``Pending`` with no event, and its Job reads
+    ``active``. None of :func:`pod_block_reason`'s shapes covers it, so a wait that does not
+    ask this sees a Job that is merely slow. A caller treats the answer as blocked, under
+    the same grace, since the kubelet can still move past such a kill.
+    """
+    out = {}
+    for pod in k8s_core.list_namespaced_pod(namespace, label_selector=label_selector).items:
+        name = _pod_job_name(pod)
+        status = getattr(pod, "status", None)
+        if not name or getattr(status, "phase", None) != "Pending":
+            continue
+        for cs in getattr(status, "init_container_statuses", None) or []:
+            term = getattr(getattr(cs, "state", None), "terminated", None)
+            if term is not None and getattr(term, "reason", None) == "OOMKilled":
+                out[name] = (f"OOMKilled: init container {getattr(cs, 'name', None) or '?'} "
+                             "was killed for exceeding its memory limit, and the kubelet does "
+                             "not start the next container after that")
+                break
+    return out
+
+
 def oom_killed_job_forensics(k8s_core, namespace, label_selector, job_names=None) -> dict:
     """Job name → ``{"containers", "node"}`` for Jobs whose pod ENDED on an OOM-killed
     container. Empty when none did.
