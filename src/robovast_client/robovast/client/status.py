@@ -18,10 +18,10 @@
 
 These are pure data types (stdlib + pydantic only) shared by every layer: the
 controller that advances them, the service that serves them, the MCP/CLI clients
-that render them, and ``common`` readers that persist/recover them. They live in
-``common`` so that a foundational module (e.g. ``campaign_data`` reading a durable
-``outcome.json`` back into a ``Status``) can depend on the contract *downward*,
-instead of ``common`` reaching up into ``execution`` for it.
+that render them, and ``common`` readers that persist/recover them. They live in the
+client distribution, which every other one depends on, so a foundational module (e.g.
+``campaign_data`` reading a durable ``outcome.json`` back into a ``Status``) depends on
+the contract *downward*, and a client-only install renders a status without the core.
 
 The live, thread-owning holder that the controller writes —
 :class:`~robovast.execution.control_server.ControllerState` — stays in

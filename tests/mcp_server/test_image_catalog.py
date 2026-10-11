@@ -106,7 +106,21 @@ def test_a_non_address_is_refused_with_an_actionable_error():
 def test_no_service_is_reported_not_worked_around(monkeypatch):
     monkeypatch.setattr(service_access, "service_client", lambda: None)
     out = image_catalog.list_image_catalog(address="/sources/ws-1/a.vast")
-    assert "error" in out
+    assert out == {"error": service_access.NO_SERVICE}
+
+
+def test_a_service_that_stops_answering_is_reported_as_no_service(monkeypatch):
+    """A failed image resolution is answered as every tool answers it, so an unreachable
+    service reads as the one no-service sentence rather than a socket error."""
+    from robovast.service.interface import ServiceUnreachable
+
+    class _Unreachable(_FakeClient):
+        def resolve_image(self, request):
+            raise ServiceUnreachable("http://service.example", "connection refused")
+
+    monkeypatch.setattr(service_access, "service_client", lambda: _Unreachable())
+    out = image_catalog._fetch("roqsim_plugins", "", family="roqsim")
+    assert service_access.NO_SERVICE in out["error"]
 
 
 # -- one exec per image, not per item ------------------------------------------
