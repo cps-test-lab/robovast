@@ -1668,10 +1668,10 @@ same time and the difference lands entirely in CPU consumed. One declared number
 wrong on every node but the one it was measured on.
 
 It is a **validity** matter as much as a throughput one. At one uniform allocation for the
-system under test, a slow node can be quota-bound in every run while faster ones never are.
-Equal *cores* are not equal *compute*,
-so an equal declaration produces unequal conditions — the thing a uniform number was meant to
-prevent.
+system under test, a slow node can be quota-bound in every run while faster ones never are —
+``run_validity_view`` shows ``quota_bound`` per run and node. Equal *cores* are not equal
+*compute*, so an equal declaration produces unequal conditions — the thing a uniform number
+was meant to prevent.
 
 How the figure is found:
 
@@ -1680,7 +1680,7 @@ How the figure is found:
   the first place. Every container of the probe writes there: the scenario's results, the
   job artifacts, and what a sidecar writes per run (a simulator's recording and pose
   record), each of which is named by its own variable and every one of which the probe
-  points at its own directory. A campaign of 50 runs still delivers 50.
+  points at its own directory. A campaign delivers every run it asked for.
 * **What it measured and what it allocated are part of the campaign's record.** Every run on a
   node was sized from that node's figures, so they are a condition of the run: ``campaign.db``
   keeps them on the machine's own row, ``node.calibration_json`` -- per container, what the
@@ -1703,8 +1703,8 @@ How the figure is found:
   under test is read at its maximum, as request *and* limit, so it never throttles: a run
   clipped mid-plan fails in a way that looks like the stack's fault rather than the
   allocation's. The simulator is read at the 95th percentile and keeps its ceiling — its
-  peak-to-mean ratio is about 18, so reserving the maximum would cost more than not
-  calibrating, and the realtime factor reports if the squeeze cost anything. The scenario
+  peak-to-mean ratio can be an order of magnitude, so reserving the maximum would cost more
+  than not calibrating, and the realtime factor reports if the squeeze cost anything. The scenario
   runner is read the same way, but nothing grades how well *it* ran, so its ceiling is what
   must not be tight; on a probe its own tick rate fills that gap (see below).
 
@@ -1726,13 +1726,13 @@ How the figure is found:
   instrumentation on the trial's hot path, and only the probe's file is ever read.
 * **A calibrated figure never exceeds what the ``.vast`` declared.** Calibration sizes a
   node's jobs down to what they need; it does not raise a ceiling the author set.
-* **Frozen once set, and dropped when the campaign ends.** Continuing to adapt would mean run
-  5 and run 40 on the same node ran in different environments. The figures are deliberately
+* **Frozen once set, and dropped when the campaign ends.** Continuing to adapt would mean an
+  early and a late run on the same node ran in different environments. The figures are deliberately
   not reused by the next campaign — they were measured under this one's contention, for this
   one's containers.
 * **Pilots calibrate nothing.** With no more jobs than the cluster has nodes, no node runs a
   second one, so the probe would cost as much as the work it was meant to improve. The
-  mechanism is skipped and the campaign behaves as it did before any of this existed.
+  mechanism is skipped and every run uses the declared sizing.
 
 **Whether it is worth turning on is a question about your cluster, not about RoboVAST.**
 The gain is the spread between your fastest and slowest node; on a homogeneous cluster there
@@ -1773,8 +1773,8 @@ can move a long way while another's barely moves, flipping their order.
 safe and is not: a container clipped at its limit does not lose the clipped work, it queues it,
 so it stays pegged working the backlog off and the next spike arrives into a full budget. A
 configuration whose static clip rate is **a fraction of a percent** can stay saturated for much
-of a run and **lose runs outright**. That is why the system under test takes the peak as request *and* limit, while
-everything else splits the two.
+of a run and **lose runs outright**. That is why the system under test takes the peak as
+request *and* limit, while everything else splits the two.
 
 **What remains true, and is why a campaign chooses.** A peak measured on an idle probe is
 still an unvalidated basis for a hard limit on a loaded machine; a workload with heavier

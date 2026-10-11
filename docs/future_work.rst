@@ -225,7 +225,7 @@ whose lifetime is the campaign's rather than the batch's. An owner-scoped regist
 queue would hold it together with the probe bookkeeping, and would make ``cancel(owner)`` mean
 one thing.
 
-**Two figures assume a nav2 trial's dimensions, and should be derived.**
+**Two places assume a nav2 trial's dimensions, and should be derived.**
 
 * ``CONTENDED_GRACE_SECONDS = 900`` (``cluster_execution.py``) is documented as "fifteen
   minutes outlasts a typical trial", which is true of a 150 s trial. A campaign whose trials
@@ -294,9 +294,10 @@ isolation a year later gives no hint which of the two it is.
   blocker, and it is not specific to us.
 
 **The tension worth stating plainly:** per-job GPU attribution and time-slicing pull against
-each other. Exclusive allocation (``--gpu-replicas 1``, or MIG on the cards that offer it) makes a device figure exactly the job's figure and gives up the
-concurrency the replica count exists for. Time-slicing buys the concurrency and makes device
-*utilization* meaningless per job, since the card interleaves contexts. Memory is the more
+each other. Exclusive allocation (``--gpu-replicas 1``, or MIG on the cards that offer it)
+makes a device figure exactly the job's figure and gives up the concurrency the replica count
+exists for. Time-slicing buys the concurrency and makes device *utilization* meaningless per
+job, since the card interleaves contexts. Memory is the more
 tractable half: an allocation does belong to one context, so per-job GPU *memory* is
 attributable in principle and blocked only by the PID mapping above.
 
