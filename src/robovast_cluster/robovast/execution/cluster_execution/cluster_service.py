@@ -1350,6 +1350,15 @@ class ClusterService(ServiceBase):
         del campaign_id
         return self._job_artifact_dir(job_name)
 
+    def _job_is_queued(self, campaign_id: str, job_name: str) -> bool:
+        """Whether the admission queue holds *job_name* as planned: admitted, no Job yet."""
+        from .node_admission import PLANNED
+
+        with self._admission_lock:
+            admission = self._admission
+        return admission is not None and \
+            admission.states(campaign_id).get(job_name) == PLANNED
+
     # -- image builds (in-cluster BuildKit Job) -----------------------------
 
     def _image_build_state(self) -> dict:
