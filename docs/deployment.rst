@@ -348,6 +348,11 @@ other step whose plugin declares it (:ref:`extending-postprocessing`) — run in
 them wherever the cluster has room. One more Job then runs the remaining steps and the index
 ingest over the whole campaign.
 
+A part that fails still delivers what it derived, and that last Job still runs once every part
+has ended: the campaign is queryable less what the failed parts could not derive, and its
+postprocessing is reported as failed, naming the parts. Only a part that never ran -- one that
+could not start, or a stop -- leaves the campaign out of the index.
+
 **Nothing has to be set for this.** By default a campaign is cut into as many parts as the
 cluster could run at once: its recorded size (``ROBOVAST_CLUSTER_MAX_CPU``, written by
 ``setup``) divided by the CPU one conversion reserves, which is the campaign's own

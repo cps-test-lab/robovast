@@ -322,6 +322,14 @@ read too, and all uncached plugins of one world are asked in one exec. Its findi
 design: a docstring-published key list can be incomplete, so the finding states what the catalog
 shows rather than a verdict the check cannot make.
 
+And one more: the state a trial starts from. The describe the check asks for resets the world it
+built, as a run does before each trial, and the answer carries ``warnings`` -- what that state holds
+that will not stop the world from loading but is likely to make a run misbehave, in the simulator's
+own ``{check, message, hint}`` (roqsim: two bodies placed inside one another, which the contact
+solver flings apart on the first steps). Each becomes advice carrying the simulator's words, because
+the simulator does not refuse it either; nothing here knows which checks exist. A reset that raises
+comes back as ``errors.reset`` and is an error, since no run of that world reaches its first step.
+
 One function runs every such query --
 :func:`robovast.common.config_generation.describe_world_payload` -- because the two callers
 (the ``sim``-override pre-check, and
@@ -1029,7 +1037,10 @@ a caller's viewpoint, so its key would be a camera pose and a time and would nev
 no cache, no thread, one synchronous ``POST`` that returns the image or the reason. That second
 part matters as much as the first — an asynchronous render would have to stash its failure
 somewhere the caller could find later, which is exactly the in-memory dictionary that makes a
-failed scene build visible to nothing but ``get_run_scene_status``.
+failed scene build visible to nothing but ``get_run_scene_status``. A render is still *kept*,
+under a fresh name the response's ``Content-Location`` carries: not for reuse, but so a caller
+can pass it on by address. The store is bounded by age and count rather than cached, and pruned
+each time a render is kept.
 
 **Costmap delivery.** A grid needs a table of its own. The generic topic flatten packs an
 array field into one cell and the read path caps a cell at 2 KB, so a run view reading SQL

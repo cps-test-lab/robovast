@@ -19,14 +19,8 @@ Run it as the **whole** command — nothing chained after it. The exit code is t
 signal, and `; echo …` makes the harness observe the wrapper's status instead: a failed
 campaign then reports success.
 
-| exit | means |
-|---|---|
-| 0 | finished, past postprocessing |
-| 1 | failed or stopped |
-| 2 | `--timeout` elapsed; the campaign is still running |
-| 3 | the service has no phase for that id — a typo, or it died before recording one |
-| 4 | **stalled** — nothing completed for longer than one run may take |
-| 5 | a running job's **simulator** reported a fault (sim time not advancing, and the like) |
+`vast campaign wait --help` lists what each exit code means. Two of them, `STALLED` and
+`HEALTH_FINDING`, end the wait while the campaign is still running — see below.
 
 Backgrounded, it costs you nothing: you stay free, and you are notified when it exits.
 
@@ -41,7 +35,7 @@ More than a handful of reads of one campaign inside five minutes and the hook sa
 If you find yourself checking again because the last answer was "running", background the
 waiter instead: that is the call that tells you when the answer changes.
 
-## 4 and 5 are a hand-off, not an ending
+## A stall or a simulator fault is a hand-off, not an ending
 
 **The campaign is still running and nothing is waiting on it now.** Neither exit touched the
 run. This is the waiter telling you something is wrong so you do not have to remember to look

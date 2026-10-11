@@ -394,12 +394,14 @@ def describe_world(address: str, targets: str = "", entities: bool = False) -> d
             *entities*.
 
     Returns:
-        ``{backend, image, duration_s, world, packaged, inputs, components, entities, overridable,
-        dropped_transport, errors}``, ``overridable`` being ``{fields, targets}``; or
-        ``{error}`` — including when only an unbuilt image could answer. A non-empty ``errors``
-        means a partial answer: read it before taking a null ``entities`` for a world that
-        compiles none. ``dropped_transport`` names transport plugins the build left out, which a
-        describe does not need.
+        ``{backend, image, duration_s, world, packaged, inputs, components, entities, warnings,
+        overridable, dropped_transport, errors}``, ``overridable`` being ``{fields, targets}``;
+        or ``{error}`` — including when only an unbuilt image could answer. A non-empty
+        ``errors`` means a partial answer: read it before taking a null ``entities`` for a world
+        that compiles none. ``warnings`` comes with *entities*: what the start state holds that
+        will make a run misbehave (bodies placed inside one another), each
+        ``{check, message, hint}``. ``dropped_transport`` names transport plugins the build left
+        out, which a describe does not need.
     """
     from robovast.service.project_push import _resolve_workspace_id
     try:

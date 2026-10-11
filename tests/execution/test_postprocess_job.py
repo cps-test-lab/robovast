@@ -207,9 +207,10 @@ _ACTIVE = {"active": 1}
 _SUCCEEDED = {"succeeded": 1}
 
 
-def _await(monkeypatch, *, probes, statuses, timeout=100_000):
+def _await(monkeypatch, *, probes, statuses, timeout=100_000, wedged=("",), cancelled=None):
     """Drive ``await_job`` on a fake clock that advances by each poll's sleep, with the
-    blocked probe answering from *probes* (the last repeated). Returns
+    blocked probe answering from *probes* and the wedge probe from *wedged* (the last of each
+    repeated); *cancelled* collects the Jobs deleted. Returns
     ``((ok, message), seconds_waited)``."""
     now = {"t": 1_000.0}
     monkeypatch.setattr(pj, "time", types.SimpleNamespace(time=lambda: now["t"]))
@@ -219,6 +220,12 @@ def _await(monkeypatch, *, probes, statuses, timeout=100_000):
     script = iter(probes)
     monkeypatch.setattr(pj, "_blocked_reason",
                         lambda *_a, **_kw: next(script, probes[-1]))
+    wedge = iter(wedged)
+    monkeypatch.setattr(pj, "_wedged_init_container",
+                        lambda *_a, **_kw: next(wedge, wedged[-1]))
+    monkeypatch.setattr(pj, "cancel_job", lambda _b, _ns, name: (cancelled
+                                                                  if cancelled is not None
+                                                                  else []).append(name))
     result = pj.await_job(object(), _JobStatusFeed(*statuses), "/nowhere", "ns", "job-x",
                           timeout=timeout)
     return result, now["t"] - 1_000.0
@@ -258,6 +265,58 @@ def test_a_pod_with_an_unpullable_image_is_reported_after_the_short_grace(monkey
     assert ok is False
     assert "cannot start" in message and "ImagePullBackOff: no such image" in message
     assert BLOCKED_GRACE_SECONDS <= waited < CONTENDED_GRACE_SECONDS
+
+
+def test_a_pod_stuck_behind_an_oom_killed_stage_is_failed_and_deleted(monkeypatch):
+    """The kubelet neither starts the next step nor fails the pod, so the Job reads active
+    until the deadline -- and a re-run adopts the same Job and waits on it again."""
+    from robovast.execution.cluster_execution.cluster_execution import BLOCKED_GRACE_SECONDS
+
+    cancelled = []
+    (ok, message), waited = _await(monkeypatch, probes=[("", False)], statuses=[_ACTIVE],
+                                   wedged=[pj.STAGE_CONTAINER], cancelled=cancelled)
+    assert ok is False
+    assert pj.STAGE_CONTAINER in message and "memory limit" in message
+    assert cancelled == ["job-x"]
+    assert BLOCKED_GRACE_SECONDS <= waited < 10 * BLOCKED_GRACE_SECONDS
+
+
+def test_an_oom_kill_the_kubelet_moves_past_is_not_a_verdict(monkeypatch):
+    """Seen once and gone: the pod went on to its next step, so the conversion carries on."""
+    cancelled = []
+    (ok, message), _waited = _await(
+        monkeypatch, probes=[("", False)], statuses=[_ACTIVE, _ACTIVE, _SUCCEEDED],
+        wedged=[pj.STAGE_CONTAINER, ""], cancelled=cancelled)
+    assert ok is True, message
+    assert cancelled == []
+
+
+def _pod_status(phase, *init):
+    return types.SimpleNamespace(status=types.SimpleNamespace(
+        phase=phase, init_container_statuses=[
+            types.SimpleNamespace(name=name, state=types.SimpleNamespace(
+                terminated=types.SimpleNamespace(reason=reason, exit_code=0)))
+            for name, reason in init]))
+
+
+class _Pods:
+    def __init__(self, *pods):
+        self.pods = list(pods)
+
+    def list_namespaced_pod(self, namespace, label_selector):
+        return types.SimpleNamespace(items=self.pods)
+
+
+def test_a_pending_pod_behind_an_oom_killed_init_step_is_named():
+    core = _Pods(_pod_status("Pending", (pj.STAGE_CONTAINER, "OOMKilled")))
+    assert pj._wedged_init_container(core, "ns", "job-x") == pj.STAGE_CONTAINER
+
+
+def test_a_cleanly_staged_or_running_pod_is_not_wedged():
+    assert pj._wedged_init_container(
+        _Pods(_pod_status("Pending", (pj.STAGE_CONTAINER, "Completed"))), "ns", "j") == ""
+    assert pj._wedged_init_container(
+        _Pods(_pod_status("Running", (pj.STAGE_CONTAINER, "OOMKilled"))), "ns", "j") == ""
 
 
 # -- one campaign, many conversions ------------------------------------------
@@ -444,9 +503,22 @@ def test_the_conversion_writes_the_campaign_tree_and_uploads_nothing():
 
     assert step.rstrip().endswith(f"{pj.CAMPAIGN_MOUNT}/c1")
     assert "--output-root" not in step
-    assert script.rstrip().endswith("exit $rc")
     for absent in ("curl", pod_access.TOKEN_ENV, pod_access.DATA_URL_ENV):
         assert absent not in script, absent
+
+
+def test_a_failed_conversion_hands_its_status_on_instead_of_failing_the_pod():
+    """The conversion is an initContainer, and a failed one starts nothing after it -- so
+    the host container, the only one that delivers, would never run, and one refused bag
+    would take every converted one down with the pod. The status goes to the host instead,
+    which fails the Job once it has delivered."""
+    from robovast.execution.cluster_execution.postprocess_host import CONVERSION_EXIT_FILE
+
+    script = pj._conversion_script(steps(), campaign_id="c1")
+    lines = script.rstrip().splitlines()
+    assert lines[-1] == "exit 0"
+    # Handed over, or returned when it cannot be: never dropped for a pass.
+    assert lines[-2] == f'echo "$rc" > {pj.CAMPAIGN_MOUNT}/{CONVERSION_EXIT_FILE} || exit $rc'
 
 
 def test_a_failed_conversion_still_writes_a_postprocessing_section(tmp_path):
@@ -571,6 +643,22 @@ def test_another_containers_exit_code_is_reported_as_the_number():
 
     assert pj.pod_failure_reason(core, 'ns', 'job-x') == (
         f'container {pj.HOST_CONTAINER} exited 7 (Error)')
+
+
+def test_a_host_that_delivered_after_a_failed_conversion_names_the_conversion():
+    """The conversion hands its status to the host rather than exiting with it, so the
+    container that exits non-zero is the host -- and "host exited 3" would send the reader
+    to the one step that worked."""
+    from robovast.execution.cluster_execution.postprocess_host import CONVERSION_FAILED_EXIT
+
+    core = _core([_pod(init=[_CS(pj.STAGE_CONTAINER, exit_code=0),
+                             _CS(pj.CONVERT_CONTAINER, exit_code=0)],
+                       main=[_CS(pj.HOST_CONTAINER, exit_code=CONVERSION_FAILED_EXIT)])])
+
+    reason = pj.pod_failure_reason(core, 'ns', 'job-x')
+
+    assert reason.startswith(f'container {pj.CONVERT_CONTAINER} failed')
+    assert 'delivered' in reason
 
 
 class _FakeBatch:

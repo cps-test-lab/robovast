@@ -249,15 +249,25 @@ def step_resources(cpu, memory, ephemeral: str = "") -> dict:
     }
 
 
+#: The stage step's memory, as reservation and ceiling. Fixed rather than sized from the
+#: campaign (see :func:`stage_resources`), but not tight: the memory cgroup also carries the
+#: kernel's buffers for the files being written, and a part of tens of gigabytes can take them
+#: past a few hundred MiB. A process killed there is retried by the fetch and the step still
+#: succeeds -- but the kubelet records the container as OOMKilled and does not start the next
+#: one (see :func:`_wedged_init_container`), so a kill costs the whole postprocess.
+STAGE_MEMORY = "2Gi"
+
+
 def stage_resources(stage_bytes=None) -> dict:
     """What the stage step gets for a campaign of *stage_bytes*.
 
     **cpu and memory are fixed, and a campaign's figure does not raise them** -- unlike the
     host step below. Staging is ``curl | tar``: the archive streams through a pipe and each
-    member is written as it arrives, so what it holds *in memory* is set by that construction
-    and not by the size of the campaign. The small memory bound is therefore a GUARD rather
-    than a reservation, and it runs nothing a ``.vast`` would know the appetite of better
-    than we do.
+    member is written as it arrives, so what its processes hold *in memory* is set by that
+    construction and not by the size of the campaign. The memory bound is therefore a GUARD
+    rather than a reservation for the campaign, with room for the write buffers the cgroup
+    is charged for (:data:`STAGE_MEMORY`), and it runs nothing a ``.vast`` would know the
+    appetite of better than we do.
 
     **Disk is the opposite, because that is where the streaming ends.** Every member lands on
     the node's filesystem and stays there for the pod's life, so the staged tree *is* the
@@ -266,7 +276,7 @@ def stage_resources(stage_bytes=None) -> dict:
     the figure is scheduled onto a node that cannot hold it and evicted partway through --
     losing the whole postprocessing, not the excess.
     """
-    return step_resources(2, "512Mi", ephemeral=stage_ephemeral_request(stage_bytes))
+    return step_resources(2, STAGE_MEMORY, ephemeral=stage_ephemeral_request(stage_bytes))
 
 
 #: The floor under the host step, which is where **everything the campaign declared that is
@@ -679,14 +689,20 @@ def _postprocess_split(cluster_config, campaign_id: str, campaign_root: str, nam
 
     map_cmds, reduce_cmds, parts = split
     write_plan(campaign_root, parts, force=force, skip=skip)
-    ok, message = run_map_phase(
+    map_ok, map_message, ended = run_map_phase(
         cluster_config, campaign_id, campaign_root, namespace, image, map_cmds, parts,
         token=token, force=force, kube_context=kube_context, tolerate_under=tolerate_under,
         convert_resources=convert_resources, admission=admission, should_stop=should_stop)
     map_log = delivered_map_log(campaign_root, parts)
-    if not ok:
-        write_phase_log(campaign_root, map_log + stamped("ERROR", message))
-        return record_job_outputs(campaign_id, campaign_root, ok, message,
+    if not map_ok:
+        map_log += stamped("ERROR", map_message)
+    # A part that failed still delivered what it derived, so the reduce runs over whatever
+    # the parts produced and the campaign is queryable less the part's failures -- which the
+    # verdict below still reports. Only a map that did not run to an end (a part never
+    # created, a stop, a lost sight of the Jobs) leaves nothing a reduce could complete.
+    if not map_ok and not ended:
+        write_phase_log(campaign_root, map_log)
+        return record_job_outputs(campaign_id, campaign_root, map_ok, map_message,
                                   should_stop=should_stop)
     config_dir = os.path.dirname(campaign_vast(campaign_root))
     reduce_image = [c for c in reduce_cmds if needs_execution_image(c, config_dir)]
@@ -698,6 +714,10 @@ def _postprocess_split(cluster_config, campaign_id: str, campaign_root: str, nam
         log_prefix=map_log)
     # The reduce pod delivered its own section, which knows nothing of the parts'.
     _prepend_phase_log(campaign_root, map_log)
+    if not map_ok:
+        # An unknown reduce stays unknown; either way the parts' failure is what leads.
+        message = map_message if ok else f"{map_message}; {message}"
+        ok = None if ok is None else False
     return record_job_outputs(campaign_id, campaign_root, ok, message,
                               should_stop=should_stop)
 
@@ -953,11 +973,17 @@ def _conversion_script(steps: list, campaign_id: str = "", part: str = "") -> st
     it becomes the POSTPROCESSING section of the unified campaign log; the host container
     appends to the same file. ``pipefail`` preserves a step's exit status through the
     ``tee`` pipe.
+
+    The steps' status is handed to the host container in
+    :data:`~.postprocess_host.CONVERSION_EXIT_FILE` rather than returned: this is an
+    initContainer, and a failed one would keep the host container -- the only one that
+    delivers -- from running at all. The host fails the Job for it once it has delivered.
     """
     from robovast.results_processing.postprocessing_plugins import (  # noqa: PLC0415
         IMAGE_SCRIPTS_DIR)
 
-    from .postprocess_host import IMAGE_STEPS_MARKER  # noqa: PLC0415
+    from .postprocess_host import (CONVERSION_EXIT_FILE,  # noqa: PLC0415
+                                   IMAGE_STEPS_MARKER)
 
     root = campaign_dir(campaign_id)
     log = f"{root}/{_log_rel(part)}"
@@ -987,7 +1013,10 @@ def _conversion_script(steps: list, campaign_id: str = "", part: str = "") -> st
         # its memory is exactly the case the record exists for -- and it must not be able to
         # change `rc`, which is the conversion's own verdict.
         postprocess_usage.shell_record(root, CONVERT_CONTAINER, _usage_rel(part)),
-        "exit $rc",
+        # A status that cannot be handed over is returned instead: the host container
+        # then never runs, which loses this pod's output but never reports it as a pass.
+        f'echo "$rc" > {CAMPAIGN_MOUNT}/{CONVERSION_EXIT_FILE} || exit $rc',
+        "exit 0",
     ]
     return "\n".join(lines)
 
@@ -1453,6 +1482,7 @@ def pod_failure_reason(core, namespace: str, job_name: str) -> str:
     Advisory: this runs while reporting a failure, so it must not raise one of its own.
     """
     from .cluster_execution import pod_termination_reason  # noqa: PLC0415
+    from .postprocess_host import CONVERSION_FAILED_EXIT  # noqa: PLC0415
 
     try:
         pods = core.list_namespaced_pod(namespace=namespace,
@@ -1483,9 +1513,39 @@ def pod_failure_reason(core, namespace: str, job_name: str) -> str:
                 # their own; `exited 1 (Error)` names none of them.
                 if name == STAGE_CONTAINER:
                     return f"container {name} {_stage_failure(code)} (exit {code})"
+                if name == HOST_CONTAINER and code == CONVERSION_FAILED_EXIT:
+                    return (f"container {CONVERT_CONTAINER} failed; what it converted was "
+                            f"delivered, and its log names what it could not convert")
                 detail = (getattr(term, "reason", None) or "").strip()
                 exited = f"container {name} exited {code}"
                 return f"{exited} ({detail})" if detail else exited
+    return ""
+
+
+def _wedged_init_container(core, namespace: str, job_name: str) -> str:
+    """The init container this Job's pod is stuck behind, or ``""``.
+
+    An init container the kernel OOM-killed a process in can still succeed -- the fetch
+    retries a killed ``curl`` and succeeds -- and the kubelet then records it ``OOMKilled``,
+    neither starts the next container nor fails the pod: it stays ``Pending`` with no event.
+    The Job reads ``active`` throughout, so without this the wait sees a conversion that
+    is merely slow until its deadline.
+
+    Advisory, like :func:`_blocked_reason`: a pod list that cannot be read yields ``""``.
+    """
+    try:
+        pods = core.list_namespaced_pod(namespace=namespace,
+                                        label_selector=f"job-name={job_name}").items or []
+        for pod in pods:
+            status = getattr(pod, "status", None)
+            if getattr(status, "phase", None) != "Pending":
+                continue
+            for cs in getattr(status, "init_container_statuses", None) or []:
+                term = getattr(getattr(cs, "state", None), "terminated", None)
+                if term is not None and getattr(term, "reason", None) == "OOMKilled":
+                    return getattr(cs, "name", None) or "?"
+    except Exception as e:  # noqa: BLE001 - advisory only
+        logger.debug("Could not read pods of %s: %s", job_name, e)
     return ""
 
 
@@ -1909,6 +1969,7 @@ def await_job(core, batch, campaign_root, namespace: str, name: str,
     # minutes -- and the only way to watch one is a pod name nobody off-cluster has.
     next_live_log = 0.0
     blocked_since = None  # when the pod was first seen unable to start, while it still is
+    wedged_since = None  # when the pod was first seen stuck behind an OOM-killed init step
     while time.time() < deadline:
         if should_stop is not None and should_stop():
             return False, cancel_job(batch, namespace, name)
@@ -1973,6 +2034,24 @@ def await_job(core, batch, campaign_root, namespace: str, name: str,
                     f"node for it, or mounting what it needs -- not about postprocessing, "
                     f"which has not run. Nothing about the campaign's results is wrong; "
                     f"re-run postprocessing once the pod can start.")
+        # A pod stuck behind an OOM-killed init step is not reported by the Job either, and
+        # it never moves: deleted rather than left, because a part Job an earlier attempt
+        # left running is adopted by the next one, which would wait on this pod again.
+        wedged = _wedged_init_container(core, namespace, name)
+        if not wedged:
+            wedged_since = None
+        else:
+            if wedged_since is None:
+                wedged_since = time.time()
+            if time.time() - wedged_since >= BLOCKED_GRACE_SECONDS:
+                publish_live_log(core, campaign_root, namespace, name, prefix=log_prefix)
+                cancel_job(batch, namespace, name)
+                return False, (
+                    f"postprocessing job {name} stopped after its {wedged} step: the "
+                    f"kernel killed a process there for exceeding the step's memory limit, "
+                    f"and the kubelet does not start the next step after that, even when "
+                    f"the step succeeded. The Job is deleted so a re-run starts it afresh; "
+                    f"nothing about the campaign's runs is wrong.")
         sleep_unless_stopped(POLL_SECONDS, should_stop)
     # The deadline is this process's patience, not a verdict about the Job: nothing here
     # stops it, and a conversion measured in hours is still running when the wait gives

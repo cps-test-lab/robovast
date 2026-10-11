@@ -213,43 +213,41 @@ merely past its last run:
 
    vast campaign wait basic-nav-2026-08-16-101500
 
-**The exit code is the answer:**
-
-.. list-table::
-   :header-rows: 1
-   :widths: 12 88
-
-   * - Code
-     - Means
-   * - ``0``
-     - Finished.
-   * - ``1``
-     - Failed, or stopped.
-   * - ``2``
-     - ``--timeout`` elapsed. The campaign is unaffected and can be waited on again.
-   * - ``3``
-     - No such campaign — the service knows no phase for that id. A typo, or a campaign
-       that died before recording one. Distinct from ``1`` on purpose: those send you
-       looking for different things.
-   * - ``4``
-     - **Stalled**: nothing has completed for longer than one run may take. The campaign is
-       *still running* and nothing is waiting on it now — the message says so, and names
-       both ways out (re-run this command, or ``stop_campaign``).
-   * - ``5``
-     - A running job's **simulator** reported something wrong about itself
-       (:ref:`mcp-health-findings`). Same shape as ``4``: the campaign is still running, the
-       run was **not** touched, and nothing is waiting on it.
-
-Codes ``4`` and ``5`` are why this command exists in the form it does. A stalled or wedged
-campaign never reaches a terminal phase — it holds ``running`` for its whole life — so a
-waiter that stopped only on a terminal phase never returned, and nobody was ever told. Only a
-**new** stall or finding ends the wait: whatever was already true when this command started
-is what the caller was just told about, and exiting on it would make "re-run this after
-diagnosing" an infinite loop rather than the way back.
-
 Run it as the **whole** command, unwrapped and unchained. Anything appended makes the
 shell report the wrapper's status instead, which turns a failed campaign into a reported
 success — a real incident, not a hypothetical one.
+
+.. _client-wait-exit-codes:
+
+Its exit codes
+--------------
+
+**The exit code is the answer.** The codes are defined once, as the members of
+``robovast.execution.wait_exit.CampaignWaitExit``: the command raises them, and this table, its
+``--help`` and every list of them an MCP tool or prompt hands out are rendered from them.
+Anything else refers to a code by its name.
+
+.. wait-exit-codes:: robovast.execution.wait_exit.CampaignWaitExit
+
+``NO_PHASE`` is distinct from ``FAILED`` on purpose: the two send you looking for different
+things. ``STALLED`` and ``HEALTH_FINDING`` end the wait with the campaign still running and the
+run **not** touched; the message says so and names both ways out (re-run this command, or
+``stop_campaign``). A health finding is what a running job's own simulator reported about
+itself (:ref:`mcp-health-findings`).
+
+Those two are why this command exists in the form it does. A stalled or wedged campaign never
+reaches a terminal phase — it holds ``running`` for its whole life — so a waiter that stopped
+only on a terminal phase would never return, and nobody would be told. Only a **new** stall or
+finding ends the wait: whatever was already true when this command started is what the caller
+was just told about, and exiting on it would make "re-run this after diagnosing" an infinite
+loop rather than the way back.
+
+``vast image wait`` answers the same way for image builds, with the members of
+``ImageWaitExit``:
+
+.. _client-image-wait-exit-codes:
+
+.. wait-exit-codes:: robovast.execution.wait_exit.ImageWaitExit
 
 
 When something is wrong

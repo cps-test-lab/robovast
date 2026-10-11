@@ -152,7 +152,7 @@ def test_the_conversion_records_its_usage_even_when_it_failed():
     assert subprocess.run(["bash", "-n"], input=script, text=True, check=False,
                           capture_output=True).returncode == 0
     assert script.index("tee -a") < script.index("monitor_resources.py --once")
-    assert script.rstrip().endswith("exit $rc")
+    assert script.index("monitor_resources.py --once") < script.index('echo "$rc"')
 
 
 # -- how it reads in the log ---------------------------------------------------------

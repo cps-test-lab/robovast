@@ -881,3 +881,34 @@ def test_an_image_that_logs_after_its_catalog_is_still_read():
     line would otherwise go from answering to refusing."""
     from robovast.service.image_catalog import catalog_json
     assert catalog_json('{"items": [1]}\nbye\n') == {"items": [1]}
+
+
+def test_an_archived_campaign_is_read_as_archived(tmp_path):
+    """A campaign's own ``_config/`` already ran and cannot be edited, so a key the schema
+    has since retired changed nothing when it ran. Reading it strictly makes a finished
+    campaign unreadable -- and there is no edit its owner could make to satisfy the read."""
+    from robovast.service.container_exec import stage
+
+    vast = tmp_path / "p.vast"
+    vast.write_text(
+        "version: 4\n"
+        "configuration:\n"
+        "- name: only\n"
+        "execution:\n"
+        "  scenario_file: s.osc\n"
+        "  runs: 1\n"
+        "  containers:\n"
+        "    scenario:\n"
+        "      resources: {cpu: 1, memory: 1Gi}\n"
+        "  local:\n"
+        "    gui:\n"
+        "      parameter_overrides:\n"
+        "      - use_rviz: \"True\"\n",
+        encoding="utf-8")
+
+    with pytest.raises(ValueError, match="local"):
+        stage(str(vast), "", cluster=True, command="echo hi")
+
+    spec, _data, _limit, _source = stage(str(vast), "", cluster=True, command="echo hi",
+                                         archived=True)
+    spec.close()

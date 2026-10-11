@@ -18,6 +18,8 @@
 
 from fastmcp import FastMCP
 
+from robovast.execution.wait_exit import CampaignWaitExit
+
 _SYSTEM_PROMPT = """\
 I'm a robotics engineer and researcher that wants to analyze robovast campaigns.
 You are an assistant that helps me explore and understand the campaign data through tools.
@@ -132,12 +134,11 @@ If no service answers, the control tools say so. Tell me, and stop. Do not work 
    Only then the full sweep. A sweep that fails in its last cell has cost everything.
 5. **Describe every run.** `description` is what tells two same-day
    `campaign-<timestamp>` ids apart a week later. Say what the run is *for*.
-6. **Wait for it.** Background `vast campaign wait <campaign_id>` (exit 0 finished, 1
-   failed/stopped, **4 stalled**, **5 its simulator reported a fault**) — it exits when the
-   campaign is genuinely over, past postprocessing, and leaves you free meanwhile. **4 and 5
-   mean the campaign is still running and nothing is waiting on it**, so they are a hand-off
-   to you, not an ending: diagnose, then either background the waiter again or
-   `stop_campaign`. You do not have to remember to check for a wedge — the waiter tells you. Never end a turn on a campaign you started without
+6. **Wait for it.** Background `vast campaign wait <campaign_id>` ({wait_exit_codes}) — it
+   exits when the campaign is genuinely over, past postprocessing, and leaves you free
+   meanwhile. **A still-running exit means nothing is waiting on the campaign any more**, so
+   it is a hand-off to you, not an ending: diagnose, then either background the waiter again
+   or `stop_campaign`. You do not have to remember to check for a wedge — the waiter tells you. Never end a turn on a campaign you started without
    either waiting for it or saying you are not: an unwatched campaign's end goes
    unnoticed, which is what ntfy (`ROBOVAST_NTFY_TOPIC`) is for. Then check what it
    actually produced — `status: finished` does not imply results, and a campaign whose
@@ -204,7 +205,7 @@ Config version 2 replaced `execution.image`, `execution.resources`,
 `execution.secondary_containers` and the top-level `build:` section with `containers`.
 A version-1 file is refused with a message naming what each key became; there is no
 automatic migration.
-"""
+""".replace("{wait_exit_codes}", CampaignWaitExit.summary())
 
 
 def analyze_campaigns() -> str:

@@ -23,6 +23,7 @@ from robovast.client.errors import handle_cli_exception
 from robovast.client.service_target import echo_target as _echo_target
 from robovast.client.service_target import service_client, target_options
 from robovast.client.tail import tail_chunks
+from robovast.execution.wait_exit import CampaignWaitExit, documents_exit_codes
 
 
 @click.group()
@@ -374,11 +375,11 @@ def _materialize_work_order(client, campaign_id: str, workspace_name: str):
 @click.option('--timeout', type=float, default=None,
               help='Give up after this many seconds (default: wait indefinitely).')
 @target_options
+@documents_exit_codes(CampaignWaitExit)
 def wait(campaign, interval, timeout, namespace, context):
-    """Block until CAMPAIGN is over: exit 0 (finished), 1 (failed/stopped), 2 (stopped
-    waiting: --timeout, or the service stopped answering), 3 (no phase), 4 (stalled --
-    still running, but no longer being waited on), 5 (a running job's simulator reported
-    something wrong -- likewise still running).
+    """Block until CAMPAIGN is over; the exit code says how it ended, or why the wait did.
+
+    {exit_codes}
 
     The service drives every campaign, so its phase *is* the campaign's. Prints each
     phase change as it happens and exits when the campaign reaches a terminal one — past
@@ -391,15 +392,15 @@ def wait(campaign, interval, timeout, namespace, context):
     The loop itself is :func:`~robovast.execution.campaign_wait.wait_for_campaign_status`,
     shared with every other surface that waits.
 
-    **A stall ends the wait too** (exit 4), because a stalled campaign never reaches a
+    **A stall ends the wait too** (``STALLED``), because a stalled campaign never reaches a
     terminal phase: it holds ``running`` for its whole life, so a waiter that stopped only
     on terminality would never return and nobody would be told. The verdict is
     :func:`~robovast.client.status.stall_report`'s, not a second opinion computed here.
 
-    **An ``error``-level health finding ends it too** (exit 5), and earlier: a stall is only
-    visible once a run is past its declared budget, and needs one to have been declared at
-    all, while a simulator saying "sim time is not advancing" is true within a minute and
-    needs no budget. Whatever a finding means is the simulator's business -- this reads one
+    **An ``error``-level health finding ends it too** (``HEALTH_FINDING``), and earlier: a
+    stall is only visible once a run is past its declared budget, and needs one to have been
+    declared at all, while a simulator saying "sim time is not advancing" is true within a
+    minute and needs no budget. Whatever a finding means is the simulator's business -- this reads one
     word, ``level``, and passes the rest through.
 
     Only a **new** stall or a **new** finding exits. A campaign already stalled when this
@@ -448,13 +449,13 @@ def wait(campaign, interval, timeout, namespace, context):
         # Not a failure of the campaign, which is still running: the caller asked to stop
         # waiting. A distinct exit code keeps the two apart for a script branching on it.
         click.echo(str(e), err=True)
-        raise SystemExit(2) from e
+        raise SystemExit(CampaignWaitExit.STOPPED_WAITING) from e
     except PollsStopped as e:
         # Same category -- the wait ended, the campaign did not -- so the same code, but
         # the message must not read as a campaign problem: nothing is known about the
         # campaign here, because nothing answered.
         click.echo(str(e), err=True)
-        raise SystemExit(2) from e
+        raise SystemExit(CampaignWaitExit.STOPPED_WAITING) from e
     except Exception as e:  # noqa: BLE001
         handle_cli_exception(e)
         return
@@ -488,20 +489,20 @@ def wait(campaign, interval, timeout, namespace, context):
             # sentence of its own. Deliberately NOT the stall's step, which reused to send a
             # reader off to ask what the job was doing -- the question this finding just answered.
             click.echo(f"{campaign}: next: {HEALTH_NEXT_STEP}", err=True)
-            raise SystemExit(5)
-        raise SystemExit(4)
+            raise SystemExit(CampaignWaitExit.HEALTH_FINDING)
+        raise SystemExit(CampaignWaitExit.STALLED)
     click.echo(f"{campaign}: {status.phase}")
     if status.phase == Phase.UNKNOWN:
         # `unknown` is terminal, so the wait ends -- but it does not mean the campaign
         # failed. The service has no phase for this id at all: either it is a typo, or the
-        # campaign died before it ever wrote to the store. Exiting 1 made both read as "the
-        # campaign ran and failed", sending the caller to look for a failure that never
-        # happened. A distinct code, because 0/1/2 are taken and a script branches on it.
+        # campaign died before it ever wrote to the store. FAILED would read as "the campaign
+        # ran and failed", sending the caller to look for a failure that never happened. A
+        # code of its own, because a script branches on it.
         click.echo(
             f"{campaign}: the service knows no phase for this campaign — check the id, "
             f"or see 'vast campaign log {campaign}' if it died before recording one.",
             err=True)
-        raise SystemExit(3)
+        raise SystemExit(CampaignWaitExit.NO_PHASE)
     if status.error:
         click.echo(f"{campaign}: {status.error}", err=True)
     if status.postprocessing_error:
@@ -510,7 +511,8 @@ def wait(campaign, interval, timeout, namespace, context):
         # successful exit code promised and nothing produced.
         click.echo(f"{campaign}: postprocessing failed: {status.postprocessing_error}",
                    err=True)
-    raise SystemExit(0 if status.phase == Phase.FINISHED else 1)
+    raise SystemExit(CampaignWaitExit.FINISHED if status.phase == Phase.FINISHED
+                     else CampaignWaitExit.FAILED)
 
 
 
