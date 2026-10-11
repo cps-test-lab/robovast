@@ -400,15 +400,15 @@ def _write_postprocessing_provenance_yaml(
 ) -> None:
     """Write postprocessing.yaml under campaign-<id>/_transient/ with all provenance entries.
 
+    Raises ``OSError`` when the record cannot be written: it is what says the campaign is
+    postprocessed, so a pass that could not write it has not finished.
+
     Args:
         campaign_dir: Path to the campaign-<id> directory.
         entries: List of provenance entry dicts.
     """
     transient_dir = Path(campaign_dir) / "_transient"
-    try:
-        transient_dir.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        return
+    transient_dir.mkdir(parents=True, exist_ok=True)
     yaml_path = transient_dir / "postprocessing.yaml"
 
     # Paths in entries are relative to results_dir (parent of campaign_dir).
@@ -436,8 +436,11 @@ def _write_postprocessing_provenance_yaml(
         "generated_by": "robovast",
         "entries": relative_entries,
     }
+    # Written beside it and renamed into place: a write that fails part-way must not leave a
+    # truncated record, which a reader would take for a finished pass.
+    fd, tmp_path = tempfile.mkstemp(dir=transient_dir, prefix=".postprocessing.", suffix=".tmp")
     try:
-        with open(yaml_path, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             yaml.dump(
                 data,
                 f,
@@ -445,8 +448,10 @@ def _write_postprocessing_provenance_yaml(
                 sort_keys=False,
                 allow_unicode=True,
             )
-    except OSError:
-        pass  # skip if we cannot write
+        os.replace(tmp_path, yaml_path)
+    except BaseException:
+        Path(tmp_path).unlink(missing_ok=True)
+        raise
 
 
 
@@ -698,7 +703,13 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements,too-many-b
     # and a file has no way to say "finished" but when it is written. Written before the
     # metadata step, and still written when that fails: it records what was derived, which is
     # true either way -- the failure is carried by the return below.
-    _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
+    try:
+        _write_postprocessing_provenance_yaml(campaign_dir, all_provenance_entries)
+    except OSError as exc:
+        # Without it the campaign does not read as postprocessed, whatever was derived.
+        output(f"✗ the postprocessing record could not be written: {exc}")
+        failures.append(f"the postprocessing record could not be written: {exc}")
+        success = False
 
     meta_failure = ""
     if skip_metadata:
@@ -729,8 +740,8 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements,too-many-b
     return False, "Postprocessing failed: " + " | ".join(reasons)
 
 
-def _campaign_provider_records(campaign_dir) -> list:
-    """Every container's distributions record from this campaign's job dirs.
+def _campaign_provider_records(campaign_dir) -> Tuple[list, int]:
+    """``(records, read)``: every DISTINCT container distributions record, and how many were read.
 
     ``_jobs/[<batch>/]job-N/`` is the shared job-artifact layout -- see
     :mod:`robovast_decode.run_slices`, and :mod:`robovast_decode.resource_usage` for the
@@ -741,20 +752,37 @@ def _campaign_provider_records(campaign_dir) -> list:
     Per CONTAINER, because that is how they were written: in the ROS shape the simulator runs
     in a container of its own, so a record from the main container alone would name none of the
     campaign's asset providers.
+
+    **Each distinct record once.** Every job's containers run the same few images, so their
+    records repeat -- and a record parses to hundreds of KB of objects, which over a campaign
+    of thousands of jobs is more than the host step's memory. Identical bytes are skipped
+    before they are parsed, which leaves the union :func:`providers_from_records` takes unchanged: it
+    keeps the first value it meets, and the first copy is kept in the same sorted order.
     """
     import glob  # pylint: disable=import-outside-toplevel
+    import hashlib  # pylint: disable=import-outside-toplevel
 
     pattern = os.path.join(str(campaign_dir), "_jobs", "**", "distributions_*.json")
-    records = []
+    records, read = [], 0
+    usable = {}           # digest -> whether those bytes are a record
     for path in sorted(glob.glob(pattern, recursive=True)):
         try:
-            with open(path, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
-        except (OSError, ValueError):
+            with open(path, "rb") as handle:
+                raw = handle.read()
+        except OSError:
             continue          # one unreadable container's record is not the campaign's answer
-        if isinstance(data, dict):
-            records.append(data)
-    return records
+        digest = hashlib.sha256(raw).digest()
+        if digest not in usable:
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                data = None
+            usable[digest] = isinstance(data, dict)
+            if usable[digest]:
+                records.append(data)
+        if usable[digest]:
+            read += 1
+    return records, read
 
 
 def _record_campaign_providers(campaign_dir, output) -> None:
@@ -783,7 +811,7 @@ def _record_campaign_providers(campaign_dir, output) -> None:
         providers_from_records  # pylint: disable=import-outside-toplevel
 
     try:
-        records = _campaign_provider_records(campaign_dir)
+        records, read = _campaign_provider_records(campaign_dir)
         groups = campaign_asset_groups(campaign_dir)
         if not records or not groups:
             output(
@@ -797,6 +825,6 @@ def _record_campaign_providers(campaign_dir, output) -> None:
         providers = providers_from_records(records, groups)
         write_providers_record(campaign_dir, providers)
         output(f"✓ recorded {len(providers)} asset provider(s) from "
-               f"{len(records)} container record(s)")
+               f"{read} container record(s), {len(records)} distinct")
     except Exception as e:  # pylint: disable=broad-except
         output(f"Warning: could not record asset providers: {e}")

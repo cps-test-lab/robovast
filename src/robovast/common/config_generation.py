@@ -1584,8 +1584,8 @@ def _collect_analysis_input_files(parameters, base_dir=None):
     # file in each bundle dir so remoteEntry.js + its chunks land in _config/ and are served
     # per campaign at runtime. Package panels (entry-point types) ship their own assets and
     # are not collected here.
-    visualization = parameters.get('visualization')
-    panels = visualization.get('panels') if isinstance(visualization, dict) else None
+    panels = _section(_section(_section(_section(parameters, 'visualization'), 'results'),
+                               'run_view'), 'panels')
     if base_dir and panels:
         for entry in panels:
             if isinstance(entry, dict) and 'type' not in entry and len(entry) == 1:

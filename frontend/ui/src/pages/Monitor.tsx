@@ -1000,8 +1000,8 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
           cursor: 'pointer',
           userSelect: collapsed ? 'none' : 'text',
           // The Paper's padding, cancelled outside and restored inside, so the padded strip is
-          // part of the target and nothing moves. The gap the row used to hold below itself
-          // (`mb`) is folded into the bottom margin rather than kept as a second rule.
+          // part of the target and nothing moves. The gap below the row is part of the bottom
+          // margin rather than a second rule.
           mx: -2,
           px: 2,
           mt: collapsed ? -0.75 : -2,

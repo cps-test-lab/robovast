@@ -313,6 +313,7 @@ def search_run_logs(
         summarize: Patterns and counts instead — "what flooded this sweep".
 
     Returns:
+        ``{error}`` when no campaign could be searched; otherwise
         ``{campaigns, campaigns_skipped}`` plus one of: ``runs`` (per-run ``hits``,
         ``first_sim_time``, ``worst_severity``, ``example`` joined to ``passed``/``status``, and
         ``clock_map_source`` — ``none`` means that run has no ``sim_time`` at all); ``lines`` with
@@ -378,6 +379,11 @@ def search_run_logs(
             counted = data_access.rows(cid, _count_sql(scoped), 1)
             total_rows = (counted or [{}])[0].get("n")
             lines_total += int(total_rows) if total_rows is not None else len(rows)
+
+    if not searched:
+        # Nothing was read, so an empty rollup would say "no run logged this" about runs
+        # nobody looked at. Each campaign's reason is the answer.
+        return {"error": "; ".join(f"{s['campaign_id']}: {s['reason']}" for s in skipped)}
 
     out: dict = {"campaigns": searched, "campaigns_skipped": skipped}
     notes = [skip_note.lstrip("; ")] if skip_note else []
