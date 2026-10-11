@@ -12,7 +12,7 @@ cleaning up one campaign's jobs deletes the other's.
 from robovast.execution.cluster_execution import pod_access
 from robovast.execution.cluster_execution.cluster_execution import _label_safe_campaign
 
-_NAME = "metamorphic-pt1-big-map-remove-recursive"
+_NAME = "an-experiment-whose-name-has-forty-chars"
 _EARLIER = f"{_NAME}-2026-10-04-04111039"
 _LATER = f"{_NAME}-2026-10-04-04240269"
 _LONG = "a-very-long-experiment-name-that-alone-nearly-fills-a-label"
