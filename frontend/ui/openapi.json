@@ -3687,7 +3687,7 @@
         "type": "object"
       },
       "ServiceEvents": {
-        "description": "A page of the event log, oldest first, with the cursor to resume from.\n\nOldest first because a caller is resuming a position rather than browsing: it holds\n:attr:`next_seq` and asks for what came after. Presenting newest-first is the reader's job.",
+        "description": "A page of the event log, oldest first, with the cursor to resume from.\n\nOldest first because a caller is resuming a position rather than browsing: it holds\n:attr:`next_seq` and asks for what came after. A page asked for with ``newest=true`` is the\ntail of the record in the same order. Presenting newest-first is the reader's job.",
         "properties": {
           "events": {
             "items": {
@@ -5394,7 +5394,7 @@
     },
     "/admin/events": {
       "get": {
-        "description": "What this service did, from cursor *since* -- durable across restarts.\n\nIts own cursor-keyed route rather than a field on a polled payload, per the tiers in\n``docs/http_api.rst``: this grows, and the campaign list is re-sent once a second for\nas long as any tab is open.\n\nNot the same thing as ``/admin/log``, which is this process's recent stderr and dies\nwith it. The events worth keeping are the ones a restart destroys.",
+        "description": "What this service did, from cursor *since* -- durable across restarts.\n\n``newest=true`` answers the newest *limit* events instead, in the same order and with\nthe same ``next_seq``: what a reader opening the record wants, where a reader holding a\ncursor resumes from it. The two are exclusive, so a request naming both is refused\nrather than having one of them ignored.\n\nA log that cannot be read answers 503, never an empty page: an empty record says\nnothing happened, which a broken log cannot know.\n\nIts own cursor-keyed route rather than a field on a polled payload, per the tiers in\n``docs/http_api.rst``: this grows, and the campaign list is re-sent once a second for\nas long as any tab is open.\n\nNot the same thing as ``/admin/log``, which is this process's recent stderr and dies\nwith it. The events worth keeping are the ones a restart destroys.",
         "operationId": "get_service_events_admin_events_get",
         "parameters": [
           {
@@ -5402,9 +5402,15 @@
             "name": "since",
             "required": false,
             "schema": {
-              "default": 0,
-              "title": "Since",
-              "type": "integer"
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since"
             }
           },
           {
@@ -5415,6 +5421,16 @@
               "default": 200,
               "title": "Limit",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "newest",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Newest",
+              "type": "boolean"
             }
           }
         ],
@@ -8678,7 +8694,7 @@
     },
     "/data/campaigns/{campaign_id}/archive": {
       "get": {
-        "description": "Stream the campaign as a ``tar.gz``.\n\nBacks ``vast campaign download`` and the web UI's download menu. What comes out is\nthe campaign as this service holds it -- its records, what postprocessing derived,\nand its built tables, so it opens in a notebook without building anything -- or,\nwith ``raw=true``, the records alone, which an import postprocesses afresh.\n\nNothing is buffered and no scratch is used: the tree is tarred into the response\nas it is read. Decisive for campaigns that run to terabytes.",
+        "description": "Stream the campaign as a ``tar.gz``.\n\nBacks ``vast campaign download`` and the web UI's download menu. What comes out is\nthe campaign as this service holds it -- its records, what postprocessing derived,\nand its built tables, so it opens in a notebook without building anything -- or,\nwith ``raw=true``, the records alone, which an import postprocesses afresh.\n\nNothing is buffered and no scratch is used: the tree is tarred into the response\nas it is read. Decisive for campaigns that run to terabytes.\n\n``part`` (with ``raw=true``) stages one part of a table build for the pod that\nbuilds it; ``uncompressed=true`` is a plain tar, for a reader inside the cluster.",
         "operationId": "download_campaign_archive_data_campaigns__campaign_id__archive_get",
         "parameters": [
           {
@@ -8697,6 +8713,26 @@
             "schema": {
               "default": false,
               "title": "Raw",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "part",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Part",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "uncompressed",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Uncompressed",
               "type": "boolean"
             }
           }

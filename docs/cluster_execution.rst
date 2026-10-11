@@ -496,9 +496,9 @@ campaign this deployment has finished. Archive what matters (``vast share``) bef
 the placement.
 
 One thing a re-``setup`` cannot do by itself: applying a manifest over an object that already
-exists keeps the existing one, so a **running** ``robovast`` pod — the registry — cannot be
+exists keeps the existing one, so a live ``robovast`` Deployment — the registry — cannot be
 relocated that way. Setup refuses rather than reporting a placement it did not
-apply, and says what recreating it costs: delete the pod, or run ``cleanup`` first.
+apply, and says what recreating it costs: delete the Deployment, or run ``cleanup`` first.
 
 .. _cluster-gpu:
 
@@ -543,49 +543,21 @@ the plugin, or in the driver gives each pod a share of VRAM — all ``N`` render
 from the same card, first come first served — so ``N`` is an assertion that ``N``
 simultaneous trials fit in it. Exceed that and a trial's simulator fails mid-run.
 
-Measured on an RTX A2000 12GB, one 640×480 offscreen context per pod, against a 337 MiB
-baseline (the node's desktop session):
+One offscreen context of a small frame costs tens of MiB of device memory, and the cost per
+context is **sub-linear**: the driver shares part of its allocation across the contexts on one
+GPU. For a trivial scene at a modest frame size, VRAM is therefore rarely what binds first; it
+is CPU quota that limits campaign width.
 
-.. list-table::
-   :header-rows: 1
-   :widths: 20 25 25 30
+That floor is not a budget for your own worlds. The framebuffer scales with the requested frame
+size, each camera builds its own renderer, and meshes and textures are extra. Measure with
+``nvidia-smi`` on the node while a real campaign runs before raising the default for a heavier
+world: a run records its CPU and memory, not its share of the device
+(:ref:`future-gpu-usage`).
 
-   * - Concurrent contexts
-     - GPU memory used
-     - Above baseline
-     - Marginal per context
-   * - 1
-     - 430 MiB
-     - 93 MiB
-     - 93 MiB
-   * - 4
-     - 711 MiB
-     - 374 MiB
-     - 93 MiB
-   * - 8
-     - 824 MiB
-     - 487 MiB
-     - 60 MiB
-   * - 16
-     - 1574 MiB
-     - 1237 MiB
-     - 77 MiB
-
-So the cost is **sub-linear** — the driver shares part of its allocation across contexts on
-one GPU — and 16 concurrent renderers used 13% of the card, with GPU utilization at 45% while
-each rendered at 10 Hz. On this hardware VRAM is nowhere near the binding constraint: it is
-CPU quota that limits campaign width, which is why the default sits above that ceiling.
-
-Do not read those figures as a budget for your own worlds. A 640×480 framebuffer of a trivial
-scene is the floor: the framebuffer scales with the requested frame size, each camera builds
-its own renderer, and meshes and textures are extra. Re-measure with ``nvidia-smi`` on the
-node during a real campaign, or from the per-run ``resource_usage`` table, before raising the
-default for a heavier world.
-
-The default of 16 is chosen to sit *above* the CPU ceiling, so GPU quota is not what limits a
-campaign: a three-container scenario job asks for roughly ten cores, so a 96-core node admits
-about nine concurrent jobs either way. Raising ``N`` therefore changes nothing until per-job
-CPU drops — which GPU rendering itself makes possible, by freeing the cores software
+The default of 16 is chosen to sit *above* the CPU ceiling of a typical node, so GPU quota is
+not what limits a campaign: a node admits as many jobs as its cores cover, and a scenario job
+with several containers asks for several cores. Raising ``N`` therefore changes nothing until
+per-job CPU drops — which GPU rendering itself makes possible, by freeing the cores software
 rendering was using.
 
 The value is not stored anywhere. The node's advertised capacity is the record, because
@@ -728,6 +700,60 @@ That removes the scenario Jobs and their pods with your kubeconfig (``-x`` conte
 ``-n`` namespace) and touches no results: they live with the service, and
 ``vast campaign delete`` is what removes a campaign — through the service, so a delete
 never catches a campaign that is still running.
+
+.. _cluster-trial-outcomes:
+
+How a trial ends: its Job, its run, the campaign
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A scenario Job runs one trial, once (``backoffLimit: 0``). Three records say how it ended,
+and they answer different questions: the **Job** whether its pod completed, the **run's
+status** in ``run_view`` what the trial measured, and the campaign's run counts how many of
+each there were. Only the run's status is a result. It is read from the run's ``test.xml``
+and the intervention ledger, never from the Job, and a campaign carries on past a failed
+trial: one trial's outcome never stops the others.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 36 18 18
+
+   * - The trial
+     - Its Job
+     - Its run
+     - The campaign
+   * - The scenario reaches a verdict, and its test fails
+     - The scenario container exits with the runner's non-zero status after its post-run
+       has written the done marker; the uploader delivers ``/out`` and the Job ends
+       **Failed**. A passing trial's Job ends **Complete**.
+     - ``failed``, or ``error`` when ``test.xml`` records errors
+     - a failure (``num_failed``, or ``num_errors``)
+   * - The runner crashes or exits non-zero without a verdict
+     - The entrypoint's exit trap still writes the done marker, so what the run wrote is
+       delivered, and the Job ends **Failed**.
+     - ``unknown`` (no ``test.xml``)
+     - neither a pass nor a failure
+   * - The entrypoint fails before it starts the runner — a required tool or a pre- or
+       post-command missing, a recorder refusing its arguments
+     - No done marker is written, so the uploader waits for it and the Job fails at its
+       deadline (``DeadlineExceeded``, logged ``HARD-KILLED by activeDeadlineSeconds``).
+     - ``unknown``
+     - neither a pass nor a failure
+   * - The scenario container is OOM-killed
+     - The kill takes the post-run with it, so no done marker comes. The runner reads the
+       kill off the running pod, captures the container's log and **deletes** the Job at
+       once.
+     - ``invalid``
+     - outside pass rates (``num_invalid``)
+   * - A sidecar (simulator, system under test) crashes and is restarted
+     - The runner reads the restart off the pod and deletes the Job at once, as above.
+     - ``invalid``
+     - outside pass rates (``num_invalid``)
+
+``invalid`` is an infrastructure fault, not evidence about the system under test, and it
+overrides any verdict the trial wrote (:ref:`results-invalid`); what the container died of
+is in ``container_failure_view``. A **calibration probe** whose scenario container is
+OOM-killed or whose sidecar crashes stops the campaign at once, naming the container
+(:ref:`cluster-node-calibration`).
 
 
 Push notifications (ntfy)
@@ -1166,14 +1192,23 @@ appended when the client produced none.
 Where the registry runs
 -----------------------
 
-``vast cluster setup`` creates one ``robovast`` pod per deployment, holding this
-deployment's **setup-lifetime infrastructure**: the container registry experiment images are
-built into, published on ``/v2`` of the service's own Ingress host.
+``vast cluster setup`` creates one ``robovast`` pod per deployment, as the single replica of
+the ``robovast`` Deployment, holding this deployment's **setup-lifetime infrastructure**: the
+container registry experiment images are built into, published on ``/v2`` of the service's
+own Ingress host.
 
 **Campaigns are not in this pod.** They live on the service's results volume
 (:ref:`campaign-home`), and what this pod holds is rebuilt on demand: images are rebuilt
 when a campaign asks for them. That is why it is one replica with no standby and no backup —
 losing it costs time and nothing else.
+
+**The Deployment replaces a pod the node evicted.** An evicted pod is not restarted, and while
+none runs, the Service has no endpoints and every push and pull on ``/v2`` answers 503. The
+Deployment's ``Recreate`` strategy removes the old pod before starting its replacement,
+because the registry blobs take one writer. A namespace that still runs the registry in a
+bare ``robovast`` pod is refused by ``vast cluster setup`` and ``vast service upgrade``, since
+a Deployment beside it would put two registries behind one Service; ``vast cluster cleanup``
+removes that pod, and setup then creates the Deployment.
 
 **Why it is not in the service pod.** ``robovast-service`` is a Deployment and every
 ``vast service upgrade`` rolls it, so a container living there is restarted by each
@@ -1547,10 +1582,9 @@ it, and it sits ``Unschedulable`` with ``Insufficient cpu``. That is the failure
 campaign rarely reaches and several concurrent ones reach reliably, which is what makes it
 look like a concurrency bug rather than an arithmetic one.
 
-**It is measured every cycle, not snapshotted at setup.** This replaced a fixed quota
-sized once when the cluster was set up, which had to be re-sized by hand after anything
-long-lived was added to or removed from the nodes, and was silently wrong until someone
-did. Nothing needs re-running now.
+**It is measured every cycle, not snapshotted at setup.** A quota sized once at setup would
+be silently wrong after anything long-lived is added to or removed from the nodes, until
+someone re-sized it by hand; a reading taken each cycle needs nothing re-run.
 
 **Headroom** protects the shared tenants no campaign owns: ``ROBOVAST_NODE_HEADROOM_CPU``
 (default ``1``) and ``ROBOVAST_NODE_HEADROOM_MEMORY`` (default ``2Gi``), read from the
@@ -1690,17 +1724,17 @@ It is per **container**, so a three-container pod reserves the sum until its nod
 which makes the bootstrap the floor on what calibration costs, and a reason not to set it
 generously on a small or busy cluster.
 
-Why per node at all: the same trial costs about **1.6x more CPU on the slowest machine of a
-mixed cluster than on the fastest**, and wall time does not show it — a realtime-paced
+Why per node at all: in a mixed cluster the same trial can cost **tens of percent more CPU on
+the slowest machine than on the fastest**, and wall time does not show it — a realtime-paced
 simulator holds one simulated second per wall second, so every machine finishes at roughly the
 same time and the difference lands entirely in CPU consumed. One declared number is therefore
 wrong on every node but the one it was measured on.
 
-It is a **validity** matter as much as a throughput one. At a uniform 3.0 cores for the system
-under test, one node was quota-bound in 100 % of its runs at 2.5 and below while three others
-were never quota-bound at any allocation down to 2.0. Equal *cores* are not equal *compute*,
-so an equal declaration produces unequal conditions — the thing a uniform number was meant to
-prevent.
+It is a **validity** matter as much as a throughput one. At one uniform allocation for the
+system under test, a slow node can be quota-bound in every run while faster ones never are —
+``run_validity_view`` shows ``quota_bound`` per run and node. Equal *cores* are not equal
+*compute*, so an equal declaration produces unequal conditions — the thing a uniform number
+was meant to prevent.
 
 How the figure is found:
 
@@ -1709,7 +1743,7 @@ How the figure is found:
   the first place. Every container of the probe writes there: the scenario's results, the
   job artifacts, and what a sidecar writes per run (a simulator's recording and pose
   record), each of which is named by its own variable and every one of which the probe
-  points at its own directory. A campaign of 50 runs still delivers 50.
+  points at its own directory. A campaign delivers every run it asked for.
 * **What it measured and what it allocated are part of the campaign's record.** Every run on a
   node was sized from that node's figures, so they are a condition of the run: ``campaign.db``
   keeps them on the machine's own row, ``node.calibration_json`` -- per container, what the
@@ -1732,8 +1766,8 @@ How the figure is found:
   under test is read at its maximum, as request *and* limit, so it never throttles: a run
   clipped mid-plan fails in a way that looks like the stack's fault rather than the
   allocation's. The simulator is read at the 95th percentile and keeps its ceiling — its
-  peak-to-mean ratio is about 18, so reserving the maximum would cost more than not
-  calibrating, and the realtime factor reports if the squeeze cost anything. The scenario
+  peak-to-mean ratio can be an order of magnitude, so reserving the maximum would cost more
+  than not calibrating, and the realtime factor reports if the squeeze cost anything. The scenario
   runner is read the same way, but nothing grades how well *it* ran, so its ceiling is what
   must not be tight; on a probe its own tick rate fills that gap (see below).
 
@@ -1755,13 +1789,13 @@ How the figure is found:
   instrumentation on the trial's hot path, and only the probe's file is ever read.
 * **A calibrated figure never exceeds what the ``.vast`` declared.** Calibration sizes a
   node's jobs down to what they need; it does not raise a ceiling the author set.
-* **Frozen once set, and dropped when the campaign ends.** Continuing to adapt would mean run
-  5 and run 40 on the same node ran in different environments. The figures are deliberately
+* **Frozen once set, and dropped when the campaign ends.** Continuing to adapt would mean an
+  early and a late run on the same node ran in different environments. The figures are deliberately
   not reused by the next campaign — they were measured under this one's contention, for this
   one's containers.
 * **Pilots calibrate nothing.** With no more jobs than the cluster has nodes, no node runs a
   second one, so the probe would cost as much as the work it was meant to improve. The
-  mechanism is skipped and the campaign behaves as it did before any of this existed.
+  mechanism is skipped and every run uses the declared sizing.
 
 **Whether it is worth turning on is a question about your cluster, not about RoboVAST.**
 The gain is the spread between your fastest and slowest node; on a homogeneous cluster there
@@ -1780,25 +1814,13 @@ is what says whether a tighter allocation cost the simulator its pacing, and a c
 factor drops is no longer comparable with one sized any other way — worse results rather than
 merely slower ones.
 
-**A peak measured on an idle probe is an unvalidated basis for a hard limit on a loaded
-machine.** That is why this is switchable, and why the probe is one run rather than a
-guarantee. A workload with heavier planning spikes than the one a cluster was measured on has
-not been tested against its own calibration.
-
-**The evidence behind the design**, kept here because it is what rules out the cheaper
-alternatives. Two campaigns of one configuration times twenty runs, so the machine was the only
-variable; forty trials, all passed. Per-container CPU comes from ``resource_usage``, summed per
+**How a node's cost is compared.** Per-container CPU comes from ``resource_usage``, summed per
 tick before averaging (a row is one process name, not a container), then divided by the run's
 realtime factor -- ``cpu_percent`` is per *wall* second, so a node that meets fewer step
-deadlines otherwise reads as cheaper than it is:
-
-Measured on one four-node cluster, the same pod cost **1.6x more CPU per simulated second on
-the slowest node than on the fastest** — and the ordering did not follow clock speed. Your own
-figures come from ``get_campaign_summary``; the point is that the spread exists and is not
-guessable from the hardware.
-
-The ranking tracks **microarchitecture rather than clock**: the two Skylake-derived parts sit
-together at ~2.2 despite a 1.5x clock difference, Zen 3 at 1.71, Raptor Lake at 1.37.
+deadlines otherwise reads as cheaper than it is. Compared that way, the cost of one pod differs
+between the nodes of a mixed cluster, and the ordering follows the processor generation rather
+than the clock speed, so it cannot be guessed from the hardware. Your own figures come from
+``get_campaign_summary``.
 
 **A cached per-node factor is refuted, and that is why this is measured per campaign.** Every
 design that stores a number and reuses it -- a scalar per node, a ``robovast.io/cpu-factor``
@@ -1808,14 +1830,14 @@ rankings **invert between nodes**: one machine was the cheapest for the system u
 among the dearest for the simulator, while another was the reverse, so no single per-node scalar
 can be both greater and less than one at once -- the shape is wrong, not the calibration. Even
 per ``(node, container)`` it does not transfer: between two campaigns one node's simulation cost
-moved +42 % while another's moved +1 %, flipping their order.
+can move a long way while another's barely moves, flipping their order.
 
 **Why a hard limit is sized on the peak and not on p95.** Sizing a limit at ``p95 x 1.25`` looks
 safe and is not: a container clipped at its limit does not lose the clipped work, it queues it,
 so it stays pegged working the backlog off and the next spike arrives into a full budget. A
-configuration whose static clip rate was **0.5 %** produced **44 % saturation and lost 22 % of
-the runs**. That is why the system under test takes the peak as request *and* limit, while
-everything else splits the two.
+configuration whose static clip rate is **a fraction of a percent** can stay saturated for much
+of a run and **lose runs outright**. That is why the system under test takes the peak as
+request *and* limit, while everything else splits the two.
 
 **What remains true, and is why a campaign chooses.** A peak measured on an idle probe is
 still an unvalidated basis for a hard limit on a loaded machine; a workload with heavier
@@ -1839,8 +1861,10 @@ are still read over the whole life, because a memory limit has to clear bring-up
 whose ``test.xml`` records no start time is read over the whole life, and the campaign log
 says so.
 
-**A probe that loses a workload container stops the campaign, naming that container.** Those
-containers are native sidecars, so one that dies is *restarted* rather than ending the job.
+**A probe that loses a workload container stops the campaign, naming that container.** The
+sidecars are native sidecars, so one that dies is *restarted* rather than ending the job; the
+scenario container is not restarted, and an OOM kill of it leaves the pod running too, its
+uploader waiting for a done marker the killed container never writes.
 The instance that comes back starts nothing — a workload brought back mid-trial would run a
 fresh world under a stack still on the old one, so the sidecar entrypoint refuses a second
 start in the same pod — and the probe would go on sampling a stack with a hole in it, hold
@@ -1960,10 +1984,15 @@ busy
 
 ``blocked``
    It will not start on its own: an image reference that names nothing, missing pull
-   credentials, or a reservation no node can satisfy — one larger than the biggest
-   machine, or a GPU that no node advertises because its device plugin is down. These
-   look the same in ten minutes as in one, so the batch fails after **60 seconds**
-   (``BLOCKED_GRACE_SECONDS``) with Kubernetes' own message.
+   credentials, a reservation no node can satisfy — one larger than the biggest
+   machine, or a GPU that no node advertises because its device plugin is down — or a
+   one-shot init container such as ``fetch-inputs`` that ended ``OOMKilled``. The kubelet
+   starts nothing after such an init container and does not fail the pod, so it stays
+   ``Pending`` with no event; a native sidecar (``restartPolicy: Always``) is restarted
+   instead and is not counted here. These look the same in ten minutes as in one, so
+   after **60 seconds** (``BLOCKED_GRACE_SECONDS``) each such job is dropped and its run
+   recorded as invalid with Kubernetes' own message, or the init container's name; a
+   batch whose every job is blocked fails, since the cause is then in the campaign.
 
 The job *listing* (``vast cluster monitor``, the web UI, ``list_campaign_jobs``)
 reports all three, and a busy job appears there as ``pending`` carrying Kubernetes'

@@ -347,6 +347,64 @@ def test_stop_job_reports_a_refusal_as_an_error(monkeypatch):
     assert "not running" in res["error"]
 
 
+def test_a_refused_stop_is_an_error_not_a_stopping_campaign(monkeypatch):
+    """A campaign that is already over is refused by the service; the tool says so instead
+    of reporting it as stopping."""
+    from robovast.service.interface import ActionResult
+
+    class _Refusing(_FakeClient):
+        def stop(self, campaign_id):
+            return ActionResult(ok=False, message=f"campaign {campaign_id} is already over")
+
+    monkeypatch.setattr(service_access, "service_client", lambda: _Refusing())
+    res = execution.stop_campaign("svc-campaign-1")
+    assert res == {"error": "campaign svc-campaign-1 is already over"}
+
+
+def test_a_job_stop_the_service_declines_is_an_error(monkeypatch):
+    from robovast.service.interface import ActionResult
+
+    class _Declining(_FakeClient):
+        def stop_job(self, campaign_id, job_name, reason=None, source="api"):
+            return ActionResult(ok=False, message=f"campaign {campaign_id} is not running here")
+
+    monkeypatch.setattr(service_access, "service_client", lambda: _Declining())
+    res = execution.stop_job("svc-campaign-1", "cfgA/0")
+    assert res == {"error": "campaign svc-campaign-1 is not running here"}
+
+
+def _tap_client(base_url):
+    class _Tapping(_FakeClient):
+        def tap_job(self, campaign_id, job_name, selection, max_seconds, source):
+            yield SimpleNamespace(line="/odom")
+            yield SimpleNamespace(exit_code=0, timed_out=False)
+
+        def version(self):
+            return SimpleNamespace(web_base="")
+
+    client = _Tapping()
+    if base_url:
+        client.base_url = base_url
+    return client
+
+
+def test_a_tap_links_its_stream_when_an_origin_is_known(monkeypatch):
+    client = _tap_client("http://127.0.0.1:8800")
+    monkeypatch.setattr(service_access, "service_client", lambda: client)
+    res = execution.tap_job("svc-campaign-1", "cfgA/0", max_seconds=1)
+    assert res["lines"] == ["/odom"] and res["exit_code"] == 0
+    assert res["stream_url"].startswith("http://127.0.0.1:8800/")
+
+
+def test_a_tap_with_no_origin_omits_the_stream_url(monkeypatch):
+    """No origin means no usable link, so the field is absent rather than empty."""
+    client = _tap_client("")
+    monkeypatch.setattr(service_access, "service_client", lambda: client)
+    res = execution.tap_job("svc-campaign-1", "cfgA/0", max_seconds=1)
+    assert res["lines"] == ["/odom"]
+    assert "stream_url" not in res
+
+
 def test_stop_job_without_a_service_says_so(monkeypatch):
     monkeypatch.setattr(service_access, "service_client", lambda: None)
     assert "error" in execution.stop_job("svc-campaign-1", "cfgA/0")
@@ -411,15 +469,6 @@ def test_stop_without_service_fails_loudly(no_service):
     assert "no robovast-service" in execution.stop_campaign("x")["error"]
 
 
-def _dummy_arguments(fn) -> dict:
-    """One value per required parameter, by its annotation."""
-    import inspect
-    by_type = {str: "x", int: 1, float: 1.0, bool: False}
-    return {name: by_type[param.annotation]
-            for name, param in inspect.signature(fn).parameters.items()
-            if param.default is inspect.Parameter.empty}
-
-
 def _tools_of(*modules):
     """The registered tools whose functions live in *modules*, as test parameters."""
     from tests.mcp_server.conftest import registered_tools
@@ -429,7 +478,7 @@ def _tools_of(*modules):
             yield pytest.param(tool.fn, id=f"{module}.{name}")
 
 
-@pytest.mark.parametrize("tool", [p for p in _tools_of("execution")
+@pytest.mark.parametrize("tool", [p for p in _tools_of("execution", "results_lifecycle")
                                   if p.id != "execution.get_campaign_log"])
 def test_every_control_tool_refuses_with_the_one_no_service_sentence(no_service, tool):
     """The server instructions promise that every control tool says so when no service
@@ -440,7 +489,7 @@ def test_every_control_tool_refuses_with_the_one_no_service_sentence(no_service,
     ``get_campaign_log`` is the exception, and reads an archived campaign on this host.
     """
     from robovast.mcp_server.service_access import NO_SERVICE
-    assert tool(**_dummy_arguments(tool)) == {"error": NO_SERVICE}
+    assert tool(**_workspace_arguments(tool)) == {"error": NO_SERVICE}
 
 
 #: Plugins whose tools answer from this process alone: the docs, the examples, the plugin
@@ -1061,6 +1110,23 @@ def test_a_progressing_campaign_still_gets_no_hint():
 
     assert campaign_next_step({"status": "running", "postprocessed": False}) == ""
     assert campaign_next_step({"status": "finished", "postprocessed": True}) == ""
+
+
+def test_a_health_finding_gets_the_finding_step_not_the_stall_step():
+    """A finding already says what the job is doing, so its next step starts from the job
+    and the check it names -- the step ``vast campaign wait`` prints for the same exit."""
+    from robovast.client.campaign_report import campaign_next_step
+    from robovast.client.status import HEALTH_NEXT_STEP, STALL_NEXT_STEP
+
+    step = campaign_next_step({
+        "status": "running", "stalled": True, "stall_reason": "no progress",
+        "health_findings": [{"job_name": "j-0", "level": "error", "check": "sim-time",
+                             "detail": "sim time is not advancing"}],
+    })
+
+    assert step.startswith("j-0: sim-time — sim time is not advancing.")
+    assert HEALTH_NEXT_STEP in step
+    assert STALL_NEXT_STEP not in step
 
 
 def test_a_local_file_check_does_not_call_an_unchecked_world_a_pass(

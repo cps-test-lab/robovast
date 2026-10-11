@@ -84,6 +84,10 @@ _PRUNE_EVERY = 200
 EVENTS_FILENAME = "events.db"
 
 
+class EventLogUnreadable(Exception):
+    """The log could not be read: a failed lookup, which an empty record must never stand for."""
+
+
 @dataclass(frozen=True)
 class Event:
     """One thing that happened, as recorded.
@@ -105,7 +109,12 @@ class Event:
 
 
 class EventLog:
-    """Append-only, durable, bounded. Never raises at the caller."""
+    """Append-only, durable, bounded.
+
+    Appending never raises at the caller: a record of work must not fail the work. Reading
+    does, with :class:`EventLogUnreadable`, because a reader shown an empty record would take
+    a broken log for a quiet service.
+    """
 
     def __init__(self, path):
         self.path = Path(path)
@@ -172,20 +181,34 @@ class EventLog:
         """Events after *since*, oldest first -- the shape a cursor wants.
 
         Oldest first because the caller is resuming a position, not browsing: a reader holding
-        ``seq`` asks for what came after it and appends. A newest-first view is the UI's job.
+        ``seq`` asks for what came after it and appends. A reader that wants what just
+        happened asks :meth:`latest` instead.
         """
+        return self._select("WHERE seq > ? ORDER BY seq LIMIT ?", (int(since), _bounded(limit)))
+
+    def latest(self, *, limit: int = 200) -> list:
+        """The newest *limit* events, oldest first.
+
+        The tail of the record in the order :meth:`read` returns, so a reader that starts here
+        resumes with :meth:`read` from the last ``seq`` it was given.
+        """
+        return self._select(
+            "WHERE seq IN (SELECT seq FROM event ORDER BY seq DESC LIMIT ?) ORDER BY seq",
+            (_bounded(limit),))
+
+    def _select(self, where: str, params: tuple) -> list:
         with self._lock:
             conn = self._connect()
             if conn is None:
-                return []
+                raise EventLogUnreadable(
+                    "the event log could not be opened; the service log names the reason")
             try:
                 rows = conn.execute(
                     "SELECT seq, at, kind, severity, actor, subject_type, subject_id, message, "
-                    "payload FROM event WHERE seq > ? ORDER BY seq LIMIT ?",
-                    (int(since), max(1, min(int(limit), 1000)))).fetchall()
-            except sqlite3.Error:
+                    "payload FROM event " + where, params).fetchall()
+            except sqlite3.Error as e:
                 logger.warning("could not read the event log", exc_info=True)
-                return []
+                raise EventLogUnreadable(f"the event log could not be read: {e}") from e
         out = []
         for row in rows:
             try:
@@ -196,3 +219,8 @@ class EventLog:
                              subject_type=row[5], subject_id=row[6], message=row[7],
                              payload=payload))
         return out
+
+
+def _bounded(limit) -> int:
+    """A page size between one and a thousand rows."""
+    return max(1, min(int(limit), 1000))

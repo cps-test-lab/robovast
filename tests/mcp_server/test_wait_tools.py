@@ -50,7 +50,7 @@ def test_the_wait_command_is_handed_back_with_every_exit_it_can_take():
 
 def test_building_an_image_hands_back_the_command_that_waits_for_it():
     """The same debt, and for a while the only surface that still paid it in prose."""
-    step = execution._build_wait_next_step("b1", {"sut": "b1"}, False)
+    step = execution._build_wait_next_step({"sut": "b1"}, {"sut": False})
     assert "vast image wait b1" in step
     assert "background" in step
 
@@ -59,14 +59,14 @@ def test_a_multi_container_build_waits_for_every_id():
     """A project builds one image per container that adds packages. Naming only
     ``build_id`` would wait for one of them and call the rest built."""
     step = execution._build_wait_next_step(
-        "b1", {"sut": "b1", "nav": "b2"}, False)
+        {"sut": "b1", "nav": "b2"}, {"sut": False, "nav": False})
     assert "b1" in step and "b2" in step
 
 
 def test_a_cache_hit_is_not_waited_for():
     """It already finished, so the wait is the one wrong next step — and the command
     would sit on a build id that never runs."""
-    step = execution._build_wait_next_step("b1", {"sut": "b1"}, True)
+    step = execution._build_wait_next_step({"sut": "b1"}, {"sut": True})
     assert "vast image wait" not in step
     assert "start_campaign" in step
 

@@ -52,11 +52,10 @@ _MAX_CELL_BYTES = 2048
 
 #: Ceiling on the whole JSON reply, not one cell of it. ``max_rows`` and
 #: :data:`_MAX_CELL_BYTES` bound the two axes separately and neither bounds their product:
-#: 500 rows of a real campaign's ``poses`` -- the *default*, well inside every documented
-#: cap -- serializes to ~270 KB, about 67,000 tokens, and the 5000-row clamp to roughly ten
-#: times that. A reply nothing can read is not a reply, and an agent that spends its whole
-#: context on one ``SELECT *`` cannot then do anything with the answer. Measured against
-#: campaign basic-nav-gazebo-2026-08-16-20153470.
+#: the default 500 rows of a wide table such as ``poses`` serialize to hundreds of
+#: kilobytes, and the 5000-row clamp to ten times that. A reply nothing can read is not a
+#: reply, and an agent that spends its whole context on one ``SELECT *`` cannot then do
+#: anything with the answer.
 #:
 #: 64 KB is ~16,000 tokens: bigger than any answer worth reading inline, and still larger
 #: than the entire MCP tool surface's own budget. A caller who wants the data rather than
@@ -192,7 +191,7 @@ _POSE_CLOCKS_TRANSPORT = (
     "TWO CLOCKS. `timestamp` is ARRIVAL time and the join key shared with costmaps, behaviors "
     "and run_log -- join and scrub on it, and never difference it: it is quantized to the "
     "simulator's /clock grid and jittered by delivery, so a rate derived from it measures the "
-    "transport (a constant 0.24 m/s has read as an alternating 0.21/0.43 this way). `stamp` is "
+    "transport (a constant speed reads as one alternating between two values this way). `stamp` is "
     "MEASUREMENT time -- when the pose was true -- and is the only correct base for a derivative; "
     "ORDER BY it too, since `timestamp` has ties within one arrival tick. Speed for one run: "
     "SELECT stamp, SQRT(POWER(x-px,2)+POWER(y-py,2))/(stamp-ps) AS speed FROM (SELECT stamp, "
@@ -279,21 +278,18 @@ _TABLE_DESCRIPTIONS = {
         "warnings in run_log, nav2_behaviors) to decide whether the clipping cost anything. "
         "UNDER execution.sizing: calibrated IT SATURATES, and that is expected rather than a "
         "finding: the system under test is sized AT its own measured maximum with request == "
-        "limit, so it sits against that ceiling and is quota_bound in essentially every run "
-        "(measured: 150 of 150, against 2 of 45 for a declared figure 2-3x larger). The "
-        "column is still true there but no longer discriminates, so read the MAGNITUDE of "
-        "throttle_ratio and the stack's health instead of the boolean -- over that same pair "
-        "the realtime factor was better calibrated and the verdict rate did not move. What "
+        "limit, so it sits against that ceiling and is quota_bound in essentially every run. "
+        "The column is still true there but does not discriminate, so read the MAGNITUDE of "
+        "throttle_ratio and the stack's health instead of the boolean. What "
         "does still fail loudly is a PROBE clipped while measuring, which is refused before "
         "any figure is stored. "
         "periods=0 means no CPU quota was enforced at all, which is not the same as a quota "
         "that was never hit; throttle_ratio is NULL there rather than 0. "
         "COVERAGE IS NOT UNIFORM, so check it before reading a clean result as campaign-wide. "
         "A run appears here only if its node could answer; one that could not is ABSENT, not "
-        "quota_bound=0. Absence tracks the NODE, and the node that cannot answer is not a "
-        "random "
-        "one -- measured on this cluster, the single node running an older kernel was also the "
-        "largest, so it took the most pods and contributed none of the measurements. "
+        "quota_bound=0. Absence tracks the NODE -- its kernel decides what it can report -- and "
+        "the node that cannot answer need not be a random one: a large node takes many pods, "
+        "and if it is the one that cannot answer it contributes none of the measurements. "
         "What is missing: SELECT r.node_label, COUNT(*) FROM runs r LEFT JOIN "
         "run_validity_view v ON v.config_name=r.config_name AND v.run_id=r.run_id AND "
         "v.container='sut' WHERE v.run_id IS NULL GROUP BY 1. "

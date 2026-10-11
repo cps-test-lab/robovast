@@ -7,7 +7,7 @@
 A skew between them fails at *load* time with Module Federation's own assert --
 ``remoteEntryExports is undefined`` -- which names neither the versions nor the file, and
 which its runtime produces by catching the browser's real ``import()`` rejection and
-re-throwing this instead. It cost one debugging round already.
+re-throwing this instead.
 
 Two package trees, so this is neither tree's own test: ``frontend/ui`` pins
 ``@module-federation/runtime`` directly, while ``src/robovast_nav/web`` gets its runtime
