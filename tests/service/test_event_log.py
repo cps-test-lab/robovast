@@ -14,7 +14,9 @@ and a restart is exactly when they are most worth having.
 
 import time
 
-from robovast.service.event_log import EventLog
+import pytest
+
+from robovast.service.event_log import EventLog, EventLogUnreadable
 
 
 def _log(tmp_path):
@@ -80,7 +82,28 @@ def test_an_unwritable_location_does_not_take_the_caller_with_it(tmp_path):
     blocked.write_text("not a directory")
     log = EventLog(blocked / "events.db")
     log.append("x", message="dropped")          # must not raise
-    assert log.read() == []
+
+
+def test_a_log_that_cannot_open_is_an_error_to_a_reader_not_an_empty_record(tmp_path):
+    """Absent data and a failed lookup are different answers.
+
+    An empty page reads as "nothing happened", which a log that never opened cannot know.
+    """
+    blocked = tmp_path / "afile"
+    blocked.write_text("not a directory")
+    log = EventLog(blocked / "events.db")
+    with pytest.raises(EventLogUnreadable):
+        log.read()
+    with pytest.raises(EventLogUnreadable):
+        log.latest()
+
+
+def test_a_failed_query_is_an_error_to_a_reader(tmp_path):
+    log = _log(tmp_path)
+    log.append("x", message="kept")
+    log._connect().execute("DROP TABLE event")  # pylint: disable=protected-access
+    with pytest.raises(EventLogUnreadable, match="could not be read"):
+        log.read()
 
 
 def test_the_table_is_bounded_so_a_mounted_volume_cannot_fill(tmp_path, monkeypatch):
@@ -385,3 +408,14 @@ def test_the_route_refuses_a_cursor_and_newest_together(tmp_path):
         refused = client.get("/admin/events", params={"newest": "true", "since": since})
         assert refused.status_code == 400, refused.text
         assert "since" in refused.json()["detail"]
+
+
+def test_the_route_answers_a_log_it_cannot_read_with_an_error(tmp_path):
+    """The panel shows the error the route returns; an empty page would read "Nothing recorded
+    yet" over a broken log."""
+    (tmp_path / "ws" / "events.db").mkdir(parents=True)
+    client = _refusing_client(tmp_path)
+    for params in ({}, {"newest": "true"}):
+        answer = client.get("/admin/events", params=params)
+        assert answer.status_code == 503, answer.text
+        assert "event log" in answer.json()["detail"]
