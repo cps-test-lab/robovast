@@ -758,12 +758,10 @@ def delete_server(config_name=None, forget_placement=False, delete_data=False,
     from .image_warm import delete_warm_daemonset  # pylint: disable=import-outside-toplevel
     delete_warm_daemonset(namespace, kube_context)
 
-    # Same class as the warm DaemonSet, and the reason it was missed: setup writes it, so
-    # only setup used to take it away. A teardown that left it kept a privileged pod on
-    # every node, re-asserting a governor for a deployment that no longer exists -- the
-    # observed symptom being governor pods days older than everything else after a
-    # cleanup + setup. Removing the DaemonSet does NOT restore the previous governor; see
-    # `remove_daemonset` and the note the CLI prints.
+    # Same class as the warm DaemonSet: setup writes it, so teardown has to remove it too. A
+    # teardown that left it would keep a privileged pod on every node, re-asserting a governor
+    # for a deployment that no longer exists. Removing the DaemonSet does NOT restore the
+    # previous governor; see `remove_daemonset` and the note the CLI prints.
     from .node_governor import delete_cpu_governor  # pylint: disable=import-outside-toplevel
     governor_removal = delete_cpu_governor(namespace, kube_context)
     # The tailnet node goes with the deployment it fronts: left behind it would answer on a

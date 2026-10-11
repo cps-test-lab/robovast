@@ -198,10 +198,6 @@ def resolve_pull_secret(cluster_config, k8s_core, namespace: str) -> str:
 
     Everything optional: a deployment on a public registry needs no credential, so any failure
     to determine one yields ``""`` rather than an error.
-
-    The run, exec and warm paths each carry this logic inline (``kubernetes_backend``,
-    ``kube_exec_runner``, ``image_warm``). They predate this helper and can move onto it; nothing
-    is gained by leaving a fifth copy for the next pod spec that needs one.
     """
     from .service_deploy import REGISTRY_PUSH_SECRET_NAME  # noqa: PLC0415
 
@@ -743,9 +739,8 @@ def image_pull_is_throttled(message: str) -> bool:
     campaigns start a batch together, and self-clearing in both cases.
 
     It matters because the two live on different clocks. Failing a throttled pull on the
-    sixty-second blip timer ends the campaign for the one image condition that fixes
-    itself — which is what happened to a 50-batch search on its 34th batch, with two
-    jobs of thirty-five affected and eight hours of finished work behind it.
+    sixty-second blip timer would end the campaign for the one image condition that fixes
+    itself, discarding every batch a long search has already finished.
 
     Everything else — a manifest that does not exist, a registry that refuses the
     credential, a host that does not resolve — reads identically in fifteen minutes and
