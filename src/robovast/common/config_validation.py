@@ -767,7 +767,7 @@ def _scene_camera_panel_problems(raw):
     problems = [_problem(
         "panel",
         "a camera panel with kind: scene needs a `sensor`: the name of the camera sensor the "
-        "scene shows the run through (the 3D view's viewpoint selector lists them).",
+        "scene shows the run through (a panel naming one the scene lacks lists those it has).",
         field=f"{RUN_VIEW_PANELS}[{i}].sensor")
         for i, props in panels if not (isinstance(props, dict) and props.get("sensor"))]
     name, replay = _scene_replay(raw)

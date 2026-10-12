@@ -127,8 +127,8 @@ export function cameraTopic(config: CameraConfig): string {
 export function cameraSensor(config: CameraConfig): string {
   if (!config.sensor) {
     throw new Error(
-      "camera panel: kind 'scene' needs a `sensor` (the name of a camera the scene places; the 3D " +
-        "view's viewpoint selector lists them).",
+      "camera panel: kind 'scene' needs a `sensor` (the name of a camera the scene places; a " +
+        'panel naming one the scene lacks lists those it has).',
     )
   }
   return config.sensor

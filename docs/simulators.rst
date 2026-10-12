@@ -312,9 +312,8 @@ matter to a *second* producer:
 .. _scene-descriptor-cameras:
 
 **Camera sensors.** A producer that knows the world's camera sensors places each one in the
-descriptor, under ``cameras``, and the run view then renders the scene from where the sensor looked
--- the :ref:`3D panel's viewpoint selector <scene3d-panel>` and the :ref:`camera panel's
-<camera-panel>` ``kind: scene``. That is all a backend provides for camera views: the picture is
+descriptor, under ``cameras``, and a :ref:`camera panel <camera-panel>` with ``kind: scene`` then
+renders the scene from where the sensor looked. That is all a backend provides for camera views: the picture is
 drawn in the browser from the scene and the recorded poses, so a run stores no images for it and
 the service renders nothing per frame. An entry is a standard glTF perspective camera on a body:
 

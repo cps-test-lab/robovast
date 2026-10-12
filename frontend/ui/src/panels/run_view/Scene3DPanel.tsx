@@ -26,19 +26,15 @@
 // Geometry needs no binding at all: the service resolves the world the run used, so `- scene3d:` on
 // its own is a complete panel.
 //
-// Viewpoints: a descriptor may place sensor cameras on its bodies (lib/scene3d/sceneCameras.ts).
-// When it does, a selector over the view offers each colour camera besides the free orbit view, and
-// choosing one shows the scene through it, with the sensor's projection, following its body as the
-// motion plays -- a picture of what the sensor saw, rendered here from the geometry and poses the
-// view already holds, so nothing is stored or fetched for it. The camera panel's `kind: scene` is
-// this same view fixed on one sensor (`Scene3DView`'s `sensor`).
+// `Scene3DView` with a `sensor` is the camera panel's `kind: scene`: the same replay, shown through a
+// sensor camera the descriptor places on a body (lib/scene3d/sceneCameras.ts) instead of the orbit
+// camera -- a picture of what the sensor saw, rendered from the geometry and poses this view loads
+// anyway, so nothing is stored for it. The scene3d panel itself is always the free orbit view.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
-import MenuItem from '@mui/material/MenuItem'
-import Select from '@mui/material/Select'
 import { registerPanel } from '@/lib/panels/registry'
 import { isLiveProvider } from '@/lib/panels/dataProvider'
 import type { PanelProps } from '@robovast/panel-kit'
@@ -76,11 +72,8 @@ interface Mismatch {
   producer?: string
 }
 
-/** The free orbit view's entry in the viewpoint selector. */
-const ORBIT = ''
-
-/** The 3D view of a run. `sensor` fixes it on that sensor camera of the scene, with no orbit view and
- *  no viewpoint selector -- what the camera panel's `kind: scene` shows. */
+/** The 3D view of a run, through the orbit camera -- or, given a `sensor`, through that sensor camera
+ *  of the scene, with no orbit camera at all: what the camera panel's `kind: scene` shows. */
 export function Scene3DView({ spec, clock, data, sensor }: PanelProps & { sensor?: string }) {
   const motionCfg = (spec.config.motion ?? {}) as { poses?: unknown; joints?: unknown }
   const poseTable = String(motionCfg.poses ?? DEFAULT_POSE_TABLE)
@@ -98,11 +91,8 @@ export function Scene3DView({ spec, clock, data, sensor }: PanelProps & { sensor
   const [mismatch, setMismatch] = useState<Mismatch | null>(null)
   /** Whether the source has any sample yet -- a live run's tables can be empty for a while. */
   const [empty, setEmpty] = useState(false)
-  /** The loaded scene's cameras (null until a scene is), and the one shown through (ORBIT for the
-   *  free view). */
+  /** The loaded scene's cameras; null until a scene is. */
   const [cameras, setCameras] = useState<SceneCamera[] | null>(null)
-  const [chosen, setViewpoint] = useState<string>(ORBIT)
-  const viewpoint = sensor ?? chosen
 
   /** Seat the scene at the sample nearest `t`. Nothing here allocates: the source pushes into the
    *  sink, which is the loader's own imperative API, and the viewport redraws continuously. */
@@ -161,14 +151,8 @@ export function Scene3DView({ spec, clock, data, sensor }: PanelProps & { sensor
     if (!el) return
     const viewport = new SceneViewport(el)
     viewportRef.current = viewport
-    // A view fixed on a sensor has no free camera for the header's reset to re-frame; any other
-    // returns to the free view and re-frames it.
-    const unregister = sensor
-      ? () => undefined
-      : registerSceneReset(() => {
-          setViewpoint(ORBIT)
-          viewport.resetView()
-        })
+    // A sensor's view has no free camera for the header's reset to re-frame.
+    const unregister = sensor ? () => undefined : registerSceneReset(() => viewport.resetView())
     return () => {
       unregister()
       viewportRef.current = null
@@ -313,13 +297,13 @@ export function Scene3DView({ spec, clock, data, sensor }: PanelProps & { sensor
 
   useEffect(() => clock.subscribe(() => applyAt(clock.t)), [clock, applyAt])
 
-  // Show the chosen camera of the scene now on screen. A camera belongs to one model, so this follows
-  // the camera list -- a new model brings its own cameras -- as well as the choice.
+  // Show the sensor's camera of the scene now on screen. A camera belongs to one model, so this
+  // follows the camera list: a new model brings its own cameras.
   const offered = viewpoints(cameras ?? [])
-  const shown = viewpoint === ORBIT ? null : (offered.find((c) => c.name === viewpoint) ?? null)
+  const shown = sensor ? (offered.find((c) => c.name === sensor) ?? null) : null
   useEffect(() => {
-    viewportRef.current?.setViewpoint(shown)
-  }, [shown])
+    if (sensor) viewportRef.current?.setViewpoint(shown)
+  }, [sensor, shown])
   // Only once the scene is loaded can a missing sensor be told from one still on its way.
   const missingSensor = sensor && cameras && !shown ? sensor : null
   const missingKind = cameras?.find((c) => c.name === missingSensor)?.kind
@@ -327,32 +311,6 @@ export function Scene3DView({ spec, clock, data, sensor }: PanelProps & { sensor
   return (
     <Box sx={{ position: 'relative', width: '100%', height: '100%', bgcolor: CANVAS }}>
       <Box ref={containerRef} sx={{ position: 'absolute', inset: 0 }} />
-      {!sensor && offered.length ? (
-        <Select
-          size="small"
-          value={shown ? viewpoint : ORBIT}
-          onChange={(e) => setViewpoint(String(e.target.value))}
-          displayEmpty
-          aria-label="Viewpoint"
-          sx={{
-            position: 'absolute',
-            top: 8,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            minWidth: 180,
-            fontSize: 13,
-            bgcolor: 'background.paper',
-          }}
-        >
-          <MenuItem value={ORBIT}>Free view</MenuItem>
-          {offered.map((c) => (
-            <MenuItem key={c.name} value={c.name}>
-              {c.name}
-              {c.width && c.height ? ` (${c.width}×${c.height})` : ''}
-            </MenuItem>
-          ))}
-        </Select>
-      ) : null}
       {missingSensor ? (
         <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, right: 8 }}>
           This run&apos;s scene has no colour camera <code>{missingSensor}</code>

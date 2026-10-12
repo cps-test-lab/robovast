@@ -2702,10 +2702,10 @@ per world (``GET /campaigns/{id}/scene`` asks, one ``POST .../scene/run`` builds
 uses the workspace's ``/workspaces/{id}/scene``). The run view's panel drives ``jointMap`` and
 ``basePose`` from the run's ``sim_poses`` and ``joint_states`` rows on the clock; the config
 view's has no clock and draws what the variations placed as markers. ``SceneViewport.setViewpoint`` renders
-through one of those cameras instead of the orbit camera, letterboxed to the sensor's shape; the
-run-view panel's viewpoint selector and the camera panel's ``kind: scene`` (``Scene3DView`` with a
-fixed ``sensor``) are its two callers, and neither asks the service for anything the 3D view does
-not already load.
+through one of those cameras instead of the orbit camera, letterboxed to the sensor's shape. Its
+one caller is the camera panel's ``kind: scene``: ``Scene3DView`` (the run view's 3D panel) with a
+fixed ``sensor``, which asks the service for nothing the 3D view does not already load. The
+``scene3d`` panel itself never leaves the orbit camera.
 
 Deferred: a bundle code-split (Monaco + Plotly + Vega + Module Federation make the SPA large).
 

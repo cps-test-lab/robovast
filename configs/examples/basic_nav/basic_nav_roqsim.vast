@@ -64,8 +64,9 @@ visualization:
           title: OAK-D camera
           kind: scene
           sensor: robot.oakd.oakd_camera
-          position: {anchor: top-center, width: 400, height: 330}
+          position: {anchor: top-center, width: 360, height: 300}
           minimizable: true
+          minimized: true
       - log:
           title: Run log
           position: {anchor: bottom-center, width: "calc(100% - 680px)", height: 380}
