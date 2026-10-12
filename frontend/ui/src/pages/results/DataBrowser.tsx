@@ -22,7 +22,7 @@ import {
 } from '@mui/x-data-grid'
 import {
   robovast,
-  hasResults,
+  resultsCampaigns,
   type CampaignSummary,
   type DataQueryResult,
   type PlotSpec,
@@ -74,7 +74,7 @@ export function DataBrowser({
   // The campaigns with results to query: recorded runs, or trials under way (`hasResults`). The
   // Results container already filters to these; kept defensive since `campaigns` is a prop.
   // Newest-first is the service's order; filtering preserves it.
-  const evalCampaigns = campaigns.filter(hasResults)
+  const evalCampaigns = resultsCampaigns(campaigns)
 
   const describe = useQuery({
     queryKey: ['describe', campaignId],
