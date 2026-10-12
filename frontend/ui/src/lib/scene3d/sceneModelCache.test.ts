@@ -15,6 +15,7 @@ function fakeModel(): SceneModel {
     initialJoints: {},
     bodies: [],
     joints: [],
+    cameras: [],
     basePose: () => {},
     reset: vi.fn(),
     dispose: vi.fn(),

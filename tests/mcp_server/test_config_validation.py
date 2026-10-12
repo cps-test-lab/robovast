@@ -205,6 +205,75 @@ def test_the_scene3d_check_stays_quiet_without_a_backend():
     assert _scene3d_problems(raw) == []
 
 
+def _with_backend(backend, check, raw):
+    import robovast.common.simulators as sim_mod
+    original = sim_mod.resolve_backend
+    try:
+        sim_mod.resolve_backend = lambda name, base_dir="": backend
+        return check(raw)
+    finally:
+        sim_mod.resolve_backend = original
+
+
+def _scene_camera_raw(panel):
+    return {
+        "execution": {"mode": "ros2", "containers": {
+            "simulation": {"backend": "sim", "stage": "x"}}},
+        "visualization": {"results": {"run_view": {"panels": [{"camera": panel}]}}},
+    }
+
+
+def test_a_scene_camera_panel_needs_a_simulator_that_replays_and_exports_its_scene():
+    """``kind: scene`` renders the scene from a sensor camera as the recorded poses move it, so
+    the simulator has to record its state and export the scene the camera is placed in."""
+    from robovast.common.config_validation import _scene_camera_panel_problems
+    from robovast.common.simulators import SimulatorBackend
+
+    class _Replays(SimulatorBackend):
+        def records_scene_state(self, cfg, execution):
+            return True
+
+        def scene_export(self, cfg, execution, *, world, max_tex_dim, overrides,
+                         overrides_file=None):
+            return "export --out {out}"
+
+    class _RecordsOnly(_Replays):
+        def scene_export(self, cfg, execution, *, world, max_tex_dim, overrides,
+                         overrides_file=None):
+            return None
+
+    raw = _scene_camera_raw({"kind": "scene", "sensor": "robot.cam"})
+    assert _with_backend(_Replays(), _scene_camera_panel_problems, raw) == []
+
+    problems = _with_backend(_RecordsOnly(), _scene_camera_panel_problems, raw)
+    assert [p["field"] for p in problems] == ["visualization.results.run_view.panels[0]"]
+    assert "exports no scene" in problems[0]["message"]
+    assert "records no scene state" not in problems[0]["message"]
+
+    problems = _with_backend(SimulatorBackend(), _scene_camera_panel_problems, raw)
+    assert "records no scene state" in problems[0]["message"]
+    assert "exports no scene" in problems[0]["message"]
+
+
+def test_a_scene_camera_panel_names_its_sensor():
+    from robovast.common.config_validation import _scene_camera_panel_problems
+    problems = _scene_camera_panel_problems(
+        {"visualization": {"results": {"run_view": {"panels": [{"camera": {"kind": "scene"}}]}}}})
+    assert [p["field"] for p in problems] == ["visualization.results.run_view.panels[0].sensor"]
+
+
+def test_only_a_recorded_camera_panel_needs_a_video_producer():
+    """``topic``, ``render`` and ``scene`` read frames, renders or the scene, never the
+    ``videos`` table, so a campaign without ``rosbags_to_webm`` is fine for them."""
+    from robovast.common.config_validation import _camera_panel_problems
+    for panel in ({"kind": "topic", "topic": "/cam"}, {"kind": "render"},
+                  {"kind": "scene", "sensor": "robot.cam"}):
+        assert _camera_panel_problems(_raw(panels=[{"camera": panel}])) == [], panel
+    for panel in ({}, {"kind": "recorded"}):
+        problems = _camera_panel_problems(_raw(panels=[{"camera": panel}]))
+        assert [p["field"] for p in problems] == ["visualization.results.run_view.panels[0]"]
+
+
 # ---------------------------------------------------------------------------
 # Build-context advisory
 #

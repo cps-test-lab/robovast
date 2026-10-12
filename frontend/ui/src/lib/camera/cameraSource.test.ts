@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import type { DataProvider, PanelSpec } from '@robovast/panel-kit'
-import { cameraKind, cameraTopic, resolveCameraSource } from './cameraSource'
+import { cameraKind, cameraSensor, cameraTopic, resolveCameraSource } from './cameraSource'
 
 const spec = (config: Record<string, unknown>): PanelSpec =>
   ({ type: 'camera', config }) as unknown as PanelSpec
@@ -23,6 +23,7 @@ describe('cameraKind', () => {
     expect(cameraKind({})).toBe('recorded')
     expect(cameraKind({ kind: 'topic' })).toBe('topic')
     expect(cameraKind({ kind: 'render' })).toBe('render')
+    expect(cameraKind({ kind: 'scene' })).toBe('scene')
   })
 
   it('refuses a kind it does not have', () => {
@@ -35,6 +36,13 @@ describe('cameraTopic', () => {
     expect(cameraTopic({ topic: '/a' })).toBe('/a')
     expect(cameraTopic({ source: { topic: '/b' } })).toBe('/b')
     expect(() => cameraTopic({})).toThrow(/topic/)
+  })
+})
+
+describe('cameraSensor', () => {
+  it('reads sensor, and refuses a scene panel without one', () => {
+    expect(cameraSensor({ kind: 'scene', sensor: 'robot.cam' })).toBe('robot.cam')
+    expect(() => cameraSensor({ kind: 'scene' })).toThrow(/sensor/)
   })
 })
 
@@ -86,5 +94,21 @@ describe('resolveCameraSource', () => {
       kind: 'render', run: { campaignId: 'c', configName: 'cfg', runId: '0' },
       view: { camera: 'top', view: { distance: 4 } },
     })
+  })
+
+  it('scene: names the sensor, asks the service nothing and reads no table', async () => {
+    const fetchJson = vi.fn()
+    const data = provider()
+    const src = await resolveCameraSource(
+      spec({ kind: 'scene', sensor: 'robot.oakd.oakd_camera' }), data, fetchJson,
+    )
+    expect(src).toEqual({ kind: 'scene', sensor: 'robot.oakd.oakd_camera' })
+    expect(fetchJson).not.toHaveBeenCalled()
+    expect(data.has).not.toHaveBeenCalled()
+    expect(data.series).not.toHaveBeenCalled()
+  })
+
+  it('scene: refuses a panel with no sensor', async () => {
+    await expect(resolveCameraSource(spec({ kind: 'scene' }), provider())).rejects.toThrow(/sensor/)
   })
 })

@@ -1,7 +1,7 @@
 // Where a camera panel gets its picture, and the one thing it needs besides the pixels: where the
 // picture sits on the run's timeline.
 //
-// Three kinds, chosen by the panel's `kind`:
+// Four kinds, chosen by the panel's `kind`:
 //
 //  - `recorded`: a `.webm` a producer registered in the `videos` table (or named by `source.path`).
 //    The video file alone cannot place itself: `rosbags_to_webm` re-times every frame onto a constant
@@ -12,6 +12,9 @@
 //    is the smooth-playback derivative of the same recording.
 //  - `render`: a run with no camera topic at all. The screenshot route re-renders the run's
 //    recorded state at the clock's moment, from a camera the world defines or a free viewpoint.
+//  - `scene`: a sensor camera the scene descriptor places on a body, rendered in the browser from the
+//    geometry and the recorded poses the 3D view replays -- every moment at once, with nothing stored
+//    or rendered on the service. Its time base is the motion's own, so there is nothing to place.
 
 import type { DataProvider, PanelSpec } from '@robovast/panel-kit'
 import { cameraRoutes, type RenderView, type RunRef } from './frameRoutes'
@@ -45,6 +48,11 @@ export type CameraSource =
       run: RunRef
       view: RenderView
     }
+  | {
+      kind: 'scene'
+      /** The camera's name in the scene descriptor: the sensor it renders for. */
+      sensor: string
+    }
 
 export type CameraKind = CameraSource['kind']
 
@@ -56,6 +64,7 @@ export type CameraKind = CameraSource['kind']
  *     - camera: { kind: topic, topic: /cam }     the recorded frames of an image topic
  *     - camera: { kind: render, camera: top }    a render of the recorded state
  *     - camera: { kind: render, view: { azimuth: 90, distance: 12 } }
+ *     - camera: { kind: scene, sensor: robot.oakd.oakd_camera }   a sensor camera of the scene
  */
 export interface CameraConfig {
   kind?: CameraKind
@@ -65,6 +74,8 @@ export interface CameraConfig {
   camera?: string
   /** `kind: render`: free-camera settings. */
   view?: Record<string, string | number>
+  /** `kind: scene`: the sensor camera, by its name in the scene descriptor. */
+  sensor?: string
   source?: CameraBinding
 }
 
@@ -85,7 +96,7 @@ export interface CameraBinding {
  *  `rosbags_to_webm` is the first, a simulator that renders its own video may be the next. */
 export const VIDEOS_TABLE = 'videos'
 
-const KINDS: ReadonlySet<string> = new Set<CameraKind>(['recorded', 'topic', 'render'])
+const KINDS: ReadonlySet<string> = new Set<CameraKind>(['recorded', 'topic', 'render', 'scene'])
 
 /** Which kind a panel config asks for. `recorded` unless it says, so a config written before the
  *  other kinds existed reads the same. */
@@ -109,6 +120,18 @@ export function cameraTopic(config: CameraConfig): string {
     )
   }
   return topic
+}
+
+/** The sensor a `scene` panel looks through, or throws: a scene may place several cameras, and
+ *  picking one for the panel would show a view nobody chose. */
+export function cameraSensor(config: CameraConfig): string {
+  if (!config.sensor) {
+    throw new Error(
+      "camera panel: kind 'scene' needs a `sensor` (the name of a camera the scene places; the 3D " +
+        "view's viewpoint selector lists them).",
+    )
+  }
+  return config.sensor
 }
 
 export const runRef = (data: DataProvider): RunRef => ({
@@ -143,6 +166,8 @@ export async function resolveCameraSource(
       return resolveTopic(config, data, fetchJson)
     case 'render':
       return { kind: 'render', run: runRef(data), view: { camera: config.camera, view: config.view } }
+    case 'scene':
+      return { kind: 'scene', sensor: cameraSensor(config) }
     case 'recorded':
       return resolveRecorded(config.source ?? {}, data)
   }

@@ -1831,6 +1831,27 @@ playback is not a seek storm. Outside the recording — a camera that came up la
 ran past the last frame — it dims and says *"No frames at this time"* rather than showing
 frame 0 as though it were the current moment.
 
+**Through a sensor of the scene** (``kind: scene``). For a simulator whose scene export places
+its camera sensors (:ref:`camera sensors <scene-descriptor-cameras>`), the panel shows the 3D scene as that sensor
+saw it, the same view as the :ref:`3D panel's <scene3d-panel>` viewpoint selector, fixed on one
+sensor:
+
+.. code-block:: yaml
+
+   - camera:
+       title: OAK-D camera
+       kind: scene
+       sensor: robot.oakd.oakd_camera     # the camera's name in the scene; the selector lists them
+       position: {anchor: top-center, width: 400, height: 330}
+
+Nothing is recorded for it: it renders in the browser from the world's cached scene and the run's
+recorded poses, so it plays at the view's frame rate and seeks instantly, and it needs no
+``rosbags_to_webm`` step. It shows the simulated geometry under the viewer's lighting, without the
+sensor's noise or the simulator's own renderer — a view of where the sensor looked, not its pixels.
+Validation refuses a ``kind: scene`` panel with no ``sensor``, or on a simulator that records no scene
+state or exports no scene; a ``sensor`` the scene has no colour camera for is reported in the panel,
+with the names it has.
+
 Where the video comes from: a producer writes it into the run directory and registers it in
 the ``videos`` table. ``rosbags_to_webm`` is the first such producer (see the
 :ref:`worked example <videos-table>`), but the table is a contract any of them may write.
@@ -1944,6 +1965,16 @@ default and is what makes such a view freeze a short way from that center; here 
 re-chosen every gesture and can be flown through. Because it flies without bound, the way back is
 the header gear's :ref:`Reset 3D view <reset-3d-view>` entry, which re-frames the camera at the view
 the world was authored with.
+
+**Viewpoints.** When the scene places camera sensors (see :ref:`camera sensors <scene-descriptor-cameras>`), a
+selector at the top of the view lists each colour camera beside **Free view**. Choosing one shows the
+scene *through* that sensor: its mount on its body, its field of view and image shape (letterboxed
+to it), following the body as the run plays — a picture of what the sensor saw, rendered in the browser
+from the geometry and motion the view already holds, so scrubbing is instant and nothing is recorded,
+stored or rendered on the service for it. The orbit bindings are off while a sensor's view shows, and
+**Free view** returns to the orbit camera where it was. A depth sensor is not offered: its image is a
+distance per pixel, which a render of the scene's colours would misstate. To keep a sensor's view on
+screen next to the 3D view, use a :ref:`camera panel <camera-panel>` with ``kind: scene``.
 
 It needs no bindings at all — ``- scene3d:`` on its own is a complete panel — because the run's
 **recording** names the world it used (its ``sim_recording`` row) and the service builds the

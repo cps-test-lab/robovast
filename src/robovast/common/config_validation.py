@@ -641,6 +641,31 @@ def _scene_descriptor_problems(raw, vast_dir):
     return problems
 
 
+def _scene_replay(raw):
+    """``(backend name, capabilities)`` of the configured simulator for a 3D replay.
+
+    ``capabilities`` is ``{"records": <records_scene_state>, "exports": <has a scene_export>}``,
+    or ``None`` when there is no backend or it does not resolve -- a campaign with no backend is
+    not second-guessed, and an unresolvable one is reported by the schema.
+    """
+    from robovast.common.simulators import backend_name  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import resolve_backend
+    execution = raw.get("execution") or {}
+    name = backend_name(execution)
+    if not name:
+        return name, None
+    try:
+        backend = resolve_backend(name)
+        cfg = (execution.get("containers") or {}).get("simulation") or {}
+        return name, {
+            "records": bool(backend.records_scene_state(cfg, execution)),
+            "exports": backend.scene_export(cfg, execution, world="", max_tex_dim=0,
+                                            overrides={}) is not None,
+        }
+    except Exception:  # noqa: BLE001 - an unresolvable backend is reported by the schema
+        return name, None
+
+
 def _scene3d_problems(raw):
     """A ``scene3d`` panel replays the simulator's **recorded state**, so the runs have to record it.
 
@@ -658,25 +683,13 @@ def _scene3d_problems(raw):
     A campaign with no backend is not second-guessed: nothing here could tell where its
     recording would come from.
     """
-    problems = []
     panels = [(i, entry) for i, entry in enumerate(_run_view_panels(raw))
               if _panel_entry(entry)[0] == "scene3d"]
     if not panels:
-        return problems
-
-    from robovast.common.simulators import backend_name  # pylint: disable=import-outside-toplevel
-    from robovast.common.simulators import resolve_backend
-    execution = raw.get("execution") or {}
-    name = backend_name(execution)
-    if not name:
-        return problems
-    try:
-        backend = resolve_backend(name)
-        cfg = (execution.get("containers") or {}).get("simulation") or {}
-        if backend.records_scene_state(cfg, execution):
-            return problems
-    except Exception:  # noqa: BLE001 - an unresolvable backend is reported by the schema
-        return problems
+        return []
+    name, replay = _scene_replay(raw)
+    if replay is None or replay["records"]:
+        return []
 
     return [_problem(
         "panel",
@@ -694,6 +707,9 @@ def _camera_panel_problems(raw):
     shows "this run registered no video" to whoever finally opens it — after the compute is
     spent.
 
+    Only the ``recorded`` kind (the default) plays such a video; the other kinds read frames,
+    renders or the scene, and :func:`_scene_camera_panel_problems` checks the scene kind.
+
     Only the ``videos``-table path is checked. A panel naming ``source.path`` points at a
     file it takes responsibility for (the escape hatch for a video no producer registered),
     and second-guessing that would reject the one case the hatch exists for.
@@ -708,7 +724,8 @@ def _camera_panel_problems(raw):
 
     problems = []
     panels = [(i, props) for i, entry in enumerate(_run_view_panels(raw))
-              for ptype, props in [_panel_entry(entry)] if ptype == "camera"]
+              for ptype, props in [_panel_entry(entry)]
+              if ptype == "camera" and _camera_kind(props) == "recorded"]
     if not panels:
         return problems
 
@@ -726,6 +743,47 @@ def _camera_panel_problems(raw):
         "file directly with `source: {path: ..., t0: ...}`.",
         field=f"{RUN_VIEW_PANELS}[{i}]")
         for i, props in panels if not ((props or {}).get("source") or {}).get("path")]
+
+
+def _camera_kind(props):
+    """A camera panel's ``kind``; ``recorded`` when it names none, as the panel reads it."""
+    return str((props or {}).get("kind") or "recorded") if isinstance(props, dict) else "recorded"
+
+
+def _scene_camera_panel_problems(raw):
+    """A ``kind: scene`` camera panel renders the 3D scene from a sensor camera the scene places.
+
+    It needs what a ``scene3d`` panel needs -- runs that record the simulator state, and a
+    simulator whose scene export the geometry comes from (and which places the sensor's
+    camera) -- plus the ``sensor`` it looks through. Which cameras a world has is only known
+    once its scene is exported, so the name itself is checked by the panel, which lists the
+    ones the scene has.
+    """
+    panels = [(i, props) for i, entry in enumerate(_run_view_panels(raw))
+              for ptype, props in [_panel_entry(entry)]
+              if ptype == "camera" and _camera_kind(props) == "scene"]
+    if not panels:
+        return []
+    problems = [_problem(
+        "panel",
+        "a camera panel with kind: scene needs a `sensor`: the name of the camera sensor the "
+        "scene shows the run through (the 3D view's viewpoint selector lists them).",
+        field=f"{RUN_VIEW_PANELS}[{i}].sensor")
+        for i, props in panels if not (isinstance(props, dict) and props.get("sensor"))]
+    name, replay = _scene_replay(raw)
+    if replay is None:
+        return problems
+    missing = [what for what, ok in (
+        ("records no scene state to move the camera with", replay["records"]),
+        ("exports no scene for it to render", replay["exports"])) if not ok]
+    if missing:
+        problems.extend(_problem(
+            "panel",
+            f"a camera panel with kind: scene renders the run's 3D scene from a sensor camera, "
+            f"and the '{name}' simulator {' and '.join(missing)}. Use kind: recorded or "
+            f"kind: topic for a camera this simulator records.",
+            field=f"{RUN_VIEW_PANELS}[{i}]") for i, _props in panels)
+    return problems
 
 
 #: What a scenario writes when it starts a bag recorder of its own. Matched on the text of
@@ -1492,8 +1550,10 @@ def validate_project_file(config_path):
     problems.extend(_image_provenance_problems(raw))
     problems.extend(_unresolvable_image_problems(raw))
     problems.extend(_migration_marker_problems(raw))
-    # ...and a camera panel needs a step that produces the video it plays.
+    # ...and a camera panel needs a step that produces the video it plays, or, looking
+    # through a sensor of the scene, a simulator that replays one.
     problems.extend(_camera_panel_problems(raw))
+    problems.extend(_scene_camera_panel_problems(raw))
     # ...and the run's bag has to hold what the tables and panels read from it.
     problems.extend(_recording_problems(raw, scenario_file))
 

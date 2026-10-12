@@ -2681,7 +2681,11 @@ decoder builds via ``ctx.open_db()`` and returns the frame dict the costmap pane
 descriptor (``scene.json``/``scene.bin``), which a simulator backend's exporter produces;
 the format is RoboVAST's, see :ref:`scene-descriptor`. ``sceneLoader.ts``
 builds a three.js ``Group`` and returns an imperative animation API (``jointMap`` /
-``basePose``); ``viewport.ts`` is a plain-three viewport (renderer/camera/lights/grid/orbit
+``basePose``) and the descriptor's sensor cameras (``sceneCameras.ts``, the contract is the scene descriptor's
+:ref:`camera sensors <scene-descriptor-cameras>`): each a three ``PerspectiveCamera`` -- glTF's camera convention is
+three's -- parented to its body's node, so the motion that moves the body moves the camera and the
+renderer keeps its view matrix current with the rest of the graph; ``viewport.ts`` is a plain-three
+viewport (renderer/camera/lights/grid/orbit
 controls + the Z-up wrapper). The wheel is the viewport's own, not the orbit controller's
 (``cursorDolly.ts``): scaling the orbit radius toward a fixed pivot makes the travel a geometric
 series converging on that pivot, so a notch moves millimeters once you are close and the pivot can
@@ -2697,7 +2701,11 @@ and ``frontend/ui/src/panels/config/Scene3DPanel.tsx``. Both resolve the descrip
 per world (``GET /campaigns/{id}/scene`` asks, one ``POST .../scene/run`` builds; the config view
 uses the workspace's ``/workspaces/{id}/scene``). The run view's panel drives ``jointMap`` and
 ``basePose`` from the run's ``sim_poses`` and ``joint_states`` rows on the clock; the config
-view's has no clock and draws what the variations placed as markers.
+view's has no clock and draws what the variations placed as markers. ``SceneViewport.setViewpoint`` renders
+through one of those cameras instead of the orbit camera, letterboxed to the sensor's shape; the
+run-view panel's viewpoint selector and the camera panel's ``kind: scene`` (``Scene3DView`` with a
+fixed ``sensor``) are its two callers, and neither asks the service for anything the 3D view does
+not already load.
 
 Deferred: a bundle code-split (Monaco + Plotly + Vega + Module Federation make the SPA large).
 
