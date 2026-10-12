@@ -43,13 +43,15 @@ from robovast.execution.data.collect_sysinfo import node_label  # noqa: F401
 from robovast.execution.campaign_archive import JOB_DOCUMENT_SUFFIXES
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
-from .config import SIMULATION_CONTAINER, Ros2RecordingConfig, recording_config
+from .config import (SIMULATION_CONTAINER, Ros2RecordingConfig, recording_config,
+                     records_every_ros2_topic)
 from .config_identifier import (compute_config_identifier, hash_file_content, hash_run_files,
                                 variation_refs)
 from .sut_channel import SUT_CONFIG_FILE
 from .sut_channel import source_paths as sut_source_paths
 from .errors import CampaignConfigError, missing_input_error
-from .simulators import SIM_CONFIG_FILE, SIM_OVERRIDES_MOUNT, scenario_use_sim_time
+from .simulators import (SIM_CONFIG_FILE, SIM_OVERRIDES_MOUNT, backend_name,
+                         declares_on_demand_streams, scenario_use_sim_time)
 
 # The host <-> container protocol: what host scripts assume about an image's entrypoint,
 # paths and environment. Bump COMPAT_VERSION when that contract changes (a new required
@@ -1116,6 +1118,48 @@ def scenario_env(campaign_data):
     return env
 
 
+#: Where a configuration records which streams its ROS bag left out, beside ``sim.config``.
+RECORDING_CONFIG_FILE = "recording.config"
+
+#: Why a stream in that record is absent from the bag, stated with it.
+LEFT_OUT_REASON = ("computed by the simulator only while subscribed; left out of a recording "
+                   "of every topic so that recording does not make the simulator compute it. "
+                   "Name it in execution.recording.ros2.topics to record it.")
+
+
+def recording_left_out(execution: dict, config: dict, base_dir: str = "") -> list:
+    """The simulator streams this configuration's ROS bag leaves out, as composition froze them.
+
+    ``[{"topic", "type"}, ...]`` from the configuration's ``recording.ros2.left_out``; ``[]``
+    when the campaign names its topics or the backend cannot say which streams are on demand.
+    A configuration whose backend can say but which carries no answer was composed without
+    asking, and is refused: running it would record the streams it exists to leave out.
+    """
+    resolved = ((config or {}).get("recording") or {}).get("ros2") or {}
+    if "left_out" in resolved:
+        return list(resolved["left_out"] or [])
+    if not records_every_ros2_topic(execution) or not declares_on_demand_streams(
+            execution, (config or {}).get("sim") or {}, base_dir):
+        return []
+    raise CampaignConfigError(
+        f"Config '{(config or {}).get('name')}': simulator backend "
+        f"'{backend_name(execution)}' computes some "
+        "streams only on demand, but this configuration was composed without asking which, so "
+        "its recording would subscribe them. Compose the campaign again.")
+
+
+def recording_env(execution: dict, config: dict, base_dir: str = "") -> dict:
+    """The per-configuration half of the recorder's environment: ``RECORD_LEFT_OUT``.
+
+    Space-separated topic names the entrypoint leaves out of ``<run>/rosbag2`` by exact match.
+    Always stated, empty included, so a job's spec says outright what its bag left out.
+    """
+    env = {}
+    env['RECORD_LEFT_OUT'] = " ".join(
+        row["topic"] for row in recording_left_out(execution, config, base_dir))
+    return env
+
+
 def _backend_env_for(execution: dict) -> dict:
     """The backend's contribution, with the campaign's own ``execution.env`` winning."""
     backend_env = execution.get("_backend_env") or {}
@@ -1963,6 +2007,18 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
             os.makedirs(run_config_dir, exist_ok=True)
             with open(os.path.join(run_config_dir, SIM_CONFIG_FILE), "w") as f:
                 yaml.dump(convert_dataclasses_to_dict(copy.deepcopy(sim_block)), f,
+                          default_flow_style=False, sort_keys=False)
+
+        # What the run's ROS bag leaves out of "every topic", and why: the simulator's streams
+        # it computes only on demand (`recording_left_out`). Frozen at composition, so every
+        # run of this configuration records the same topic set, and a topic absent from the
+        # bag is explained here rather than only in a log line.
+        left_out = ((config_data.get("recording") or {}).get("ros2") or {}).get("left_out")
+        if left_out is not None:
+            os.makedirs(run_config_dir, exist_ok=True)
+            with open(os.path.join(run_config_dir, RECORDING_CONFIG_FILE), "w") as f:
+                yaml.dump({"ros2": {"left_out": list(left_out),
+                                    "reason": LEFT_OUT_REASON}}, f,
                           default_flow_style=False, sort_keys=False)
 
         # The same, for how the system under test is configured. The rewritten files are

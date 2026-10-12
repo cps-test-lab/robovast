@@ -46,6 +46,14 @@ class _Exec:
         return self.result
 
 
+@pytest.fixture(autouse=True)
+def _no_on_demand_streams(monkeypatch):
+    """The world's on-demand streams are their own question (the recording tests below); the
+    tests about loading a world answer it with "none"."""
+    from robovast.common import config_generation
+    monkeypatch.setattr(config_generation, "query_on_demand_streams", lambda *a, **k: [])
+
+
 def _resolve(_request):
     """``resolve_image``: the tests below never reach the key check's catalog lookup."""
     raise AssertionError("no document component here, so nothing should resolve the image")
@@ -683,3 +691,68 @@ def test_an_advisory_about_a_checked_world_still_passes(tmp_path, monkeypatch):
          "message": "this world has no lighting"}])
     assert result["valid"] is True
     assert result["world_checked"] is True
+
+
+# -- the recording: which of the world's streams the run's bag leaves out --------------------
+
+_CAMERA = {"topic": "/oakd/rgb/preview/image_raw", "type": "sensor_msgs/msg/Image"}
+_SCAN_CLOUD = {"topic": "/lidar/points", "type": "sensor_msgs/msg/PointCloud2"}
+
+
+def _recording_check(monkeypatch, tmp_path, parameters, streams=None, crash=None):
+    from robovast.common import config_generation
+    from robovast.service.world_query import world_problems
+
+    monkeypatch.setattr(config_generation, "describe_world_payload",
+                        lambda *a, **k: ({"components": [], "errors": None}, "roqsim:test"))
+
+    def _answer(*a, **k):
+        if crash is not None:
+            raise crash
+        return streams
+    monkeypatch.setattr(config_generation, "query_on_demand_streams", _answer)
+    return world_problems(_Exec(), resolve_call=_resolve, workspace_id="ws-1",
+                          config_path="a.vast", vast_dir=str(tmp_path), parameters=parameters)
+
+
+def test_a_recording_of_every_topic_says_which_streams_it_leaves_out(tmp_path, monkeypatch):
+    (problem,) = _recording_check(monkeypatch, tmp_path, _parameters(), [_CAMERA, _SCAN_CLOUD])
+    assert problem["severity"] == "advice"
+    assert problem["field"] == "execution.recording.ros2"
+    assert "leaves out" in problem["message"]
+    assert "/oakd/rgb/preview/image_raw (sensor_msgs/msg/Image)" in problem["message"]
+    assert "/lidar/points" in problem["message"]
+
+
+def test_a_named_on_demand_stream_is_recorded_and_its_cost_said(tmp_path, monkeypatch):
+    parameters = _parameters()
+    parameters["execution"]["recording"] = {"ros2": {"topics": ["/odom", "^/oakd/"]}}
+    (problem,) = _recording_check(monkeypatch, tmp_path, parameters, [_CAMERA, _SCAN_CLOUD])
+    assert problem["severity"] == "advice"
+    assert "records /oakd/rgb/preview/image_raw" in problem["message"]
+    assert "render it every frame" in problem["message"]
+
+
+def test_a_stream_a_camera_panel_plays_is_recorded_not_left_out(tmp_path, monkeypatch):
+    parameters = _parameters()
+    parameters["visualization"] = {"results": {"run_view": {"panels": [
+        {"camera": {"topic": _CAMERA["topic"]}}]}}}
+    problems = _recording_check(monkeypatch, tmp_path, parameters, [_CAMERA, _SCAN_CLOUD])
+    left_out, kept = problems
+    assert "leaves out" in left_out["message"] and _CAMERA["topic"] not in left_out["message"]
+    assert f"records {_CAMERA['topic']}" in kept["message"]
+
+
+def test_a_simulator_that_cannot_say_its_streams_is_an_error(tmp_path, monkeypatch):
+    """Composition asks the same question and refuses to start without the answer, so a
+    validation that passed here would only defer the failure."""
+    (problem,) = _recording_check(
+        monkeypatch, tmp_path, _parameters(),
+        crash=RuntimeError("roqsim: invalid choice: 'on-demand'"))
+    assert problem["severity"] == "error"
+    assert "invalid choice: 'on-demand'" in problem["message"]
+
+
+def test_a_world_with_no_on_demand_streams_says_nothing_about_them(tmp_path, monkeypatch):
+    assert _recording_check(monkeypatch, tmp_path, _parameters(), []) == []
+    assert _recording_check(monkeypatch, tmp_path, _parameters(), None) == []

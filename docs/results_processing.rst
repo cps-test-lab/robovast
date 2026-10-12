@@ -285,7 +285,11 @@ the decoder encodes into the run directory because a browser plays it from there
 
 ``rosbag2/`` is the run's bag, and RoboVAST records it: the job's entrypoint starts
 ``ros2 bag record`` before the scenario and stops it after, holding what the ``.vast``'s
-:ref:`execution.recording <recording-config>` block says (everything, by default). It is a standard
+:ref:`execution.recording <recording-config>` block says: by default every topic except the
+simulator's on-demand streams -- camera and depth images, which a simulator renders only
+while subscribed. Those a configuration left out are listed, with the
+reason, in ``<config>/_config/recording.config``; the simulator's own state, poses included, is in
+its recording (``roqsim_bag/`` for roqsim), not in the bag. It is a standard
 ROS 2 bag in MCAP storage, written **through** rather than cached and split into a new segment
 every 10 s, so a running run's bag is readable as it grows: a closed segment is read whole, the
 open one up to its last complete record. The storage plugin flushes in 4 KiB steps, so the newest messages

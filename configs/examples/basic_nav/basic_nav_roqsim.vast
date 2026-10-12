@@ -155,8 +155,8 @@ execution:
   - files/nav2_params.yaml
   - files/nav2_bt.xml
   - files/nav2_sut.launch.py
-  # Every topic; the bag is stamped on the simulator's clock, so derived tables read in sim
-  # seconds, and /clock in it maps wall-stamped topics (/behavior_tree_log) back onto it.
+  # Every topic but the camera's on-demand streams, stamped on the simulator's clock: tables read
+  # in sim seconds, and /clock in it maps wall-stamped topics (/behavior_tree_log) back onto it.
   recording:
     ros2:
       use_sim_time: true

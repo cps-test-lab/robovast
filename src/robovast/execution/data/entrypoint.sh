@@ -210,9 +210,13 @@ else
     # RECORD_TOPICS is `all` or space-separated entries, a regex when it starts with `^`:
     # names go to --topics, regexes joined to one -e pattern. RECORD_EXCLUDE is one regex,
     # RECORD_EXCLUDE_TYPES space-separated type names, RECORD_USE_SIM_TIME true or false.
-    # Absent, everything is recorded in wall time. Hidden topics are always admitted: an
-    # action's `/<name>/_action/feedback` and `status` are hidden, rosbag2 drops a hidden
-    # topic even when it is named, and the action tables are read from exactly those.
+    # RECORD_LEFT_OUT is space-separated topic names, each excluded by exact match: the
+    # simulator's streams it computes only while subscribed, which a recording of every topic
+    # would otherwise make it compute (frozen per configuration at composition, empty when the
+    # campaign names its topics). Absent, everything is recorded in wall time.
+    # Hidden topics are always admitted: an action's `/<name>/_action/feedback` and `status`
+    # are hidden, rosbag2 drops a hidden topic even when it is named, and the action tables
+    # are read from exactly those.
     scenario_record_args() {
         SCENARIO_RECORD_ARGS=(bag record -o "${RUN_OUTPUT_DIR}/rosbag2" ${RECORD_OPTIONS} --include-hidden-topics)
         if [ "${RECORD_USE_SIM_TIME:-false}" = "true" ]; then
@@ -235,8 +239,12 @@ else
                 SCENARIO_RECORD_ARGS+=(-e "${_regex}")
             fi
         fi
-        if [ -n "${RECORD_EXCLUDE:-}" ]; then
-            SCENARIO_RECORD_ARGS+=(--exclude-regex "${RECORD_EXCLUDE}")
+        local _exclude="${RECORD_EXCLUDE:-}"
+        if [ -n "${RECORD_LEFT_OUT:-}" ]; then
+            _exclude="${_exclude:+(${_exclude})|}^(${RECORD_LEFT_OUT// /|})\$"
+        fi
+        if [ -n "${_exclude}" ]; then
+            SCENARIO_RECORD_ARGS+=(--exclude-regex "${_exclude}")
         fi
         if [ -n "${RECORD_EXCLUDE_TYPES:-}" ]; then
             SCENARIO_RECORD_ARGS+=(--exclude-topic-types ${RECORD_EXCLUDE_TYPES})
@@ -245,6 +253,9 @@ else
     start_scenario_recorder() {
         scenario_record_args
         mkdir -p "${RUN_OUTPUT_DIR}"
+        if [ -n "${RECORD_LEFT_OUT:-}" ]; then
+            log "Scenario recording leaves out the simulator's on-demand streams (computed only while subscribed; recorded in _config/recording.config): ${RECORD_LEFT_OUT}"
+        fi
         # --no-close: the recorder's own output (the topics it subscribed, or why it refused
         # its arguments) belongs in the run log, not in /dev/null.
         log "Starting scenario recording: ros2 ${SCENARIO_RECORD_ARGS[*]}"
