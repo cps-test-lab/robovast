@@ -62,8 +62,7 @@ visualization:
       # Drawn in the browser from the 3D scene and the recorded poses; no image is recorded.
       - camera:
           title: OAK-D camera
-          kind: scene
-          sensor: robot.oakd.oakd_camera
+          camera: robot.oakd.oakd_camera
           position: {anchor: top-center, width: 360, height: 300}
           minimizable: true
           minimized: true

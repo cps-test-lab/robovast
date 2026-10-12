@@ -4,8 +4,11 @@ import { MathUtils, Vector3 } from 'three'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  FREE_VIEW_DEFAULTS,
   INFINITE_FAR_RATIO,
+  buildFreeCamera,
   buildSceneCamera,
+  parseFreeView,
   letterbox,
   parseSceneCameras,
   viewpoints,
@@ -149,5 +152,59 @@ describe('loadScene cameras', () => {
     model.root.updateMatrixWorld(true)
     close(camera.getWorldPosition(new Vector3()), [1.9, 0, 0.2])
     close(camera.getWorldDirection(new Vector3()), [-1, 0, 0])
+  })
+})
+
+describe('free view', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('takes its defaults', () => {
+    const spec = parseFreeView({ position: [0, 0, 1], look_at: [1, 0, 1] })
+    expect(spec).toEqual({ position: [0, 0, 1], look_at: [1, 0, 1], ...FREE_VIEW_DEFAULTS })
+    expect(spec.aspect).toBeUndefined()
+    expect(parseFreeView({ position: [0, 0, 1], look_at: [1, 0, 1], width: 640, height: 480 }).aspect)
+      .toBeCloseTo(4 / 3, 12)
+  })
+
+  it.each([
+    [{ look_at: [1, 0, 0] }, /position/],
+    [{ position: [0, 0, 0], look_at: [0, 0, 0] }, /same point/],
+    [{ position: [0, 0, 0], look_at: [0, 0, 1] }, /up is parallel/],
+    [{ position: [0, 0, 0], look_at: [1, 0, 0], fov: 180 }, /fov/],
+    [{ position: [0, 0, 0], look_at: [1, 0, 0], near: 2, far: 1 }, /far/],
+    [{ position: [0, 0, 0], look_at: [1, 0, 0], width: 640 }, /width and height/],
+    [{ position: [0, 0, 0], look_at: [1, 0, 0], attach: '' }, /attach/],
+    [{ azimuth: 90, distance: 4 }, /azimuth.*kind: render/],
+  ])('refuses %j', (view, why) => {
+    expect(() => parseFreeView(view)).toThrow(why)
+  })
+
+  it('looks from position at look_at, with up as the image up', () => {
+    const { camera } = buildFreeCamera(parseFreeView({ position: [1, 2, 3], look_at: [1, 7, 3], fov: 40 }))
+    camera.updateMatrixWorld(true)
+    close(camera.getWorldPosition(new Vector3()), [1, 2, 3])
+    close(camera.getWorldDirection(new Vector3()), [0, 1, 0])
+    close(new Vector3(0, 1, 0).applyQuaternion(camera.quaternion), [0, 0, 1])
+    expect(camera.fov).toBe(40)
+  })
+
+  it('attached to a body, follows it as the body is posed', async () => {
+    vi.stubGlobal('window', { location: { href: 'http://example.test/' } })
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => DESCRIPTOR,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    })))
+    const model = await loadScene(URL_)
+    expect(model.frameNode('nope')).toBeUndefined()
+    expect(model.frameNode()?.name).toBe('world')
+    // A chase view: 2 m behind and 1 m above the body, looking at a point 3 m ahead of it.
+    const { camera } = buildFreeCamera(parseFreeView({ position: [-2, 0, 1], look_at: [3, 0, 0] }))
+    model.frameNode('base_link')!.add(camera)
+    model.basePose('base_link', [5, 1, 0], [0, 0, 0, 1]) // half a turn about z
+    model.root.updateMatrixWorld(true)
+    close(camera.getWorldPosition(new Vector3()), [7, 1, 1])
+    const dir = camera.getWorldDirection(new Vector3())
+    close(dir, new Vector3(-5, 0, -1).normalize().toArray() as [number, number, number])
   })
 })

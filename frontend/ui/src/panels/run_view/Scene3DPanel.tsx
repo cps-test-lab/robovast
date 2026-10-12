@@ -26,10 +26,10 @@
 // Geometry needs no binding at all: the service resolves the world the run used, so `- scene3d:` on
 // its own is a complete panel.
 //
-// `Scene3DView` with a `sensor` is the camera panel's `kind: scene`: the same replay, shown through a
-// sensor camera the descriptor places on a body (lib/scene3d/sceneCameras.ts) instead of the orbit
-// camera -- a picture of what the sensor saw, rendered from the geometry and poses this view loads
-// anyway, so nothing is stored for it. The scene3d panel itself is always the free orbit view.
+// `Scene3DView` with a `look` is the camera panel's `kind: scene`: the same replay, shown through a
+// camera the descriptor places on a body or a free view the panel places (lib/scene3d/sceneCameras.ts)
+// instead of the orbit camera -- rendered from the geometry and poses this view loads anyway, so
+// nothing is stored for it. The scene3d panel itself is always the free orbit view.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Alert from '@mui/material/Alert'
@@ -44,7 +44,8 @@ import { CANVAS } from '@/colors'
 import {
   DEFAULT_JOINT_TABLE, DEFAULT_POSE_TABLE, openRowMotion, type RowReader,
 } from '@/lib/scene3d/rowMotion'
-import { viewpoints, type SceneCamera } from '@/lib/scene3d/sceneCameras'
+import { buildFreeCamera, viewpoints, type SceneCamera } from '@/lib/scene3d/sceneCameras'
+import type { SceneLook } from '@/lib/camera/cameraSource'
 import type { SceneModel } from '@/lib/scene3d/sceneLoader'
 import { sceneModels, type SceneLease } from '@/lib/scene3d/sceneModelCache'
 import { useSceneGeometry } from '@/lib/scene3d/useSceneGeometry'
@@ -72,9 +73,12 @@ interface Mismatch {
   producer?: string
 }
 
-/** The 3D view of a run, through the orbit camera -- or, given a `sensor`, through that sensor camera
- *  of the scene, with no orbit camera at all: what the camera panel's `kind: scene` shows. */
-export function Scene3DView({ spec, clock, data, sensor }: PanelProps & { sensor?: string }) {
+/** The 3D view of a run, through the orbit camera -- or, given a `look`, through that camera of the
+ *  scene or that free view, with no orbit camera at all: what the camera panel's `kind: scene` shows. */
+export function Scene3DView({ spec, clock, data, look }: PanelProps & { look?: SceneLook }) {
+  const sensor = look && 'camera' in look ? look.camera : undefined
+  const view = look && 'view' in look ? look.view : undefined
+  const viewKey = view ? JSON.stringify(view) : ''
   const motionCfg = (spec.config.motion ?? {}) as { poses?: unknown; joints?: unknown }
   const poseTable = String(motionCfg.poses ?? DEFAULT_POSE_TABLE)
   const jointTable = String(motionCfg.joints ?? DEFAULT_JOINT_TABLE)
@@ -151,8 +155,8 @@ export function Scene3DView({ spec, clock, data, sensor }: PanelProps & { sensor
     if (!el) return
     const viewport = new SceneViewport(el)
     viewportRef.current = viewport
-    // A sensor's view has no free camera for the header's reset to re-frame.
-    const unregister = sensor ? () => undefined : registerSceneReset(() => viewport.resetView())
+    // A camera panel's view has no free camera for the header's reset to re-frame.
+    const unregister = look ? () => undefined : registerSceneReset(() => viewport.resetView())
     return () => {
       unregister()
       viewportRef.current = null
@@ -297,13 +301,38 @@ export function Scene3DView({ spec, clock, data, sensor }: PanelProps & { sensor
 
   useEffect(() => clock.subscribe(() => applyAt(clock.t)), [clock, applyAt])
 
-  // Show the sensor's camera of the scene now on screen. A camera belongs to one model, so this
+  // A free view is parented to the world's node or to its `attach` body's node of the model now on
+  // screen, and taken off it again when the view or the model changes: the model outlives this
+  // mount (sceneModelCache) and must go back as it came.
+  const [freeCamera, setFreeCamera] = useState<SceneCamera | null>(null)
+  const [missingBody, setMissingBody] = useState<string | null>(null)
+  useEffect(() => {
+    const model = modelRef.current
+    setFreeCamera(null)
+    setMissingBody(null)
+    if (!view || !cameras || !model) return
+    const parent = model.frameNode(view.attach)
+    if (!parent) {
+      setMissingBody(view.attach ?? '')
+      return
+    }
+    const free = buildFreeCamera(view)
+    parent.add(free.camera)
+    setFreeCamera(free)
+    return () => {
+      free.camera.removeFromParent()
+    }
+    // `viewKey` is the view's identity; the object itself is rebuilt with every resolve.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewKey, cameras])
+
+  // Show the chosen camera of the scene now on screen. A camera belongs to one model, so this
   // follows the camera list: a new model brings its own cameras.
   const offered = viewpoints(cameras ?? [])
-  const shown = sensor ? (offered.find((c) => c.name === sensor) ?? null) : null
+  const shown = sensor ? (offered.find((c) => c.name === sensor) ?? null) : freeCamera
   useEffect(() => {
-    if (sensor) viewportRef.current?.setViewpoint(shown)
-  }, [sensor, shown])
+    if (look) viewportRef.current?.setViewpoint(shown)
+  }, [look, shown])
   // Only once the scene is loaded can a missing sensor be told from one still on its way.
   const missingSensor = sensor && cameras && !shown ? sensor : null
   const missingKind = cameras?.find((c) => c.name === missingSensor)?.kind
@@ -311,6 +340,13 @@ export function Scene3DView({ spec, clock, data, sensor }: PanelProps & { sensor
   return (
     <Box sx={{ position: 'relative', width: '100%', height: '100%', bgcolor: CANVAS }}>
       <Box ref={containerRef} sx={{ position: 'absolute', inset: 0 }} />
+      {missingBody !== null ? (
+        <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, right: 8 }}>
+          The view is attached to body <code>{missingBody}</code>, which this run&apos;s scene does
+          not have. Bodies it has: <code>{modelRef.current?.bodies.filter(Boolean).slice(0, 12).join(', ')}</code>
+          {(modelRef.current?.bodies.length ?? 0) > 12 ? ', …' : ''}.
+        </Alert>
+      ) : null}
       {missingSensor ? (
         <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, right: 8 }}>
           This run&apos;s scene has no colour camera <code>{missingSensor}</code>

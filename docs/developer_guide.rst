@@ -2704,7 +2704,10 @@ uses the workspace's ``/workspaces/{id}/scene``). The run view's panel drives ``
 view's has no clock and draws what the variations placed as markers. ``SceneViewport.setViewpoint`` renders
 through one of those cameras instead of the orbit camera, letterboxed to the sensor's shape. Its
 one caller is the camera panel's ``kind: scene``: ``Scene3DView`` (the run view's 3D panel) with a
-fixed ``sensor``, which asks the service for nothing the 3D view does not already load. The
+``look`` -- a camera of the scene by name, or a free view ``buildFreeCamera`` poses from a position
+and a look-at point and parents to the world's node or an ``attach`` body's (``SceneModel.frameNode``),
+taking it off again on unmount because the model outlives the panel. It asks the service for nothing
+the 3D view does not already load. The
 ``scene3d`` panel itself never leaves the orbit camera.
 
 Deferred: a bundle code-split (Monaco + Plotly + Vega + Module Federation make the SPA large).

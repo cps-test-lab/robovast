@@ -746,30 +746,76 @@ def _camera_panel_problems(raw):
 
 
 def _camera_kind(props):
-    """A camera panel's ``kind``; ``recorded`` when it names none, as the panel reads it."""
-    return str((props or {}).get("kind") or "recorded") if isinstance(props, dict) else "recorded"
+    """A camera panel's ``kind`` as the panel resolves it: its ``kind``; else ``scene`` when it
+    names a ``camera`` or a ``view``, and ``recorded`` otherwise. ``render`` is never inferred."""
+    if not isinstance(props, dict):
+        return "recorded"
+    if props.get("kind"):
+        return str(props["kind"])
+    return "scene" if "camera" in props or "view" in props else "recorded"
+
+
+#: The keys a ``scene`` camera panel's free ``view`` takes (the panel's ``parseFreeView``).
+FREE_VIEW_KEYS = ("position", "look_at", "fov", "attach", "up", "near", "far", "width",
+                  "height", "aspect")
+
+
+def _is_vec3(value):
+    return (isinstance(value, list) and len(value) == 3
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value))
+
+
+def _scene_look_problems(props):
+    """What is wrong with a ``scene`` panel's ``camera``/``view``, as ``(field, message)``."""
+    if "camera" in props and "view" in props:
+        return [("", "give `camera` (a camera the scene places) or `view`, not both")]
+    if "view" not in props:
+        camera = props.get("camera")
+        if isinstance(camera, str) and camera:
+            return []
+        return [("camera", "a camera panel with kind: scene needs a `camera` (the name of a "
+                           "camera the scene places) or a `view` (position and look_at)")]
+    view = props["view"]
+    if not isinstance(view, dict):
+        return [("view", "a free view is a mapping with position and look_at")]
+    found = []
+    unknown = sorted(set(view) - set(FREE_VIEW_KEYS))
+    if unknown:
+        found.append(("view", f"unknown {', '.join(unknown)}; a free view takes "
+                              f"{', '.join(FREE_VIEW_KEYS)} (azimuth/elevation/distance/lookat "
+                              f"are the server render's view, which needs kind: render)"))
+    for key in ("position", "look_at"):
+        if not _is_vec3(view.get(key)):
+            found.append((f"view.{key}", f"{key} must be [x, y, z] in metres"))
+    if "up" in view and not _is_vec3(view["up"]):
+        found.append(("view.up", "up must be [x, y, z]"))
+    fov = view.get("fov", 60)
+    if not (isinstance(fov, (int, float)) and 0 < fov < 180):
+        found.append(("view.fov", "fov is a vertical field of view in degrees, in (0, 180)"))
+    if "attach" in view and not (isinstance(view["attach"], str) and view["attach"]):
+        found.append(("view.attach", "attach names a body of the scene"))
+    return found
 
 
 def _scene_camera_panel_problems(raw):
-    """A ``kind: scene`` camera panel renders the 3D scene from a sensor camera the scene places.
+    """A ``scene`` camera panel renders the 3D scene through a camera the scene places or a
+    free view the panel places.
 
     It needs what a ``scene3d`` panel needs -- runs that record the simulator state, and a
-    simulator whose scene export the geometry comes from (and which places the sensor's
-    camera) -- plus the ``sensor`` it looks through. Which cameras a world has is only known
-    once its scene is exported, so the name itself is checked by the panel, which lists the
-    ones the scene has.
+    simulator whose scene export the geometry comes from -- plus a well-formed ``camera`` or
+    ``view``. Which cameras and bodies a world has is only known once its scene is exported,
+    on first view, so a name the scene lacks is reported by the panel, with the names it has.
     """
     panels = [(i, props) for i, entry in enumerate(_run_view_panels(raw))
               for ptype, props in [_panel_entry(entry)]
               if ptype == "camera" and _camera_kind(props) == "scene"]
     if not panels:
         return []
-    problems = [_problem(
-        "panel",
-        "a camera panel with kind: scene needs a `sensor`: the name of the camera sensor the "
-        "scene shows the run through (a panel naming one the scene lacks lists those it has).",
-        field=f"{RUN_VIEW_PANELS}[{i}].sensor")
-        for i, props in panels if not (isinstance(props, dict) and props.get("sensor"))]
+    problems = [_problem("panel", message,
+                         field=f"{RUN_VIEW_PANELS}[{i}]" + (f".{where}" if where else ""))
+                for i, props in panels
+                for where, message in _scene_look_problems(props if isinstance(props, dict)
+                                                            else {})]
     name, replay = _scene_replay(raw)
     if replay is None:
         return problems
@@ -779,7 +825,7 @@ def _scene_camera_panel_problems(raw):
     if missing:
         problems.extend(_problem(
             "panel",
-            f"a camera panel with kind: scene renders the run's 3D scene from a sensor camera, "
+            f"a camera panel with kind: scene renders the run's 3D scene in the browser, "
             f"and the '{name}' simulator {' and '.join(missing)}. Use kind: recorded or "
             f"kind: topic for a camera this simulator records.",
             field=f"{RUN_VIEW_PANELS}[{i}]") for i, _props in panels)

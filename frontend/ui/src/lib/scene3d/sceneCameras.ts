@@ -13,8 +13,12 @@
 // becomes a PerspectiveCamera parented to its body's node with nothing converted. As a child of that
 // node it follows the body as the motion source moves it, and the renderer keeps its view matrix
 // current with the rest of the graph.
+//
+// A free view is the same thing placed by the viewer rather than by the world: a position, a point to
+// look at and a field of view, in the descriptor's world frame or in a body's frame
+// (`parseFreeView`, `buildFreeCamera`).
 
-import { MathUtils, PerspectiveCamera, Quaternion } from 'three'
+import { MathUtils, Matrix4, PerspectiveCamera, Quaternion, Vector3 } from 'three'
 
 /** One `cameras` entry as the descriptor states it. */
 export interface SceneCameraEntry {
@@ -141,4 +145,95 @@ export function letterbox(
   }
   const h = width / aspect
   return { x: 0, y: (height - h) / 2, width, height: h }
+}
+
+/** A camera the viewer places: `position` and `look_at` in metres, in the descriptor's frame (Z-up
+ *  world), or in the frame of body `attach`, which it then follows. */
+export interface FreeViewSpec {
+  position: [number, number, number]
+  look_at: [number, number, number]
+  /** Vertical field of view in degrees. */
+  fov: number
+  attach?: string
+  up: [number, number, number]
+  near: number
+  far: number
+  /** Width over height of the picture; `undefined` takes the panel's shape. */
+  aspect?: number
+}
+
+/** What a free view takes when it does not say: a 60 degree field of view, the world's +z as up,
+ *  and clip planes at 5 cm and 1 km. */
+export const FREE_VIEW_DEFAULTS = {
+  fov: 60,
+  up: [0, 0, 1] as [number, number, number],
+  near: 0.05,
+  far: 1000,
+}
+
+/** The keys a free view takes. */
+export const FREE_VIEW_KEYS: readonly string[] = [
+  'position', 'look_at', 'fov', 'attach', 'up', 'near', 'far', 'width', 'height', 'aspect',
+]
+
+/** A free view from a panel's `view`, checked; throws naming what is wrong. */
+export function parseFreeView(raw: unknown): FreeViewSpec {
+  const where = 'camera panel view'
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw))
+    throw new Error(`${where}: expected a mapping with position and look_at.`)
+  const v = raw as Record<string, unknown>
+  const unknown = Object.keys(v).filter((k) => !FREE_VIEW_KEYS.includes(k))
+  if (unknown.length)
+    throw new Error(
+      `${where}: unknown ${unknown.join(', ')} (it takes ${FREE_VIEW_KEYS.join(', ')}; ` +
+        'azimuth/elevation/distance/lookat are the server render\'s view, which needs kind: render).',
+    )
+  const vec = (key: string): [number, number, number] => {
+    if (!isVec(v[key], 3)) throw new Error(`${where}: ${key} must be [x, y, z] in metres.`)
+    return v[key] as [number, number, number]
+  }
+  const pos = (key: string, fallback: number): number => {
+    if (v[key] === undefined) return fallback
+    if (!isNum(v[key]) || (v[key] as number) <= 0) throw new Error(`${where}: ${key} must be positive.`)
+    return v[key] as number
+  }
+  const position = vec('position')
+  const lookAt = vec('look_at')
+  const up = v.up === undefined ? FREE_VIEW_DEFAULTS.up : vec('up')
+  const fov = pos('fov', FREE_VIEW_DEFAULTS.fov)
+  if (fov >= 180) throw new Error(`${where}: fov must be below 180 degrees.`)
+  const near = pos('near', FREE_VIEW_DEFAULTS.near)
+  const far = pos('far', FREE_VIEW_DEFAULTS.far)
+  if (far <= near) throw new Error(`${where}: far must exceed near.`)
+  if (v.attach !== undefined && (typeof v.attach !== 'string' || !v.attach))
+    throw new Error(`${where}: attach must name a body.`)
+  if ((v.width === undefined) !== (v.height === undefined))
+    throw new Error(`${where}: width and height go together.`)
+  if (v.aspect !== undefined && v.width !== undefined)
+    throw new Error(`${where}: give aspect or width/height, not both.`)
+  let aspect: number | undefined
+  if (v.width !== undefined) aspect = pos('width', 0) / pos('height', 0)
+  else if (v.aspect !== undefined) aspect = pos('aspect', 0)
+  const dir = new Vector3(...lookAt).sub(new Vector3(...position))
+  if (dir.lengthSq() === 0) throw new Error(`${where}: position and look_at are the same point.`)
+  if (new Vector3(...up).cross(dir).lengthSq() < 1e-12 * dir.lengthSq() * new Vector3(...up).lengthSq())
+    throw new Error(`${where}: up is parallel to the view direction; give another up.`)
+  return {
+    position, look_at: lookAt, fov, up, near, far,
+    ...(v.attach !== undefined ? { attach: v.attach as string } : {}),
+    ...(aspect !== undefined ? { aspect } : {}),
+  }
+}
+
+/** The camera a free view describes, posed in the frame it is given in (the caller parents it to the
+ *  scene's world node, or to the `attach` body's node). It looks from `position` at `look_at`, with
+ *  `up` the image's up as far as the view direction allows. */
+export function buildFreeCamera(spec: FreeViewSpec, name = 'view'): SceneCamera {
+  const camera = new PerspectiveCamera(spec.fov, spec.aspect ?? 1, spec.near, spec.far)
+  camera.name = name
+  const eye = new Vector3(...spec.position)
+  const rotation = new Matrix4().lookAt(eye, new Vector3(...spec.look_at), new Vector3(...spec.up))
+  camera.position.copy(eye)
+  camera.quaternion.setFromRotationMatrix(rotation)
+  return { name, kind: 'rgb', aspect: spec.aspect, camera }
 }

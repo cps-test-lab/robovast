@@ -165,6 +165,9 @@ export interface SceneModel {
   view?: SceneDescriptor['view']
   /** The sensor cameras the descriptor places, each a child of its body's node (sceneCameras.ts). */
   cameras: SceneCamera[]
+  /** The node of the body named *body*, or of the world body without one -- what a viewer-placed
+   *  camera is parented to so it is posed in that frame. `undefined` for a name the scene lacks. */
+  frameNode: (body?: string) => Object3D | undefined
   /**
    * Seat a body at a **world** pose, in the descriptor frame -- from a run capture's pose track or a
    * /tf transform. Works for any body: the pose is composed with the inverse of the parent's
@@ -764,6 +767,11 @@ export async function loadScene(sceneUrl: string): Promise<SceneModel> {
     basePose,
     view: scene.view,
     cameras,
+    frameNode: (body?: string) => {
+      if (body === undefined) return nodes[0]
+      const i = bodyIndexByName.get(body)
+      return i == null ? undefined : nodes[i]
+    },
     reset: seatHome,
     dispose: () => {
       disposeSceneGraph(root)

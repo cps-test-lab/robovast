@@ -11,8 +11,8 @@
 //   topic     the recorded frames of an image topic, one request per frame; live frames from the
 //             run's stream while the clock follows a live run
 //   render    a re-render of the recorded state at the clock's moment, for a run with no camera
-//   scene     a sensor camera of the scene descriptor, rendered in the browser from the geometry and
-//             poses the 3D view replays (Scene3DView, fixed on that sensor)
+//   scene     the scene rendered in the browser from the geometry and poses the 3D view replays,
+//             through a camera the scene places or a free view (Scene3DView with `look`)
 //
 // THE PANEL IS A READER OF THE CLOCK, NEVER A WRITER. The playback bar owns time (see
 // panel-kit/src/clock.ts: one writer, every other panel a subscriber), so the `<video>` carries no
@@ -24,7 +24,8 @@
 //   source: { path, t0, t1?, fps? }   escape hatch for a video no producer registered
 //   kind: topic, topic: <image topic>
 //   kind: render, camera?: <world camera>, view?: { azimuth, distance, ... }
-//   kind: scene, sensor: <camera name in the scene descriptor>
+//   camera: <camera name in the scene descriptor>                         (kind scene)
+//   view: { position, look_at, fov?, attach?, up?, near?, far?, width/height | aspect? } (kind scene)
 //
 // A bare `- camera:` is a complete panel when the run registered exactly one video -- the same
 // promise `scene3d` makes.
@@ -41,9 +42,9 @@ import { isLiveProvider } from '@/lib/panels/dataProvider'
 import { useLiveStream } from '@/lib/liveStream'
 import {
   cameraKind,
-  cameraSensor,
   cameraTopic,
   resolveCameraSource,
+  sceneLook,
   VIDEOS_TABLE,
   type CameraConfig,
   type CameraSource,
@@ -115,7 +116,7 @@ function CameraPanel({ spec, clock, data }: PanelProps) {
   try {
     kind = cameraKind(config)
     if (kind === 'topic') cameraTopic(config)
-    if (kind === 'scene') cameraSensor(config)
+    if (kind === 'scene') sceneLook(config)
   } catch (e) {
     configError = e as Error
   }
@@ -125,7 +126,6 @@ function CameraPanel({ spec, clock, data }: PanelProps) {
     // serves the previous campaign's row after a switch.
     queryKey: [
       'camera-source', data.scope, kind, config.topic ?? null, config.camera ?? null,
-      config.sensor ?? null,
       JSON.stringify(config.view ?? null), config.source?.topic ?? null, config.source?.path ?? null,
     ],
     queryFn: () => resolveCameraSource(spec, data),
@@ -160,7 +160,7 @@ function CameraPanel({ spec, clock, data }: PanelProps) {
     case 'render':
       return <RenderCamera source={source} clock={clock} data={data} />
     case 'scene':
-      return <Scene3DView spec={spec} clock={clock} data={data} sensor={source.sensor} />
+      return <Scene3DView spec={spec} clock={clock} data={data} look={source.look} />
   }
 }
 

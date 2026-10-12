@@ -324,7 +324,7 @@ the service renders nothing per frame. An entry is a standard glTF perspective c
     "perspective": {"yfov": 0.992, "aspectRatio": 1.333, "znear": 0.5, "zfar": 2500.0},
     "kind": "rgb", "width": 320, "height": 240}
 
-* ``name`` -- the sensor's name, unique in the scene; it is what a panel's ``sensor`` names.
+* ``name`` -- the sensor's name, unique in the scene; it is what a camera panel's ``camera`` names.
 * ``body`` -- the index of the body the sensor is mounted on; ``pos`` and ``quat`` (``w, x, y, z``)
   are its mount pose in that body's frame, so the camera follows the body as the recording moves
   it.

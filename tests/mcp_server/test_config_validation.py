@@ -242,7 +242,7 @@ def test_a_scene_camera_panel_needs_a_simulator_that_replays_and_exports_its_sce
                          overrides_file=None):
             return None
 
-    raw = _scene_camera_raw({"kind": "scene", "sensor": "robot.cam"})
+    raw = _scene_camera_raw({"camera": "robot.cam"})
     assert _with_backend(_Replays(), _scene_camera_panel_problems, raw) == []
 
     problems = _with_backend(_RecordsOnly(), _scene_camera_panel_problems, raw)
@@ -255,11 +255,33 @@ def test_a_scene_camera_panel_needs_a_simulator_that_replays_and_exports_its_sce
     assert "exports no scene" in problems[0]["message"]
 
 
-def test_a_scene_camera_panel_names_its_sensor():
+def _scene_look_fields(panel):
     from robovast.common.config_validation import _scene_camera_panel_problems
-    problems = _scene_camera_panel_problems(
-        {"visualization": {"results": {"run_view": {"panels": [{"camera": {"kind": "scene"}}]}}}})
-    assert [p["field"] for p in problems] == ["visualization.results.run_view.panels[0].sensor"]
+    raw = {"visualization": {"results": {"run_view": {"panels": [{"camera": panel}]}}}}
+    return [p["field"].removeprefix("visualization.results.run_view.panels[0]")
+            for p in _scene_camera_panel_problems(raw)]
+
+
+def test_a_scene_camera_panel_names_a_camera_or_places_a_view():
+    assert _scene_look_fields({"camera": "robot.cam"}) == []
+    assert _scene_look_fields({"view": {"position": [0, 0, 2], "look_at": [3, 0, 0],
+                                        "attach": "base_link", "fov": 70}}) == []
+    assert _scene_look_fields({"kind": "scene"}) == [".camera"]
+    assert _scene_look_fields({"camera": "a", "view": {}}) == [""]
+    assert _scene_look_fields({"view": {"look_at": [1, 0, 0], "fov": 200}}) == [
+        ".view.position", ".view.fov"]
+
+
+def test_a_render_view_without_kind_render_is_refused_by_name():
+    """``view`` without a ``kind`` is a scene panel's free view; the server render's free
+    camera keys are named, with the kind that takes them."""
+    from robovast.common.config_validation import _scene_camera_panel_problems
+    raw = {"visualization": {"results": {"run_view": {"panels": [
+        {"camera": {"view": {"azimuth": 90, "distance": 12}}}]}}}}
+    messages = [p["message"] for p in _scene_camera_panel_problems(raw)]
+    assert any("kind: render" in m and "azimuth" in m for m in messages)
+    raw["visualization"]["results"]["run_view"]["panels"][0]["camera"]["kind"] = "render"
+    assert _scene_camera_panel_problems(raw) == []
 
 
 def test_only_a_recorded_camera_panel_needs_a_video_producer():
@@ -267,7 +289,7 @@ def test_only_a_recorded_camera_panel_needs_a_video_producer():
     ``videos`` table, so a campaign without ``rosbags_to_webm`` is fine for them."""
     from robovast.common.config_validation import _camera_panel_problems
     for panel in ({"kind": "topic", "topic": "/cam"}, {"kind": "render"},
-                  {"kind": "scene", "sensor": "robot.cam"}):
+                  {"camera": "robot.cam"}):
         assert _camera_panel_problems(_raw(panels=[{"camera": panel}])) == [], panel
     for panel in ({}, {"kind": "recorded"}):
         problems = _camera_panel_problems(_raw(panels=[{"camera": panel}]))

@@ -1831,32 +1831,71 @@ playback is not a seek storm. Outside the recording — a camera that came up la
 ran past the last frame — it dims and says *"No frames at this time"* rather than showing
 frame 0 as though it were the current moment.
 
-**Through a sensor of the scene** (``kind: scene``). For a simulator whose scene export places
-its camera sensors (:ref:`camera sensors <scene-descriptor-cameras>`), the panel shows the
-:ref:`3D scene <scene3d-panel>` as that sensor saw it: from its mount on its body, with its field of
-view and image shape (letterboxed to it), following the body as the run plays. The ``scene3d`` panel
-itself stays the free orbit view; the sensor's view is only ever this panel, where a campaign
-declares one:
+**Through a camera of the scene** (``kind: scene``). The panel draws the :ref:`3D scene
+<scene3d-panel>` in the browser, from the world's cached scene and the run's recorded poses, through
+a camera instead of the orbit view. The ``scene3d`` panel itself stays the orbit view; a camera's
+view is only ever this panel, where a campaign declares one. It looks through one of two cameras:
+
+* ``camera: <name>`` -- a camera the scene places, by its name in the scene descriptor
+  (:ref:`camera sensors <scene-descriptor-cameras>`): a robot's camera sensor, from its mount on its
+  body, with its field of view and image shape, following the body as the run plays. Nothing else
+  is given; all of it comes from the scene.
+* ``view: {...}`` -- a camera the panel places, for a viewpoint no sensor has:
+
+  .. list-table::
+     :header-rows: 1
+     :widths: 18 82
+
+     * - key
+       - meaning
+     * - ``position``
+       - ``[x, y, z]`` in metres, where the camera is. Required.
+     * - ``look_at``
+       - ``[x, y, z]`` in metres, the point it looks at. Required.
+     * - ``attach``
+       - a body of the scene. Without it, ``position`` and ``look_at`` are in the world frame (z up);
+         with it, they are in that body's frame and the camera follows the body -- a chase or
+         onboard view.
+     * - ``fov``
+       - vertical field of view in degrees, default 60.
+     * - ``up``
+       - ``[x, y, z]``, the direction that is up in the picture, default ``[0, 0, 1]``.
+     * - ``near``/``far``
+       - clip planes in metres, default 0.05 and 1000.
+     * - ``width``/``height`` or ``aspect``
+       - the picture's shape, letterboxed in the panel; default the panel's own shape.
 
 .. code-block:: yaml
 
    - camera:
        title: OAK-D camera
-       kind: scene
-       sensor: robot.oakd.oakd_camera     # the camera's name in the scene
+       camera: robot.oakd.oakd_camera     # a camera the scene places
        position: {anchor: top-center, width: 360, height: 300}
        minimizable: true
        minimized: true                    # collapsed until the viewer opens it
+   - camera:
+       title: Chase view
+       view: {attach: base_link, position: [-2.0, 0.0, 1.2], look_at: [2.0, 0.0, 0.0]}
+       minimizable: true
+       minimized: true
 
-A minimized panel renders nothing, so a view that starts collapsed costs nothing until somebody opens
-it from its title bar. Nothing is recorded for it either: it renders in the browser from the world's cached scene and the run's
-recorded poses, so it plays at the view's frame rate and seeks instantly, and it needs no
-``rosbags_to_webm`` step. It shows the simulated geometry under the viewer's lighting, without the
-sensor's noise or the simulator's own renderer — a view of where the sensor looked, not its pixels.
-Only colour cameras can be shown: a depth sensor's image is a distance per pixel, which a render of
-the scene's colours would misstate. Validation refuses a ``kind: scene`` panel with no ``sensor``, or
-on a simulator that records no scene state or exports no scene; a ``sensor`` the scene has no colour
-camera for is reported in the panel, with the names it has.
+**Which kind a panel is.** ``kind`` when it says; otherwise ``scene`` when it names a ``camera`` or a
+``view``, and ``recorded`` otherwise. ``render`` -- the service re-rendering the recorded state per
+moment, through a camera the *world* defines (``camera``) or from its own free-camera settings
+(``view: {azimuth, elevation, distance, lookat}``) -- is never inferred, so it is always written
+``kind: render``. A ``view`` with those keys and no ``kind`` is refused, naming the kind it needs.
+
+A minimized panel renders nothing, so a view that starts collapsed costs nothing until somebody
+opens it from its title bar; there is no other way to show or hide a panel in the view. Nothing is
+recorded for it either, so it plays at the view's frame rate and seeks instantly, and it needs no
+``rosbags_to_webm`` step. It shows the simulated geometry under the viewer's lighting, without a
+sensor's noise or the simulator's own renderer — a view of where the camera looked, not a sensor's
+pixels. Only colour cameras of the scene can be shown: a depth sensor's image is a distance per
+pixel, which a render of the scene's colours would misstate. Validation refuses a ``scene`` panel
+with neither or both of ``camera`` and ``view``, a malformed ``view``, or a simulator that records no
+scene state or exports no scene. Which cameras and bodies a world has is known only once its scene is
+exported, on first view, so a ``camera`` or ``attach`` the scene lacks is reported in the panel, with
+the names it has.
 
 Where the video comes from: a producer writes it into the run directory and registers it in
 the ``videos`` table. ``rosbags_to_webm`` is the first such producer (see the

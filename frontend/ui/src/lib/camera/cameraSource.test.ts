@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import type { DataProvider, PanelSpec } from '@robovast/panel-kit'
-import { cameraKind, cameraSensor, cameraTopic, resolveCameraSource } from './cameraSource'
+import { cameraKind, cameraTopic, resolveCameraSource, sceneLook } from './cameraSource'
 
 const spec = (config: Record<string, unknown>): PanelSpec =>
   ({ type: 'camera', config }) as unknown as PanelSpec
@@ -26,6 +26,14 @@ describe('cameraKind', () => {
     expect(cameraKind({ kind: 'scene' })).toBe('scene')
   })
 
+  it('is scene for a camera or a view without a kind, and render only when asked', () => {
+    expect(cameraKind({ camera: 'robot.cam' })).toBe('scene')
+    expect(cameraKind({ view: { position: [0, 0, 1], look_at: [1, 0, 0] } })).toBe('scene')
+    expect(cameraKind({ kind: 'render', camera: 'top' })).toBe('render')
+    expect(cameraKind({ kind: 'render', view: { azimuth: 90 } })).toBe('render')
+    expect(cameraKind({ source: { topic: '/cam' } })).toBe('recorded')
+  })
+
   it('refuses a kind it does not have', () => {
     expect(() => cameraKind({ kind: 'webrtc' as never })).toThrow(/webrtc/)
   })
@@ -39,10 +47,23 @@ describe('cameraTopic', () => {
   })
 })
 
-describe('cameraSensor', () => {
-  it('reads sensor, and refuses a scene panel without one', () => {
-    expect(cameraSensor({ kind: 'scene', sensor: 'robot.cam' })).toBe('robot.cam')
-    expect(() => cameraSensor({ kind: 'scene' })).toThrow(/sensor/)
+describe('sceneLook', () => {
+  it('reads a camera by name, or a free view with its defaults', () => {
+    expect(sceneLook({ camera: 'robot.cam' })).toEqual({ camera: 'robot.cam' })
+    expect(sceneLook({ view: { position: [0, 0, 2], look_at: [3, 0, 0], attach: 'base_link' } }))
+      .toEqual({
+        view: {
+          position: [0, 0, 2], look_at: [3, 0, 0], attach: 'base_link', fov: 60, up: [0, 0, 1],
+          near: 0.05, far: 1000,
+        },
+      })
+  })
+
+  it('refuses neither, both, and a server render view by name', () => {
+    expect(() => sceneLook({ kind: 'scene' })).toThrow(/camera.*view/)
+    expect(() => sceneLook({ camera: 'a', view: { position: [0, 0, 1], look_at: [1, 0, 0] } }))
+      .toThrow(/not both/)
+    expect(() => sceneLook({ view: { azimuth: 90, distance: 12 } })).toThrow(/kind: render/)
   })
 })
 
@@ -96,19 +117,17 @@ describe('resolveCameraSource', () => {
     })
   })
 
-  it('scene: names the sensor, asks the service nothing and reads no table', async () => {
+  it('scene: names the camera, asks the service nothing and reads no table', async () => {
     const fetchJson = vi.fn()
     const data = provider()
-    const src = await resolveCameraSource(
-      spec({ kind: 'scene', sensor: 'robot.oakd.oakd_camera' }), data, fetchJson,
-    )
-    expect(src).toEqual({ kind: 'scene', sensor: 'robot.oakd.oakd_camera' })
+    const src = await resolveCameraSource(spec({ camera: 'robot.oakd.oakd_camera' }), data, fetchJson)
+    expect(src).toEqual({ kind: 'scene', look: { camera: 'robot.oakd.oakd_camera' } })
     expect(fetchJson).not.toHaveBeenCalled()
     expect(data.has).not.toHaveBeenCalled()
     expect(data.series).not.toHaveBeenCalled()
   })
 
-  it('scene: refuses a panel with no sensor', async () => {
-    await expect(resolveCameraSource(spec({ kind: 'scene' }), provider())).rejects.toThrow(/sensor/)
+  it('scene: refuses a panel with neither camera nor view', async () => {
+    await expect(resolveCameraSource(spec({ kind: 'scene' }), provider())).rejects.toThrow(/camera/)
   })
 })

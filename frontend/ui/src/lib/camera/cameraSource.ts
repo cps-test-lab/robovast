@@ -12,13 +12,19 @@
 //    is the smooth-playback derivative of the same recording.
 //  - `render`: a run with no camera topic at all. The screenshot route re-renders the run's
 //    recorded state at the clock's moment, from a camera the world defines or a free viewpoint.
-//  - `scene`: a sensor camera the scene descriptor places on a body, rendered in the browser from the
-//    geometry and the recorded poses the 3D view replays -- every moment at once, with nothing stored
-//    or rendered on the service. Its time base is the motion's own, so there is nothing to place.
+//  - `scene`: the scene drawn in the browser from the geometry and the recorded poses the 3D view
+//    replays, through a camera the scene descriptor places (`camera`) or one the panel places
+//    (`view`) -- every moment at once, with nothing stored or rendered on the service. Its time base
+//    is the motion's own, so there is nothing to place.
+//
+// Which kind: `kind` when the panel says; else `scene` when it names a `camera` or a `view`, and
+// `recorded` otherwise. `render` is never inferred -- running the simulator per frame on the service
+// is asked for by name -- which is what lets `camera` and `view` mean the scene's in every other case.
 
 import type { DataProvider, PanelSpec } from '@robovast/panel-kit'
 import { cameraRoutes, type RenderView, type RunRef } from './frameRoutes'
 import { parseFrameIndex } from './frameIndex'
+import { parseFreeView, type FreeViewSpec } from '@/lib/scene3d/sceneCameras'
 
 /** A resolved camera: everything the panel needs to put a picture on the clock. The panel branches
  *  on `kind` and never sees a file path. */
@@ -50,9 +56,12 @@ export type CameraSource =
     }
   | {
       kind: 'scene'
-      /** The camera's name in the scene descriptor: the sensor it renders for. */
-      sensor: string
+      look: SceneLook
     }
+
+/** What a `scene` panel looks through: a camera the scene descriptor places, by name, or a free view
+ *  the panel places. */
+export type SceneLook = { camera: string } | { view: FreeViewSpec }
 
 export type CameraKind = CameraSource['kind']
 
@@ -62,20 +71,19 @@ export type CameraKind = CameraSource['kind']
  *     - camera: { source: { topic } }            which video, for a run that recorded several
  *     - camera: { source: { path, t0 } }         a video no producer registered
  *     - camera: { kind: topic, topic: /cam }     the recorded frames of an image topic
- *     - camera: { kind: render, camera: top }    a render of the recorded state
+ *     - camera: { kind: render, camera: top }    a render of the recorded state, on the service
  *     - camera: { kind: render, view: { azimuth: 90, distance: 12 } }
- *     - camera: { kind: scene, sensor: robot.oakd.oakd_camera }   a sensor camera of the scene
+ *     - camera: { camera: robot.oakd.oakd_camera }   the scene through a camera it places
+ *     - camera: { view: { position: [x, y, z], look_at: [x, y, z], attach: base_link } }
  */
 export interface CameraConfig {
   kind?: CameraKind
   /** `kind: topic`: the image topic. Falls back to `source.topic`, so one name serves both. */
   topic?: string
-  /** `kind: render`: a camera the world defines. */
+  /** `scene`: a camera of the scene descriptor; `render`: a camera the world defines. */
   camera?: string
-  /** `kind: render`: free-camera settings. */
-  view?: Record<string, string | number>
-  /** `kind: scene`: the sensor camera, by its name in the scene descriptor. */
-  sensor?: string
+  /** `scene`: a free view (`parseFreeView`); `render`: the screenshot route's free-camera settings. */
+  view?: Record<string, unknown>
   source?: CameraBinding
 }
 
@@ -98,10 +106,11 @@ export const VIDEOS_TABLE = 'videos'
 
 const KINDS: ReadonlySet<string> = new Set<CameraKind>(['recorded', 'topic', 'render', 'scene'])
 
-/** Which kind a panel config asks for. `recorded` unless it says, so a config written before the
- *  other kinds existed reads the same. */
+/** Which kind a panel config asks for: its `kind`; else `scene` when it names a `camera` or a
+ *  `view`, and `recorded` otherwise. */
 export function cameraKind(config: CameraConfig): CameraKind {
-  const kind = config.kind ?? 'recorded'
+  const kind =
+    config.kind ?? (config.camera !== undefined || config.view !== undefined ? 'scene' : 'recorded')
   if (!KINDS.has(kind)) {
     throw new Error(
       `camera panel: kind '${String(kind)}' is not one of ${[...KINDS].join(', ')}`,
@@ -122,16 +131,18 @@ export function cameraTopic(config: CameraConfig): string {
   return topic
 }
 
-/** The sensor a `scene` panel looks through, or throws: a scene may place several cameras, and
- *  picking one for the panel would show a view nobody chose. */
-export function cameraSensor(config: CameraConfig): string {
-  if (!config.sensor) {
+/** What a `scene` panel looks through, or throws: exactly one of `camera` (a name) and `view`. A
+ *  scene may place several cameras, and picking one for the panel would show a view nobody chose. */
+export function sceneLook(config: CameraConfig): SceneLook {
+  if (config.camera !== undefined && config.view !== undefined)
+    throw new Error('camera panel: give `camera` (a camera the scene places) or `view`, not both.')
+  if (config.view !== undefined) return { view: parseFreeView(config.view) }
+  if (typeof config.camera !== 'string' || !config.camera)
     throw new Error(
-      "camera panel: kind 'scene' needs a `sensor` (the name of a camera the scene places; a " +
-        'panel naming one the scene lacks lists those it has).',
+      "camera panel: kind 'scene' needs a `camera` (the name of a camera the scene places) or a " +
+        '`view` (position and look_at).',
     )
-  }
-  return config.sensor
+  return { camera: config.camera }
 }
 
 export const runRef = (data: DataProvider): RunRef => ({
@@ -165,9 +176,13 @@ export async function resolveCameraSource(
     case 'topic':
       return resolveTopic(config, data, fetchJson)
     case 'render':
-      return { kind: 'render', run: runRef(data), view: { camera: config.camera, view: config.view } }
+      return {
+        kind: 'render',
+        run: runRef(data),
+        view: { camera: config.camera, view: config.view as RenderView['view'] },
+      }
     case 'scene':
-      return { kind: 'scene', sensor: cameraSensor(config) }
+      return { kind: 'scene', look: sceneLook(config) }
     case 'recorded':
       return resolveRecorded(config.source ?? {}, data)
   }
