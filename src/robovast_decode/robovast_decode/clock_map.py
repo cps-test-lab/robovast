@@ -109,6 +109,32 @@ class ClockMap:
         sim_span = (self._sim[-1] - self._sim[0]) if enough else 0.0
         return ClockMapInfo(self._source, len(self._wall), span, sim_span)
 
+    def windows(self, sim_window_s: float = 1.0) -> List[Tuple[float, float, float, float]]:
+        """``(sim_start, sim_end, wall_span, sim_span)`` per window of *sim_window_s* simulated
+        seconds that holds two samples or more.
+
+        The realtime factor of a window is ``sim_span / wall_span``, measured between its own first
+        and last sample: a run's factor is not constant, and one number for the whole run hides the
+        stretch where a trial ran slow. A window with fewer than two samples, or no wall time
+        between them, is left out rather than given a factor nobody measured.
+        """
+        if len(self._wall) < 2 or sim_window_s <= 0:
+            return []
+        buckets: dict = {}
+        for wall, sim in zip(self._wall, self._sim):
+            buckets.setdefault(int(sim // sim_window_s), []).append((wall, sim))
+        out = []
+        for index in sorted(buckets):
+            pairs = buckets[index]
+            if len(pairs) < 2:
+                continue
+            wall_span = pairs[-1][0] - pairs[0][0]
+            if wall_span <= 0:
+                continue
+            out.append((index * sim_window_s, (index + 1) * sim_window_s,
+                        wall_span, pairs[-1][1] - pairs[0][1]))
+        return out
+
     def to_sim(self, wall: Optional[float]) -> Optional[float]:
         """Sim seconds at *wall*, or ``None`` when that is outside the sampled range."""
         if wall is None or len(self._wall) < 2:
