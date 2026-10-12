@@ -130,6 +130,10 @@ const TRIAL_PHASES: ReadonlySet<string> = new Set<CampaignPhase>(['running', 'fi
 export const hasResults = (c: CampaignSummary) =>
   hasRecordedRuns(c) || TRIAL_PHASES.has(c.phase)
 
+/** The campaigns every Results view (Explorer, Run view, Data browser) offers: {@link hasResults}. */
+export const resultsCampaigns = (campaigns: readonly CampaignSummary[]): CampaignSummary[] =>
+  campaigns.filter(hasResults)
+
 export type CreateCampaignRequest = Schemas['CreateCampaignRequest']
 
 // Mirrors interface.py:DESCRIPTION_MAX_LEN. Enforced here only to keep the field from

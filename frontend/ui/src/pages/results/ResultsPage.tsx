@@ -5,7 +5,7 @@ import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
 import { useActiveView } from '@/lib/activeView'
 import {
-  robovast, hasRecordedRuns, hasResults, isRunning, type CampaignSummary,
+  robovast, hasRecordedRuns, isRunning, resultsCampaigns, type CampaignSummary,
 } from '@/lib/robovastClient'
 import { KeepAlive } from '@/components/KeepAlive'
 import { lazyView } from '@/lib/lazyView'
@@ -76,7 +76,7 @@ export function ResultsPage({
   // running or not. Everything downstream (Explorer, Run, Data) shares one list because they share
   // one selection, and each filters it to what it can actually show.
   const live = useMemo(
-    () => (campaigns.data?.campaigns ?? []).filter(hasResults),
+    () => resultsCampaigns(campaigns.data?.campaigns ?? []),
     [campaigns.data],
   )
 
@@ -109,7 +109,7 @@ export function ResultsPage({
   // Take the service's answer as the new snapshot. A failed refetch carries no data; keep the list
   // that is on screen rather than blanking every view.
   const adopt = (res: { data?: { campaigns: CampaignSummary[] } }) => {
-    if (res.data) setShown(res.data.campaigns.filter(hasResults))
+    if (res.data) setShown(resultsCampaigns(res.data.campaigns))
   }
 
   const shownIds = new Set(list.map((c) => c.campaign_id))

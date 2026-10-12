@@ -40,7 +40,7 @@ import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import PodcastsRoundedIcon from '@mui/icons-material/PodcastsRounded'
 import SensorsRoundedIcon from '@mui/icons-material/SensorsRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
-import { robovast, hasRecordedRuns, isRunning, type CampaignSummary } from '@/lib/robovastClient'
+import { robovast, isRunning, resultsCampaigns, type CampaignSummary } from '@/lib/robovastClient'
 import {
   firstRunSelection,
   resolveSelection,
@@ -281,12 +281,11 @@ export function RunView({
 
   const [runAnchor, setRunAnchor] = useState<HTMLElement | null>(null)
 
-  // Only campaigns that recorded runs can be replayed, so they are the only ones this view offers —
-  // the picker never lists a campaign whose store was never written, and a selection inherited from
-  // another Results view (the campaign is shared) is treated as no selection here rather than
-  // queried into a "no store to read" error. A campaign still running is offered like any other:
-  // its `run_view` answers while it runs, and a run still recording is read live.
-  const replayable = useMemo(() => campaigns.filter(hasRecordedRuns), [campaigns])
+  // The campaigns every Results view offers (`resultsCampaigns`): recorded runs, or trials under
+  // way, whose `run_view` answers while they run and whose runs still recording are read live. A
+  // selection inherited from another Results view that this one does not offer is treated as no
+  // selection rather than queried into a "no store to read" error.
+  const replayable = useMemo(() => resultsCampaigns(campaigns), [campaigns])
   const available = !!campaignId && replayable.some((c) => c.campaign_id === campaignId)
   const summary = replayable.find((c) => c.campaign_id === campaignId)
   const running = !!summary && isRunning(summary)
