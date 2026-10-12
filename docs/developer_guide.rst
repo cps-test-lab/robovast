@@ -2248,6 +2248,16 @@ service**. The build location is ``frontend/ui/dist`` relative to the repo, over
 ``ROBOVAST_UI_DIST``; package the built assets into the service/controller image so the
 in-cluster service ships the UI. If no build is present the service runs API-only.
 
+**The bundle ships compressed.** ``npm run build`` writes a ``.br`` and a ``.gz`` beside each
+emitted text file of 1 KiB or more (``frontend/ui/precompress.ts``, a Vite plugin), and the
+mount serves the one the request's ``Accept-Encoding`` admits, Brotli first, with
+``Content-Encoding`` and ``Vary: Accept-Encoding``; a client that accepts neither gets the
+original. Each coding is its own representation with its own ``ETag``, so the cache headers
+above hold for all three. Compressing once per build rather than per request keeps the
+work off the control plane's event loop, and serves the same bytes whether the service is
+reached directly or through the cluster's front (:doc:`deployment`, "What runs in the
+service pod"), which passes an already-encoded response through.
+
 **Dev loop.** ``cd frontend/ui && npm run dev`` runs Vite (:5173) and proxies the API path
 prefixes to a running ``vast serve`` (``ROBOVAST_SERVICE_URL`` to retarget), keeping the
 browser same-origin for hot-reload development.
