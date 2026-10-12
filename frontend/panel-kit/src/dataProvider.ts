@@ -79,7 +79,7 @@ export interface DataProvider {
    *  (e.g. robovast_nav's costmap, via `fetchRun('costmap', {topic, t})`) reaches its own data without
    *  the generic seam knowing anything nav-specific. */
   fetchRun<T>(endpoint: string, params?: Record<string, string | number>): Promise<T>
-  /** URL of one of the run's artifact files (e.g. the scene3d panel's `scene/scene.json`), fetched
+  /** URL of one of the run's artifact files (e.g. a camera panel's recorded frame), fetched
    *  directly by the consumer. Path-style so relative sibling fetches stay within the run. */
   runFileUrl(path: string): string
   /** URL of a file the whole campaign shares rather than one run (a world every run compiled

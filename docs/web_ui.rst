@@ -1847,7 +1847,7 @@ frame 0 as though it were the current moment.
 a camera instead of the orbit view. The ``scene3d`` panel itself stays the orbit view; a camera's
 view is only ever this panel, where a campaign declares one. It looks through one of two cameras:
 
-* ``camera: <name>`` -- a camera the scene places, by its name in the scene descriptor
+* ``camera: <name>`` -- a camera the scene places, by its sensor name in the scene
   (:ref:`camera sensors <scene-descriptor-cameras>`): a robot's camera sensor, from its mount on its
   body, with its field of view and image shape, following the body as the run plays. Nothing else
   is given; all of it comes from the scene.
@@ -2024,10 +2024,10 @@ the world was authored with.
 
 It needs no bindings at all — ``- scene3d:`` on its own is a complete panel — because the run's
 **recording** names the world it used (its ``sim_recording`` row) and the service builds the
-matching **geometry** on demand. The descriptor is specified in :ref:`scene-descriptor`.
+matching **geometry** on demand. The scene is specified in :ref:`scene-descriptor`.
 
-*Geometry is compiled when somebody looks, not when a campaign runs.* A descriptor is 13–31 MB and takes
-5–9 s to compile, for an artifact whose only consumer is this panel — so a campaign does not ship one.
+*Geometry is compiled when somebody looks, not when a campaign runs.* A scene takes seconds to compile
+and megabytes to keep, for an artifact whose only consumer is this panel — so a campaign does not ship one.
 On the first view the service compiles it **inside that campaign's own pinned image** (the world is
 generally installed there from a wheel, and a host that merely happens to have the tooling could be a
 different version, which renders plausible but wrong geometry) and caches it keyed by *world identity*:
@@ -2055,7 +2055,7 @@ table-fed panels need no geometry, so playback and the costmap keep working — 
 and shows its reason.
 
 Nothing is listed under the panel. A recording's pose and joint rows name the bodies and joints they
-drive exactly as the descriptor spells them, so what gets animated is discovered from the artifact
+drive exactly as the scene spells them, so what gets animated is discovered from the artifact
 pair; a name matching nothing is reported, with the recording's own ``world``, rather than leaving a
 silently static world.
 
@@ -2254,10 +2254,9 @@ campaign shares, as the ``scene3d`` panel does.) See the developer guide for the
 
 .. _scene-descriptor-delivery:
 
-**3D scene data delivery.** The ``scene3d`` panel renders a **scene descriptor** — ``scene.json`` +
-``scene.bin`` + one PNG per texture, a compact browser-renderable export of the simulated world, defined
-in :ref:`scene-descriptor` and produced for roqsim by ``roqsim/export_web.py``. It is a *directory*, not a file: the
-loader fetches ``scene.bin`` and the textures as **relative siblings** of ``scene.json``.
+**3D scene data delivery.** The ``scene3d`` panel renders a **scene**: the simulated world as one
+binary glTF file, specified in :ref:`scene-descriptor` and produced for roqsim by ``roqsim export
+gltf``.
 
 A campaign does not deliver it. The service resolves it per view:
 
@@ -2271,8 +2270,11 @@ The split matters: a ``GET`` that started a build would fire on a browser prefet
 strict-mode double render, and each of those would launch an image pull. Status is its own
 cheap ``GET`` (*say why you are about to wait, before you wait*), starting work is a ``POST`` returning
 ``ActionResult`` as ``postprocessing/run`` is, and the bytes are served like a panel bundle because they
-live in the service's cache rather than in the campaign's results. The cache key is in the asset path so
-one URL prefix addresses the whole entry, which is what makes the loader's sibling fetches resolve.
+live in the service's cache rather than in the campaign's results. The cache writes a gzip copy beside
+the scene when it builds it, and a request that accepts gzip is served that copy, so the service never
+compresses a scene per download; with ``EXT_meshopt_compression`` and WebP inside, the file and its
+gzip copy are a fraction of the raw geometry and images they hold. The bytes a browser fetches for a
+world are the status's ``bytes`` at most.
 
 Because the key names what an entry was compiled from, and an entry is never rewritten under its key,
 an asset URL names its bytes. So the assets are served ``Cache-Control: private, max-age=31536000,

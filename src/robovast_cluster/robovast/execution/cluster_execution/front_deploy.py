@@ -129,10 +129,6 @@ http {{
             proxy_read_timeout 3600s;
             proxy_send_timeout 3600s;
         }}
-        location ~ "{scene_assets}" {{
-            gzip_types {gzip_types} {scene_gzip_types};
-{control_proxy}
-        }}
         location / {{
 {control_proxy}
         }}
@@ -173,11 +169,6 @@ CONTROL_PROXY = """\
 GZIP_TYPES = ("application/json", "application/javascript", "text/javascript", "text/css",
               "text/csv", "image/svg+xml", "application/vnd.apache.arrow.stream")
 
-#: Added for a cached scene descriptor (:func:`scene_assets_location`): its geometry is
-#: ``scene.bin``, raw vertex and index arrays that compress to about a quarter, and the
-#: largest single file the run view loads.
-SCENE_GZIP_TYPES = ("application/octet-stream",)
-
 #: Level 5 of zlib's 1-9: on scene geometry and large JSON it comes within about one per
 #: cent of 6 and 9 for roughly three quarters and half of their CPU, and is some seven per
 #: cent smaller than 1. A scene's files are compressed once per browser, since they are
@@ -187,18 +178,6 @@ GZIP_LEVEL = 5
 GZIP_MIN_LENGTH = 1024
 
 
-def scene_assets_location() -> str:
-    """The paths of a cached scene descriptor's files, a campaign's and a project's, as the
-    nginx regular expression of a ``location``."""
-    import re  # pylint: disable=import-outside-toplevel
-
-    from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
-    placeholder = "ID"
-    prefixes = (Routes.campaign_scene_asset(placeholder, ""),
-                Routes.workspace_scene_asset(placeholder, ""))
-    return "^(" + "|".join(re.escape(p).replace(placeholder, "[^/]+") for p in prefixes) + ")"
-
-
 def front_config(port: int) -> str:
     """The rendered nginx configuration for a front on *port*."""
     from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
@@ -206,9 +185,7 @@ def front_config(port: int) -> str:
                                data_socket=DATA_SOCKET, data_prefix=Routes.DATA,
                                control_proxy=CONTROL_PROXY,
                                gzip_level=GZIP_LEVEL, gzip_min_length=GZIP_MIN_LENGTH,
-                               gzip_types=" ".join(GZIP_TYPES),
-                               scene_gzip_types=" ".join(SCENE_GZIP_TYPES),
-                               scene_assets=scene_assets_location())
+                               gzip_types=" ".join(GZIP_TYPES))
 
 
 def front_configmap_manifest(namespace: str, port: int) -> dict:

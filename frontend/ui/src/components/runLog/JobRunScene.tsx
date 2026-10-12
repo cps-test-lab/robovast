@@ -3,7 +3,7 @@
 // where it ended once it has. No playback controls -- it shows the run *now*, which is what the log
 // beside it shows -- and the free orbit camera of the run view's base layer.
 //
-// Nothing is stored for it: the scene is the world's cached descriptor (built on first view, as in
+// Nothing is stored for it: the scene is the world's cached glTF file (built on first view, as in
 // the run view) and the motion is the run's live stream. Unmounting -- closing the log or this
 // view -- closes the stream with the provider.
 

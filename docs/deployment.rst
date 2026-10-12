@@ -191,17 +191,16 @@ cost every client a port. The front's configuration is rendered by ``setup`` and
 ``upgrade`` into a ConfigMap and never edited on the cluster.
 
 The front also **compresses** what the two processes answer uncompressed, when the client
-accepts gzip: JSON, CSV, Arrow query results, SVG, scripts and styles, and a scene's
-geometry (``scene_assets/``, where ``scene.bin`` compresses to about a quarter). It
+accepts gzip: JSON, CSV, Arrow query results, SVG, scripts and styles. It
 leaves alone the live event streams, which a compressor would hold back, and what is
 compressed already or of unknown kind -- images, video, recordings, tar and gzip
 downloads, results files served as ``application/octet-stream``. A range request is
 answered uncompressed, so a download still resumes. A compressed response's ``ETag``
 becomes weak, which revalidation still matches; the cache headers are unchanged. The web
-UI's bundle arrives precompressed from the control plane (:ref:`web-ui-internals`) and
-passes through. The types and level are ``GZIP_TYPES`` and ``GZIP_LEVEL`` in
+UI's bundle and a run view's 3D scene arrive precompressed from the control plane
+(:ref:`web-ui-internals`, :ref:`scene-descriptor`) and pass through. The types and level are ``GZIP_TYPES`` and ``GZIP_LEVEL`` in
 :mod:`~robovast.execution.cluster_execution.front_deploy`. A ``vast serve`` started by
-hand serves the bundle precompressed the same way and every other response
+hand serves the bundle and the scene precompressed the same way and every other response
 uncompressed.
 
 Keeping the service up to date

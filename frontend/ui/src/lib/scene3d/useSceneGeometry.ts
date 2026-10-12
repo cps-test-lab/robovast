@@ -1,4 +1,4 @@
-// Resolving a scene descriptor through the service: ask, POST once if nothing is cached, then poll
+// Resolving a scene through the service: ask, POST once if nothing is cached, then poll
 // until it is.
 //
 // Shared by the run view's scene3d panel and the config view's, because the *protocol* is the same
@@ -46,7 +46,7 @@ export interface SceneGeometry {
 }
 
 /**
- * Drive one descriptor to `cached`, whatever endpoint answers for it.
+ * Drive one scene to `cached`, whatever endpoint answers for it.
  *
  * @param ask    read the status; must never start work.
  * @param start  the explicit trigger, called at most once per mount.
@@ -95,7 +95,7 @@ export function useSceneGeometry(
       if (timer) clearTimeout(timer)
     }
     // `ask`/`start` are closures rebuilt every render; `key` is what actually identifies the
-    // descriptor being resolved.
+    // scene being resolved.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
 

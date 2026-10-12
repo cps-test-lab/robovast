@@ -342,32 +342,9 @@ def test_the_front_compresses_text_and_leaves_streams_and_compressed_formats_alo
     never = {"text/event-stream", "image/png", "image/jpeg", "video/webm", "application/gzip",
              "application/zstd", "application/x-tar", "application/octet-stream", "text/plain"}
     assert not types & never
-    # One location adds octet-stream (the scene's, below); none adds anything else of these.
-    widened = [_gzip_types(block) for block in config.split("location ")[1:]]
-    widened = [types for types in widened if types is not None]
-    assert len(widened) == 1
-    assert not widened[0] & (never - {"application/octet-stream"})
-
-
-def test_scene_geometry_is_compressed_and_only_there():
-    """``scene.bin`` is served as octet-stream, like a results file of unknown kind; only
-    the scene descriptor's location adds that type, and it matches both scene routes and
-    nothing else the control plane serves."""
-    import re
-
-    from robovast.service.interface import Routes
-    config = _front_config()
-    location = front_deploy.scene_assets_location()
-    block = config[config.index(f'location ~ "{location}"'):config.index("location / ")]
-    assert "application/octet-stream" in _gzip_types(block)
-    assert _gzip_types(block) >= _gzip_types(config[:config.index("server {")])
-    assert "proxy_pass http://control;" in block
-    pattern = re.compile(location)
-    assert pattern.match(Routes.campaign_scene_asset("c-1", "0123abcd/scene.bin"))
-    assert pattern.match(Routes.workspace_scene_asset("w-1", "0123abcd/scene.json"))
-    assert not pattern.match(Routes.campaign_scene("c-1"))
-    assert not pattern.match("/results/c-1/scene_assets/x.bin")
-    assert not pattern.match(f"{Routes.DATA}/campaigns/c-1/scene_assets/x")
+    # No location widens the list: what is worth compressing and is not text -- the web UI's
+    # bundle, a scene -- the control plane serves precompressed, and the front passes through.
+    assert all(_gzip_types(block) is None for block in config.split("location ")[1:])
 
 
 def test_deploy_context_stamped_into_service_env():

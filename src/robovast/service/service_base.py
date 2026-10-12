@@ -5386,8 +5386,8 @@ class ServiceBase(RobovastInterface):
             "in_progress": running,
             "stage": stage,
             "stage_detail": stage_detail,
-            "bytes": scene_cache.entry_bytes(key) if cached else 0,
-            "url": (Routes.campaign_scene_asset(campaign_id, f"{key}/scene.json")
+            "bytes": scene_cache.scene_bytes(key) if cached else 0,
+            "url": (Routes.campaign_scene_asset(campaign_id, f"{key}/{scene_cache.SCENE_FILE}")
                     if cached else ""),
             "world": identity["world"],
             "overrides_known": identity["overrides_known"],
@@ -5501,8 +5501,8 @@ class ServiceBase(RobovastInterface):
             "in_progress": running,
             "stage": stage,
             "stage_detail": stage_detail,
-            "bytes": scene_cache.entry_bytes(key) if cached else 0,
-            "url": (Routes.workspace_scene_asset(workspace_id, f"{key}/scene.json")
+            "bytes": scene_cache.scene_bytes(key) if cached else 0,
+            "url": (Routes.workspace_scene_asset(workspace_id, f"{key}/{scene_cache.SCENE_FILE}")
                     if cached else ""),
             "world": identity["world"],
             "overrides_known": True,
@@ -5540,7 +5540,7 @@ class ServiceBase(RobovastInterface):
         return ActionResult(ok=True, message="building this world's geometry; poll the scene status")
 
     def resolve_workspace_scene_asset(self, workspace_id: str, path: str) -> str:
-        """One file of a cached descriptor. The cache is keyed by content and shared, so the
+        """One file of a cached scene. The cache is keyed by content and shared, so the
         workspace only scopes the *route*, not the bytes."""
         del workspace_id
         return self.resolve_campaign_scene_asset("", path)
@@ -5583,12 +5583,11 @@ class ServiceBase(RobovastInterface):
         return str(screenshot.kept(campaign_id, name))
 
     def resolve_campaign_scene_asset(self, campaign_id: str, path: str) -> str:
-        """Resolve ``<key>/<file>`` within the shared descriptor cache.
+        """Resolve ``<key>/<file>`` within the shared scene cache.
 
-        The **key is in the path** rather than re-derived from a run, for two reasons: the descriptor's
-        loader fetches ``scene.bin`` and every texture as *relative siblings* of ``scene.json``, so one
-        URL prefix has to address the whole entry; and an entry is shared by every campaign that used
-        that world, so there is no single run it belongs to. The client never builds this URL -- the
+        The **key is in the path** rather than re-derived from a run, because the key names the
+        bytes -- which is what lets the route serve them as immutable -- and an entry is shared by
+        every campaign that used that world, so there is no single run it belongs to. The client never builds this URL -- the
         status response hands it over -- and ``asset_path`` refuses anything escaping the entry.
         """
         del campaign_id  # scopes the route, but a cache entry belongs to a world, not a campaign

@@ -9,6 +9,7 @@ right picture, just slowly; a key that ignores the overrides renders the wrong p
 """
 
 import contextlib
+import gzip
 import json
 import os
 import shlex
@@ -243,11 +244,14 @@ def test_the_command_is_the_backends_to_give(tmp_path):
     """Which exporter builds geometry is the simulator's business, not the service's.
 
     Asked of the backend the campaign already names, so a second simulator needs no table
-    here -- only the descriptor format stays RoboVAST's.
+    here -- only what it writes stays RoboVAST's: the scene file, compressed for the browser.
     """
     ident = scene_cache.world_identity(_campaign(tmp_path), _recording())
     assert ident["backend"] == "roqsim"
-    assert "roqsim-export-web" in scene_cache._command_for(ident, 1024)
+    command = scene_cache._command_for(ident, 1024)
+    assert command.startswith("roqsim export gltf ")
+    assert f"--out {{out}}/{scene_cache.SCENE_FILE}" in command
+    assert "--meshopt" in command and "--texture-format webp" in command
 
 
 def test_a_simulator_that_exports_no_geometry_says_so(tmp_path):
@@ -260,7 +264,7 @@ def test_a_simulator_that_exports_no_geometry_says_so(tmp_path):
             return None
 
     ident = scene_cache.world_identity(_campaign(tmp_path, backend="mute"), _recording())
-    with pytest.raises(scene_cache.SceneUnavailable, match="exports no scene descriptor"):
+    with pytest.raises(scene_cache.SceneUnavailable, match="exports no scene,"):
         with _backend_named("mute", _Mute()):
             scene_cache._command_for(ident, 1024)
 
@@ -292,8 +296,8 @@ def test_generate_runs_the_generator_and_caches_the_directory(tmp_path, monkeypa
     assert not scene_cache.is_cached(key)
 
     fake = tmp_path / "fake.sh"
-    fake.write_text('#!/bin/sh\nmkdir -p "$1"\necho "{}" > "$1/scene.json"\n'
-                    'printf x > "$1/scene.bin"\n', encoding="utf-8")
+    fake.write_text('#!/bin/sh\nmkdir -p "$1"\nprintf glTF-and-more > "$1/scene.glb"\n',
+                    encoding="utf-8")
     fake.chmod(0o755)
     # No `image`: this test covers the caching semantics, not the container path -- that one was
     # measured for real against the cluster (see tests/execution/test_aux_container_transfer.py).
@@ -302,7 +306,11 @@ def test_generate_runs_the_generator_and_caches_the_directory(tmp_path, monkeypa
 
     out = scene_cache.generate(ident, key, runner_context=_no_runner)
     assert scene_cache.is_cached(key)
-    assert os.path.isfile(os.path.join(out, "scene.json"))
+    scene = os.path.join(out, scene_cache.SCENE_FILE)
+    # The compressed sibling is written once, with the entry, and holds the scene's bytes.
+    with gzip.open(os.path.join(out, scene_cache.PRECOMPRESSED)) as handle:
+        assert handle.read() == open(scene, "rb").read() == b"glTF-and-more"
+    assert scene_cache.scene_bytes(key) == len(b"glTF-and-more")
     identity = json.loads(open(os.path.join(out, scene_cache.IDENTITY_FILE), encoding="utf-8").read())
     assert identity["world"] == "pkg:depot" and identity["key"] == key
 
@@ -313,7 +321,7 @@ def test_generate_runs_the_generator_and_caches_the_directory(tmp_path, monkeypa
 
 
 def test_a_generator_that_writes_nothing_is_not_cached(tmp_path, monkeypatch):
-    """"Success" with no descriptor must not become a permanent empty cache entry.
+    """"Success" with no scene must not become a permanent empty cache entry.
 
     The generator framework catches the empty case first, with its own message ("reported success but
     wrote no files"), and this asserts that it reaches the viewer as a reason rather than as a traceback
@@ -323,7 +331,7 @@ def test_a_generator_that_writes_nothing_is_not_cached(tmp_path, monkeypatch):
     key = scene_cache.cache_key(ident)
     monkeypatch.setattr(scene_cache, "_generate_entry",
                         lambda i, k, m: {"shell": {"out": k, "command": "true"}})
-    with pytest.raises(scene_cache.SceneUnavailable, match="wrote no files|wrote no scene.json"):
+    with pytest.raises(scene_cache.SceneUnavailable, match="wrote no files|wrote no scene.glb"):
         scene_cache.generate(ident, key, runner_context=_no_runner)
     assert not scene_cache.is_cached(key)
     assert not os.path.isdir(scene_cache.entry_dir(key))
@@ -335,13 +343,13 @@ def test_eviction_drops_whole_entries_least_recently_used_first(tmp_path):
     for name, atime in (("old", 1000), ("new", 9000)):
         path = os.path.join(root, name)
         os.makedirs(path)
-        with open(os.path.join(path, "scene.bin"), "wb") as fh:
+        with open(os.path.join(path, "scene.glb.gz"), "wb") as fh:
             fh.write(b"x" * 1024)
         os.utime(path, (atime, atime))
 
     removed = scene_cache.evict(root, max_bytes=1500)
     assert removed == ["old"], "least recently used goes first"
-    assert scene_cache.is_cached("new") is False  # no scene.json in the fixture
+    assert scene_cache.is_cached("new") is False  # no scene.glb in the fixture
     assert os.path.isdir(os.path.join(root, "new")), "and the recent one survives"
 
 
@@ -349,9 +357,9 @@ def test_asset_path_refuses_to_escape_its_entry(tmp_path):
     key = "k"
     path = scene_cache.entry_dir(key)
     os.makedirs(path)
-    with open(os.path.join(path, "scene.json"), "w", encoding="utf-8") as fh:
+    with open(os.path.join(path, "scene.glb"), "w", encoding="utf-8") as fh:
         fh.write("{}")
-    assert scene_cache.asset_path(key, "scene.json").endswith("scene.json")
+    assert scene_cache.asset_path(key, "scene.glb").endswith("scene.glb")
     for bad in ("../../etc/passwd", "/etc/passwd", "nope.png"):
         with pytest.raises(KeyError):
             scene_cache.asset_path(key, bad)

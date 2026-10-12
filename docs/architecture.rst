@@ -1120,7 +1120,7 @@ service cannot serve a path when it can. It answers or it refuses by name; there
 probe. The service answers, because a campaign's results are under its own results root.
 
 **Screenshots are the deliberate opposite of geometry.** ``scene_cache`` builds a scene
-descriptor per *world*, so one build serves every run that used it — worth a background thread,
+per *world*, so one build serves every run that used it — worth a background thread,
 a cache and a status to poll. ``robovast.service.screenshot`` renders one moment of one run from
 a caller's viewpoint, so its key would be a camera pose and a time and would never be hit twice:
 no cache, no thread, one synchronous ``POST`` that returns the image or the reason. That second

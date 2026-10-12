@@ -64,6 +64,10 @@ SHAPE_ROS = "ros"
 #: schedule, i.e. at the cost of a whole cell.
 CONFIG_MOUNT = "/config"
 
+#: The file :meth:`SimulatorBackend.scene_export` writes into its output directory: the scene as
+#: one binary glTF file, to the contract of ``docs/simulators.rst`` ("The scene").
+SCENE_FILE = "scene.glb"
+
 #: Where RoboVAST mounts the job's resolved simulator overrides, in every container of the
 #: job. A constant rather than a per-backend choice for the same reason ``/ipc`` is one: a
 #: backend building a command has to name it, and the code writing the file has to agree.
@@ -346,7 +350,7 @@ class SimulatorBackend:
 
     def scene_export(self, cfg, execution: dict, *, world: str, max_tex_dim: int,
                      overrides: dict, overrides_file: Optional[str] = None) -> Optional[str]:
-        """Command that compiles *world* into a web scene descriptor, or ``None``.
+        """Command that compiles *world* into the run view's scene, or ``None``.
 
         Returned as a **string**, run through ``shlex.split`` by the ``shell`` input
         generator, with ``{out}`` for the output directory. It runs in the campaign's own
@@ -357,10 +361,10 @@ class SimulatorBackend:
         rebuilt. ``None`` -- the default -- means this backend has no exporter, which is a
         normal answer: Gazebo has none.
 
-        The descriptor *format* is RoboVAST's (``scene.json`` + ``scene.bin``, and a
-        ``.generated.json`` manifest; see the scene descriptor section of
-        ``docs/simulators.rst``), so a second backend implements against it rather than
-        inventing one. What belongs here is only the
+        What the command writes is RoboVAST's contract: :data:`SCENE_FILE` in ``{out}``, a
+        binary glTF file with the ``extras`` the scene section of ``docs/simulators.rst``
+        states, and a ``.generated.json`` manifest -- so a second backend implements against
+        it rather than inventing one. What belongs here is only the
         command: which tool, and how it spells its arguments -- ``overrides`` in particular,
         whose serialization is the simulator's own convention.
 

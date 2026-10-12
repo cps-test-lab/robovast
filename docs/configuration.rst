@@ -1418,7 +1418,7 @@ Each entry is ``- <generator>: {out: <dir>, ...}`` — the same single-key short
          out: files/scene
          inputs: ["../worlds/depot.yaml"]
          command: >-
-           roqsim-export-web --world {inputs[0]} --out {out}
+           roqsim export gltf --world {inputs[0]} --out {out}/scene.glb
            --manifest {out}/.generated.json
 
 Generation runs **once per campaign preparation, before ``run_files`` are collected**, and
