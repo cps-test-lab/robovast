@@ -74,8 +74,17 @@ interface Mismatch {
 }
 
 /** The 3D view of a run, through the orbit camera -- or, given a `look`, through that camera of the
- *  scene or that free view, with no orbit camera at all: what the camera panel's `kind: scene` shows. */
-export function Scene3DView({ spec, clock, data, look }: PanelProps & { look?: SceneLook }) {
+ *  scene or that free view, with no orbit camera at all: what the camera panel's `kind: scene` shows.
+ *
+ *  `registerReset` is where the orbit camera's reset is offered: the run view header's channel
+ *  unless the host has its own control for it, as a view outside the run view does. */
+export function Scene3DView({
+  spec,
+  clock,
+  data,
+  look,
+  registerReset = registerSceneReset,
+}: PanelProps & { look?: SceneLook; registerReset?: (reset: () => void) => () => void }) {
   const sensor = look && 'camera' in look ? look.camera : undefined
   const view = look && 'view' in look ? look.view : undefined
   const viewKey = view ? JSON.stringify(view) : ''
@@ -156,7 +165,7 @@ export function Scene3DView({ spec, clock, data, look }: PanelProps & { look?: S
     const viewport = new SceneViewport(el)
     viewportRef.current = viewport
     // A camera panel's view has no free camera for the header's reset to re-frame.
-    const unregister = look ? () => undefined : registerSceneReset(() => viewport.resetView())
+    const unregister = look ? () => undefined : registerReset(() => viewport.resetView())
     return () => {
       unregister()
       viewportRef.current = null
