@@ -11,7 +11,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
-import Chip from '@mui/material/Chip'
 import CircularProgress from '@mui/material/CircularProgress'
 import IconButton from '@mui/material/IconButton'
 import Stack from '@mui/material/Stack'
@@ -30,11 +29,38 @@ import { Scene3DView } from '@/panels/run_view/Scene3DPanel'
 /** How often a run that has not started recording is looked for again. */
 const STARTING_POLL_MS = 5_000
 
-function LiveState({ clock }: { clock: PlaybackClock }) {
+/** Width of the column of controls floating over the scene's top-right corner, its margin included;
+ *  the scene's own warnings at the top keep clear of it. */
+const CONTROLS_WIDTH = 40
+
+/** One floating control: opaque enough to read over any scene, and fully so under the pointer. */
+const floating = {
+  bgcolor: 'background.paper',
+  opacity: 0.85,
+  '&:hover': { bgcolor: 'background.paper', opacity: 1 },
+} as const
+
+/** Where the run stands, as a dot: red while the view follows a recording run, grey once the run
+ *  has finished. Nothing while a live view is held back from the edge. */
+function RunState({ clock, live, finished }: { clock: PlaybackClock; live: boolean; finished: boolean }) {
   const { following } = useClock(clock)
-  return following ? (
-    <Chip label="live" size="small" color="error" variant="outlined" sx={{ height: 18 }} />
-  ) : null
+  const state = live && following
+    ? { label: 'live: following the edge of the recording', color: 'error.main' }
+    : finished
+      ? { label: 'finished: showing where the run ended', color: 'text.disabled' }
+      : null
+  if (!state) return null
+  return (
+    <Tooltip title={state.label[0].toUpperCase() + state.label.slice(1)} placement="left">
+      <Box
+        role="status"
+        aria-label={state.label}
+        sx={{ ...floating, borderRadius: '50%', p: '7px', display: 'flex' }}
+      >
+        <Box sx={{ width: 10, height: 10, borderRadius: '50%', bgcolor: state.color }} />
+      </Box>
+    </Tooltip>
+  )
 }
 
 export default function JobRunScene({
@@ -86,46 +112,22 @@ export default function JobRunScene({
     return () => setReset(null)
   }, [])
 
+  const name = `${run.configName} run ${run.runId}`
+
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <Stack direction="row" spacing={0.5} alignItems="center" sx={{ px: 1, minHeight: 32 }}>
-        <Typography variant="caption" color="text.secondary" noWrap sx={{ flexGrow: 1 }}>
-          3D · {run.configName} · run {run.runId}
-        </Typography>
-        {provider?.live ? <LiveState clock={clock} /> : null}
-        {phase === 'finished' ? (
-          <Chip label="finished" size="small" variant="outlined" sx={{ height: 18 }} />
-        ) : null}
-        <Tooltip title="Put the camera back where the scene opened">
-          <span>
-            <IconButton
-              size="small"
-              aria-label="reset 3D view"
-              disabled={!reset}
-              onClick={() => reset?.()}
-            >
-              <CenterFocusStrongRoundedIcon fontSize="small" />
-            </IconButton>
-          </span>
-        </Tooltip>
-        <Tooltip title="Hide the 3D view beside job logs">
-          <IconButton size="small" aria-label="hide 3D view" onClick={onClose}>
-            <CloseRoundedIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
-      </Stack>
       {liveError ? (
-        <Alert severity="error" variant="outlined" sx={{ mx: 1, mb: 1, py: 0 }}>
+        <Alert severity="error" variant="outlined" sx={{ m: 1, py: 0 }}>
           The live stream of this run failed: {liveError}
         </Alert>
       ) : null}
       <Box sx={{ flexGrow: 1, minHeight: 0, position: 'relative' }}>
         {row.isError ? (
-          <Alert severity="warning" variant="outlined" sx={{ m: 1 }}>
+          <Alert severity="warning" variant="outlined" sx={{ m: 1 }} style={{ marginRight: CONTROLS_WIDTH + 8 }}>
             Could not read this run: {(row.error as Error).message}
           </Alert>
         ) : !provider ? (
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ p: 2 }}>
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ p: 2 }} style={{ paddingRight: CONTROLS_WIDTH + 8 }}>
             <CircularProgress size={16} />
             <Typography variant="body2" color="text.secondary">
               {phase === 'starting'
@@ -140,23 +142,50 @@ export default function JobRunScene({
             clock={clock}
             data={provider}
             registerReset={registerReset}
+            reserveRight={CONTROLS_WIDTH}
           />
         )}
-        {/* Over the canvas, top right: the scene's own alerts anchor top left and top centre. A
-            link rather than a handler, so it can also be opened in a new tab. */}
-        <Tooltip title="Open in run view, with every panel of this run" placement="left">
-          <IconButton
-            size="small"
-            aria-label="open in run view"
-            href={runViewHashOf(campaignId, run)}
-            sx={{
-              position: 'absolute', top: 8, right: 8,
-              bgcolor: 'background.paper', opacity: 0.85, '&:hover': { bgcolor: 'background.paper', opacity: 1 },
-            }}
-          >
-            <OpenInFullRoundedIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
+        {/* A column in the top-right corner, over the canvas: the scene's own warnings anchor top
+            left, top centre and bottom left, and those at the top keep clear of it. */}
+        <Stack
+          data-scene-controls
+          spacing={0.5}
+          alignItems="center"
+          style={{ position: 'absolute', top: 8, right: 8 }}
+        >
+          {/* A link rather than a handler, so it can also be opened in a new tab. */}
+          <Tooltip title={`Open ${name} in run view, with every panel of this run`} placement="left">
+            <IconButton
+              size="small"
+              aria-label={`open ${name} in run view`}
+              href={runViewHashOf(campaignId, run)}
+              sx={floating}
+            >
+              <OpenInFullRoundedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Put the camera back where the scene opened" placement="left">
+            <span>
+              <IconButton
+                size="small"
+                aria-label="reset 3D view"
+                disabled={!reset}
+                onClick={() => reset?.()}
+                sx={floating}
+              >
+                <CenterFocusStrongRoundedIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+          <Tooltip title={`Hide the 3D view of ${name} beside job logs`} placement="left">
+            <IconButton size="small" aria-label="hide 3D view" onClick={onClose} sx={floating}>
+              <CloseRoundedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          {provider?.live || phase === 'finished' ? (
+            <RunState clock={clock} live={!!provider?.live} finished={phase === 'finished'} />
+          ) : null}
+        </Stack>
       </Box>
     </Box>
   )

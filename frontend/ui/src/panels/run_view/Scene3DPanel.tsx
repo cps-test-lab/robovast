@@ -77,14 +77,23 @@ interface Mismatch {
  *  scene or that free view, with no orbit camera at all: what the camera panel's `kind: scene` shows.
  *
  *  `registerReset` is where the orbit camera's reset is offered: the run view header's channel
- *  unless the host has its own control for it, as a view outside the run view does. */
+ *  unless the host has its own control for it, as a view outside the run view does.
+ *
+ *  `reserveRight` is a strip, in pixels, along the top of the right edge that the host floats its
+ *  own controls in: the warnings at the top of the view keep clear of it rather than sit under
+ *  them. */
 export function Scene3DView({
   spec,
   clock,
   data,
   look,
   registerReset = registerSceneReset,
-}: PanelProps & { look?: SceneLook; registerReset?: (reset: () => void) => () => void }) {
+  reserveRight = 0,
+}: PanelProps & {
+  look?: SceneLook
+  registerReset?: (reset: () => void) => () => void
+  reserveRight?: number
+}) {
   const sensor = look && 'camera' in look ? look.camera : undefined
   const view = look && 'view' in look ? look.view : undefined
   const viewKey = view ? JSON.stringify(view) : ''
@@ -345,19 +354,22 @@ export function Scene3DView({
   // Only once the scene is loaded can a missing sensor be told from one still on its way.
   const missingSensor = sensor && cameras && !shown ? sensor : null
   const missingKind = cameras?.find((c) => c.name === missingSensor)?.kind
+  // The top edge's warnings stop short of the host's controls; one anchored left keeps its width.
+  const topRight = 8 + reserveRight
+  const topLeftMaxWidth = (w: number) => `min(${w}px, calc(100% - ${8 + topRight}px))`
 
   return (
     <Box sx={{ position: 'relative', width: '100%', height: '100%', bgcolor: CANVAS }}>
       <Box ref={containerRef} sx={{ position: 'absolute', inset: 0 }} />
       {missingBody !== null ? (
-        <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, right: 8 }}>
+        <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, right: topRight }}>
           The view is attached to body <code>{missingBody}</code>, which this run&apos;s scene does
           not have. Bodies it has: <code>{modelRef.current?.bodies.filter(Boolean).slice(0, 12).join(', ')}</code>
           {(modelRef.current?.bodies.length ?? 0) > 12 ? ', …' : ''}.
         </Alert>
       ) : null}
       {missingSensor ? (
-        <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, right: 8 }}>
+        <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, right: topRight }}>
           This run&apos;s scene has no colour camera <code>{missingSensor}</code>
           {missingKind ? ` (its image is ${missingKind}, which a scene render would misstate)` : ''}
           .{' '}
@@ -383,7 +395,7 @@ export function Scene3DView({
         <Alert
           severity="info"
           icon={<CircularProgress size={16} />}
-          sx={{ position: 'absolute', top: 8, left: 8, maxWidth: 560 }}
+          sx={{ position: 'absolute', top: 8, left: 8, maxWidth: topLeftMaxWidth(560) }}
         >
           {buildingText}
           {scene?.world ? (
@@ -415,13 +427,14 @@ export function Scene3DView({
             top: 8,
             left: '50%',
             transform: 'translateX(-50%)',
-            maxWidth: 'min(620px, calc(100% - 16px))',
+            // Centred, so it keeps clear of a strip on the right by staying as far off the left.
+            maxWidth: `min(620px, calc(100% - ${2 * topRight}px))`,
           }}
         >
           No 3D geometry: {resolveError || loadError || scene?.error}
         </Alert>
       ) : scene && !scene.overrides_known ? (
-        <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, maxWidth: 620 }}>
+        <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, maxWidth: topLeftMaxWidth(620) }}>
           {scene.note}
         </Alert>
       ) : null}
