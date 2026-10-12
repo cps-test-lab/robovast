@@ -287,3 +287,17 @@ def _freeze_backend(campaign: Path) -> None:
         "version: 5\nexecution:\n  mode: ros2\n  containers:\n    simulation:\n"
         "      backend: roqsim\n      config: pkg:depot\n      image: harbor/x@sha256:"
         + "a" * 64 + "\n", encoding="utf-8")
+
+
+def test_a_scene_is_sent_as_gltf_whatever_the_platform_knows(client, monkeypatch):
+    """The media type is the service's own answer, not the host's mimetypes table, which may lack
+    ``.glb`` -- then a scene went out as text, plain or compressed."""
+    import mimetypes
+    real = mimetypes.guess_type
+    monkeypatch.setattr(mimetypes, "guess_type", lambda url, strict=True: (
+        (None, None) if str(url).endswith(".glb") else real(url, strict)))
+    client.post(f"/campaigns/{CAMPAIGN}/scene/run", params=QUERY)
+    ready = _wait_ready(client)
+    for encoding in ("identity", "gzip"):
+        response = client.get(ready["url"], headers={"Accept-Encoding": encoding})
+        assert response.headers["content-type"] == "model/gltf-binary", encoding

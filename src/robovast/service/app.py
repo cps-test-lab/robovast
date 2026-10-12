@@ -2274,6 +2274,23 @@ def accepts_encoding(header: str, coding: str) -> bool:
     return weights.get("*", 0.0) > 0
 
 
+#: Media types the platform's ``mimetypes`` table may lack, for files the service serves.
+_MEDIA_TYPES = {".glb": "model/gltf-binary", ".gltf": "model/gltf+json"}
+
+
+def media_type_of(path) -> str:
+    """The media type a served file is sent as; ``application/octet-stream`` when unknown.
+
+    One answer for a file and for its precompressed sibling, which is the same representation
+    under a ``Content-Encoding``.
+    """
+    import mimetypes  # pylint: disable=import-outside-toplevel
+    import os  # pylint: disable=import-outside-toplevel
+    suffix = os.path.splitext(str(path))[1].lower()
+    return (_MEDIA_TYPES.get(suffix) or mimetypes.guess_type(str(path))[0]
+            or "application/octet-stream")
+
+
 def precompressed_response(full_path, accept_encoding: str, *, status_code: int = 200,
                            stat_result=None, headers=None):
     """The file, or the precompressed sibling of it (:data:`PRECOMPRESSED`) the request accepts.
@@ -2284,7 +2301,6 @@ def precompressed_response(full_path, accept_encoding: str, *, status_code: int 
     request.
     """
     # pylint: disable=import-outside-toplevel
-    import mimetypes
     import os
 
     from starlette.responses import FileResponse
@@ -2296,12 +2312,12 @@ def precompressed_response(full_path, accept_encoding: str, *, status_code: int 
                    if accepts_encoding(accept_encoding, coding)), None)
     if chosen is None:
         response = FileResponse(full_path, status_code=status_code, stat_result=stat_result,
-                                headers=headers)
+                                media_type=media_type_of(full_path), headers=headers)
     else:
         coding, sibling = chosen
         response = FileResponse(
             sibling, status_code=status_code, stat_result=os.stat(sibling),
-            media_type=mimetypes.guess_type(full_path)[0] or "text/plain",
+            media_type=media_type_of(full_path),
             headers={**(headers or {}), "Content-Encoding": coding})
     if siblings:
         response.headers["Vary"] = "Accept-Encoding"
