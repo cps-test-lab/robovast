@@ -163,6 +163,88 @@ def test_a_backend_that_cannot_say_is_not_asked(tmp_path, asked):
     assert not asked
 
 
+# -- the query runs where the simulator runs, and a failed check says why ----------------
+
+#: ``roqsim check --json`` over a world whose plugins are not installed where it ran: the report on
+#: stdout, spread over lines, and the exit status of a verdict that failed.
+FAILED_REPORT = json.dumps({
+    "ok": False, "reached": "resolve", "world": {},
+    "problems": [{"stage": "config",
+                  "message": "unknown plugin 'ros2_bridge' (known: floorplan, robot)"}],
+}, indent=2)
+
+
+def test_the_query_runs_in_the_environment_a_run_has(monkeypatch):
+    from robovast.common.execution import run_env_prefix
+
+    specs = []
+
+    def runner(spec, **_kw):
+        specs.append(spec)
+        return _Runner({"depot": {"on_demand": [CAMERA]}}, [])
+
+    monkeypatch.setattr(config_generation, "_make_container_runner", runner)
+    query = QueryBackend().on_demand_streams(StageConfig(stage="depot"), {})
+    config_generation._run_json_query(query, "/tmp", what="the query")
+    assert specs[0].image == "vendor/sim:1"
+    assert specs[0].command_prefix == run_env_prefix()
+
+
+def test_a_local_runner_starts_the_query_through_the_run_environment(monkeypatch, tmp_path):
+    """The argv ``docker run`` gets, and what that argv does when a shell runs it."""
+    from robovast.common.execution import RUN_ENV_NOTE
+    from robovast.common.variation import container_runner
+
+    started = []
+    monkeypatch.setattr(container_runner, "run_with_live_output",
+                        lambda cmd, *_a, **_kw: started.append(cmd))
+    spec = config_generation._query_spec(ContainerSpec(image="vendor/sim:1"))
+    command = ["printf", "%s\n", "/config/world one.yaml", "--json"]
+    container_runner.LocalContainerRunner(spec).run(command)
+    docker = started[0]
+    image = docker.index("vendor/sim:1")
+    assert docker[docker.index("--entrypoint") + 1] == "/bin/bash"
+    in_image = ["/bin/bash"] + docker[image + 1:]
+    assert in_image[-len(command):] == command
+    # The words reach the command unsplit, and the environment step says what it did on
+    # stderr, apart from the stdout a caller parses.
+    ran = subprocess.run(in_image, capture_output=True, text=True, check=True,
+                         env={"PATH": os.environ["PATH"], "ROS_DISTRO": "absent"})
+    assert ran.stdout.splitlines() == ["/config/world one.yaml", "--json"]
+    assert f"{RUN_ENV_NOTE} ROS_DISTRO=absent but /opt/ros/absent/setup.bash is missing" \
+        in ran.stderr
+
+
+class _FailedCheck:
+    """An image whose check of the world fails: the report, then a non-zero exit."""
+
+    def __init__(self, *, through_callback):
+        self._through_callback = through_callback
+
+    def run(self, command, emit):
+        if self._through_callback:
+            for line in FAILED_REPORT.splitlines():
+                emit(line)
+            raise subprocess.CalledProcessError(5, command)
+        from robovast.service.world_query import QueryCommandFailed
+        raise QueryCommandFailed(5, command, output=FAILED_REPORT + "\n")
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("through_callback", [True, False])
+def test_a_failed_check_is_refused_with_the_problem_its_report_states(monkeypatch,
+                                                                     through_callback):
+    monkeypatch.setattr(config_generation, "_make_container_runner",
+                        lambda _spec, **_kw: _FailedCheck(through_callback=through_callback))
+    query = QueryBackend().on_demand_streams(StageConfig(stage="depot"), {})
+    with pytest.raises(RuntimeError,
+                       match=r"the query failed in vendor/sim:1: config: unknown plugin "
+                             r"'ros2_bridge'"):
+        config_generation._run_json_query(query, "/tmp", what="the query")
+
+
 # -- the run's recorder --------------------------------------------------------------------
 
 def test_the_job_is_handed_the_frozen_topics():

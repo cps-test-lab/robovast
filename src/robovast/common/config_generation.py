@@ -461,9 +461,14 @@ def _run_json_query(query, vast_dir, *, what, image_project=None, image_project_
     raises, naming *what* was being asked: a caller holding no answer must not carry on as if
     it held an empty one.
 
+    The command runs in the environment the simulator has in a run (:func:`_query_spec`). A
+    command that fails and prints its report anyway is refused with the report's own
+    ``problems`` (:func:`_report_problems`), so a world that does not load stops the caller
+    with the reason it does not.
+
     *digests* collects ``{container name: digest}`` of the image that answered.
     """
-    runner = _make_container_runner(query.spec, image_project=image_project,
+    runner = _make_container_runner(_query_spec(query.spec), image_project=image_project,
                                     image_project_tag=image_project_tag,
                                     purpose=what)
     if runner is None:
@@ -485,7 +490,9 @@ def _run_json_query(query, vast_dir, *, what, image_project=None, image_project_
         # renders as "returned non-zero exit status N" and nothing else, and the failure this
         # meets most -- an image with no simulator in it, so the exec never starts -- states
         # its reason ONLY on the exception, never through the line callback.
-        spoke = (_command_failure(str(exc.output or "").splitlines())
+        output = lines or str(exc.output or "").splitlines()
+        spoke = (_report_problems(_last_json_line(output) or _last_json_block(output))
+                 or _command_failure(str(exc.output or "").splitlines())
                  or _command_failure(lines))
         raise RuntimeError(
             f"{what} failed in {getattr(query.spec, 'image', '') or 'its image'}: "
@@ -501,6 +508,41 @@ def _run_json_query(query, vast_dir, *, what, image_project=None, image_project_
             f"{what} printed no JSON; its output was: "
             + " | ".join(str(line) for line in lines[-3:]))
     return payload
+
+
+def _query_spec(spec):
+    """*spec*, with its commands run in the environment a run's own processes have.
+
+    A :class:`~robovast.common.simulators.ContainerQuery` asks the image a run uses about the
+    world the run loads, and loading it loads the plugins that environment installs: a ROS
+    simulator's bridge lives in the overlay the run's entrypoint sources. A runner enters an
+    auxiliary container without that entrypoint -- ``docker run --entrypoint``, an exec into a
+    kept-alive container -- so the environment is set up by the command itself
+    (:func:`~robovast.common.execution.run_env_prefix`).
+    """
+    from dataclasses import replace  # pylint: disable=import-outside-toplevel
+
+    from robovast.common.execution import \
+        run_env_prefix  # pylint: disable=import-outside-toplevel
+    return replace(spec, command_prefix=run_env_prefix() + list(spec.command_prefix))
+
+
+def _report_problems(report) -> str:
+    """The problems a failed query's JSON report states, as ``stage: message``; ``""`` if none.
+
+    A query command that fails may still print its report, and the report says why where the
+    last line of output is only its closing brace (:class:`~robovast.common.simulators.ContainerQuery`).
+    """
+    if not isinstance(report, dict):
+        return ""
+    stated = []
+    for problem in report.get("problems") or []:
+        if isinstance(problem, dict) and problem.get("message"):
+            stage = problem.get("stage")
+            stated.append(f"{stage}: {problem['message']}" if stage else str(problem["message"]))
+        elif isinstance(problem, str) and problem:
+            stated.append(problem)
+    return "; ".join(stated)[:2000]
 
 
 def _run_input_files_query(query, vast_dir, *, image_project=None, image_project_tag=None,
@@ -819,7 +861,7 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
         raise WorldQueryUnavailable(
             f"this campaign's world is described by its own built image ({image}), which does "
             "not exist yet -- build the experiment image first")
-    runner = _make_container_runner(query.spec, purpose="the world description")
+    runner = _make_container_runner(_query_spec(query.spec), purpose="the world description")
     if runner is None:
         raise WorldQueryUnavailable("no container runner is available here")
     lines = []

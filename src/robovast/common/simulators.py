@@ -801,6 +801,11 @@ class ContainerQuery:
     the runner mounts the campaign's directory at its own path, so anything under it is a file
     the campaign owns and everything else came with the image.
 
+    The command runs in the environment a run's own processes have (the ROS overlay a run's
+    entrypoint sources), whichever runner starts it. A command that exits non-zero may still
+    print a JSON report; its ``problems`` (``[{"stage": ..., "message": ...}]``) are what the
+    refusal quotes.
+
     *documents* is ``{container path: mapping}`` the query needs mounted as YAML -- an override
     tree, which argv cannot carry. It travels on the query rather than being re-derived by the
     caller, because the path the command names and the path the file is mounted at have to be the
