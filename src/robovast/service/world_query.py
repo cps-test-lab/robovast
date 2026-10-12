@@ -49,6 +49,7 @@ import logging
 import os
 import re
 import shlex
+import subprocess  # nosec B404 - only its CalledProcessError
 import tempfile
 
 from robovast.common.config_channels import SIM, channel
@@ -68,12 +69,18 @@ _STAGE_DIR = "/tmp/robovast-world-query"
 _HEREDOC_EOF = "ROQSIM_QUERY_DOCUMENT_EOF"
 
 
-class QueryCommandFailed(RuntimeError):
-    """The command ran and failed. Carries the output so a caller can read the reason."""
+class QueryCommandFailed(subprocess.CalledProcessError):
+    """The command ran and failed. Carries the output so a caller can read the reason.
 
-    def __init__(self, message: str, output: str = ""):
-        super().__init__(message)
-        self.output = output
+    A :class:`subprocess.CalledProcessError`, as every other runner's failed command is, so a
+    caller reading the reason out of a failed query's output reads it from this one too.
+    """
+
+    def __init__(self, returncode: int, cmd, output: str = ""):
+        super().__init__(returncode, cmd, output=output)
+
+    def __str__(self) -> str:
+        return f"command failed with exit {self.returncode}"
 
 
 class ExecSlotContainerRunner:
@@ -165,8 +172,7 @@ class ExecSlotContainerRunner:
                 progress_update_callback(line)
         if result.exit_code != 0:
             self.command_failed = True
-            raise QueryCommandFailed(
-                f"command failed with exit {result.exit_code}", output=combined)
+            raise QueryCommandFailed(result.exit_code, command, output=combined)
 
     def close(self) -> None:
         import shutil

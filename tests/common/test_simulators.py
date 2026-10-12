@@ -15,6 +15,7 @@ from robovast.common.containers import plan_containers
 from robovast.common.execution import scenario_env
 from robovast.common.simulators import (SHAPE_ROS, SHAPE_STEPPED, SimulatorBackend, apply_backend,
                                         shape_for, simulator_image)
+from robovast.common.variation.container_runner import ContainerSpec
 
 
 class StageConfig(BaseModel):
@@ -57,16 +58,6 @@ class RosOnlyBackend(SimulatorBackend):
 
     def containers(self, cfg, execution):
         return {"simulation": {"image": "gz:harmonic", "command": ["gz", "sim", "-s"]}}
-
-
-class _ContainerSpec:
-    """Only what a query carries: an image, and a name derived from it."""
-
-    def __init__(self, image):
-        self.image = image
-
-    def container_name(self):
-        return "aux-" + self.image.split("/")[-1].split(":")[0]
 
 
 class PanelBackend(StubBackend):
@@ -397,7 +388,7 @@ def test_a_query_that_never_started_reports_what_the_container_said(tmp_path):
         def close(self):
             pass
 
-    query = ContainerQuery(_ContainerSpec("vendor/sim:1"), ["sim", "inputs", "/config/w.yaml"])
+    query = ContainerQuery(ContainerSpec(image="vendor/sim:1"), ["sim", "inputs", "/config/w.yaml"])
     token = cg.set_container_runner_factory(lambda spec: Exploding())
     try:
         with pytest.raises(RuntimeError) as caught:

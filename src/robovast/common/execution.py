@@ -1282,9 +1282,30 @@ def in_run_env(command: str) -> list:
     The notes go to **stderr**, where they join whatever the command says about its own failure
     rather than being mixed into the JSON a caller parses.
     """
-    prelude = (f'{_RUN_ENV_NOTE_FN}() {{ echo "{RUN_ENV_NOTE} $*" >&2; }}\n'
-               f'ROS_SETUP_ANNOUNCE={_RUN_ENV_NOTE_FN}\n')
-    return ["/bin/bash", "-c", f"{prelude}{ROS_SETUP_BLOCK}\n{command}"]
+    return ["/bin/bash", "-c", f"{_run_env_prelude()}\n{command}"]
+
+
+def run_env_prefix() -> list:
+    """argv that runs the argv appended to it in the environment a run's own processes have.
+
+    :func:`in_run_env` for a command that is already argv: a
+    :class:`~robovast.common.variation.container_runner.ContainerSpec` ``command_prefix``, for
+    a question asked of the image a run uses -- a simulator command that loads the world loads
+    the plugins the ROS overlay installs, and an auxiliary container is entered without the
+    entrypoint that sources it. The appended words reach the command as they are (``exec
+    "$@"``), so a runner that rewrites a path argument still finds it as its own word.
+    """
+    return ["/bin/bash", "-c", f'{_run_env_prelude()}\nexec "$@"', RUN_ENV_ARGV0]
+
+
+def _run_env_prelude() -> str:
+    """The note function, the announce seam and :data:`ROS_SETUP_BLOCK`, as shell."""
+    return (f'{_RUN_ENV_NOTE_FN}() {{ echo "{RUN_ENV_NOTE} $*" >&2; }}\n'
+            f'ROS_SETUP_ANNOUNCE={_RUN_ENV_NOTE_FN}\n{ROS_SETUP_BLOCK}')
+
+
+#: ``$0`` of :func:`run_env_prefix`'s shell, so the appended argv is ``$@`` from its first word.
+RUN_ENV_ARGV0 = "robovast-run-env"
 
 
 #: Shell function name the notes go through. Named rather than inlined so the block's

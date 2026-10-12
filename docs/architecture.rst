@@ -311,17 +311,25 @@ Four rules make those answers trustworthy:
   :func:`~robovast.common.simulators.simulator_image` is the one place that decides, because
   :func:`~robovast.common.simulators.apply_backend` applies the same precedence to the *run* and
   a second copy would be free to disagree with it.
+* **In the environment the run has.** Loading a world loads its plugins, and a ROS simulator's
+  bridge is installed in the overlay a run's entrypoint sources. A runner enters a query's
+  container without that entrypoint, so the query's command sets the environment up itself
+  (:func:`~robovast.common.execution.run_env_prefix`, the same setup the entrypoint runs); asked
+  without it, the world the query loads is not the one the run will.
 * **An unanswerable question says so.** ``WorldQueryUnavailable`` names which reason it is -- no
   backend, an unbuilt ``build:<tag>``, no container runner here, a command that failed. A
   pre-check that logged this at debug and carried on would be indistinguishable from a check
   that passed, and a misspelled plugin key would first surface in the container.
 * **Half an answer beats none.** A simulator that exits non-zero having still *printed* a payload
-  answered what it could, and that payload is taken. A world whose model does not compile in the
-  image (a ``*_ros`` world described where the colcon-packaged bridge does not resolve) can still
-  say which plugin keys it has -- that half needs no build -- and discarding the reply would
+  answered what it could, and the world description takes that payload. A world whose model does
+  not compile in the image can still say which plugin keys it has -- that half needs no build -- and discarding the reply would
   cost the campaign a check it could have had. The rule is generic: nothing here knows which half was lost,
   because the simulator says so in the payload's own ``errors``, and each half that goes unchecked
   is warned about by name.
+* **A failed check is refused with its own reason.** A query that must be answered whole -- the
+  input files, the on-demand streams -- stops the caller when its command exits non-zero, and a
+  report the command printed anyway names the reason: each entry of its ``problems`` list
+  (``{stage, message}``) is quoted, rather than the last line of output.
 * **A container runner is not implied.** The query runs a container, and in-cluster a container
   runner exists only *inside* a composition, which creates the aux pod it asks for, so outside one
   the query is refused with that reason rather than quietly running ``docker run`` on the serve host. A standalone aux pod for
