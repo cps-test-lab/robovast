@@ -1198,9 +1198,14 @@ lives in the ``results`` MCP plugin):
   (the current batch's execution units and a job's log). ``list_jobs`` lists the campaign's
   Kubernetes Jobs, whose sim and SUT containers are *native sidecars* in
   ``spec.initContainers``, found via ``cluster_execution.kube_client.pod_workload_containers``.
+  A Job's name is a Kubernetes name and carries no run, so the run a job executes
+  (``JobSummary.config_name`` / ``run_id``) is read off the Job's ``RUN_OUTPUT_DIR``, which the
+  backend stamps on it (``kubernetes_backend.run_of_output_dir``, beside the function that
+  writes it); a client that needs a job's run, or a run's job, reads those two fields.
   ``get_job_log`` is ``ServiceBase``'s (:mod:`robovast.service.job_log`): it reads the job's
   ``logs/system*.log`` files in the campaign directory, which grow while the job runs because
-  the pod's file agent delivers their growth as it happens. It returns **rows** (one per log
+  the pod's file agent delivers their growth as it happens. It takes a listed job or a run's
+  ``<config>/<run>``, resolved through the job-link manifest. It returns **rows** (one per log
   event, every container of the job in one stream) after an opaque cursor, and its SSE stream
   pushes new rows as the files change. The campaign's own log is served the same way by
   ``get_campaign_logs`` (:mod:`robovast.service.campaign_log`): rows after a cursor, read

@@ -529,7 +529,8 @@ export interface paths {
         };
         /**
          * Get Job Log
-         * @description A job's log rows after *cursor*, running or finished.
+         * @description A job's log rows after *cursor*, running or finished. ``job_name`` is a listed
+         *     job or a run's ``<config>/<run>``.
          */
         get: operations["get_job_log_campaigns__campaign_id__job_log_get"];
         put?: never;
@@ -550,7 +551,8 @@ export interface paths {
         /**
          * Stream Job Log
          * @description Server-sent events: one job's log rows as they are written (``Last-Event-ID``
-         *     resumes). A finished job is served too; see ``_sse_rows_stream``.
+         *     resumes). ``job_name`` as for ``get_job_log``. A finished job is served too; see
+         *     ``_sse_rows_stream``.
          */
         get: operations["stream_job_log_campaigns__campaign_id__job_log_stream_get"];
         put?: never;
@@ -3540,11 +3542,14 @@ export interface components {
          * @description One execution unit of a campaign's current batch.
          *
          *     A "job" is whatever the backend fans a batch out into: a **Kubernetes Job** on the
-         *     cluster backend, running one run. ``job_name`` is the id
-         *     :meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional
-         *     human-friendly label (batch/job-index on the cluster).
+         *     cluster backend, running one run. ``job_name`` is the id the job operations take
+         *     (:meth:`RobovastInterface.get_job_log`, :meth:`~RobovastInterface.tap_job`, ...) and names
+         *     the job, not its run; ``config_name`` and ``run_id`` say which run it executes.
+         *     ``display_name`` is an optional human-friendly label (batch/job-index on the cluster).
          */
         JobSummary: {
+            /** Config Name */
+            config_name: string | null;
             /** Detail */
             detail: string | null;
             /** Display Name */
@@ -3558,6 +3563,8 @@ export interface components {
             kind: string;
             /** Node */
             node: string | null;
+            /** Run Id */
+            run_id: number | null;
             /** Started At */
             started_at: number | null;
             /**

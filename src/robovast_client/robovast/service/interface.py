@@ -654,9 +654,10 @@ class JobSummary(BaseModel):
     """One execution unit of a campaign's current batch.
 
     A "job" is whatever the backend fans a batch out into: a **Kubernetes Job** on the
-    cluster backend, running one run. ``job_name`` is the id
-    :meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional
-    human-friendly label (batch/job-index on the cluster).
+    cluster backend, running one run. ``job_name`` is the id the job operations take
+    (:meth:`RobovastInterface.get_job_log`, :meth:`~RobovastInterface.tap_job`, ...) and names
+    the job, not its run; ``config_name`` and ``run_id`` say which run it executes.
+    ``display_name`` is an optional human-friendly label (batch/job-index on the cluster).
     """
 
     job_name: str
@@ -668,6 +669,12 @@ class JobSummary(BaseModel):
     #: older than this field -- which is why a reader must test for the kinds it cares about
     #: (``== "calibration"``) and never for ``!= "run"``.
     kind: str = JobKind.RUN
+    #: The run this job executes, keyed as the campaign's tables key it (``run_view``'s
+    #: ``config_name`` and ``run_id``). Absent for a job that executes none -- a calibration
+    #: probe -- and for one the service cannot tie to its run yet: on the cluster, a job still
+    #: queued for capacity, which has no Kubernetes object to read it from.
+    config_name: Optional[str] = None
+    run_id: Optional[int] = None
     # running | pending | waiting | completed | failed | killed | blocked
     status: str = "pending"
     display_name: Optional[str] = None
@@ -3358,6 +3365,11 @@ class RobovastInterface(ABC):
     @abstractmethod
     def get_job_log(self, campaign_id: str, job_name: str, cursor: str = "") -> JobLogChunk:
         """Return a job's log rows after *cursor*, running or finished.
+
+        *job_name* is a job as :meth:`list_jobs` reports it, or the key ``<config>/<run>`` of
+        one of the campaign's runs, which reads the log of the job that executes that run. The
+        run key is resolved through the campaign's job-link manifest, so it also reads a run's log
+        once its job is no longer listed; it is not a job's name.
 
         Read from the job's ``logs/system*.log`` files in the campaign directory, which grow
         while it runs. Resume with :attr:`JobLogChunk.cursor`; stop at

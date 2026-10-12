@@ -2167,8 +2167,19 @@
         "type": "object"
       },
       "JobSummary": {
-        "description": "One execution unit of a campaign's current batch.\n\nA \"job\" is whatever the backend fans a batch out into: a **Kubernetes Job** on the\ncluster backend, running one run. ``job_name`` is the id\n:meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional\nhuman-friendly label (batch/job-index on the cluster).",
+        "description": "One execution unit of a campaign's current batch.\n\nA \"job\" is whatever the backend fans a batch out into: a **Kubernetes Job** on the\ncluster backend, running one run. ``job_name`` is the id the job operations take\n(:meth:`RobovastInterface.get_job_log`, :meth:`~RobovastInterface.tap_job`, ...) and names\nthe job, not its run; ``config_name`` and ``run_id`` say which run it executes.\n``display_name`` is an optional human-friendly label (batch/job-index on the cluster).",
         "properties": {
+          "config_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Name"
+          },
           "detail": {
             "anyOf": [
               {
@@ -2211,6 +2222,17 @@
             ],
             "title": "Node"
           },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
           "started_at": {
             "anyOf": [
               {
@@ -2239,11 +2261,13 @@
           }
         },
         "required": [
+          "config_name",
           "detail",
           "display_name",
           "job_name",
           "kind",
           "node",
+          "run_id",
           "started_at",
           "status",
           "usage"
@@ -6450,7 +6474,7 @@
     },
     "/campaigns/{campaign_id}/job-log": {
       "get": {
-        "description": "A job's log rows after *cursor*, running or finished.",
+        "description": "A job's log rows after *cursor*, running or finished. ``job_name`` is a listed\njob or a run's ``<config>/<run>``.",
         "operationId": "get_job_log_campaigns__campaign_id__job_log_get",
         "parameters": [
           {
@@ -6512,7 +6536,7 @@
     },
     "/campaigns/{campaign_id}/job-log/stream": {
       "get": {
-        "description": "Server-sent events: one job's log rows as they are written (``Last-Event-ID``\nresumes). A finished job is served too; see ``_sse_rows_stream``.",
+        "description": "Server-sent events: one job's log rows as they are written (``Last-Event-ID``\nresumes). ``job_name`` as for ``get_job_log``. A finished job is served too; see\n``_sse_rows_stream``.",
         "operationId": "stream_job_log_campaigns__campaign_id__job_log_stream_get",
         "parameters": [
           {

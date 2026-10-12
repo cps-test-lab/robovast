@@ -11,9 +11,11 @@ import { robovast, type JobLogRow } from '@/lib/robovastClient'
 import { liveLogNote, parseRowFrame, useLiveLogStream, type LiveLogKind } from './useLiveLogStream'
 import type { LogRow } from './useRunLog'
 
-/** `job_name` is `<config>/<run>`: how the service names the job that executes one run, and the
- *  two fields a run row of the results tree carries, so a run addresses its job with no lookup. */
-export const jobNameOf = (configName: string, runId: number | string) =>
+/** A run's key, `<config>/<run>`: what the job log takes in place of a job's name to read the
+ *  log of the job that executes the run, from the two fields a run row of the results tree
+ *  carries. It is not a job's name, so the job operations that take a listed job (the tap, stop)
+ *  need the job `jobOfRun` finds. */
+export const runKeyOf = (configName: string, runId: number | string) =>
   `${configName}/${runId}`
 
 /** One streamed row in the view's row shape. */
@@ -48,7 +50,8 @@ export const parseFrame = (data: string): LogRow[] => parseRowFrame(JOB_LOG, dat
 export const liveNote = (o: { dropped: number; eof: boolean; state: LiveState }): string =>
   liveLogNote(JOB_LOG, o)
 
-/** Stream one job's log. `jobName` null opens nothing. */
+/** Stream one job's log, by a listed job's name or a run's key (`runKeyOf`). `jobName` null
+ *  opens nothing. */
 export function useJobLogStream(campaignId: string, jobName: string | null) {
   const url = jobName ? robovast.jobLogStreamUrl(campaignId, jobName) : null
   return useLiveLogStream(JOB_LOG, url, `${campaignId}/${jobName ?? ''}`)
