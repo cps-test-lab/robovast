@@ -2240,6 +2240,35 @@ def _ui_dist() -> Optional[Path]:
     return None
 
 
+#: The content codings ``npm run build`` writes beside each compressible file of the web UI
+#: (``frontend/ui/precompress.ts``), by suffix, in the order a response prefers them.
+UI_PRECOMPRESSED = (("br", ".br"), ("gzip", ".gz"))
+
+
+def accepts_encoding(header: str, coding: str) -> bool:
+    """Whether an ``Accept-Encoding`` value admits *coding* (RFC 9110, 12.5.3).
+
+    A coding named with ``q=0`` is refused, and ``*`` stands for every coding the value
+    does not name.
+    """
+    weights = {}
+    for item in header.split(","):
+        name, _, params = item.partition(";")
+        weight = 1.0
+        for param in params.split(";"):
+            key, _, value = param.partition("=")
+            if key.strip().lower() == "q":
+                try:
+                    weight = float(value)
+                except ValueError:
+                    weight = 0.0
+        if name.strip():
+            weights[name.strip().lower()] = weight
+    if coding in weights:
+        return weights[coding] > 0
+    return weights.get("*", 0.0) > 0
+
+
 def _mount_ui(app) -> None:
     """Serve the built SPA (``frontend/ui/dist``) from the service so the UI starts with it.
 
@@ -2259,7 +2288,15 @@ def _mount_ui(app) -> None:
             "`cd frontend/ui && npm run build`, or point ROBOVAST_UI_DIST at a built "
             "copy (an image bakes it in and sets that variable).")
         return
-    from fastapi.staticfiles import StaticFiles  # pylint: disable=import-outside-toplevel
+    # pylint: disable=import-outside-toplevel
+    import mimetypes
+    import os
+
+    from fastapi.staticfiles import StaticFiles
+    from starlette.datastructures import Headers
+    from starlette.responses import FileResponse
+    from starlette.staticfiles import NotModifiedResponse
+    # pylint: enable=import-outside-toplevel
 
     class _CachedUi(StaticFiles):
         """``StaticFiles`` that says how long each response may be reused.
@@ -2285,6 +2322,36 @@ def _mount_ui(app) -> None:
             # above turns that into a 304 with no body.
             response.headers["Cache-Control"] = (
                 self.IMMUTABLE if path.startswith("assets/") else "no-cache")
+            return response
+
+        def file_response(self, full_path, stat_result, scope, status_code=200):
+            """The file, or the precompressed sibling of it the request accepts.
+
+            The sibling is its own representation: its own ``ETag`` and length, the
+            original's media type, ``Content-Encoding`` naming the coding. ``Vary`` goes on
+            every response for a file that has siblings, so a shared cache keeps the
+            representations apart.
+            """
+            siblings = [(coding, f"{full_path}{suffix}") for coding, suffix in UI_PRECOMPRESSED
+                        if os.path.isfile(f"{full_path}{suffix}")]
+            if not siblings:
+                return super().file_response(full_path, stat_result, scope, status_code)
+            request_headers = Headers(scope=scope)
+            accept = request_headers.get("accept-encoding", "")
+            chosen = next(((coding, sibling) for coding, sibling in siblings
+                           if accepts_encoding(accept, coding)), None)
+            if chosen is None:
+                response = FileResponse(full_path, status_code=status_code,
+                                        stat_result=stat_result)
+            else:
+                coding, sibling = chosen
+                response = FileResponse(
+                    sibling, status_code=status_code, stat_result=os.stat(sibling),
+                    media_type=mimetypes.guess_type(str(full_path))[0] or "text/plain",
+                    headers={"Content-Encoding": coding})
+            response.headers["Vary"] = "Accept-Encoding"
+            if self.is_not_modified(response.headers, request_headers):
+                return NotModifiedResponse(response.headers)
             return response
 
     app.mount("/", _CachedUi(directory=str(dist), html=True), name="ui")

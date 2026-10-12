@@ -313,6 +313,63 @@ def test_the_front_routes_the_data_prefix_to_the_data_socket():
     assert "client_max_body_size 0;" in config
 
 
+def _front_config():
+    ms = sd.service_manifests(namespace="default", image="x")
+    cm = next(m for m in ms if m["kind"] == "ConfigMap")
+    return cm["data"][front_deploy.FRONT_CONFIG_KEY]
+
+
+def _gzip_types(block):
+    """The ``gzip_types`` of a block of the rendered config, or ``None`` if it sets none."""
+    import re
+    match = re.search(r"^\s*gzip_types ([^;]*);", block, re.MULTILINE)
+    return set(match.group(1).split()) if match else None
+
+
+def test_the_front_compresses_text_and_leaves_streams_and_compressed_formats_alone():
+    """Compressing an event stream holds events back until a block fills; compressing a
+    PNG, a gzip or a tar costs CPU on both ends for nothing. Both are pinned by type."""
+    config = _front_config()
+    http_block = config[:config.index("server {")]
+    assert "gzip on;" in http_block
+    assert f"gzip_comp_level {front_deploy.GZIP_LEVEL};" in http_block
+    assert "gzip_proxied any;" in http_block
+    assert "gzip_vary on;" in http_block
+    assert f"gzip_min_length {front_deploy.GZIP_MIN_LENGTH};" in http_block
+    types = _gzip_types(http_block)
+    assert {"application/json", "application/javascript", "text/javascript", "text/css",
+            "image/svg+xml", "application/vnd.apache.arrow.stream"} <= types
+    never = {"text/event-stream", "image/png", "image/jpeg", "video/webm", "application/gzip",
+             "application/zstd", "application/x-tar", "application/octet-stream", "text/plain"}
+    assert not types & never
+    # One location adds octet-stream (the scene's, below); none adds anything else of these.
+    widened = [_gzip_types(block) for block in config.split("location ")[1:]]
+    widened = [types for types in widened if types is not None]
+    assert len(widened) == 1
+    assert not widened[0] & (never - {"application/octet-stream"})
+
+
+def test_scene_geometry_is_compressed_and_only_there():
+    """``scene.bin`` is served as octet-stream, like a results file of unknown kind; only
+    the scene descriptor's location adds that type, and it matches both scene routes and
+    nothing else the control plane serves."""
+    import re
+
+    from robovast.service.interface import Routes
+    config = _front_config()
+    location = front_deploy.scene_assets_location()
+    block = config[config.index(f'location ~ "{location}"'):config.index("location / ")]
+    assert "application/octet-stream" in _gzip_types(block)
+    assert _gzip_types(block) >= _gzip_types(config[:config.index("server {")])
+    assert "proxy_pass http://control;" in block
+    pattern = re.compile(location)
+    assert pattern.match(Routes.campaign_scene_asset("c-1", "0123abcd/scene.bin"))
+    assert pattern.match(Routes.workspace_scene_asset("w-1", "0123abcd/scene.json"))
+    assert not pattern.match(Routes.campaign_scene("c-1"))
+    assert not pattern.match("/results/c-1/scene_assets/x.bin")
+    assert not pattern.match(f"{Routes.DATA}/campaigns/c-1/scene_assets/x")
+
+
 def test_deploy_context_stamped_into_service_env():
     # Per-cluster resource lists are keyed by kubeconfig context name; in-cluster
     # there is no kubeconfig, so deploy records the context for the in-pod driver.

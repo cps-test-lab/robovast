@@ -91,6 +91,9 @@ DATA_RESOURCES = {
 #:   what lets a chunked upload pass through unchanged.
 #: * ``X-Forwarded-*`` -- the control plane trusts these from the front only
 #:   (``_proxy_trust``), which is how a session cookie learns it is behind TLS.
+#: * ``gzip`` -- the front compresses what the control plane and the data plane answer
+#:   uncompressed, for the types in :data:`GZIP_TYPES`; see there for what is left out
+#:   and why.
 FRONT_CONFIG = """\
 worker_processes 1;
 error_log /dev/stderr warn;
@@ -104,6 +107,12 @@ http {{
     fastcgi_temp_path /tmp/fastcgi;
     uwsgi_temp_path /tmp/uwsgi;
     scgi_temp_path /tmp/scgi;
+    gzip on;
+    gzip_comp_level {gzip_level};
+    gzip_min_length {gzip_min_length};
+    gzip_proxied any;
+    gzip_vary on;
+    gzip_types {gzip_types};
     upstream control {{ server unix:{service_socket}; keepalive 16; }}
     upstream data {{ server unix:{data_socket}; keepalive 16; }}
     server {{
@@ -120,7 +129,19 @@ http {{
             proxy_read_timeout 3600s;
             proxy_send_timeout 3600s;
         }}
+        location ~ "{scene_assets}" {{
+            gzip_types {gzip_types} {scene_gzip_types};
+{control_proxy}
+        }}
         location / {{
+{control_proxy}
+        }}
+    }}
+}}
+"""
+
+#: How a request reaches the control plane, the same from every location that routes there.
+CONTROL_PROXY = """\
             proxy_pass http://control;
             proxy_http_version 1.1;
             proxy_set_header Connection "";
@@ -129,18 +150,65 @@ http {{
             proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
             proxy_buffering off;
             proxy_read_timeout 3600s;
-            proxy_send_timeout 3600s;
-        }}
-    }}
-}}
-"""
+            proxy_send_timeout 3600s;"""
+
+#: What the front compresses: the text the API and the web UI answer with (JSON, CSV, the
+#: scripts and styles of a panel bundle, SVG) and Arrow IPC streams, which the service
+#: writes without buffer compression. ``text/html`` nginx compresses whenever ``gzip`` is
+#: on. Left out on purpose:
+#:
+#: * ``text/event-stream`` -- a compressor holds bytes back until its block fills, so an
+#:   event would reach the browser late or not at all while the stream is quiet.
+#: * Formats that are compressed already (PNG, JPEG, video, ``application/gzip``, a bag's
+#:   chunks) -- a second pass costs CPU on both ends and saves nothing.
+#: * ``application/octet-stream`` and ``text/plain`` in general -- the types a results
+#:   file of unknown kind is served as, which is as often a compressed recording as
+#:   anything; and ``application/x-tar``, the data plane's bulk streams, where a
+#:   compressor on the front's one worker would cap the transfer rate.
+#:
+#: A response that already names a ``Content-Encoding`` -- the web UI's precompressed
+#: bundle -- passes through untouched. A ``206`` is never compressed, so a range request
+#: still resumes a download. Compressing a response turns its strong ``ETag`` weak, which
+#: revalidation still matches.
+GZIP_TYPES = ("application/json", "application/javascript", "text/javascript", "text/css",
+              "text/csv", "image/svg+xml", "application/vnd.apache.arrow.stream")
+
+#: Added for a cached scene descriptor (:func:`scene_assets_location`): its geometry is
+#: ``scene.bin``, raw vertex and index arrays that compress to about a quarter, and the
+#: largest single file the run view loads.
+SCENE_GZIP_TYPES = ("application/octet-stream",)
+
+#: Level 5 of zlib's 1-9: on scene geometry and large JSON it comes within about one per
+#: cent of 6 and 9 for roughly three quarters and half of their CPU, and is some seven per
+#: cent smaller than 1. A scene's files are compressed once per browser, since they are
+#: cached for good. ``gzip_min_length`` skips the bodies where the header and a decode cost
+#: more than they save.
+GZIP_LEVEL = 5
+GZIP_MIN_LENGTH = 1024
+
+
+def scene_assets_location() -> str:
+    """The paths of a cached scene descriptor's files, a campaign's and a project's, as the
+    nginx regular expression of a ``location``."""
+    import re  # pylint: disable=import-outside-toplevel
+
+    from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
+    placeholder = "ID"
+    prefixes = (Routes.campaign_scene_asset(placeholder, ""),
+                Routes.workspace_scene_asset(placeholder, ""))
+    return "^(" + "|".join(re.escape(p).replace(placeholder, "[^/]+") for p in prefixes) + ")"
 
 
 def front_config(port: int) -> str:
     """The rendered nginx configuration for a front on *port*."""
     from robovast.service.interface import Routes  # pylint: disable=import-outside-toplevel
     return FRONT_CONFIG.format(port=port, service_socket=SERVICE_SOCKET,
-                               data_socket=DATA_SOCKET, data_prefix=Routes.DATA)
+                               data_socket=DATA_SOCKET, data_prefix=Routes.DATA,
+                               control_proxy=CONTROL_PROXY,
+                               gzip_level=GZIP_LEVEL, gzip_min_length=GZIP_MIN_LENGTH,
+                               gzip_types=" ".join(GZIP_TYPES),
+                               scene_gzip_types=" ".join(SCENE_GZIP_TYPES),
+                               scene_assets=scene_assets_location())
 
 
 def front_configmap_manifest(namespace: str, port: int) -> dict:
