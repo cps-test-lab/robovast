@@ -60,6 +60,9 @@ function vendorChunk(id: string): string | undefined {
     return 'react'
   }
   if (!id.includes('node_modules')) return undefined
+  // three's add-ons stay with what imports them: the glTF loader and its decoders are imported
+  // dynamically by the scene loader, so they load with the first scene and not with the app.
+  if (id.includes('node_modules/three/examples/')) return undefined
   for (const [chunk, packages] of Object.entries(VENDOR_CHUNKS)) {
     // Match the package directory, not a bare substring: 'three' would otherwise also
     // capture anything with 'three' in its path.

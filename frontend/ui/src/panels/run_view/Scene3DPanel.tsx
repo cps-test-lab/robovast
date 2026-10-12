@@ -2,8 +2,8 @@
 //
 // It reads two things, and nothing else:
 //
-//   * the **scene** descriptor (`scene.json`/`scene.bin`) -- the geometry: a body tree with rest
-//     transforms and named joints. Static per *world*, so it is not a per-run artifact and is not
+//   * the **scene** (one glTF file) -- the geometry: a body tree with named joints, sensor cameras
+//     and the world's initial view. Static per *world*, so it is not a per-run artifact and is not
 //     shipped by every campaign: the service compiles it on demand, in the campaign's own image, the
 //     first time somebody opens a 3D view, and caches it by world identity. The panel asks
 //     `GET /campaigns/{id}/scene`, POSTs once if nothing is cached, and loads the URL it is handed.
@@ -27,7 +27,7 @@
 // its own is a complete panel.
 //
 // `Scene3DView` with a `look` is the camera panel's `kind: scene`: the same replay, shown through a
-// camera the descriptor places on a body or a free view the panel places (lib/scene3d/sceneCameras.ts)
+// camera the scene places on a body or a free view the panel places (lib/scene3d/sceneCameras.ts)
 // instead of the orbit camera -- rendered from the geometry and poses this view loads anyway, so
 // nothing is stored for it. The scene3d panel itself is always the free orbit view.
 
@@ -173,9 +173,9 @@ export function Scene3DView({
     }
   }, [])
 
-  // Resolving a descriptor is the same protocol in both scene panels, so it is one hook.
+  // Resolving a scene is the same protocol in both scene panels, so it is one hook.
   // Two distinct failures, kept apart: `resolveError` is the service refusing or failing to build
-  // the descriptor, `loadError` is bytes that arrived and would not parse. Both mean "no geometry",
+  // the scene, `loadError` is bytes that arrived and would not parse. Both mean "no geometry",
   // but only one of them is worth retrying.
   const [loadError, setLoadError] = useState<string | null>(null)
   const {
@@ -368,7 +368,7 @@ export function Scene3DView({
           ) : (
             <>
               It places no colour camera: a camera view needs the simulator&apos;s scene export to
-              place its camera sensors (see the scene descriptor in the simulator documentation).
+              place its camera sensors (see the scene contract in the simulator documentation).
             </>
           )}
         </Alert>

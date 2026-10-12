@@ -33,7 +33,7 @@ export interface MotionRange {
 export interface MotionTrack {
   kind: 'joint' | 'pose'
   /** The name this track drives -- a joint name for `joint`, a body name for `pose`, as the scene
-   *  descriptor spells them. Names are the whole addressing scheme: no indices cross the interface. */
+   *  spells them. Names are the whole addressing scheme: no indices cross the interface. */
   name: string
   /** Physical unit of a `joint` value (`rad` / `m`), when the producer states one. */
   unit?: string
@@ -46,7 +46,7 @@ export interface MotionMeta {
   /** The world this motion was recorded from. Naming it is what makes a mismatch reportable. */
   world?: string
   seed?: number | null
-  /** The frame poses are expressed in. `world` matches the scene descriptor's geometry 1:1; anything
+  /** The frame poses are expressed in. `world` matches the scene's geometry 1:1; anything
    *  else (a `map` frame, say) can be metres away and is indistinguishable from the numbers alone. */
   frame?: string
   /** `sim` = seconds of simulated time from the run's start; `wall` = wall-clock. Declared so a

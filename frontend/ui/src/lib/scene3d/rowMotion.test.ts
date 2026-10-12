@@ -55,7 +55,7 @@ describe('a finished run', () => {
     const s = sink()
     source.apply(source.indexAt(1.4), s)
     expect(s.joints.wheel).toBeCloseTo(0.2)
-    // Position, then the quaternion in the descriptor's wxyz order.
+    // Position, then the quaternion in the scene's wxyz order.
     expect(s.poses.base).toEqual([1, 0, 0, 1, 0, 0, 0])
     expect(s.poses.prop).toEqual([9, 0, 0, 1, 0, 0, 0])
   })

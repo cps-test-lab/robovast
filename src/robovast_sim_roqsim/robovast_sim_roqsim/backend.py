@@ -13,8 +13,8 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from robovast.client.safe_path import UnsafePathError, check_relative
 from robovast.common.execution import IPC_DIR, MEMBER_ROQSIM, family_image_ref
-from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER, SHAPE_ROS, SHAPE_STEPPED,
-                                        SIM_OVERRIDES_MOUNT, SIM_QUERY_OVERRIDES_MOUNT,
+from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER, SCENE_FILE, SHAPE_ROS,
+                                        SHAPE_STEPPED, SIM_OVERRIDES_MOUNT, SIM_QUERY_OVERRIDES_MOUNT,
                                         SIMULATION_CONTAINER, ContainerQuery, SimulatorBackend,
                                         shape_for, simulator_image)
 from robovast.common.variation.container_runner import ContainerSpec
@@ -435,7 +435,10 @@ class RoqsimBackend(SimulatorBackend):
 
     def scene_export(self, cfg, execution: dict, *, world: str, max_tex_dim: int,
                      overrides: dict, overrides_file: Optional[str] = None) -> str:
-        """``roqsim-export-web``, roqsim's own exporter, run in roqsim's own image.
+        """``roqsim export gltf``, roqsim's own exporter, run in roqsim's own image.
+
+        Compressed for the browser: vertex and index data with ``EXT_meshopt_compression`` and
+        every image as WebP, which the run view's loader decodes.
 
         *world* is passed through as the recording names it -- a package ref, or the
         ``/config/...`` path a campaign file had in the job, which RoboVAST reproduces for
@@ -453,8 +456,9 @@ class RoqsimBackend(SimulatorBackend):
         recorded overrides travel.
         """
         override_arg = f" --override {overrides_file}" if overrides_file else ""
-        return (f"roqsim-export-web --world {world}{override_arg} --out {{out}} "
-                f"--max-tex-dim {int(max_tex_dim)} --manifest {{out}}/.generated.json")
+        return (f"roqsim export gltf --world {world}{override_arg} --out {{out}}/{SCENE_FILE} "
+                f"--meshopt --texture-format webp --max-tex-dim {int(max_tex_dim)} "
+                f"--manifest {{out}}/.generated.json")
 
     def run_state_file(self, cfg, execution: dict) -> str:
         """The recording :meth:`env` asks every run to write.
@@ -551,7 +555,7 @@ def _set_arg(key: str, value) -> str:
     runs through ``shlex.split``. A vector-valued override -- ``components.parcel.pos: [11.8,
     4.55, 0.762]``, i.e. exactly what a campaign that sweeps a position records -- renders as
     ``[11.8, 4.55, 0.762]`` and was torn into three argv words at those spaces, so
-    ``roqsim-export-web`` got ``--set components.parcel.pos=[11.8,`` plus two stray arguments and
+    the exporter got ``--set components.parcel.pos=[11.8,`` plus two stray arguments and
     exited 2. The failure surfaces only when somebody opens the run view, and only for a
     world whose overrides contain a list, so it reads as "this campaign has no 3D geometry"
     rather than as a quoting bug.

@@ -506,4 +506,6 @@ unstamped
 undecodable
 unwritable
 glTF
+meshopt
+WebP
 letterboxed

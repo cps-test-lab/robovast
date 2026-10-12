@@ -48,8 +48,7 @@ def stages(tmp_path, monkeypatch):
         seen.append(scene_cache.current_stage(KEY)[0])
         out = Path(scene_cache.entry_dir(KEY))
         out.mkdir(parents=True, exist_ok=True)
-        (out / "scene.json").write_text("{}", encoding="utf-8")
-        (out / "scene.bin").write_bytes(b"x")
+        (out / "scene.glb").write_bytes(b"glTF")
 
     monkeypatch.setattr("robovast.common.input_generation.run_input_generators", run)
     return seen

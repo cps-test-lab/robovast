@@ -1,8 +1,8 @@
 // Shared-candidate code: this file imports only 'three' / 'three/addons' and its siblings in this
 // directory -- keep it free of robovast imports (see README.md here).
 //
-// A plain-three viewport for the scene descriptor: renderer + camera + lights + ground grid +
-// orbit controls + the Z-up wrapper group (the descriptor is Z-up like ROS; the wrapper rotates it
+// A plain-three viewport for the scene: renderer + camera + lights + ground grid +
+// orbit controls + the Z-up wrapper group (the scene is Z-up like ROS; the wrapper rotates it
 // -PI/2 about X into three's Y-up -- sceneLoader's skin binding relies on exactly this rotation).
 // Hosts mount it into a container element, hand it the loader's scene root, and animate through
 // the loader's imperative API (jointMap/basePose); the viewport just renders continuously.
@@ -38,7 +38,7 @@ import { dollyToCursor } from './cursorDolly'
 import { MIN_PIVOT_M, frameObject, measureDepth, pickObject, retargetPivot } from './pivot'
 import { letterbox, type SceneCamera } from './sceneCameras'
 
-/** The descriptor's optional baked initial camera (a MuJoCo free camera, Z-up world frame). */
+/** The scene's optional baked initial camera (a MuJoCo free camera, Z-up world frame). */
 export interface SceneViewSpec {
   lookat?: number[]
   distance?: number
@@ -55,7 +55,7 @@ export interface ViewportOptions {
 // The Z-up -> Y-up wrapper rotation; also used to bring the (Z-up) camera spec into three coords.
 const UP_MATRIX = new Matrix4().makeRotationX(-Math.PI / 2)
 
-// Floor for the assumed scene extent, matching the ground grid: a descriptor holding one small robot
+// Floor for the assumed scene extent, matching the ground grid: a scene holding one small robot
 // should still see the grid it stands on, and an empty one has no bounds to measure at all.
 const MIN_SCENE_RADIUS_M = 20
 
@@ -77,7 +77,7 @@ const LETTERBOX = new Color(0x000000)
 const FOCUS_MS = 260
 
 /**
- * How far below z=0 to sink the ground grid so a descriptor's floor plane hides it, when the plane
+ * How far below z=0 to sink the ground grid so a scene's floor plane hides it, when the plane
  * the two share is `viewDistance` metres from the camera.
  *
  * A fixed millimetre does not do it. A 24-bit depth buffer resolves roughly z^2 / (near * 2^24)
@@ -139,7 +139,7 @@ export class SceneViewport {
   private sceneRadius = MIN_SCENE_RADIUS_M
   private sceneCenter = new Vector3()
   // The view last framed, so `resetView` has a home to return to. It starts as the empty spec the
-  // constructor frames with, which is exactly where a descriptor carrying no baked camera stands.
+  // constructor frames with, which is exactly where a scene carrying no baked camera stands.
   private view: SceneViewSpec = {}
   private onWheel: (event: WheelEvent) => void
   private onPointerDown: (event: PointerEvent) => void
@@ -180,7 +180,7 @@ export class SceneViewport {
     fill.position.set(-2.2, 2.0, -1.8)
     this.scene.add(fill)
 
-    // Ground grid below z=0, so a descriptor's floor plane covers it rather than fighting it; how
+    // Ground grid below z=0, so a scene's floor plane covers it rather than fighting it; how
     // far below is a function of where the camera is (updateGridDepth, every frame).
     this.grid = new GridHelper(
       40,
@@ -201,7 +201,7 @@ export class SceneViewport {
     // Drag bindings stay OrbitControls'; its dolly does not, because shrinking the orbit radius
     // stalls the wheel a short way from the pivot -- cursorDolly.ts flies instead.
     this.controls.enableZoom = false
-    this.setView({}) // sane default until the descriptor's baked view arrives
+    this.setView({}) // sane default until the scene's baked view arrives
 
     // Native listener, non-passive: a passive one cannot preventDefault, and without that the wheel
     // scrolls the page under the panel instead of moving the camera.
@@ -372,7 +372,7 @@ export class SceneViewport {
     else this.sceneCenter.set(0, 0, 0)
   }
 
-  /** Frame the camera per the descriptor's baked view (or defaults for missing fields). */
+  /** Frame the camera per the scene's baked view (or defaults for missing fields). */
   setView(view: SceneViewSpec): void {
     this.view = view
     const { position, target } = cameraFromView(view)
@@ -383,7 +383,7 @@ export class SceneViewport {
     this.controls.update()
   }
 
-  /** Put the camera back where the scene opened -- the descriptor's baked view, or the default one.
+  /** Put the camera back where the scene opened -- the scene's baked view, or the default one.
    *
    *  The way *out* of a lost view, and it exists because there is no way back by hand: the wheel
    *  flies rather than orbiting, so a few notches at a wall can leave the camera inside geometry or

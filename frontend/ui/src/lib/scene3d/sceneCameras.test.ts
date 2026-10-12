@@ -1,4 +1,4 @@
-// Sensor cameras from a scene descriptor: what is read, what is refused, and that a loaded camera
+// Sensor cameras from a scene: what is read, what is refused, and that a loaded camera
 // looks where the sensor looked and follows its body.
 import { MathUtils, Vector3 } from 'three'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -14,9 +14,10 @@ import {
   viewpoints,
   type SceneCameraEntry,
 } from './sceneCameras'
+import { fetchOf, gltfScene } from './gltfFixture'
 import { loadScene } from './sceneLoader'
 
-const URL_ = '/campaigns/c/scene_assets/k/scene.json'
+const URL_ = '/campaigns/c/scene_assets/k/scene.glb'
 
 /** A camera mounted the way a forward-looking robot camera is: MuJoCo's `xyaxes="0 -1 0 0 0 1"`,
  *  image right = body -y, image up = body +z, so it looks along the body's +x. */
@@ -33,28 +34,23 @@ const ENTRY: SceneCameraEntry = {
   height: 240,
 }
 
-const DESCRIPTOR = {
-  format: 'roqsim.web_scene',
-  version: 1,
-  up: 'z',
-  bodies: [
-    { name: 'world', parent: 0, pos: [0, 0, 0], quat: [1, 0, 0, 0] },
-    { name: 'base_link', parent: 0, pos: [0, 0, 0], quat: [1, 0, 0, 0] },
-  ],
-  joints: [],
-  initialJoints: {},
-  geoms: [],
-  meshes: [],
-  materials: [],
-  textures: [],
-  cameras: [ENTRY, { ...ENTRY, name: 'robot.depth', kind: 'depth' }],
-}
+/** A scene with ENTRY, and a depth camera beside it, as camera nodes on the node of base_link. */
+const xyzw = ([w, x, y, z]: number[]) => [x, y, z, w] as [number, number, number, number]
+const camera = (name: string, kind: string) => ({
+  sensor: name, body: ENTRY.body, translation: ENTRY.pos, rotation: xyzw(ENTRY.quat),
+  perspective: ENTRY.perspective, kind, width: ENTRY.width, height: ENTRY.height,
+})
+const SCENE = gltfScene(
+  [{ name: 'world', parent: 0 }, { name: 'base_link', parent: 0 }],
+  undefined,
+  [camera(ENTRY.name, 'rgb'), camera('robot.depth', 'depth')],
+)
 
 const close = (a: Vector3, b: [number, number, number]) =>
   a.toArray().forEach((v, i) => expect(v).toBeCloseTo(b[i], 9))
 
 describe('parseSceneCameras', () => {
-  it('reads no cameras from a descriptor that places none', () => {
+  it('reads no cameras from a scene that places none', () => {
     expect(parseSceneCameras(undefined, 2, URL_)).toEqual([])
   })
 
@@ -133,11 +129,7 @@ describe('loadScene cameras', () => {
 
   it('puts each camera on its body, where it follows the body', async () => {
     vi.stubGlobal('window', { location: { href: 'http://example.test/' } })
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      json: async () => DESCRIPTOR,
-      arrayBuffer: async () => new ArrayBuffer(0),
-    })))
+    vi.stubGlobal('fetch', vi.fn(fetchOf(SCENE)))
     const model = await loadScene(URL_)
     expect(model.cameras.map((c) => [c.name, c.kind])).toEqual([
       [ENTRY.name, 'rgb'],
@@ -190,11 +182,7 @@ describe('free view', () => {
 
   it('attached to a body, follows it as the body is posed', async () => {
     vi.stubGlobal('window', { location: { href: 'http://example.test/' } })
-    vi.stubGlobal('fetch', vi.fn(async () => ({
-      ok: true,
-      json: async () => DESCRIPTOR,
-      arrayBuffer: async () => new ArrayBuffer(0),
-    })))
+    vi.stubGlobal('fetch', vi.fn(fetchOf(SCENE)))
     const model = await loadScene(URL_)
     expect(model.frameNode('nope')).toBeUndefined()
     expect(model.frameNode()?.name).toBe('world')
