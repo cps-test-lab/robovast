@@ -45,7 +45,7 @@ import { CollapsibleBox } from './CollapsibleBox'
 import { DetailsBox } from './DetailsBox'
 import { FactRows, HoverFacts } from './HoverFacts'
 import { LiveCampaignLog } from './runLog/LiveCampaignLog'
-import { LiveJobLog } from './runLog/LiveJobLog'
+import { JobLogWithScene } from './runLog/JobLogWithScene'
 import { MeterBar } from './MeterBar'
 
 // The upload-to-share bar, shown only while the campaign is in the `sharing` phase.
@@ -1210,10 +1210,9 @@ function JobRow({
   }
   return (
     <CollapsibleBox {...header} open={open} onToggle={onToggle}>
-      {/* A fixed height: the log view fills its parent and windows its rows against it. */}
-      <Box sx={{ height: 320, display: 'flex', flexDirection: 'column' }}>
-        <LiveJobLog campaignId={campaignId} jobName={job.job_name} />
-      </Box>
+      {/* A fixed height: the log view fills its parent and windows its rows against it, and the
+          run's 3D view beside it takes the same. */}
+      <JobLogWithScene campaignId={campaignId} job={job} height={320} />
     </CollapsibleBox>
   )
 }

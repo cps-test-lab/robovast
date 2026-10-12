@@ -18,12 +18,12 @@ import type { JobSummary } from './robovastClient'
  * server always serializes them -- but a service older than the field sends none at all, so the
  * value is `undefined` at runtime there. Written the other way round, every job of every older
  * deployment would render as a probe. Open vocabulary either way: an unfamiliar kind is not one. */
-export function isCalibrationJob(job: JobSummary): boolean {
+export function isCalibrationJob(job: Pick<JobSummary, 'kind'>): boolean {
   return job.kind === 'calibration'
 }
 
 /** Whether a row is something the campaign is doing other than one of its trials. */
-export function isNonRunJob(job: JobSummary): boolean {
+export function isNonRunJob(job: Pick<JobSummary, 'kind'>): boolean {
   return isCalibrationJob(job)
 }
 
