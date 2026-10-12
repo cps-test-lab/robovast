@@ -10,6 +10,12 @@ format or a version newer than `SCENE_VERSION`, naming both, and reads an unstam
 - `sceneLoader.ts` — descriptor → three.js `Group`, plus an imperative animation API:
   `jointMap[name](value)` for hinge/slide joints and `basePose(body, pos, quat)` for world-frame
   body poses.
+- `sceneCameras.ts` — the descriptor's `cameras`: sensor cameras as glTF perspective cameras on
+  their bodies (`docs/simulators.rst`, "Camera sensors"), each built into a three
+  `PerspectiveCamera` parented to its body's node; `viewport.ts`'s `setViewpoint` renders through
+  one, letterboxed to the sensor's shape. `parseFreeView`/`buildFreeCamera` make the same kind of
+  camera from a position and a look-at point, in the world's frame or a body's. Used by the camera
+  panel's `kind: scene` only; the `scene3d` panel stays on the orbit camera.
 - `motionSource.ts` — what a run's *motion* looks like to a viewer: a time base plus named joint
   and pose tracks, pushed into the scene model as the sink. `rowMotion.ts` is the source over a
   run's `sim_poses` / `joint_states` rows, windowed around the clock and paged at the query's row

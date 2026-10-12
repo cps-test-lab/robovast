@@ -36,6 +36,7 @@ import {
   type Bone,
   type Texture,
 } from 'three'
+import { buildSceneCamera, parseSceneCameras, type SceneCamera } from './sceneCameras'
 
 interface BinRef {
   off: number
@@ -146,6 +147,8 @@ interface SceneDescriptor {
   // The world's authored initial camera (a MuJoCo free camera, Z-up world frame), baked by the
   // exporter so any viewer frames the scene the way the world author intended.
   view?: { lookat?: number[]; distance?: number; azimuth?: number; elevation?: number }
+  // Sensor cameras on their bodies (sceneCameras.ts); absent in a descriptor that places none.
+  cameras?: unknown
 }
 
 export interface SceneModel {
@@ -160,6 +163,11 @@ export interface SceneModel {
   joints: string[]
   /** The descriptor's baked initial camera, passed through verbatim (absent when unauthored). */
   view?: SceneDescriptor['view']
+  /** The sensor cameras the descriptor places, each a child of its body's node (sceneCameras.ts). */
+  cameras: SceneCamera[]
+  /** The node of the body named *body*, or of the world body without one -- what a viewer-placed
+   *  camera is parented to so it is posed in that frame. `undefined` for a name the scene lacks. */
+  frameNode: (body?: string) => Object3D | undefined
   /**
    * Seat a body at a **world** pose, in the descriptor frame -- from a run capture's pose track or a
    * /tf transform. Works for any body: the pose is composed with the inverse of the parent's
@@ -551,6 +559,7 @@ export async function loadScene(sceneUrl: string): Promise<SceneModel> {
     return r.json() as Promise<SceneDescriptor>
   })
   checkSceneFormat(scene, sceneUrl)
+  const cameraEntries = parseSceneCameras(scene.cameras, scene.bodies.length, sceneUrl)
   const bin = await binRequest
 
   const loader = new TextureLoader()
@@ -632,6 +641,13 @@ export async function loadScene(sceneUrl: string): Promise<SceneModel> {
     mesh.receiveShadow = true
     nodes[geom.body].add(mesh)
   }
+
+  // Sensor cameras ride their body's node at the mount pose, so they follow it as poses play.
+  const cameras = cameraEntries.map((entry) => {
+    const sceneCamera = buildSceneCamera(entry)
+    nodes[entry.body].add(sceneCamera.camera)
+    return sceneCamera
+  })
 
   // jointMap: recompute the joint's body local matrix = rest * jointMotion(value). Multiple joints
   // on one body compose in declaration order (only relevant for compound joints; the arm is 1/body).
@@ -750,6 +766,12 @@ export async function loadScene(sceneUrl: string): Promise<SceneModel> {
     joints: Object.keys(jointMap),
     basePose,
     view: scene.view,
+    cameras,
+    frameNode: (body?: string) => {
+      if (body === undefined) return nodes[0]
+      const i = bodyIndexByName.get(body)
+      return i == null ? undefined : nodes[i]
+    },
     reset: seatHome,
     dispose: () => {
       disposeSceneGraph(root)
