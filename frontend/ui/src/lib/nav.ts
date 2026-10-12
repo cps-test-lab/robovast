@@ -23,6 +23,15 @@ export function openResultsView(
   campaignId: string,
   sel: ResultsSel = { level: 'campaign' },
 ): void {
+  window.location.hash = resultsViewHash(view, campaignId, sel)
+}
+
+/** The address `openResultsView` goes to, for a link that is rendered rather than clicked. */
+export function resultsViewHash(
+  view: ResultsViewId,
+  campaignId: string,
+  sel: ResultsSel = { level: 'campaign' },
+): string {
   const nav: Nav = {
     topicId: 'results',
     viewId: view,
@@ -36,7 +45,7 @@ export function openResultsView(
     openCampaign: '',
     listSort: DEFAULT_CAMPAIGN_SORT,
   }
-  window.location.hash = `#${hashFor(nav)}`
+  return `#${hashFor(nav)}`
 }
 
 /** Open the Config view on a campaign's frozen `_config/`, read-only.

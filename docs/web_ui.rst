@@ -154,6 +154,17 @@ here by what they do:
   simulator and the system under test have their own containers and a failure is only legible
   when their output is read against the scenario's. The rows come from the job's log files in
   the campaign as they are written, so a finished job opens the same way.
+  Where the campaign's run view has a :ref:`3D scene <scene3d-panel>` -- declared, or
+  contributed by a simulator backend that records scene state -- the job's log has **the run's
+  3D view beside it**, on the right and the same height: the run view's scene panel with its
+  free orbit camera, following the edge of the recording as the log follows its newest line.
+  A job whose run has not started recording says so until it does, and a run that has finished
+  stays on where it ended. The **open in run view** button in the scene's top-right corner opens
+  that run in the :ref:`run view <run-view>` with all of its panels, following it there too
+  while it records. The 3D view is loaded only while the log is open and stops its stream when
+  the log closes, and nothing is stored for it. Its close button folds it into a narrow strip
+  whose button brings it back, and this browser remembers which you chose; on a narrow window
+  the log keeps the whole width. A campaign with no 3D scene shows the log alone.
   On the cluster, every placed row also names **the node its pod landed on**, as a coloured
   chip. The name is the information and the colour only a scanning aid -- one machine is one
   colour down the whole list, so a batch that has piled onto a single node is visible without
