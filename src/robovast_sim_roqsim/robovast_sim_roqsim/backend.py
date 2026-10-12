@@ -294,6 +294,52 @@ class RoqsimBackend(SimulatorBackend):
         """
         return {"table": "sim_poses", "entity_kind": "robot"}
 
+    def on_demand_streams(self, cfg, execution: dict):
+        """``roqsim check --json``, in the image this campaign runs, with its overrides.
+
+        Which streams a world has, under which topic, whether each is read only while
+        subscribed (``lazy``) and what it costs to produce (``cost``) is settled only once the
+        world is loaded with this configuration's overrides, and ``roqsim check`` reports each
+        endpoint with exactly those. :meth:`on_demand_from_reply` reads the report.
+        """
+        command = ["roqsim", "check", _config_in_container(cfg.config), "--json"]
+        document = self.sim_document(cfg, execution)
+        if document:
+            command += ["--override", SIM_QUERY_OVERRIDES_MOUNT]
+        return ContainerQuery(
+            ContainerSpec(image=simulator_image(execution, self.containers(cfg, execution))),
+            command,
+            {SIM_QUERY_OVERRIDES_MOUNT: document} if document else None)
+
+    def on_demand_from_reply(self, cfg, execution: dict, reply: dict) -> list:
+        """Every ``lazy`` ROS output whose ``cost`` is ``render``: images, depth, their encodings.
+
+        Rendering is what a subscription costs most and what no stack reads by accident. A
+        ``raycast`` stream -- a lidar scan, a range sensor -- is cheap beside it and is, more
+        often than not, an input the stack runs on, so it stays in the bag.
+
+        A report whose endpoints do not say what they cost comes from a roqsim that cannot
+        answer, and is refused rather than read as "nothing is on demand".
+        """
+        del cfg, execution
+        world = reply.get("world") if isinstance(reply, dict) else None
+        if not isinstance(world, dict):
+            problems = "; ".join(str(p.get("message", p)) for p in reply.get("problems") or []
+                                 if isinstance(p, dict)) if isinstance(reply, dict) else ""
+            raise ValueError(f"roqsim check reported no world: {problems or str(reply)[:200]}")
+        rows = []
+        for endpoint in world.get("endpoints") or []:
+            if endpoint.get("direction") != "out" or not endpoint.get("topic"):
+                continue
+            if "lazy" not in endpoint or "cost" not in endpoint:
+                raise ValueError(
+                    "the roqsim in this image does not report what its endpoints cost (no "
+                    "'lazy'/'cost' in roqsim check's endpoints); use an image whose roqsim does")
+            if endpoint["lazy"] and endpoint["cost"] == "render":
+                rows.append({"topic": _ros2_name(endpoint.get("namespace"), endpoint["topic"]),
+                             "type": _ros2_type(endpoint.get("type"))})
+        return rows
+
     def default_panels(self, cfg, execution: dict) -> list:
         """The 3D scene, always -- for the same reason :meth:`env` asks for the recording.
 
@@ -482,6 +528,20 @@ class RoqsimBackend(SimulatorBackend):
             if focus:
                 parts += ["--focus"] + [shlex.quote(str(f)) for f in focus]
         return " ".join(parts)
+
+
+def _ros2_name(namespace, topic: str) -> str:
+    """The fully qualified name of *topic* under an entity's *namespace*, as ROS 2 resolves a
+    relative name; an absolute *topic* ignores the namespace."""
+    if topic.startswith("/"):
+        return "/" + topic.strip("/")
+    parts = [part.strip("/") for part in (namespace or "", topic) if part and part.strip("/")]
+    return "/" + "/".join(parts)
+
+
+def _ros2_type(name) -> str:
+    """``sensor_msgs/msg/Image`` from roqsim's ``sensor_msgs.msg.Image``; ``""`` when unnamed."""
+    return str(name).replace(".", "/") if name else ""
 
 
 def _set_arg(key: str, value) -> str:

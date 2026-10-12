@@ -1262,6 +1262,24 @@ seconds wants (see :ref:`one clock per run <run-clock>`); the default is rosbag2
 hidden, rosbag2 drops a hidden topic even when ``topics`` names it, and the
 ``action_<name>_feedback``/``_status`` tables are read from exactly those.
 
+``topics: all`` -- the default -- leaves out the simulator's **on-demand streams**: what the
+simulator renders only while something subscribes, such as a camera image, a depth image and
+their compressed forms. A recorder of every topic is such a
+subscriber, so recording them would make the simulator render each one every frame whether or not
+the stack under test reads it. Which streams those are is the simulator's to say
+(:ref:`on_demand_streams <simulators>`), for each configuration's world and overrides, and it is
+asked when the campaign is composed, in the campaign's own image; a campaign that cannot get the
+answer does not start. Every run of a configuration therefore records the same topic set, and
+``<config>/_config/recording.config`` lists what was left out and why. Sensor streams the
+simulator does not render, such as ``/scan``, ``/odom`` or ``/imu``, stay in the bag, as does
+everything that exists only in ROS: the stack's commands, plans, transforms and ``/clock``.
+
+A stream the campaign names is recorded: listed or matched under ``topics``, or named by a
+``rosbags_*`` entry or a camera panel. ``validate_project`` with its world check names the
+streams a configuration leaves out, and each one the campaign records anyway. To record
+everything, on-demand streams included, list a regex matching every topic
+(``topics: ['^/']``). ``exclude`` and ``exclude_types`` apply either way.
+
 ``roqsim`` is the simulator's own recording (``<run>/roqsim_bag``): the capture rate, and which
 tracks it holds as patterns over ``<entity>/<body-or-joint>`` — ``robot/**`` is all of an entity,
 ``robot/*`` its direct children. Only the keys set are passed on, so the simulator's defaults

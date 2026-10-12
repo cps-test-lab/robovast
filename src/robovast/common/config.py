@@ -807,6 +807,7 @@ RESERVED_ENV_NAMES = frozenset({
     'BT_LOG', 'LOG_TOPICS',
     # what the run's ROS bag holds, derived from the .vast's recording: block
     'RECORD_TOPICS', 'RECORD_EXCLUDE', 'RECORD_EXCLUDE_TYPES', 'RECORD_USE_SIM_TIME',
+    'RECORD_LEFT_OUT',
     # what the container is allowed to use
     'AVAILABLE_CPUS', 'AVAILABLE_MEM',
     # how the pod reaches the service's data plane
@@ -1070,6 +1071,17 @@ def recording_config(raw) -> Optional[RecordingConfig]:
     if not isinstance(raw, dict):
         raise ValueError(f"'execution.recording' must be a mapping; got {type(raw).__name__}")
     return RecordingConfig.model_validate(raw)
+
+
+def records_every_ros2_topic(execution) -> bool:
+    """Whether the run's ROS bag is asked for every topic (``topics: all``, also by default).
+
+    The one case the simulator's on-demand streams are left out of: a campaign that names its
+    topics records exactly those, whatever they cost.
+    """
+    recording = recording_config((execution or {}).get("recording"))
+    ros2 = recording.ros2 if recording is not None else None
+    return ros2 is None or ros2.topics == 'all'
 
 
 class ExecutionConfig(BaseModel):

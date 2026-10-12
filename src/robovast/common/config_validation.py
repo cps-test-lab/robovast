@@ -734,7 +734,7 @@ def _camera_panel_problems(raw):
 _SCENARIO_RECORDER_CALL = "bag_record("
 
 
-def _named_recorded_topics(raw):
+def named_recorded_topics(raw):
     """Every topic the campaign's results side expects the run's bag to hold, with where.
 
     The decoder entries name theirs under ``topic`` / ``topics``; a camera panel names the
@@ -762,7 +762,7 @@ def _named_recorded_topics(raw):
     return named
 
 
-def _topic_is_recorded(topic, topics, exclude):
+def topic_is_recorded(topic, topics, exclude):
     """Whether ``ros2 bag record`` with these arguments captures *topic*.
 
     A ``topics`` entry starting with ``^`` is a regex passed to ``-e``, which rosbag2 matches
@@ -822,8 +822,8 @@ def _recording_problems(raw, scenario_file):
         exclude = [e for e in (ros2.get("exclude") or []) if isinstance(e, str)]
         if topics == "all" or (isinstance(topics, list)
                                and all(isinstance(t, str) for t in topics)):
-            for topic, field in _named_recorded_topics(raw):
-                if not _topic_is_recorded(topic, topics, exclude):
+            for topic, field in named_recorded_topics(raw):
+                if not topic_is_recorded(topic, topics, exclude):
                     problems.append(_problem(
                         "recording",
                         f"{field} names topic '{topic}', which execution.recording.ros2 "

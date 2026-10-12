@@ -73,7 +73,7 @@ from robovast.common.config import SCENARIO_CONTAINER, job_deadline_seconds
 from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter_documents,
                                        create_job_links, dump_multi_document_yaml,
                                        job_artifact_rel, node_label, read_job_links,
-                                       resolve_sidecar_image, sidecar_backend_env,
+                                       recording_env, resolve_sidecar_image, sidecar_backend_env,
                                        write_job_links_manifest)
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
 from robovast.execution.backends import (CampaignConfigError, ExecutionBackend, RunOptions,
@@ -1210,7 +1210,9 @@ class BatchJobRunner:
             # (slash-free, globally unique). See _job_artifact_path / _job_tag.
             ('OUTPUT_DIR', f"/out/_jobs/{self._job_artifact_path(job.index)}"),
             ('SCENARIO_OUTPUT_DIR', '/out'),
-        ) + _run_output_dir_env(job)
+        ) + _run_output_dir_env(job) + tuple(recording_env(
+            self.campaign_data.get("execution") or {}, job.config,
+            os.path.dirname(self.campaign_data.get("vast") or "")).items())
         return self._build_job_manifest(
             job_short_name=_short_job_name(self.campaign, job_tag, job.index),
             job_full_name=f"{self.campaign}-{job_tag}",

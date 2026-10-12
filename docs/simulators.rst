@@ -186,6 +186,16 @@ Hooks, all optional except as noted:
    ``ground_truth`` entry, or ``None`` -- the default -- for a simulator that records nothing
    of its own, whose ground truth is the ``*_gt`` frame its world publishes on ``/tf``. roqsim
    answers ``{table: sim_poses, entity_kind: robot}``: the robots' bodies in its recording.
+``on_demand_streams(cfg, execution)`` / ``on_demand_from_reply(cfg, execution, reply)``
+   The ROS topics the simulator computes only while something subscribes, at a cost -- a
+   rendered camera image, a depth image, their compressed forms -- which a recording of every
+   topic :ref:`leaves out <recording-config>`: a list of ``{topic, type}`` with each topic
+   fully qualified, or a ``ContainerQuery`` answered at composition once per distinct ``sim``
+   block in the campaign's image, whose JSON reply ``on_demand_from_reply`` turns into that
+   list (by default it reads ``{"on_demand": [...]}``). A reply that cannot say fails
+   composition. ``None`` (the default) means the backend cannot say, and nothing is left out.
+   roqsim asks ``roqsim check --json`` with the configuration's overrides and leaves out every
+   ``lazy`` output whose ``cost`` is ``render``; its ray casts, a lidar scan among them, stay.
 ``default_panels(cfg, execution)``
    Run-view panels this backend contributes, as ``{<type>: <props>}`` entries — the panel
    that replays a recorded scene state, for a backend that records one; ``[]`` otherwise.

@@ -42,6 +42,7 @@ it declares strings and container specs, and anything needing the simulator itse
 
 from __future__ import annotations
 
+import re
 import shlex
 from typing import Optional
 
@@ -290,6 +291,39 @@ class SimulatorBackend:
         ``*_gt`` frame its world publishes on ``/tf``, read from ``poses``.
         """
         return None
+
+    def on_demand_streams(self, cfg, execution: dict):
+        """The ROS topics this simulator computes only while something subscribes, and at a cost.
+
+        A rendered camera image, a depth image, their compressed forms: a simulator that renders
+        them lazily spends nothing on them until a subscriber appears -- and a recorder of every
+        topic is such a subscriber. So the run's ROS bag leaves these out unless the campaign
+        names them, and the run does not pay for streams nothing in the stack reads.
+
+        ``[{"topic": "/oakd/rgb/preview/image_raw", "type": "sensor_msgs/msg/Image"}, ...]``,
+        each topic fully qualified. Which streams those are is a property of the world and of
+        this configuration's overrides, so a backend that has to load the world to know returns
+        a :class:`ContainerQuery` instead: answered once per distinct ``sim`` block at
+        composition, in the campaign's own image, its JSON reply read by
+        :meth:`on_demand_from_reply`, and the result frozen into the configuration.
+
+        ``None`` -- the default -- means the backend cannot say, and nothing is left out.
+        """
+        return None
+
+    def on_demand_from_reply(self, cfg, execution: dict, reply: dict) -> list:
+        """The list :meth:`on_demand_streams` describes, read from its query's JSON *reply*.
+
+        The default reads RoboVAST's shape, ``{"on_demand": [...]}``; a backend whose
+        simulator answers in its own vocabulary translates it here. Raise when the reply cannot
+        say: a stream that cannot be named is one the run would record after all.
+        """
+        del cfg, execution
+        rows = reply.get("on_demand") if isinstance(reply, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError("the reply does not list the on-demand streams: expected "
+                             f"{{\"on_demand\": [...]}}, got {str(reply)[:200]}")
+        return rows
 
     def default_panels(self, cfg, execution: dict) -> list:
         """Run-view panels this backend contributes, as ``{<type>: <props>}`` entries.
@@ -1060,6 +1094,69 @@ def sim_input_files(execution: dict, block: dict, base_dir: str = "",
     return [str(p) for p in (declared or [])]
 
 
+#: A fully qualified ROS 2 topic name: what an on-demand stream is matched on, exactly. Anything
+#: else -- a relative name, a substitution, whitespace -- would not match the topic the recorder
+#: sees, so the stream would be recorded while the record says it was left out.
+_ROS_TOPIC = re.compile(r"^(/[A-Za-z_][A-Za-z0-9_]*)+$")
+
+
+def checked_streams(rows, who: str) -> list:
+    """*rows* -- ``[{"topic", "type"}, ...]`` -- checked, deduplicated and sorted by topic.
+
+    Refused rather than repaired when a row names no fully qualified topic: a stream this
+    cannot name is one the run would record while its record says it was left out.
+    """
+    if not isinstance(rows, list):
+        raise ValueError(f"{who} did not list its on-demand streams; got {str(rows)[:200]}")
+    streams = {}
+    for row in rows:
+        topic = row.get("topic") if isinstance(row, dict) else None
+        if not isinstance(topic, str) or not _ROS_TOPIC.match(topic):
+            raise ValueError(f"{who} named an on-demand stream that is not a fully qualified "
+                             f"ROS 2 topic: {row!r}")
+        streams[topic] = {"topic": topic, "type": str(row.get("type") or "")}
+    return [streams[topic] for topic in sorted(streams)]
+
+
+def sim_on_demand_streams(execution: dict, block: dict, base_dir: str = "", run_query=None):
+    """:meth:`SimulatorBackend.on_demand_streams` for one resolved ``sim`` block.
+
+    ``None`` when the backend cannot say. A query is answered by *run_query* (the reply's
+    JSON) and read by :meth:`SimulatorBackend.on_demand_from_reply`; without *run_query* this
+    raises, since leaving the question unasked would record every stream it exists to leave
+    out.
+    """
+    name = backend_name(execution or {})
+    if not name:
+        return None
+    backend = resolve_backend(name, base_dir)
+    cfg = _validated_cfg(backend, dict(block or {}), name)
+    declared = backend.on_demand_streams(cfg, execution)
+    if declared is None:
+        return None
+    who = f"simulator backend '{name}'"
+    if isinstance(declared, ContainerQuery):
+        if run_query is None:
+            raise RuntimeError(f"{who} answers which streams it computes on demand with a "
+                               "query in its image, and nothing here can run one")
+        try:
+            declared = backend.on_demand_from_reply(cfg, execution, run_query(declared))
+        except ValueError as exc:
+            raise ValueError(f"{who} could not say which streams it computes on demand: "
+                             f"{exc}") from exc
+    return checked_streams(declared, who)
+
+
+def declares_on_demand_streams(execution: dict, block: dict, base_dir: str = "") -> bool:
+    """Whether the configured backend can say which of its streams are on demand, for *block*."""
+    name = backend_name(execution or {})
+    if not name:
+        return False
+    backend = resolve_backend(name, base_dir)
+    cfg = _validated_cfg(backend, dict(block or {}), name)
+    return backend.on_demand_streams(cfg, execution) is not None
+
+
 def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
     """What one job's resolved ``sim`` block contributes: ``{command, env, document}``.
 
@@ -1164,6 +1261,8 @@ __all__ = [
     "backend_name",
     "backend_own_keys",
     "campaign_sim_block",
+    "checked_streams",
+    "declares_on_demand_streams",
     "flatten_sim_block",
     "ground_truth_source",
     "merge_sim_block",
@@ -1172,5 +1271,6 @@ __all__ = [
     "ros_tap_command",
     "shape_for",
     "sim_job_overlay",
+    "sim_on_demand_streams",
     "tap_command",
 ]

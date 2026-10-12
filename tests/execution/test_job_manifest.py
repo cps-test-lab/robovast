@@ -728,6 +728,11 @@ def test_a_campaigns_own_scenario_flags_survive_the_probe(monkeypatch):
     assert TICK_LOG_FLAG in value and "-t" in value
 
 
+#: What composition adds to a roqsim configuration: the simulator streams its recording leaves
+#: out, here none.
+_COMPOSED = {"recording": {"ros2": {"left_out": []}}}
+
+
 def _stepped_with_baked_default(world="worlds/default.yaml"):
     """A stepped execution block as composition leaves it.
 
@@ -754,8 +759,8 @@ def test_a_stepped_cells_own_world_reaches_the_container_that_runs_it(monkeypatc
     survived -- a sweep whose cells all ran the campaign's default world reported success at
     every layer a caller can read.
     """
-    configs = [{"name": "depot", "sim": {"config": "worlds/depot.yaml"}},
-               {"name": "warehouse", "sim": {"config": "worlds/warehouse.yaml"}}]
+    configs = [{"name": "depot", "sim": {"config": "worlds/depot.yaml"}, **_COMPOSED},
+               {"name": "warehouse", "sim": {"config": "worlds/warehouse.yaml"}, **_COMPOSED}]
     r = _runner(monkeypatch, execution=_stepped_with_baked_default(), configs=configs)
 
     worlds = {}
@@ -780,7 +785,7 @@ def test_the_stepped_worlds_env_is_stated_once_per_name(monkeypatch):
     Appending the cell's value would leave two entries and let ordering decide, which is
     fragile and unreadable in `kubectl get job -o yaml` (see also ``scenario_env``).
     """
-    configs = [{"name": "warehouse", "sim": {"config": "worlds/warehouse.yaml"}}]
+    configs = [{"name": "warehouse", "sim": {"config": "worlds/warehouse.yaml"}, **_COMPOSED}]
     r = _runner(monkeypatch, execution=_stepped_with_baked_default(), configs=configs)
     job = r._build_jobs()[0]
     env = _main_of(r.create_job_manifest(job, total_jobs=1))["env"]
@@ -793,7 +798,7 @@ def test_a_ros_shape_leaves_the_main_containers_world_alone(monkeypatch):
     The sidecar path already delivered correctly, so this pins that the fix did not reach
     across and start writing a simulator's world into the scenario container as well.
     """
-    configs = [{"name": "depot", "sim": {"config": "worlds/depot.yaml"}}]
+    configs = [{"name": "depot", "sim": {"config": "worlds/depot.yaml"}, **_COMPOSED}]
     execution = {"_backend_env": {"ROQSIM_WORLD": "/config/worlds/default.yaml"}, **_ROS_SHAPE}
     r = _runner(monkeypatch, execution=execution, configs=configs)
     job = r._build_jobs()[0]
@@ -818,10 +823,38 @@ def test_the_roqsim_control_socket_reaches_both_containers_on_a_shared_mount(mon
         "scenario": {"image": "img:scenario"},
         "simulation": {"backend": "roqsim", "config": "pkg:world", "image": "img:sim"}}})
     r = _runner(monkeypatch, execution=execution,
-                configs=[{"name": "cfgA", "sim": {"config": "pkg:world"}}])
+                configs=[{"name": "cfgA", "sim": {"config": "pkg:world"}, **_COMPOSED}])
     manifest = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
 
     uri = f"ipc://{IPC_DIR}/roqsim-control.sock"
     for container in (_main_of(manifest), _sidecar(manifest, "simulation")):
         assert _env_dict(container)["ROQSIM_CONTROL"] == uri
         assert IPC_DIR in {m["mountPath"] for m in container["volumeMounts"]}
+
+
+def test_each_job_tells_its_recorder_which_simulator_streams_to_leave_out(monkeypatch):
+    """The streams composition froze into a configuration reach that configuration's recorder,
+    in the main container where it runs, and a configuration composed without the answer is
+    refused rather than recording what it exists to leave out."""
+    import pytest
+    from importlib.metadata import entry_points
+
+    from robovast.common.errors import CampaignConfigError
+    from robovast.common.simulators import SIMULATOR_GROUP, apply_backend
+
+    if "roqsim" not in {ep.name for ep in entry_points().select(group=SIMULATOR_GROUP)}:
+        pytest.skip("the 'roqsim' extra is not installed")
+    execution = apply_backend({"mode": "ros2", "containers": {
+        "scenario": {"image": "img:scenario"},
+        "simulation": {"backend": "roqsim", "config": "pkg:world", "image": "img:sim"}}})
+    camera = {"topic": "/oakd/rgb/preview/image_raw", "type": "sensor_msgs/msg/Image"}
+    r = _runner(monkeypatch, execution=execution,
+                configs=[{"name": "cfgA", "sim": {"config": "pkg:world"},
+                          "recording": {"ros2": {"left_out": [camera]}}}])
+    manifest = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
+    assert _env_dict(_main_of(manifest))["RECORD_LEFT_OUT"] == camera["topic"]
+
+    unasked = _runner(monkeypatch, execution=execution,
+                      configs=[{"name": "cfgA", "sim": {"config": "pkg:world"}}])
+    with pytest.raises(CampaignConfigError, match="composed without asking"):
+        unasked.create_job_manifest(unasked._build_jobs()[0], total_jobs=1)

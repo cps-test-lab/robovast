@@ -208,3 +208,91 @@ def test_the_control_socket_reaches_the_scenario_and_the_per_job_simulator():
     assert scenario_env({"execution": applied})["ROQSIM_CONTROL"] == ROQSIM_CONTROL_URI
     overlay = sim_job_overlay(execution, execution["containers"]["simulation"])
     assert overlay["env"]["ROQSIM_CONTROL"] == ROQSIM_CONTROL_URI
+
+
+def test_roqsim_is_asked_its_on_demand_streams_with_the_configurations_overrides():
+    """Which streams a world renders only on demand, and under which topics, is settled once
+    the world is loaded with this configuration's overrides -- so roqsim checks it, in the
+    campaign's image, with the same override document a run gets."""
+    from robovast.common.simulators import SIM_QUERY_OVERRIDES_MOUNT, ContainerQuery
+    from robovast_sim_roqsim.backend import RoqsimBackend, RoqsimConfig
+
+    execution = {"mode": "ros2",
+                 "containers": {"simulation": {"backend": "roqsim", "image": "sim:1"}}}
+    backend = RoqsimBackend()
+    plain = backend.on_demand_streams(RoqsimConfig(config="worlds/depot.yaml"), execution)
+    assert isinstance(plain, ContainerQuery)
+    assert plain.command == ["roqsim", "check", "/config/worlds/depot.yaml", "--json"]
+    assert plain.spec.image == "sim:1" and plain.documents == {}
+
+    overrides = {"components": {"robot": {"camera": {"rate_hz": 5}}}}
+    varied = backend.on_demand_streams(
+        RoqsimConfig(config="roqsim_scenes:depot", overrides=overrides), execution)
+    assert varied.command == ["roqsim", "check", "roqsim_scenes:depot", "--json",
+                              "--override", SIM_QUERY_OVERRIDES_MOUNT]
+    assert varied.documents == {SIM_QUERY_OVERRIDES_MOUNT: overrides}
+
+
+def _endpoint(topic, *, namespace="", lazy=True, cost="render", type_=None, direction="out"):
+    return {"name": topic.rsplit("/", 1)[-1], "direction": direction, "namespace": namespace,
+            "topic": topic, "type": type_, "lazy": lazy, "cost": cost, "rebuildable": True}
+
+
+#: A TurtleBot 4 world as `roqsim check --json` reports it: the OAK-D's colour, compressed and
+#: depth images are rendered while subscribed; its camera_info costs nothing; the lidar scan and
+#: the internal cliff sensors are ray casts the stack runs on; the imu is lazy and cheap.
+TB4_REPORT = {"ok": True, "problems": [], "world": {"endpoints": [
+    _endpoint("oakd/rgb/preview/image_raw"),
+    _endpoint("oakd/rgb/preview/image_raw/compressed",
+              type_="sensor_msgs.msg.CompressedImage"),
+    _endpoint("oakd/rgb/preview/depth"),
+    _endpoint("oakd/rgb/preview/camera_info", lazy=False, cost=None),
+    _endpoint("scan", lazy=False, cost="raycast"),
+    _endpoint("_internal/cliff_front_left/scan", lazy=True, cost="raycast"),
+    _endpoint("imu", lazy=True, cost=None),
+    _endpoint("cmd_vel", direction="in", cost=None),
+    {"name": "tf", "direction": "out", "namespace": "", "topic": None, "type": None,
+     "lazy": False, "cost": None, "rebuildable": False}]}}
+
+
+def test_roqsim_leaves_out_what_it_renders_on_demand_and_keeps_its_ray_casts():
+    from robovast.common.simulators import sim_on_demand_streams
+
+    execution = {"mode": "ros2",
+                 "containers": {"simulation": {"backend": "roqsim", "image": "sim:1"}}}
+    streams = sim_on_demand_streams(
+        execution, {"backend": "roqsim", "config": "worlds/depot.yaml"},
+        run_query=lambda query: TB4_REPORT)
+    assert streams == [
+        {"topic": "/oakd/rgb/preview/depth", "type": ""},
+        {"topic": "/oakd/rgb/preview/image_raw", "type": ""},
+        {"topic": "/oakd/rgb/preview/image_raw/compressed",
+         "type": "sensor_msgs/msg/CompressedImage"}]
+
+
+def test_a_namespaced_robots_streams_are_named_as_ros_resolves_them():
+    from robovast_sim_roqsim.backend import RoqsimBackend
+
+    report = {"ok": True, "world": {"endpoints": [
+        _endpoint("camera/image_raw", namespace="robot1"),
+        _endpoint("/global/image", namespace="robot1")]}}
+    rows = RoqsimBackend().on_demand_from_reply(None, {}, report)
+    assert [r["topic"] for r in rows] == ["/robot1/camera/image_raw", "/global/image"]
+
+
+def test_a_roqsim_that_cannot_say_what_an_endpoint_costs_is_refused():
+    """An image whose roqsim predates the cost fields must not read as "nothing is on demand"."""
+    from robovast.common.simulators import sim_on_demand_streams
+
+    old = {"ok": True, "world": {"endpoints": [
+        {"name": "image", "direction": "out", "namespace": "", "topic": "camera/image_raw",
+         "type": None}]}}
+    execution = {"mode": "ros2",
+                 "containers": {"simulation": {"backend": "roqsim", "image": "sim:1"}}}
+    with pytest.raises(ValueError, match="does not report what its endpoints cost"):
+        sim_on_demand_streams(execution, {"backend": "roqsim", "config": "w.yaml"},
+                              run_query=lambda query: old)
+    with pytest.raises(ValueError, match="reported no world"):
+        sim_on_demand_streams(execution, {"backend": "roqsim", "config": "w.yaml"},
+                              run_query=lambda query: {"ok": False, "world": None,
+                                                       "problems": [{"message": "bad mesh"}]})
