@@ -59,6 +59,13 @@ visualization:
             global: {topic: /global_costmap/costmap}
             local: {topic: /local_costmap/costmap}
             poses: {table: poses}
+      # Drawn in the browser from the 3D scene and the recorded poses; no image is recorded.
+      - camera:
+          title: OAK-D camera
+          camera: robot.oakd.oakd_camera
+          position: {anchor: top-center, width: 360, height: 300}
+          minimizable: true
+          minimized: true
       - log:
           title: Run log
           position: {anchor: bottom-center, width: "calc(100% - 680px)", height: 380}
