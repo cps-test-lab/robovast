@@ -1766,7 +1766,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
     @app.get(Routes.job_log("{campaign_id}"), response_model=JobLogChunk, tags=["campaigns"])
     def get_job_log(campaign_id: str, job_name: str, cursor: str = "") -> JobLogChunk:
-        """A job's log rows after *cursor*, running or finished."""
+        """A job's log rows after *cursor*, running or finished. ``job_name`` is a listed
+        job or a run's ``<config>/<run>``."""
         return _guard(lambda: impl.get_job_log(campaign_id, job_name, cursor))
 
     @app.get(Routes.campaign_logs_stream("{campaign_id}"), tags=["campaigns"])
@@ -1797,7 +1798,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     @app.get(Routes.job_log_stream("{campaign_id}"), tags=["campaigns"])
     async def stream_job_log(campaign_id: str, request: Request, job_name: str):
         """Server-sent events: one job's log rows as they are written (``Last-Event-ID``
-        resumes). A finished job is served too; see ``_sse_rows_stream``."""
+        resumes). ``job_name`` as for ``get_job_log``. A finished job is served too; see
+        ``_sse_rows_stream``."""
         return StreamingResponse(
             _sse_rows_stream(
                 request,

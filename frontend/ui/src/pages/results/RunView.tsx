@@ -59,7 +59,7 @@ import { PanelHost } from '@/lib/panels/PanelHost'
 import { useRunTimeline } from '@/lib/panels/runTimeline'
 import { ResultsTree, runsQuery } from './ResultsTree'
 import { panelTopics, useTap } from './tap'
-import { jobNameOf } from '@/components/runLog/useJobLogStream'
+import { jobOfRun } from '@/lib/jobRun'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 import { resetSceneViews, useSceneResetAvailable } from '@/panels/run_view/sceneReset'
 import '@/panels/run_view' // registers the built-in panels
@@ -378,7 +378,21 @@ export function RunView({
   // live, since a tap is recorded against the run it was opened on and nothing else.
   const [nowOn, setNowOn] = useState(false)
   useEffect(() => setNowOn(false), [runKey])
-  const tapJob = run && live ? jobNameOf(run.configName, run.runId) : null
+  // A tap takes a listed job, and a run is not one: the run's job is the one the service says
+  // executes it. Listed only while the tap is wanted, under the Monitor's key, and polled so a run
+  // whose job starts later is found.
+  const jobs = useQuery({
+    queryKey: ['jobs', campaignId],
+    queryFn: () => robovast.listJobs(campaignId),
+    enabled: nowOn && live,
+    refetchInterval: 5000,
+  })
+  const tapJob = run && live && jobs.data ? (jobOfRun(jobs.data.jobs, run)?.job_name ?? null) : null
+  const noTap = jobs.isError
+    ? `The campaign's jobs could not be listed: ${(jobs.error as Error).message}`
+    : jobs.data && !tapJob
+      ? 'No listed job executes this run, so there is nothing to tap.'
+      : null
   const topics = useMemo(() => panelTopics(specs), [specs])
   const tap = useTap(nowOn && live, campaignId, tapJob, topics)
   // The served list is never empty -- the playback transport is contributed for every campaign --
@@ -611,7 +625,11 @@ export function RunView({
               The live stream of this run failed: {liveError}
             </Alert>
           ) : null}
-          {nowOn && live ? <TapTail tap={tap} /> : null}
+          {nowOn && live
+            ? noTap
+              ? <Alert severity="info" variant="outlined">{noTap}</Alert>
+              : <TapTail tap={tap} />
+            : null}
           <Box
             // The panels are the point of this view, so they get the whole window rather than
             // sitting inside the page gutter: the negative margins cancel App's `p: 3` on the main

@@ -849,6 +849,12 @@ ids apart. The launcher in the web UI has the same field.
    log of a single job. A **finished** job is served as readily as a running one: a pod
    that has gone is read from the campaign's own files instead.
 
+   A job's ``job_name`` names the job, not its run -- on the cluster it is the Kubernetes
+   Job's name. Each run's job also carries ``config_name`` and ``run_id``, the run it
+   executes as the campaign's tables key it; both are absent on a calibration probe and on a
+   job still ``waiting`` for capacity. ``get_job_log`` also takes a run's
+   ``<config>/<run>`` in place of a job name, and reads the log of the job that executed it.
+
    Each job also carries ``node`` — where its pod was placed, ``None`` on a job the
    scheduler has not placed yet — and ``started_at`` (epoch seconds — the *job's* start, so a job that
    has not begun executing has one too) and, while it runs on a cluster, ``usage``: what it

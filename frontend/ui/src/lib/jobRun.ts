@@ -15,18 +15,28 @@ export interface JobRun {
   runId: number
 }
 
-/** The run a job executes: the inverse of `jobNameOf` (`<config>/<run>`), which is how the service
- *  names the job of one run. Null for a job that is not one of the campaign's trials (a
- *  calibration probe carries no run) and for a name that is not of that shape. The config name is
- *  everything before the last `/`, so a config whose name has a `/` of its own still maps. */
-export function runOfJob(job: Pick<JobSummary, 'job_name' | 'kind'>): JobRun | null {
+/** The run a job executes, as the service reports it (`config_name`, `run_id`). Null for a job
+ *  that executes none (a calibration probe) and for one the service has not tied to its run yet (a
+ *  job still queued for capacity). Never read from `job_name`: on the cluster that is the
+ *  Kubernetes Job's name, which says nothing about the run. */
+export function runOfJob(
+  job: Pick<JobSummary, 'kind' | 'config_name' | 'run_id'>,
+): JobRun | null {
   if (isNonRunJob(job)) return null
-  const cut = job.job_name.lastIndexOf('/')
-  if (cut <= 0) return null
-  const configName = job.job_name.slice(0, cut)
-  const runPart = job.job_name.slice(cut + 1)
-  if (!/^\d+$/.test(runPart)) return null
-  return { configName, runId: Number(runPart) }
+  // `== null` rather than a type test: a service without these fields sends nothing at all.
+  if (job.config_name == null || job.run_id == null) return null
+  return { configName: job.config_name, runId: job.run_id }
+}
+
+/** The listed job that executes `run`, or null when none does -- the run has not started, or its
+ *  job is no longer listed. How a run addresses the job operations that take a listed job only. */
+export function jobOfRun(jobs: readonly JobSummary[], run: JobRun): JobSummary | null {
+  return (
+    jobs.find((j) => {
+      const r = runOfJob(j)
+      return r !== null && r.configName === run.configName && r.runId === run.runId
+    }) ?? null
+  )
 }
 
 /** The 3D scene panel a campaign's run view shows, or null when it shows none.

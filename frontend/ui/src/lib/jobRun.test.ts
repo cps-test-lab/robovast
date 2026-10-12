@@ -1,30 +1,60 @@
 import { describe, expect, it } from 'vitest'
-import { jobNameOf } from '@/components/runLog/useJobLogStream'
 import { CAMPAIGN_SEL, navFromHash, type Nav } from './hashNav'
 import { DEFAULT_CAMPAIGN_SORT } from './campaignSort'
-import { runOfJob, runPhaseOf, runRowSql, runViewHashOf, sceneSpecOf } from './jobRun'
+import type { JobSummary } from './robovastClient'
+import { jobOfRun, runOfJob, runPhaseOf, runRowSql, runViewHashOf, sceneSpecOf } from './jobRun'
+
+/** A listed job in the cluster's shape: a Kubernetes Job's name, and the run it executes beside it. */
+const clusterJob = (over: Partial<JobSummary> = {}): JobSummary => ({
+  job_name: 'basicn-15180331-batch0dd05f94958dd31b7-0',
+  kind: 'run',
+  config_name: 'goal-1',
+  run_id: 0,
+  status: 'running',
+  display_name: 'batch-0-job-0',
+  detail: null,
+  node: null,
+  started_at: null,
+  usage: null,
+  ...over,
+})
 
 describe('runOfJob', () => {
-  it('is the inverse of the job name the service gives a run', () => {
-    expect(runOfJob({ job_name: jobNameOf('nav-a', 3), kind: 'run' }))
-      .toEqual({ configName: 'nav-a', runId: 3 })
+  it('is the run the service says a cluster job executes, whatever the job is named', () => {
+    expect(runOfJob(clusterJob())).toEqual({ configName: 'goal-1', runId: 0 })
   })
 
-  it('keeps a config name that has a slash of its own', () => {
-    expect(runOfJob({ job_name: 'group/cfg/12', kind: 'run' }))
-      .toEqual({ configName: 'group/cfg', runId: 12 })
+  it('reads nothing from the job name', () => {
+    // A name of the run-key shape names no run: only `config_name` / `run_id` do.
+    expect(runOfJob(clusterJob({ job_name: 'cfg/3', config_name: null, run_id: null })))
+      .toBeNull()
   })
 
-  it('maps a job from a service that sends no kind', () => {
-    expect(runOfJob({ job_name: 'cfg/0' } as { job_name: string; kind: string }))
-      .toEqual({ configName: 'cfg', runId: 0 })
+  it('maps no run for a calibration probe or a job not yet tied to its run', () => {
+    expect(runOfJob(clusterJob({ kind: 'calibration' }))).toBeNull()
+    expect(runOfJob(clusterJob({ status: 'waiting', config_name: null, run_id: null })))
+      .toBeNull()
   })
 
-  it('maps no run for a calibration probe or a name of another shape', () => {
-    expect(runOfJob({ job_name: 'cfg/0', kind: 'calibration' })).toBeNull()
-    expect(runOfJob({ job_name: 'calibrate-node', kind: 'run' })).toBeNull()
-    expect(runOfJob({ job_name: 'cfg/latest', kind: 'run' })).toBeNull()
-    expect(runOfJob({ job_name: '/4', kind: 'run' })).toBeNull()
+  it('maps no run from a service that sends neither field', () => {
+    const { config_name: _c, run_id: _r, ...older } = clusterJob()
+    expect(runOfJob(older as JobSummary)).toBeNull()
+  })
+})
+
+describe('jobOfRun', () => {
+  const jobs = [
+    clusterJob({ job_name: 'probe', kind: 'calibration' }),
+    clusterJob({ job_name: 'k8s-a', config_name: 'goal-1', run_id: 0 }),
+    clusterJob({ job_name: 'k8s-b', config_name: 'goal-1', run_id: 1 }),
+  ]
+
+  it("finds the listed job that executes a run, by the service's mapping", () => {
+    expect(jobOfRun(jobs, { configName: 'goal-1', runId: 1 })?.job_name).toBe('k8s-b')
+  })
+
+  it('finds none for a run no listed job executes', () => {
+    expect(jobOfRun(jobs, { configName: 'goal-1', runId: 2 })).toBeNull()
   })
 })
 
