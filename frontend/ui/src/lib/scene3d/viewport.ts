@@ -36,6 +36,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { CANVAS, GRID, GRID_CENTER } from '@/colors'
 import { dollyToCursor } from './cursorDolly'
 import { MIN_PIVOT_M, frameObject, measureDepth, pickObject, retargetPivot } from './pivot'
+import { letterbox, type SceneCamera } from './sceneCameras'
 
 /** The descriptor's optional baked initial camera (a MuJoCo free camera, Z-up world frame). */
 export interface SceneViewSpec {
@@ -66,6 +67,10 @@ const NEAR_FLOOR_M = 0.01
 // stream (several events per frame, then gaps) stays one gesture; short enough that letting go, aiming
 // somewhere else and scrolling again re-measures.
 const WHEEL_GESTURE_GAP_MS = 150
+
+// What surrounds a sensor's picture where the canvas is not its shape: the bars of a letterbox, so the
+// picture's edge is the sensor's and not the world's background running on past it.
+const LETTERBOX = new Color(0x000000)
 
 // How long a double-click's flight to its target takes. Long enough to read as travel rather than a
 // cut, short enough not to be something to sit through.
@@ -148,6 +153,8 @@ export class SceneViewport {
   // The in-flight double-click focus, if any: where the camera is travelling from and to.
   private focus: { from: Vector3; to: Vector3; fromT: Vector3; toT: Vector3; t0: number } | null =
     null
+  // The sensor camera the scene is shown through, or null for the free orbit view.
+  private viewpoint: SceneCamera | null = null
 
   constructor(container: HTMLElement, opts: ViewportOptions = {}) {
     this.container = container
@@ -200,6 +207,7 @@ export class SceneViewport {
     // scrolls the page under the panel instead of moving the camera.
     this.onWheel = (event: WheelEvent) => {
       event.preventDefault()
+      if (this.viewpoint) return // a sensor's view is where the sensor is, not where the wheel goes
       const now = event.timeStamp
       if (now - this.lastWheelAt > WHEEL_GESTURE_GAP_MS) this.anchor(event)
       this.lastWheelAt = now
@@ -221,12 +229,15 @@ export class SceneViewport {
     // pointerdown runs. Both rotate and pan read the pivot distance, so this one hook is what scales
     // them: it costs one raycast per gesture, and never one per frame.
     this.onPointerDown = (event: PointerEvent) => {
+      if (this.viewpoint) return
       this.focus = null
       this.anchor(event)
     }
     this.renderer.domElement.addEventListener('pointerdown', this.onPointerDown, { capture: true })
 
-    this.onDoubleClick = (event: MouseEvent) => this.focusUnderCursor(event)
+    this.onDoubleClick = (event: MouseEvent) => {
+      if (!this.viewpoint) this.focusUnderCursor(event)
+    }
     this.renderer.domElement.addEventListener('dblclick', this.onDoubleClick)
 
     this.resizeObserver = new ResizeObserver(() => this.resize())
@@ -234,12 +245,61 @@ export class SceneViewport {
     this.resize()
 
     this.renderer.setAnimationLoop(() => {
+      if (this.viewpoint) {
+        this.renderViewpoint(this.viewpoint)
+        return
+      }
       this.advanceFocus()
       this.controls.update()
       this.updateFrustum()
       this.updateGridDepth()
       this.renderer.render(this.scene, this.camera)
     })
+  }
+
+  /**
+   * Show the scene through a sensor camera of the loaded scene, or (`null`) through the free orbit
+   * camera again, which keeps the framing it had.
+   *
+   * The sensor camera is a node of the scene graph, so it moves with its body as the motion source
+   * seats poses, and its projection is the sensor's own. The picture is letterboxed to the sensor's
+   * aspect, and the ground grid -- a viewer's aid, not part of the world -- is hidden while it shows.
+   */
+  setViewpoint(viewpoint: SceneCamera | null): void {
+    this.viewpoint = viewpoint
+    this.focus = null
+    this.controls.enabled = viewpoint === null
+    this.grid.visible = viewpoint === null
+    if (!viewpoint) {
+      const { width, height } = this.canvasSize()
+      this.renderer.setScissorTest(false)
+      this.renderer.setViewport(0, 0, width, height)
+    }
+  }
+
+  private canvasSize(): { width: number; height: number } {
+    return { width: this.container.clientWidth, height: this.container.clientHeight }
+  }
+
+  /** One frame through *viewpoint*: bars over the whole canvas, then the scene in the box. */
+  private renderViewpoint(viewpoint: SceneCamera): void {
+    const { width, height } = this.canvasSize()
+    if (!width || !height) return
+    const box = letterbox(width, height, viewpoint.aspect ?? width / height)
+    const camera = viewpoint.camera
+    const aspect = viewpoint.projectionAspect ?? box.width / box.height
+    if (camera.aspect !== aspect) {
+      camera.aspect = aspect
+      camera.updateProjectionMatrix()
+    }
+    this.renderer.setScissorTest(false)
+    this.renderer.setViewport(0, 0, width, height)
+    this.renderer.setClearColor(LETTERBOX)
+    this.renderer.clear()
+    this.renderer.setViewport(box.x, box.y, box.width, box.height)
+    this.renderer.setScissor(box.x, box.y, box.width, box.height)
+    this.renderer.setScissorTest(true)
+    this.renderer.render(this.scene, camera)
   }
 
   /** Normalized device coordinates of a pointer event within the canvas. */

@@ -6,11 +6,13 @@
 // `fill` base layer -- the other panels float over `fill`, and a camera image covered by them is
 // worse than a smaller one that is whole.
 //
-// Three kinds of picture (lib/camera/cameraSource.ts), one component each below:
+// Four kinds of picture (lib/camera/cameraSource.ts), one component each below:
 //   recorded  a `.webm` from the `videos` table, in a `<video>` that follows the clock
 //   topic     the recorded frames of an image topic, one request per frame; live frames from the
 //             run's stream while the clock follows a live run
 //   render    a re-render of the recorded state at the clock's moment, for a run with no camera
+//   scene     the scene rendered in the browser from the geometry and poses the 3D view replays,
+//             through a camera the scene places or a free view (Scene3DView with `look`)
 //
 // THE PANEL IS A READER OF THE CLOCK, NEVER A WRITER. The playback bar owns time (see
 // panel-kit/src/clock.ts: one writer, every other panel a subscriber), so the `<video>` carries no
@@ -22,6 +24,8 @@
 //   source: { path, t0, t1?, fps? }   escape hatch for a video no producer registered
 //   kind: topic, topic: <image topic>
 //   kind: render, camera?: <world camera>, view?: { azimuth, distance, ... }
+//   camera: <camera name in the scene descriptor>                         (kind scene)
+//   view: { position, look_at, fov?, attach?, up?, near?, far?, width/height | aspect? } (kind scene)
 //
 // A bare `- camera:` is a complete panel when the run registered exactly one video -- the same
 // promise `scene3d` makes.
@@ -40,6 +44,7 @@ import {
   cameraKind,
   cameraTopic,
   resolveCameraSource,
+  sceneLook,
   VIDEOS_TABLE,
   type CameraConfig,
   type CameraSource,
@@ -56,6 +61,7 @@ import { LatestRequest } from '@/lib/camera/latestRequest'
 import { FrameCache } from '@/lib/camera/frameCache'
 import { fetchImage, NoImageError, type FetchedImage } from '@/lib/camera/fetchImage'
 import type { PanelProps, PlaybackClock } from '@robovast/panel-kit'
+import { Scene3DView } from './Scene3DPanel'
 
 /** Frame rate assumed when the producer recorded none — only ever used for the seek tolerance. */
 const FALLBACK_FPS = 10
@@ -110,6 +116,7 @@ function CameraPanel({ spec, clock, data }: PanelProps) {
   try {
     kind = cameraKind(config)
     if (kind === 'topic') cameraTopic(config)
+    if (kind === 'scene') sceneLook(config)
   } catch (e) {
     configError = e as Error
   }
@@ -152,6 +159,8 @@ function CameraPanel({ spec, clock, data }: PanelProps) {
       return <TopicCamera source={source} clock={clock} data={data} />
     case 'render':
       return <RenderCamera source={source} clock={clock} data={data} />
+    case 'scene':
+      return <Scene3DView spec={spec} clock={clock} data={data} look={source.look} />
   }
 }
 

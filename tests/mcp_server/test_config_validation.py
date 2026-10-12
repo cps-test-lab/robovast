@@ -205,6 +205,97 @@ def test_the_scene3d_check_stays_quiet_without_a_backend():
     assert _scene3d_problems(raw) == []
 
 
+def _with_backend(backend, check, raw):
+    import robovast.common.simulators as sim_mod
+    original = sim_mod.resolve_backend
+    try:
+        sim_mod.resolve_backend = lambda name, base_dir="": backend
+        return check(raw)
+    finally:
+        sim_mod.resolve_backend = original
+
+
+def _scene_camera_raw(panel):
+    return {
+        "execution": {"mode": "ros2", "containers": {
+            "simulation": {"backend": "sim", "stage": "x"}}},
+        "visualization": {"results": {"run_view": {"panels": [{"camera": panel}]}}},
+    }
+
+
+def test_a_scene_camera_panel_needs_a_simulator_that_replays_and_exports_its_scene():
+    """``kind: scene`` renders the scene from a sensor camera as the recorded poses move it, so
+    the simulator has to record its state and export the scene the camera is placed in."""
+    from robovast.common.config_validation import _scene_camera_panel_problems
+    from robovast.common.simulators import SimulatorBackend
+
+    class _Replays(SimulatorBackend):
+        def records_scene_state(self, cfg, execution):
+            return True
+
+        def scene_export(self, cfg, execution, *, world, max_tex_dim, overrides,
+                         overrides_file=None):
+            return "export --out {out}"
+
+    class _RecordsOnly(_Replays):
+        def scene_export(self, cfg, execution, *, world, max_tex_dim, overrides,
+                         overrides_file=None):
+            return None
+
+    raw = _scene_camera_raw({"camera": "robot.cam"})
+    assert _with_backend(_Replays(), _scene_camera_panel_problems, raw) == []
+
+    problems = _with_backend(_RecordsOnly(), _scene_camera_panel_problems, raw)
+    assert [p["field"] for p in problems] == ["visualization.results.run_view.panels[0]"]
+    assert "exports no scene" in problems[0]["message"]
+    assert "records no scene state" not in problems[0]["message"]
+
+    problems = _with_backend(SimulatorBackend(), _scene_camera_panel_problems, raw)
+    assert "records no scene state" in problems[0]["message"]
+    assert "exports no scene" in problems[0]["message"]
+
+
+def _scene_look_fields(panel):
+    from robovast.common.config_validation import _scene_camera_panel_problems
+    raw = {"visualization": {"results": {"run_view": {"panels": [{"camera": panel}]}}}}
+    return [p["field"].removeprefix("visualization.results.run_view.panels[0]")
+            for p in _scene_camera_panel_problems(raw)]
+
+
+def test_a_scene_camera_panel_names_a_camera_or_places_a_view():
+    assert _scene_look_fields({"camera": "robot.cam"}) == []
+    assert _scene_look_fields({"view": {"position": [0, 0, 2], "look_at": [3, 0, 0],
+                                        "attach": "base_link", "fov": 70}}) == []
+    assert _scene_look_fields({"kind": "scene"}) == [".camera"]
+    assert _scene_look_fields({"camera": "a", "view": {}}) == [""]
+    assert _scene_look_fields({"view": {"look_at": [1, 0, 0], "fov": 200}}) == [
+        ".view.position", ".view.fov"]
+
+
+def test_a_render_view_without_kind_render_is_refused_by_name():
+    """``view`` without a ``kind`` is a scene panel's free view; the server render's free
+    camera keys are named, with the kind that takes them."""
+    from robovast.common.config_validation import _scene_camera_panel_problems
+    raw = {"visualization": {"results": {"run_view": {"panels": [
+        {"camera": {"view": {"azimuth": 90, "distance": 12}}}]}}}}
+    messages = [p["message"] for p in _scene_camera_panel_problems(raw)]
+    assert any("kind: render" in m and "azimuth" in m for m in messages)
+    raw["visualization"]["results"]["run_view"]["panels"][0]["camera"]["kind"] = "render"
+    assert _scene_camera_panel_problems(raw) == []
+
+
+def test_only_a_recorded_camera_panel_needs_a_video_producer():
+    """``topic``, ``render`` and ``scene`` read frames, renders or the scene, never the
+    ``videos`` table, so a campaign without ``rosbags_to_webm`` is fine for them."""
+    from robovast.common.config_validation import _camera_panel_problems
+    for panel in ({"kind": "topic", "topic": "/cam"}, {"kind": "render"},
+                  {"camera": "robot.cam"}):
+        assert _camera_panel_problems(_raw(panels=[{"camera": panel}])) == [], panel
+    for panel in ({}, {"kind": "recorded"}):
+        problems = _camera_panel_problems(_raw(panels=[{"camera": panel}]))
+        assert [p["field"] for p in problems] == ["visualization.results.run_view.panels[0]"]
+
+
 # ---------------------------------------------------------------------------
 # Build-context advisory
 #

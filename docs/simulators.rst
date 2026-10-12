@@ -319,6 +319,40 @@ matter to a *second* producer:
   another format or a version newer than it reads, naming both, so a descriptor written to a later
   contract is an error rather than a plausible drawing; an unstamped descriptor is version 1.
 
+.. _scene-descriptor-cameras:
+
+**Camera sensors.** A producer that knows the world's camera sensors places each one in the
+descriptor, under ``cameras``, and a :ref:`camera panel <camera-panel>` with ``kind: scene`` then
+renders the scene from where the sensor looked. That is all a backend provides for camera views: the picture is
+drawn in the browser from the scene and the recorded poses, so a run stores no images for it and
+the service renders nothing per frame. An entry is a standard glTF perspective camera on a body:
+
+.. code-block:: json
+
+   {"name": "robot.oakd.oakd_camera", "body": 7,
+    "pos": [0.0, 0.0, 0.0], "quat": [-0.5, -0.5, 0.5, 0.5],
+    "perspective": {"yfov": 0.992, "aspectRatio": 1.333, "znear": 0.5, "zfar": 2500.0},
+    "kind": "rgb", "width": 320, "height": 240}
+
+* ``name`` -- the sensor's name, unique in the scene; it is what a camera panel's ``camera`` names.
+* ``body`` -- the index of the body the sensor is mounted on; ``pos`` and ``quat`` (``w, x, y, z``)
+  are its mount pose in that body's frame, so the camera follows the body as the recording moves
+  it.
+* The **camera frame is glTF's**: the camera looks down its local -z, with +y up and +x to the
+  right of the image. A producer whose cameras look down +z (OpenCV's optical frame) turns them
+  half a turn about x.
+* ``perspective`` -- glTF's: ``yfov`` in radians, ``znear``/``zfar`` in metres, ``aspectRatio``
+  width over height. Optional as in glTF: no ``aspectRatio`` takes the image's (else the panel's)
+  shape, and no ``zfar`` is far away.
+* ``kind`` -- what the sensor's image holds: ``rgb``, or ``depth``. Absent reads as ``rgb``. Only
+  ``rgb`` cameras are offered as views; a depth image is a distance per pixel, which a render of the
+  scene's colours would misstate.
+* ``width``/``height`` -- optional, the published image's size in pixels; the view is letterboxed
+  to this shape.
+
+A malformed entry -- an unknown body, a missing pose, a field of view outside (0, π) -- is refused
+by the loader naming it. Being additive, ``cameras`` leaves the descriptor at its version.
+
 **Names are the whole addressing scheme.** A recording drives the scene by body name
 (``sim_poses``) and by joint name (``joint_states``), in the joint's own unit; no index crosses
 the interface, so a producer resolves names from its own model. The test to apply to any field

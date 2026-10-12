@@ -641,6 +641,31 @@ def _scene_descriptor_problems(raw, vast_dir):
     return problems
 
 
+def _scene_replay(raw):
+    """``(backend name, capabilities)`` of the configured simulator for a 3D replay.
+
+    ``capabilities`` is ``{"records": <records_scene_state>, "exports": <has a scene_export>}``,
+    or ``None`` when there is no backend or it does not resolve -- a campaign with no backend is
+    not second-guessed, and an unresolvable one is reported by the schema.
+    """
+    from robovast.common.simulators import backend_name  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import resolve_backend
+    execution = raw.get("execution") or {}
+    name = backend_name(execution)
+    if not name:
+        return name, None
+    try:
+        backend = resolve_backend(name)
+        cfg = (execution.get("containers") or {}).get("simulation") or {}
+        return name, {
+            "records": bool(backend.records_scene_state(cfg, execution)),
+            "exports": backend.scene_export(cfg, execution, world="", max_tex_dim=0,
+                                            overrides={}) is not None,
+        }
+    except Exception:  # noqa: BLE001 - an unresolvable backend is reported by the schema
+        return name, None
+
+
 def _scene3d_problems(raw):
     """A ``scene3d`` panel replays the simulator's **recorded state**, so the runs have to record it.
 
@@ -658,25 +683,13 @@ def _scene3d_problems(raw):
     A campaign with no backend is not second-guessed: nothing here could tell where its
     recording would come from.
     """
-    problems = []
     panels = [(i, entry) for i, entry in enumerate(_run_view_panels(raw))
               if _panel_entry(entry)[0] == "scene3d"]
     if not panels:
-        return problems
-
-    from robovast.common.simulators import backend_name  # pylint: disable=import-outside-toplevel
-    from robovast.common.simulators import resolve_backend
-    execution = raw.get("execution") or {}
-    name = backend_name(execution)
-    if not name:
-        return problems
-    try:
-        backend = resolve_backend(name)
-        cfg = (execution.get("containers") or {}).get("simulation") or {}
-        if backend.records_scene_state(cfg, execution):
-            return problems
-    except Exception:  # noqa: BLE001 - an unresolvable backend is reported by the schema
-        return problems
+        return []
+    name, replay = _scene_replay(raw)
+    if replay is None or replay["records"]:
+        return []
 
     return [_problem(
         "panel",
@@ -694,6 +707,9 @@ def _camera_panel_problems(raw):
     shows "this run registered no video" to whoever finally opens it — after the compute is
     spent.
 
+    Only the ``recorded`` kind (the default) plays such a video; the other kinds read frames,
+    renders or the scene, and :func:`_scene_camera_panel_problems` checks the scene kind.
+
     Only the ``videos``-table path is checked. A panel naming ``source.path`` points at a
     file it takes responsibility for (the escape hatch for a video no producer registered),
     and second-guessing that would reject the one case the hatch exists for.
@@ -708,7 +724,8 @@ def _camera_panel_problems(raw):
 
     problems = []
     panels = [(i, props) for i, entry in enumerate(_run_view_panels(raw))
-              for ptype, props in [_panel_entry(entry)] if ptype == "camera"]
+              for ptype, props in [_panel_entry(entry)]
+              if ptype == "camera" and _camera_kind(props) == "recorded"]
     if not panels:
         return problems
 
@@ -726,6 +743,93 @@ def _camera_panel_problems(raw):
         "file directly with `source: {path: ..., t0: ...}`.",
         field=f"{RUN_VIEW_PANELS}[{i}]")
         for i, props in panels if not ((props or {}).get("source") or {}).get("path")]
+
+
+def _camera_kind(props):
+    """A camera panel's ``kind`` as the panel resolves it: its ``kind``; else ``scene`` when it
+    names a ``camera`` or a ``view``, and ``recorded`` otherwise. ``render`` is never inferred."""
+    if not isinstance(props, dict):
+        return "recorded"
+    if props.get("kind"):
+        return str(props["kind"])
+    return "scene" if "camera" in props or "view" in props else "recorded"
+
+
+#: The keys a ``scene`` camera panel's free ``view`` takes (the panel's ``parseFreeView``).
+FREE_VIEW_KEYS = ("position", "look_at", "fov", "attach", "up", "near", "far", "width",
+                  "height", "aspect")
+
+
+def _is_vec3(value):
+    return (isinstance(value, list) and len(value) == 3
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value))
+
+
+def _scene_look_problems(props):
+    """What is wrong with a ``scene`` panel's ``camera``/``view``, as ``(field, message)``."""
+    if "camera" in props and "view" in props:
+        return [("", "give `camera` (a camera the scene places) or `view`, not both")]
+    if "view" not in props:
+        camera = props.get("camera")
+        if isinstance(camera, str) and camera:
+            return []
+        return [("camera", "a camera panel with kind: scene needs a `camera` (the name of a "
+                           "camera the scene places) or a `view` (position and look_at)")]
+    view = props["view"]
+    if not isinstance(view, dict):
+        return [("view", "a free view is a mapping with position and look_at")]
+    found = []
+    unknown = sorted(set(view) - set(FREE_VIEW_KEYS))
+    if unknown:
+        found.append(("view", f"unknown {', '.join(unknown)}; a free view takes "
+                              f"{', '.join(FREE_VIEW_KEYS)} (azimuth/elevation/distance/lookat "
+                              f"are the server render's view, which needs kind: render)"))
+    for key in ("position", "look_at"):
+        if not _is_vec3(view.get(key)):
+            found.append((f"view.{key}", f"{key} must be [x, y, z] in metres"))
+    if "up" in view and not _is_vec3(view["up"]):
+        found.append(("view.up", "up must be [x, y, z]"))
+    fov = view.get("fov", 60)
+    if not (isinstance(fov, (int, float)) and 0 < fov < 180):
+        found.append(("view.fov", "fov is a vertical field of view in degrees, in (0, 180)"))
+    if "attach" in view and not (isinstance(view["attach"], str) and view["attach"]):
+        found.append(("view.attach", "attach names a body of the scene"))
+    return found
+
+
+def _scene_camera_panel_problems(raw):
+    """A ``scene`` camera panel renders the 3D scene through a camera the scene places or a
+    free view the panel places.
+
+    It needs what a ``scene3d`` panel needs -- runs that record the simulator state, and a
+    simulator whose scene export the geometry comes from -- plus a well-formed ``camera`` or
+    ``view``. Which cameras and bodies a world has is only known once its scene is exported,
+    on first view, so a name the scene lacks is reported by the panel, with the names it has.
+    """
+    panels = [(i, props) for i, entry in enumerate(_run_view_panels(raw))
+              for ptype, props in [_panel_entry(entry)]
+              if ptype == "camera" and _camera_kind(props) == "scene"]
+    if not panels:
+        return []
+    problems = [_problem("panel", message,
+                         field=f"{RUN_VIEW_PANELS}[{i}]" + (f".{where}" if where else ""))
+                for i, props in panels
+                for where, message in _scene_look_problems(props if isinstance(props, dict)
+                                                            else {})]
+    name, replay = _scene_replay(raw)
+    if replay is None:
+        return problems
+    missing = [what for what, ok in (
+        ("records no scene state to move the camera with", replay["records"]),
+        ("exports no scene for it to render", replay["exports"])) if not ok]
+    if missing:
+        problems.extend(_problem(
+            "panel",
+            f"a camera panel with kind: scene renders the run's 3D scene in the browser, "
+            f"and the '{name}' simulator {' and '.join(missing)}. Use kind: recorded or "
+            f"kind: topic for a camera this simulator records.",
+            field=f"{RUN_VIEW_PANELS}[{i}]") for i, _props in panels)
+    return problems
 
 
 #: What a scenario writes when it starts a bag recorder of its own. Matched on the text of
@@ -1492,8 +1596,10 @@ def validate_project_file(config_path):
     problems.extend(_image_provenance_problems(raw))
     problems.extend(_unresolvable_image_problems(raw))
     problems.extend(_migration_marker_problems(raw))
-    # ...and a camera panel needs a step that produces the video it plays.
+    # ...and a camera panel needs a step that produces the video it plays, or, looking
+    # through a sensor of the scene, a simulator that replays one.
     problems.extend(_camera_panel_problems(raw))
+    problems.extend(_scene_camera_panel_problems(raw))
     # ...and the run's bag has to hold what the tables and panels read from it.
     problems.extend(_recording_problems(raw, scenario_file))
 
