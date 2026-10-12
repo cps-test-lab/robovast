@@ -121,8 +121,8 @@ execution:
   - "files/*.pgm"
   - "files/*.xml"
   - "files/*.py"
-  # Every topic, the /collision and /clearance oracle included (recorded: poses miss the
-  # closest approach between samples); the bag is stamped on the simulator's clock.
+  # Every topic but the camera's on-demand streams, the /collision and /clearance oracle included
+  # (poses miss the closest approach between samples); stamped on the simulator's clock.
   recording:
     ros2:
       use_sim_time: true
