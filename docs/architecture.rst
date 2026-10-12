@@ -820,6 +820,14 @@ database beside them. SQL is answered over the directory itself:
   that run from there and every other from the compacted file; the next compaction folds it back in.
   A bulk build gives each worker process its own run's entries and merges what they entered,
   so the manifest is written a few times a build rather than several times a run.
+* **A finished run's recordings are packed** (:mod:`robovast_decode.pack`): at postprocessing,
+  every closed mcap file of a run is rewritten in place as zstd chunks with message indexes
+  and a summary, written beside it and renamed over it. A reader resolves a moment through the
+  index and decompresses one chunk (:class:`~robovast_decode.framing.IndexedFile`); a file
+  without the index -- one still being written -- is walked. A reader holding places in a file
+  that has since been replaced refuses to read them (a ``McapTail``'s offsets, a kept
+  ``FrameIndex``, which the frame route then builds again), and the run's table entries move
+  to the packed size, since their messages did not change.
 * **Queries run in-process on DuckDB** (:mod:`robovast_data.engine`), over views defined
   per query from the manifest, never from a directory listing — so a table being rewritten
   is seen whole or not at all.

@@ -14,11 +14,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""What runs when a campaign ends: its own postprocessing steps, and its tables.
+"""What runs when a campaign ends: its recordings packed, its own postprocessing steps, and its
+tables.
 
 A campaign's tables are built from its records by the decoder, the first time something
 names them (:mod:`robovast_data`); nothing here converts or ingests. What runs at the end is:
 
+0. the runs' recordings packed: every closed mcap file rewritten in place into zstd chunks
+   with indexes (:mod:`robovast_decode.pack`), so everything after reads the packed files;
 1. the campaign's own ``results_processing.postprocessing`` steps -- plugins by entry-point
    name or ``./path.py:Class`` -- in order, in this process; the ``rosbags_*`` entries among
    them configure the decoder and are written to its configuration record instead
@@ -51,6 +54,9 @@ from robovast.results_processing.campaign_tables import (build_tables, clear_tab
 from robovast.results_processing.metadata import generate_campaign_metadata
 
 POSTPROCESSING_GROUP = "robovast.postprocessing_commands"
+
+#: Runs whose recordings are packed at once: the same bound a build's worker processes have.
+PACK_WORKERS = 8
 
 #: What a cancelled postprocessing returns as its message, and the string a caller matches
 #: to tell a cancellation from a failure.
@@ -619,6 +625,10 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements,too-many-b
     # What failed, and why -- carried into the returned message, which is where the status
     # (``postprocessing_error``, the campaign view's failure box) is read from.
     failures: List[str] = []
+    packing = _pack_recordings(campaign_dir, output, should_stop)
+    if packing:
+        failures.append(packing)
+        success = False
     all_provenance_entries: List[dict] = []
     with tempfile.TemporaryDirectory(prefix="robovast_provenance_") as temp_dir:
         for i, command in enumerate(commands, 1):
@@ -753,6 +763,39 @@ def run_postprocessing(  # pylint: disable=too-many-return-statements,too-many-b
             f"the campaign has no FAIR provenance record: {meta_failure}. Its tables are "
             "complete and queryable; re-running postprocessing writes the record")
     return False, "Postprocessing failed: " + " | ".join(reasons)
+
+
+def _pack_recordings(campaign_dir: str, output, should_stop) -> str:
+    """Pack the runs' closed recordings (:func:`robovast_decode.pack.pack`); what failed, or
+    ``""``.
+
+    A file that could not be packed is as it was and is read as it is, but it fails
+    postprocessing: the campaign is not what packing promises, and a re-run packs it.
+    """
+    from robovast_decode.pack import pack  # pylint: disable=import-outside-toplevel
+
+    def _progress(done, total):
+        if done == total or done % 100 == 0:
+            output(f"  packed the recordings of {done}/{total} run(s)")
+
+    output("Packing the runs' recordings")
+    report = pack(campaign_dir, workers=min(PACK_WORKERS, os.cpu_count() or 1),
+                  progress=_progress, should_stop=should_stop)
+    for what, why in sorted(report.left.items()):
+        output(f"  {what} left as recorded: {why}")
+    if report.packed:
+        output(f"✓ {len(report.packed)} recording file(s) packed "
+               f"({report.bytes_before / 1e6:.0f} MB -> {report.bytes_after / 1e6:.0f} MB)"
+               + (f"; {report.already} packed before" if report.already else ""))
+    else:
+        output(f"✓ no recording file to pack ({report.already} packed before)")
+    if not report.failed:
+        return ""
+    for path, why in sorted(report.failed.items()):
+        output(f"✗ {path} could not be packed and is as it was: {why}")
+    first = next(iter(sorted(report.failed)))
+    more = f" (+{len(report.failed) - 1} more)" if len(report.failed) > 1 else ""
+    return f"packing the recordings: {first}: {report.failed[first]}{more}"
 
 
 def _campaign_provider_records(campaign_dir) -> Tuple[list, int]:
