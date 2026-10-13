@@ -4,8 +4,8 @@
 // Parsed scene models kept across viewer mounts, so switching between two runs of one world does not
 // fetch and rebuild the same geometry again.
 //
-// Keyed by the descriptor URL, which is only sound because that URL names its bytes: the service
-// puts the scene cache key -- a fingerprint of everything the descriptor is compiled from -- in the
+// Keyed by the scene URL, which is only sound because that URL names its bytes: the service
+// puts the scene cache key -- a fingerprint of everything the scene is compiled from -- in the
 // path, so a different world is a different URL. A cache keyed on a location instead would hand a
 // run another world's geometry.
 //

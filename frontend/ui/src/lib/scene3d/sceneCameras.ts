@@ -1,10 +1,11 @@
 // Shared-candidate code: this file imports only 'three' -- keep it free of robovast imports (see
 // README.md in this directory).
 //
-// The cameras a scene descriptor places on its bodies: a sensor's mount and projection, so a viewer
+// The cameras a scene places on its bodies: a sensor's mount and projection, so a viewer
 // renders the scene from where the sensor looked instead of shipping the sensor's images.
 //
-// Each entry is a glTF perspective camera on a body (docs/simulators.rst, the scene descriptor):
+// Each is a glTF perspective camera on a node of a body (docs/simulators.rst, "Camera sensors"),
+// read by the loader into:
 //
 //   { name, body, pos: [x, y, z], quat: [w, x, y, z],
 //     perspective: { yfov, aspectRatio?, znear, zfar? }, kind?, width?, height? }
@@ -15,12 +16,12 @@
 // current with the rest of the graph.
 //
 // A free view is the same thing placed by the viewer rather than by the world: a position, a point to
-// look at and a field of view, in the descriptor's world frame or in a body's frame
+// look at and a field of view, in the scene's world frame or in a body's frame
 // (`parseFreeView`, `buildFreeCamera`).
 
 import { MathUtils, Matrix4, PerspectiveCamera, Quaternion, Vector3 } from 'three'
 
-/** One `cameras` entry as the descriptor states it. */
+/** One sensor camera, as the scene places it. */
 export interface SceneCameraEntry {
   name: string
   body: number
@@ -37,11 +38,11 @@ export interface SceneCameraEntry {
 export interface SceneCamera {
   name: string
   kind: string
-  /** The published image's size, when the descriptor states it. */
+  /** The published image's size, when the scene states it. */
   width?: number
   height?: number
   /** Width over height of the picture: the image's when stated, else the projection's. `undefined`
-   *  when the descriptor states neither, and the picture then takes the canvas's shape. */
+   *  when the scene states neither, and the picture then takes the canvas's shape. */
   aspect?: number
   /** The projection's own aspect ratio, when stated. */
   projectionAspect?: number
@@ -58,8 +59,8 @@ const isVec = (v: unknown, n: number): boolean =>
   Array.isArray(v) && v.length === n && v.every(isNum)
 
 /**
- * The descriptor's `cameras`, checked. An absent list is no cameras; an entry that cannot be placed
- * is refused naming it, rather than being drawn from somewhere it is not.
+ * The scene's sensor cameras, checked. An absent list is no cameras; an entry that cannot be
+ * placed is refused naming it, rather than being drawn from somewhere it is not.
  */
 export function parseSceneCameras(raw: unknown, bodyCount: number, url: string): SceneCameraEntry[] {
   if (raw === undefined) return []
@@ -147,7 +148,7 @@ export function letterbox(
   return { x: 0, y: (height - h) / 2, width, height: h }
 }
 
-/** A camera the viewer places: `position` and `look_at` in metres, in the descriptor's frame (Z-up
+/** A camera the viewer places: `position` and `look_at` in metres, in the scene's frame (Z-up
  *  world), or in the frame of body `attach`, which it then follows. */
 export interface FreeViewSpec {
   position: [number, number, number]

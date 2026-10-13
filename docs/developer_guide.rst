@@ -2248,6 +2248,16 @@ service**. The build location is ``frontend/ui/dist`` relative to the repo, over
 ``ROBOVAST_UI_DIST``; package the built assets into the service/controller image so the
 in-cluster service ships the UI. If no build is present the service runs API-only.
 
+**The bundle ships compressed.** ``npm run build`` writes a ``.br`` and a ``.gz`` beside each
+emitted text file of 1 KiB or more (``frontend/ui/precompress.ts``, a Vite plugin), and the
+mount serves the one the request's ``Accept-Encoding`` admits, Brotli first, with
+``Content-Encoding`` and ``Vary: Accept-Encoding``; a client that accepts neither gets the
+original. Each coding is its own representation with its own ``ETag``, so the cache headers
+above hold for all three. Compressing once per build rather than per request keeps the
+work off the control plane's event loop, and serves the same bytes whether the service is
+reached directly or through the cluster's front (:doc:`deployment`, "What runs in the
+service pod"), which passes an already-encoded response through.
+
 **Dev loop.** ``cd frontend/ui && npm run dev`` runs Vite (:5173) and proxies the API path
 prefixes to a running ``vast serve`` (``ROBOVAST_SERVICE_URL`` to retarget), keeping the
 browser same-origin for hot-reload development.
@@ -2677,11 +2687,12 @@ GET→JSON only — *binary/large per-run artifacts* are already served by the f
 ``CostmapEndpoint`` (``robovast_nav/service_endpoints.py``) — it reads the ``costmaps`` table the
 decoder builds via ``ctx.open_db()`` and returns the frame dict the costmap panel decodes.
 
-**3D scene viewer core** (``frontend/ui/src/lib/scene3d/``) — renders the browser scene
-descriptor (``scene.json``/``scene.bin``), which a simulator backend's exporter produces;
-the format is RoboVAST's, see :ref:`scene-descriptor`. ``sceneLoader.ts``
-builds a three.js ``Group`` and returns an imperative animation API (``jointMap`` /
-``basePose``) and the descriptor's sensor cameras (``sceneCameras.ts``, the contract is the scene descriptor's
+**3D scene viewer core** (``frontend/ui/src/lib/scene3d/``) — renders the scene, one glTF file a
+simulator backend's exporter produces to RoboVAST's contract (:ref:`scene-descriptor`).
+``sceneLoader.ts`` parses it with three's ``GLTFLoader`` (with the meshopt decoder, both loaded with
+the first scene), maps it onto a Z-up ``Group`` and returns an imperative animation API
+(``jointMap`` / ``basePose``, from the body and joint ``extras``) and the scene's sensor cameras
+(``sceneCameras.ts``, the contract is the scene's
 :ref:`camera sensors <scene-descriptor-cameras>`): each a three ``PerspectiveCamera`` -- glTF's camera convention is
 three's -- parented to its body's node, so the motion that moves the body moves the camera and the
 renderer keeps its view matrix current with the rest of the graph; ``viewport.ts`` is a plain-three
@@ -2696,7 +2707,7 @@ from the pivot, which the wheel carries along and which is therefore constant by
 **Extractability rule: files in this directory import only
 ``three`` — never ``@/…``** (see its README) — it is shared-candidate code, so all
 robovast-specific wiring lives in the two consumers, ``frontend/ui/src/panels/run_view/Scene3DPanel.tsx``
-and ``frontend/ui/src/panels/config/Scene3DPanel.tsx``. Both resolve the descriptor through
+and ``frontend/ui/src/panels/config/Scene3DPanel.tsx``. Both resolve the scene through
 ``useSceneGeometry.ts``: the service compiles it on demand in the campaign's image and caches it
 per world (``GET /campaigns/{id}/scene`` asks, one ``POST .../scene/run`` builds; the config view
 uses the workspace's ``/workspaces/{id}/scene``). The run view's panel drives ``jointMap`` and

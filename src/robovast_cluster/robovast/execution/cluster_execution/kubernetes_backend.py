@@ -159,6 +159,12 @@ def _instance_type_command(cluster_config) -> str | None:
         return None
 
 
+#: The variable :func:`_run_output_dir_env` stamps on a job's containers.
+RUN_OUTPUT_DIR_ENV = "RUN_OUTPUT_DIR"
+#: The campaign root as a job's pod sees it.
+_POD_CAMPAIGN_ROOT = "/out"
+
+
 def _run_output_dir_env(job) -> tuple:
     """``RUN_OUTPUT_DIR``: where this job's run writes its results.
 
@@ -168,7 +174,24 @@ def _run_output_dir_env(job) -> tuple:
     by a ROS launch file, say) therefore needs it named to drop a per-run artifact: writing to
     ``/out`` collides across runs, since every pod mirrors its ``/out`` into the same campaign prefix.
     """
-    return (('RUN_OUTPUT_DIR', f"/out/{job.config_name}/{job.run_number}"),)
+    return ((RUN_OUTPUT_DIR_ENV, f"{_POD_CAMPAIGN_ROOT}/{job.config_name}/{job.run_number}"),)
+
+
+def run_of_output_dir(value) -> "tuple[str, int] | None":
+    """``(config_name, run_number)`` of the run a ``RUN_OUTPUT_DIR`` value names.
+
+    The inverse of :func:`_run_output_dir_env`, beside it so the two agree on one layout:
+    a Job's name is a Kubernetes name and says nothing about its run, while this variable is
+    the backend's own statement of it. ``None`` for a value of another shape. A calibration
+    probe carries one of its own that names no run, and is told apart by its kind, not here.
+    """
+    prefix = f"{_POD_CAMPAIGN_ROOT}/"
+    if not isinstance(value, str) or not value.startswith(prefix):
+        return None
+    config_name, _, run = value[len(prefix):].rpartition("/")
+    if not config_name or not run.isdigit():
+        return None
+    return config_name, int(run)
 
 
 def _merge_env(entries: list, values: dict) -> None:

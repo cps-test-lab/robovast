@@ -654,9 +654,10 @@ class JobSummary(BaseModel):
     """One execution unit of a campaign's current batch.
 
     A "job" is whatever the backend fans a batch out into: a **Kubernetes Job** on the
-    cluster backend, running one run. ``job_name`` is the id
-    :meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional
-    human-friendly label (batch/job-index on the cluster).
+    cluster backend, running one run. ``job_name`` is the id the job operations take
+    (:meth:`RobovastInterface.get_job_log`, :meth:`~RobovastInterface.tap_job`, ...) and names
+    the job, not its run; ``config_name`` and ``run_id`` say which run it executes.
+    ``display_name`` is an optional human-friendly label (batch/job-index on the cluster).
     """
 
     job_name: str
@@ -668,6 +669,12 @@ class JobSummary(BaseModel):
     #: older than this field -- which is why a reader must test for the kinds it cares about
     #: (``== "calibration"``) and never for ``!= "run"``.
     kind: str = JobKind.RUN
+    #: The run this job executes, keyed as the campaign's tables key it (``run_view``'s
+    #: ``config_name`` and ``run_id``). Absent for a job that executes none -- a calibration
+    #: probe -- and for one the service cannot tie to its run yet: on the cluster, a job still
+    #: queued for capacity, which has no Kubernetes object to read it from.
+    config_name: Optional[str] = None
+    run_id: Optional[int] = None
     # running | pending | waiting | completed | failed | killed | blocked
     status: str = "pending"
     display_name: Optional[str] = None
@@ -2308,7 +2315,7 @@ class SceneStatus(BaseModel):
     """Whether this run's 3D geometry is ready, and if not, what is happening about it.
 
     *Say why you are about to wait, before you wait.* A
-    scene descriptor is compiled on demand, in the campaign's own image, and cached by world identity;
+    scene is compiled on demand, in the campaign's own image, and cached by world identity;
     the first viewer of a given world pays for it and everyone after reads it from disk.
 
     Reading it never starts anything: that is ``POST .../scene/run``. A ``GET`` that launched a 2 GB
@@ -2318,7 +2325,7 @@ class SceneStatus(BaseModel):
     campaign_id: str
     config_name: str = ""
     run_id: str = ""
-    #: Ready to fetch: the descriptor is in the cache and ``url`` points at it.
+    #: Ready to fetch: the scene is in the cache and ``url`` points at it.
     cached: bool = False
     #: Nothing cached yet, so a viewer must POST to have it built. False when cached.
     generation_required: bool = False
@@ -2334,9 +2341,10 @@ class SceneStatus(BaseModel):
     #: this is what only a human can read. It is why a wait that will never end says so in seconds
     #: rather than at the build's deadline.
     stage_detail: str = ""
-    #: Size of the cached descriptor, 0 when there is none. A browser fetches this much.
+    #: Size of the cached scene, 0 when there is none: what a browser fetches at most, since one
+    #: that accepts gzip is served the compressed copy.
     bytes: int = 0
-    #: Where the descriptor's ``scene.json`` is served from, once cached.
+    #: Where the scene (one glTF file) is served from, once cached.
     url: str = ""
     #: The world identity this run needs, for display and for diagnosis when geometry looks wrong.
     world: str = ""
@@ -2961,7 +2969,7 @@ class Routes:
 
     @staticmethod
     def campaign_scene_asset(campaign_id: str, path: str) -> str:
-        # The descriptor's bytes, served from the shared cache like a panel bundle. A separate first
+        # The scene's bytes, served from the shared cache like a panel bundle. A separate first
         # segment from ``scene`` on purpose: ``scene/run`` would otherwise collide with a cached file
         # called ``run``.
         return f"/campaigns/{campaign_id}/scene_assets/{path}"
@@ -3181,8 +3189,8 @@ class RobovastInterface(ABC):
     @abstractmethod
     def read_file_bytes(self, address: str) -> bytes:
         """Return one file's raw bytes — the representation a browser or ``vast files
-        get`` wants (e.g. the run view's ``scene/scene.json`` and its sibling
-        ``scene.bin``). Same errors as :meth:`read_file`, minus the binary refusal."""
+        get`` wants (e.g. a camera panel's recorded frame). Same errors as :meth:`read_file`,
+        minus the binary refusal."""
 
     def local_file(self, address: str) -> Path:
         """A real filesystem path for *address*, so the HTTP layer can stream the file.
@@ -3357,6 +3365,11 @@ class RobovastInterface(ABC):
     @abstractmethod
     def get_job_log(self, campaign_id: str, job_name: str, cursor: str = "") -> JobLogChunk:
         """Return a job's log rows after *cursor*, running or finished.
+
+        *job_name* is a job as :meth:`list_jobs` reports it, or the key ``<config>/<run>`` of
+        one of the campaign's runs, which reads the log of the job that executes that run. The
+        run key is resolved through the campaign's job-link manifest, so it also reads a run's log
+        once its job is no longer listed; it is not a job's name.
 
         Read from the job's ``logs/system*.log`` files in the campaign directory, which grow
         while it runs. Resume with :attr:`JobLogChunk.cursor`; stop at
@@ -4097,7 +4110,7 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def resolve_workspace_scene_asset(self, workspace_id: str, path: str) -> str:
-        """Filesystem path of one file of a cached descriptor, for the workspace route."""
+        """Filesystem path of one file of a cached scene, for the workspace route."""
 
     @abstractmethod
     def campaign_screenshot(self, campaign_id: str, config_name: str, run_id: str, *,
@@ -4130,7 +4143,7 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def resolve_campaign_scene_asset(self, campaign_id: str, path: str) -> str:
-        """Absolute path of one file of this campaign's cached descriptor.
+        """Absolute path of one file of this campaign's cached scene.
 
         Raises ``KeyError`` when it is not cached or the path escapes the entry -- the same contract
         :meth:`resolve_campaign_panel_asset` has, so the route serves both the same way.

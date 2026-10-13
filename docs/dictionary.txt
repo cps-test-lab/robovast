@@ -37,6 +37,7 @@ bt
 buildable
 buildkit
 buildkitd
+Brotli
 buildx
 Burstable
 callables
@@ -284,6 +285,7 @@ postprocessed
 postprocesses
 postprocessing
 pre
+precompressed
 preemptible
 prefetch
 preflight
@@ -345,6 +347,7 @@ retriggered
 Retriggering
 retriggering
 retriggers
+revalidation
 revolute
 rjsf
 rke
@@ -503,4 +506,6 @@ unstamped
 undecodable
 unwritable
 glTF
+meshopt
+WebP
 letterboxed

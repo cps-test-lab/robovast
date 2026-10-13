@@ -223,7 +223,7 @@ export function openRowMotion(reader: RowReader, opts: RowMotionOptions = {}): M
       if (table === poseTable) {
         const name = row.frame
         if (typeof name !== 'string' || !name) continue
-        // The sink takes wxyz (the descriptor's order); the table carries the pose contract's
+        // The sink takes wxyz (the scene's order); the table carries the pose contract's
         // xyzw, so the reordering is here and nowhere else.
         const vals = POSE_COLUMNS.map((c) => num(row[c]))
         if (vals.some((v) => !Number.isFinite(v))) continue

@@ -1351,11 +1351,13 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
             media_type="image/png", headers={"Cache-Control": IMMUTABLE_CACHE_CONTROL})
 
     @app.get(Routes.campaign_scene_asset("{campaign_id}", "{path:path}"), tags=["results"])
-    def campaign_scene_asset(campaign_id: str, path: str):
-        """Serve one file of a cached scene descriptor (``<key>/scene.json``, ``<key>/tex_0.png``, …).
+    def campaign_scene_asset(campaign_id: str, path: str, request: Request):
+        """Serve one file of a cached scene (``<key>/scene.glb``), compressed as the request accepts.
 
-        Served like a panel bundle rather than from ``/results``: the descriptor is not in the campaign's
-        results at all, it is in the service's shared cache.
+        Served like a panel bundle rather than from ``/results``: the scene is not in the campaign's
+        results at all, it is in the service's shared cache. The cache writes a gzip sibling beside
+        the scene when it builds it (:data:`robovast.service.scene_cache.PRECOMPRESSED`), served to a
+        request that accepts it, so no response is compressed per request.
 
         Cached by the browser for good (:data:`IMMUTABLE_CACHE_CONTROL`), because ``<key>`` names what
         the entry was compiled from: :func:`scene_cache.cache_key` fingerprints the image digest, the
@@ -1364,9 +1366,9 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         untouched). Different geometry is a different key, so a different URL; a run switch between
         runs of one world then costs no request for its assets at all. ``/results`` files get no
         such header: their paths name a location, not the bytes in it."""
-        from fastapi.responses import FileResponse  # pylint: disable=import-outside-toplevel
-        return FileResponse(str(_guard(
-            lambda: impl.resolve_campaign_scene_asset(campaign_id, path))),
+        return precompressed_response(
+            _guard(lambda: impl.resolve_campaign_scene_asset(campaign_id, path)),
+            request.headers.get("accept-encoding", ""),
             headers={"Cache-Control": IMMUTABLE_CACHE_CONTROL})
 
     @app.get(Routes.workspace_scene("{workspace_id}"), response_model=SceneStatus,
@@ -1385,11 +1387,12 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
         return _guard(lambda: impl.run_workspace_scene(workspace_id, path))
 
     @app.get(Routes.workspace_scene_asset("{workspace_id}", "{path:path}"), tags=["authoring"])
-    def workspace_scene_asset(workspace_id: str, path: str):
-        """One file of a cached scene descriptor, for the config view's loader."""
-        from fastapi.responses import FileResponse  # pylint: disable=import-outside-toplevel
-        return FileResponse(str(_guard(
-            lambda: impl.resolve_workspace_scene_asset(workspace_id, path))))
+    def workspace_scene_asset(workspace_id: str, path: str, request: Request):
+        """One file of a cached scene, for the config view's loader, compressed as the campaign
+        one is."""
+        return precompressed_response(
+            _guard(lambda: impl.resolve_workspace_scene_asset(workspace_id, path)),
+            request.headers.get("accept-encoding", ""))
 
     @app.get(Routes.campaign_panel_asset("{campaign_id}", "{path:path}"), tags=["authoring"])
     def campaign_panel_asset(campaign_id: str, path: str):
@@ -1763,7 +1766,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
 
     @app.get(Routes.job_log("{campaign_id}"), response_model=JobLogChunk, tags=["campaigns"])
     def get_job_log(campaign_id: str, job_name: str, cursor: str = "") -> JobLogChunk:
-        """A job's log rows after *cursor*, running or finished."""
+        """A job's log rows after *cursor*, running or finished. ``job_name`` is a listed
+        job or a run's ``<config>/<run>``."""
         return _guard(lambda: impl.get_job_log(campaign_id, job_name, cursor))
 
     @app.get(Routes.campaign_logs_stream("{campaign_id}"), tags=["campaigns"])
@@ -1794,7 +1798,8 @@ def build_app(impl: RobovastInterface, mount_mcp: bool = True,
     @app.get(Routes.job_log_stream("{campaign_id}"), tags=["campaigns"])
     async def stream_job_log(campaign_id: str, request: Request, job_name: str):
         """Server-sent events: one job's log rows as they are written (``Last-Event-ID``
-        resumes). A finished job is served too; see ``_sse_rows_stream``."""
+        resumes). ``job_name`` as for ``get_job_log``. A finished job is served too; see
+        ``_sse_rows_stream``."""
         return StreamingResponse(
             _sse_rows_stream(
                 request,
@@ -2240,6 +2245,87 @@ def _ui_dist() -> Optional[Path]:
     return None
 
 
+#: The content codings ``npm run build`` writes beside each compressible file of the web UI
+#: (``frontend/ui/precompress.ts``), and the scene cache beside a scene
+#: (:data:`robovast.service.scene_cache.PRECOMPRESSED`), by suffix, in the order a response
+#: prefers them.
+PRECOMPRESSED = (("br", ".br"), ("gzip", ".gz"))
+
+
+def accepts_encoding(header: str, coding: str) -> bool:
+    """Whether an ``Accept-Encoding`` value admits *coding* (RFC 9110, 12.5.3).
+
+    A coding named with ``q=0`` is refused, and ``*`` stands for every coding the value
+    does not name.
+    """
+    weights = {}
+    for item in header.split(","):
+        name, _, params = item.partition(";")
+        weight = 1.0
+        for param in params.split(";"):
+            key, _, value = param.partition("=")
+            if key.strip().lower() == "q":
+                try:
+                    weight = float(value)
+                except ValueError:
+                    weight = 0.0
+        if name.strip():
+            weights[name.strip().lower()] = weight
+    if coding in weights:
+        return weights[coding] > 0
+    return weights.get("*", 0.0) > 0
+
+
+#: Media types the platform's ``mimetypes`` table may lack, for files the service serves.
+_MEDIA_TYPES = {".glb": "model/gltf-binary", ".gltf": "model/gltf+json"}
+
+
+def media_type_of(path) -> str:
+    """The media type a served file is sent as; ``application/octet-stream`` when unknown.
+
+    One answer for a file and for its precompressed sibling, which is the same representation
+    under a ``Content-Encoding``.
+    """
+    import mimetypes  # pylint: disable=import-outside-toplevel
+    import os  # pylint: disable=import-outside-toplevel
+    suffix = os.path.splitext(str(path))[1].lower()
+    return (_MEDIA_TYPES.get(suffix) or mimetypes.guess_type(str(path))[0]
+            or "application/octet-stream")
+
+
+def precompressed_response(full_path, accept_encoding: str, *, status_code: int = 200,
+                           stat_result=None, headers=None):
+    """The file, or the precompressed sibling of it (:data:`PRECOMPRESSED`) the request accepts.
+
+    The sibling is its own representation: its own ``ETag`` and length, the original's media
+    type, ``Content-Encoding`` naming the coding. ``Vary`` goes on every response for a file that
+    has siblings, so a shared cache keeps the representations apart. Nothing is compressed per
+    request.
+    """
+    # pylint: disable=import-outside-toplevel
+    import os
+
+    from starlette.responses import FileResponse
+    # pylint: enable=import-outside-toplevel
+    full_path = str(full_path)
+    siblings = [(coding, f"{full_path}{suffix}") for coding, suffix in PRECOMPRESSED
+                if os.path.isfile(f"{full_path}{suffix}")]
+    chosen = next(((coding, sibling) for coding, sibling in siblings
+                   if accepts_encoding(accept_encoding, coding)), None)
+    if chosen is None:
+        response = FileResponse(full_path, status_code=status_code, stat_result=stat_result,
+                                media_type=media_type_of(full_path), headers=headers)
+    else:
+        coding, sibling = chosen
+        response = FileResponse(
+            sibling, status_code=status_code, stat_result=os.stat(sibling),
+            media_type=media_type_of(full_path),
+            headers={**(headers or {}), "Content-Encoding": coding})
+    if siblings:
+        response.headers["Vary"] = "Accept-Encoding"
+    return response
+
+
 def _mount_ui(app) -> None:
     """Serve the built SPA (``frontend/ui/dist``) from the service so the UI starts with it.
 
@@ -2259,7 +2345,11 @@ def _mount_ui(app) -> None:
             "`cd frontend/ui && npm run build`, or point ROBOVAST_UI_DIST at a built "
             "copy (an image bakes it in and sets that variable).")
         return
-    from fastapi.staticfiles import StaticFiles  # pylint: disable=import-outside-toplevel
+    # pylint: disable=import-outside-toplevel
+    from fastapi.staticfiles import StaticFiles
+    from starlette.datastructures import Headers
+    from starlette.staticfiles import NotModifiedResponse
+    # pylint: enable=import-outside-toplevel
 
     class _CachedUi(StaticFiles):
         """``StaticFiles`` that says how long each response may be reused.
@@ -2285,6 +2375,17 @@ def _mount_ui(app) -> None:
             # above turns that into a 304 with no body.
             response.headers["Cache-Control"] = (
                 self.IMMUTABLE if path.startswith("assets/") else "no-cache")
+            return response
+
+        def file_response(self, full_path, stat_result, scope, status_code=200):
+            """The file, or the precompressed sibling of it the request accepts
+            (:func:`precompressed_response`), answered with a 304 when it is unchanged."""
+            request_headers = Headers(scope=scope)
+            response = precompressed_response(
+                full_path, request_headers.get("accept-encoding", ""), status_code=status_code,
+                stat_result=stat_result)
+            if self.is_not_modified(response.headers, request_headers):
+                return NotModifiedResponse(response.headers)
             return response
 
     app.mount("/", _CachedUi(directory=str(dist), html=True), name="ui")

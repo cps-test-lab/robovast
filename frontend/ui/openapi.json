@@ -2167,8 +2167,19 @@
         "type": "object"
       },
       "JobSummary": {
-        "description": "One execution unit of a campaign's current batch.\n\nA \"job\" is whatever the backend fans a batch out into: a **Kubernetes Job** on the\ncluster backend, running one run. ``job_name`` is the id\n:meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional\nhuman-friendly label (batch/job-index on the cluster).",
+        "description": "One execution unit of a campaign's current batch.\n\nA \"job\" is whatever the backend fans a batch out into: a **Kubernetes Job** on the\ncluster backend, running one run. ``job_name`` is the id the job operations take\n(:meth:`RobovastInterface.get_job_log`, :meth:`~RobovastInterface.tap_job`, ...) and names\nthe job, not its run; ``config_name`` and ``run_id`` say which run it executes.\n``display_name`` is an optional human-friendly label (batch/job-index on the cluster).",
         "properties": {
+          "config_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Name"
+          },
           "detail": {
             "anyOf": [
               {
@@ -2211,6 +2222,17 @@
             ],
             "title": "Node"
           },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
           "started_at": {
             "anyOf": [
               {
@@ -2239,11 +2261,13 @@
           }
         },
         "required": [
+          "config_name",
           "detail",
           "display_name",
           "job_name",
           "kind",
           "node",
+          "run_id",
           "started_at",
           "status",
           "usage"
@@ -3388,7 +3412,7 @@
         "type": "object"
       },
       "SceneStatus": {
-        "description": "Whether this run's 3D geometry is ready, and if not, what is happening about it.\n\n*Say why you are about to wait, before you wait.* A\nscene descriptor is compiled on demand, in the campaign's own image, and cached by world identity;\nthe first viewer of a given world pays for it and everyone after reads it from disk.\n\nReading it never starts anything: that is ``POST .../scene/run``. A ``GET`` that launched a 2 GB\nimage pull would fire on a browser prefetch or a strict-mode double render.",
+        "description": "Whether this run's 3D geometry is ready, and if not, what is happening about it.\n\n*Say why you are about to wait, before you wait.* A\nscene is compiled on demand, in the campaign's own image, and cached by world identity;\nthe first viewer of a given world pays for it and everyone after reads it from disk.\n\nReading it never starts anything: that is ``POST .../scene/run``. A ``GET`` that launched a 2 GB\nimage pull would fire on a browser prefetch or a strict-mode double render.",
         "properties": {
           "bytes": {
             "default": 0,
@@ -6450,7 +6474,7 @@
     },
     "/campaigns/{campaign_id}/job-log": {
       "get": {
-        "description": "A job's log rows after *cursor*, running or finished.",
+        "description": "A job's log rows after *cursor*, running or finished. ``job_name`` is a listed\njob or a run's ``<config>/<run>``.",
         "operationId": "get_job_log_campaigns__campaign_id__job_log_get",
         "parameters": [
           {
@@ -6512,7 +6536,7 @@
     },
     "/campaigns/{campaign_id}/job-log/stream": {
       "get": {
-        "description": "Server-sent events: one job's log rows as they are written (``Last-Event-ID``\nresumes). A finished job is served too; see ``_sse_rows_stream``.",
+        "description": "Server-sent events: one job's log rows as they are written (``Last-Event-ID``\nresumes). ``job_name`` as for ``get_job_log``. A finished job is served too; see\n``_sse_rows_stream``.",
         "operationId": "stream_job_log_campaigns__campaign_id__job_log_stream_get",
         "parameters": [
           {
@@ -7961,7 +7985,7 @@
     },
     "/campaigns/{campaign_id}/scene_assets/{path}": {
       "get": {
-        "description": "Serve one file of a cached scene descriptor (``<key>/scene.json``, ``<key>/tex_0.png``, \u2026).\n\nServed like a panel bundle rather than from ``/results``: the descriptor is not in the campaign's\nresults at all, it is in the service's shared cache.\n\nCached by the browser for good (:data:`IMMUTABLE_CACHE_CONTROL`), because ``<key>`` names what\nthe entry was compiled from: :func:`scene_cache.cache_key` fingerprints the image digest, the\nworld, its overrides and the bytes of every campaign file it reads, and an entry is written\nonce under its key and never rewritten (``scene_cache.generate`` returns a complete entry\nuntouched). Different geometry is a different key, so a different URL; a run switch between\nruns of one world then costs no request for its assets at all. ``/results`` files get no\nsuch header: their paths name a location, not the bytes in it.",
+        "description": "Serve one file of a cached scene (``<key>/scene.glb``), compressed as the request accepts.\n\nServed like a panel bundle rather than from ``/results``: the scene is not in the campaign's\nresults at all, it is in the service's shared cache. The cache writes a gzip sibling beside\nthe scene when it builds it (:data:`robovast.service.scene_cache.PRECOMPRESSED`), served to a\nrequest that accepts it, so no response is compressed per request.\n\nCached by the browser for good (:data:`IMMUTABLE_CACHE_CONTROL`), because ``<key>`` names what\nthe entry was compiled from: :func:`scene_cache.cache_key` fingerprints the image digest, the\nworld, its overrides and the bytes of every campaign file it reads, and an entry is written\nonce under its key and never rewritten (``scene_cache.generate`` returns a complete entry\nuntouched). Different geometry is a different key, so a different URL; a run switch between\nruns of one world then costs no request for its assets at all. ``/results`` files get no\nsuch header: their paths name a location, not the bytes in it.",
         "operationId": "campaign_scene_asset_campaigns__campaign_id__scene_assets__path__get",
         "parameters": [
           {
@@ -10822,7 +10846,7 @@
     },
     "/workspaces/{workspace_id}/scene_assets/{path}": {
       "get": {
-        "description": "One file of a cached scene descriptor, for the config view's loader.",
+        "description": "One file of a cached scene, for the config view's loader, compressed as the campaign\none is.",
         "operationId": "workspace_scene_asset_workspaces__workspace_id__scene_assets__path__get",
         "parameters": [
           {

@@ -402,18 +402,19 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         campaign_id: The id from ``start_campaign``.
 
     Returns:
-        ``{jobs, counts}`` where each job is ``{job_name, kind, status, display_name,
-        detail, node, started_at, usage}`` and counts tallies
-        ``running/pending/waiting/completed/failed/blocked/total`` over the campaign's own
-        runs, plus ``calibration`` and ``postprocessing`` beside them. Or ``{error}``.
+        ``{jobs, counts}`` where each job is ``{job_name, kind, config_name, run_id, status,
+        display_name, detail, node, started_at, usage}`` and counts tallies
+        ``running/pending/waiting/completed/failed/killed/blocked/total`` over the campaign's
+        own runs, plus ``calibration`` beside them. Or ``{error}``.
 
-        ``kind`` is ``run`` for one of the campaign's trials, ``calibration`` for a
+        ``kind`` is ``run`` for one of the campaign's trials, or ``calibration`` for a
         node-sizing probe (a cluster job that measures a machine before work is placed on
-        it), or ``postprocessing`` for the conversion of the campaign's rosbags, which is
-        what a campaign in its ``postprocessing`` phase is doing — ``get_job_log`` on it
-        reads the conversion live. Both are listed because they hold real capacity, and
-        both are counted apart because neither is one of the campaign's runs; neither can
-        be stopped individually.
+        it). A probe is listed because it holds real capacity, and counted apart because it
+        is not one of the campaign's runs; it cannot be stopped individually.
+
+        ``config_name`` and ``run_id`` are the run a job executes, keyed as the campaign's
+        tables key it -- the job's ``job_name`` is a Kubernetes name and says nothing about
+        its run. Absent on a probe and on a job still ``waiting`` for capacity.
 
         ``node`` is the machine the job's pod was placed on -- absent on a job the scheduler
         has not placed yet. Reading it across a listing says whether a
@@ -614,12 +615,12 @@ def get_job_log(campaign_id: str, job_name: str, cursor: str = "",
     **This is what a stalled status points at. Call it with ``summarize=True`` first:**
     a wedged run repeats one message thousands of times, which summarizes to one line.
 
-    A **finished** job is served as readily as a running one: both are read from the job's
-    log files in the campaign. Every container is in one stream, tagged ``[<container>]``.
+    A **finished** job is served as readily as a running one, from its log files in the
+    campaign. Every container is in one stream, tagged ``[<container>]``.
 
     Args:
         campaign_id: The id from ``start_campaign``.
-        job_name: A ``job_name`` from ``list_campaign_jobs``.
+        job_name: A ``job_name`` from ``list_campaign_jobs``, or a run's ``<config>/<run>``.
         cursor: Pass back the previous call's ``cursor`` to read only what arrived since.
             It marks the *unfiltered* log, so filtering never breaks a poll loop.
         hide_shutdown, grep, tail, min_severity, summarize, top: The filters

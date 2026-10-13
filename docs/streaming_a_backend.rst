@@ -26,7 +26,7 @@ relative to that directory -- and a scenario or a postprocessing step writes the
      - a ``*.csv`` or ``*.jsonl`` file, flushed row by row
      - a table: SQL, declared plots, the MCP tools, notebooks, a query while the run goes
    * - 2
-     - pose and joint rows in the tables the ``scene3d`` panel reads, plus a scene descriptor
+     - pose and joint rows in the tables the ``scene3d`` panel reads, plus a scene
      - the run view's 3D replay
    * - 3
      - an mcap recording, ``ros2msg`` channels or roqsim's JSON channels
@@ -82,8 +82,8 @@ and ``sim_poses``: ``pose_track_view`` sums up its tracks, and ``get_track_devia
 reads it by naming it as ``source``. ``timestamp`` is the run's one clock
 (:ref:`one clock per run <run-clock>`): simulated seconds, the join key of every table of the run.
 
-Level 2: pose and joint rows, and a scene descriptor
-----------------------------------------------------
+Level 2: pose and joint rows, and a scene
+-----------------------------------------
 
 The run view's ``scene3d`` panel reads two things and nothing else (:ref:`scene-descriptor`):
 
@@ -94,8 +94,8 @@ The run view's ``scene3d`` panel reads two things and nothing else (:ref:`scene-
   in the joint's own unit, so nothing is listed anywhere; a name matching nothing is
   reported. Poses are in the scene's frame, not a map frame. A campaign binds other tables
   under the panel's ``motion: {poses: <table>, joints: <table>}``.
-* **geometry**, the scene descriptor: ``scene.json`` + ``scene.bin`` + a PNG per texture,
-  static per world. The service compiles it on first view, in the campaign's own pinned
+* **geometry**, the scene: one glTF file with the ``extras`` the contract names, static per
+  world. The service compiles it on first view, in the campaign's own pinned
   image, through the backend's ``scene_export`` hook, and caches it by world identity
   (:ref:`how it is served <scene-descriptor-delivery>`).
 
@@ -111,9 +111,8 @@ Two hooks of the backend decide whether the panel appears at all. ``records_scen
 returning true is what makes the backend contribute a ``scene3d`` panel to every campaign's
 run view (``default_panels``); a campaign can also declare ``- scene3d:`` under
 ``visualization.results.run_view.panels`` itself, which is a complete panel. A backend with
-no ``scene_export`` is reported by the panel as one that exports no scene descriptor -- the
-normal answer for a simulator RoboVAST merely launches -- and the panel names the campaign's
-own ``execution.generate`` entry as the way to produce one.
+no ``scene_export`` is reported by the panel as one that exports no scene -- the normal
+answer for a simulator RoboVAST merely launches.
 
 A run whose motion is decoded from its recording is followed as the recording grows; one
 whose motion is a file is read as the file is at each query the panel makes.

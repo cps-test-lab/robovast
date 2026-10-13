@@ -529,7 +529,8 @@ export interface paths {
         };
         /**
          * Get Job Log
-         * @description A job's log rows after *cursor*, running or finished.
+         * @description A job's log rows after *cursor*, running or finished. ``job_name`` is a listed
+         *     job or a run's ``<config>/<run>``.
          */
         get: operations["get_job_log_campaigns__campaign_id__job_log_get"];
         put?: never;
@@ -550,7 +551,8 @@ export interface paths {
         /**
          * Stream Job Log
          * @description Server-sent events: one job's log rows as they are written (``Last-Event-ID``
-         *     resumes). A finished job is served too; see ``_sse_rows_stream``.
+         *     resumes). ``job_name`` as for ``get_job_log``. A finished job is served too; see
+         *     ``_sse_rows_stream``.
          */
         get: operations["stream_job_log_campaigns__campaign_id__job_log_stream_get"];
         put?: never;
@@ -1015,10 +1017,12 @@ export interface paths {
         };
         /**
          * Campaign Scene Asset
-         * @description Serve one file of a cached scene descriptor (``<key>/scene.json``, ``<key>/tex_0.png``, …).
+         * @description Serve one file of a cached scene (``<key>/scene.glb``), compressed as the request accepts.
          *
-         *     Served like a panel bundle rather than from ``/results``: the descriptor is not in the campaign's
-         *     results at all, it is in the service's shared cache.
+         *     Served like a panel bundle rather than from ``/results``: the scene is not in the campaign's
+         *     results at all, it is in the service's shared cache. The cache writes a gzip sibling beside
+         *     the scene when it builds it (:data:`robovast.service.scene_cache.PRECOMPRESSED`), served to a
+         *     request that accepts it, so no response is compressed per request.
          *
          *     Cached by the browser for good (:data:`IMMUTABLE_CACHE_CONTROL`), because ``<key>`` names what
          *     the entry was compiled from: :func:`scene_cache.cache_key` fingerprints the image digest, the
@@ -2035,7 +2039,8 @@ export interface paths {
         };
         /**
          * Workspace Scene Asset
-         * @description One file of a cached scene descriptor, for the config view's loader.
+         * @description One file of a cached scene, for the config view's loader, compressed as the campaign
+         *     one is.
          */
         get: operations["workspace_scene_asset_workspaces__workspace_id__scene_assets__path__get"];
         put?: never;
@@ -3537,11 +3542,14 @@ export interface components {
          * @description One execution unit of a campaign's current batch.
          *
          *     A "job" is whatever the backend fans a batch out into: a **Kubernetes Job** on the
-         *     cluster backend, running one run. ``job_name`` is the id
-         *     :meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional
-         *     human-friendly label (batch/job-index on the cluster).
+         *     cluster backend, running one run. ``job_name`` is the id the job operations take
+         *     (:meth:`RobovastInterface.get_job_log`, :meth:`~RobovastInterface.tap_job`, ...) and names
+         *     the job, not its run; ``config_name`` and ``run_id`` say which run it executes.
+         *     ``display_name`` is an optional human-friendly label (batch/job-index on the cluster).
          */
         JobSummary: {
+            /** Config Name */
+            config_name: string | null;
             /** Detail */
             detail: string | null;
             /** Display Name */
@@ -3555,6 +3563,8 @@ export interface components {
             kind: string;
             /** Node */
             node: string | null;
+            /** Run Id */
+            run_id: number | null;
             /** Started At */
             started_at: number | null;
             /**
@@ -4298,7 +4308,7 @@ export interface components {
          * @description Whether this run's 3D geometry is ready, and if not, what is happening about it.
          *
          *     *Say why you are about to wait, before you wait.* A
-         *     scene descriptor is compiled on demand, in the campaign's own image, and cached by world identity;
+         *     scene is compiled on demand, in the campaign's own image, and cached by world identity;
          *     the first viewer of a given world pays for it and everyone after reads it from disk.
          *
          *     Reading it never starts anything: that is ``POST .../scene/run``. A ``GET`` that launched a 2 GB

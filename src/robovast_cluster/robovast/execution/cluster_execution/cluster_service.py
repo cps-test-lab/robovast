@@ -1155,6 +1155,7 @@ class ClusterService(ServiceBase):
         jobs = [
             JobSummary(job_name=listed.job.metadata.name, status=listed.phase,
                        kind=self._job_kind(listed.job),
+                       **self._job_run(listed.job),
                        display_name=self._job_display_name(campaign_id, listed.job),
                        detail=listed.detail, node=listed.node,
                        started_at=self._job_started_at(listed.job),
@@ -1340,6 +1341,29 @@ class ClusterService(ServiceBase):
             return JobKind.RUN
         return (JobKind.CALIBRATION
                 if labels.get(JOB_KIND_LABEL) == CALIBRATION_JOB_KIND else JobKind.RUN)
+
+    @classmethod
+    def _job_run(cls, job) -> dict:
+        """``config_name`` and ``run_id`` of the run a Job executes, as :class:`JobSummary` fields.
+
+        Read off the Job's ``RUN_OUTPUT_DIR``, which the backend stamps on every run's pod
+        (:func:`~.kubernetes_backend.run_of_output_dir`): the Job's *name* is a Kubernetes name
+        and carries no run. Empty -- both fields absent -- for a calibration probe, which executes
+        no run, and for a Job that carries no such variable.
+        """
+        from .kubernetes_backend import RUN_OUTPUT_DIR_ENV, run_of_output_dir
+        if cls._job_kind(job) != JobKind.RUN:
+            return {}
+        try:
+            containers = job.spec.template.spec.containers or []
+        except AttributeError:
+            return {}
+        for container in containers:
+            for var in getattr(container, "env", None) or []:
+                if var.name == RUN_OUTPUT_DIR_ENV:
+                    run = run_of_output_dir(var.value)
+                    return {"config_name": run[0], "run_id": run[1]} if run else {}
+        return {}
 
     @staticmethod
     def _job_display_name(campaign_id, job) -> "str | None":

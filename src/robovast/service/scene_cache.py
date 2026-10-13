@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""On-demand 3D scene descriptors for the run view, cached across campaigns.
+"""On-demand 3D scenes for the run view, cached across campaigns.
 
 A run view needs two artifacts: the **recording** (motion), which the simulator writes as the run
-goes and the decoder reads into the run's tables, and the **scene descriptor** (geometry; see the
-scene descriptor section of ``docs/simulators.rst``), which is what this module produces.
+goes and the decoder reads into the run's tables, and the **scene** (geometry: one glTF file, see
+the scene section of ``docs/simulators.rst``), which is what this module produces.
 
 Producing it eagerly, by an ``execution.generate`` entry at campaign preparation, costs 5-9 s and
 13-31 MB for every campaign whether or not anyone ever opens the 3D view, and cannot be got right for
@@ -33,8 +33,8 @@ Why the key is ours rather than the generator framework's
 ``run_input_generators`` has its own staleness cache, and it is deliberately unusable here.
 :func:`~robovast.common.input_generation._run_one` discards a manifest whose recorded inputs are not
 visible on this host — "unverifiable inputs mean regenerate" — and a generator that ran in a container
-reports paths *inside* it. ``roqsim-export-web --manifest`` lists 55 such paths, none of which exist here,
-so that cache would never hit: every viewer would recompile the world. So generation is invoked with
+reports paths *inside* it. ``roqsim export gltf --manifest`` lists dozens of such paths, none of which exist
+here, so that cache would never hit: every viewer would recompile the world. So generation is invoked with
 ``use_cache=False`` and this module decides hits itself, which it can do without running anything.
 
 What is reused, and what is not
@@ -45,11 +45,13 @@ atomic swap; the ``shell`` generator's ``image`` support for the aux container;
 :class:`~robovast.common.file_cache2.CacheKey` for fingerprinting; ``read_execution_metadata``
 for ``execution.yaml``.
 
-Not reused: :class:`~robovast.common.file_cache2.FileCache2` itself. It stores **one file** per key (a
-directory goes in as a tarball), and this cache is served over HTTP as a directory — ``scene.json`` plus
-``scene.bin`` plus a PNG per texture, fetched as relative siblings. Tarring on write and extracting on
-read to satisfy an API we would immediately undo is worse than owning a directory per key.
+Not reused: :class:`~robovast.common.file_cache2.FileCache2` itself. It stores one file per key, and
+an entry here is the generator's output directory -- the scene, its compressed sibling, the manifest
+and the identity note, served over HTTP from that directory. Owning a directory per key keeps it the
+generator's own output, with nothing to unpack on a read.
 """
+
+import gzip
 
 import hashlib
 import json
@@ -61,22 +63,27 @@ from pathlib import Path
 
 import yaml
 
-from robovast.common.simulators import backend_name
+from robovast.common.simulators import SCENE_FILE, backend_name
 
 logger = logging.getLogger(__name__)
 
-#: Longest side of a copied/re-encoded texture. 1024 keeps the depot world at ~13 MB against ~31 MB at
-#: the exporter's own 2048 default, and a browser orbiting a warehouse needs no more. It is part of the
-#: cache key, so changing it regenerates rather than serving the previous size.
+#: Longest side of an embedded texture: a browser orbiting a warehouse needs no more. It is part of
+#: the cache key, so changing it regenerates rather than serving the previous size.
 DEFAULT_MAX_TEX_DIM = 1024
 
 #: Bumped when this module changes what it *asks for*, so old entries are not served for new requests.
-#: 2: the whole ``_config/`` tree is staged and the key covers it, where 1 hashed the world file alone.
-CACHE_FORMAT_VERSION = 2
+CACHE_FORMAT_VERSION = 3
 
-#: Files a descriptor must have to count as complete. A half-written directory must never be a hit; the
+#: The gzip sibling written beside :data:`SCENE_FILE` once it is built, and served to a request that
+#: accepts gzip (``robovast.service.app.precompressed_response``), so the scene is compressed once
+#: per world rather than per download. gzip at level 9: the scene's buffers are already compressed
+#: for its own decoder and gzip takes a further third off; brotli would take some ten per cent more
+#: and needs a package the service does not otherwise have.
+PRECOMPRESSED = f"{SCENE_FILE}.gz"
+
+#: Files an entry must have to count as complete. A half-written directory must never be a hit; the
 #: generator's atomic swap makes that nearly impossible, but "nearly" is not a cache invariant.
-REQUIRED_OUTPUTS = ("scene.json", "scene.bin")
+REQUIRED_OUTPUTS = (SCENE_FILE, PRECOMPRESSED)
 
 #: Written beside each entry: what it was generated from, for a human reading the cache directory.
 IDENTITY_FILE = ".identity.json"
@@ -541,7 +548,7 @@ def entry_dir(key: str) -> str:
 
 
 def is_cached(key: str) -> bool:
-    """True when this key has a complete descriptor on disk."""
+    """True when this key has a complete scene on disk."""
     path = entry_dir(key)
     return all(os.path.isfile(os.path.join(path, name)) for name in REQUIRED_OUTPUTS)
 
@@ -552,6 +559,14 @@ def entry_bytes(key: str) -> int:
         return 0
     return sum(os.path.getsize(os.path.join(dirpath, name))
                for dirpath, _dirs, names in os.walk(path) for name in names)
+
+
+def scene_bytes(key: str) -> int:
+    """Size of the entry's scene: what a browser that takes no compressed sibling fetches."""
+    try:
+        return os.path.getsize(os.path.join(entry_dir(key), SCENE_FILE))
+    except OSError:
+        return 0
 
 
 def is_generating(key: str) -> bool:
@@ -612,8 +627,8 @@ def _command_for(identity: dict, max_tex_dim: int, overrides_file: str | None = 
 
     Which exporter builds geometry, and how it spells its arguments, is the *simulator's*
     business -- so it is answered by the backend the campaign already names rather than by a
-    table here. What stays RoboVAST's is the descriptor format the command has to produce
-    (``scene.json`` + ``scene.bin``, and the ``.generated.json`` manifest).
+    table here. What stays RoboVAST's is what the command has to produce: :data:`SCENE_FILE`, a
+    glTF file to the contract of ``docs/simulators.rst``, and the ``.generated.json`` manifest.
 
     The world is passed as RECORDED, in both cases. A packaged world's path is valid in the
     image by construction; a campaign file's is valid because the campaign's ``_config/`` is
@@ -636,9 +651,8 @@ def _command_for(identity: dict, max_tex_dim: int, overrides_file: str | None = 
             f"geometry: {err}") from err
     if not command:
         raise SceneUnavailable(
-            f"this campaign's simulator ({name or 'none declared'}) exports no scene "
-            "descriptor, so there is no geometry to build. A campaign can still declare its "
-            "own execution.generate entry to produce one.")
+            f"this campaign's simulator ({name or 'none declared'}) exports no scene, so there "
+            "is no geometry to build.")
     return command
 
 
@@ -747,18 +761,32 @@ def generate(identity: dict, key: str, runner_context, max_tex_dim: int = DEFAUL
                                      container_runner_factory=factory, use_cache=False)
         except Exception as err:  # noqa: BLE001 - every failure must reach the viewer as a reason
             shutil.rmtree(out_dir, ignore_errors=True)
-            raise SceneUnavailable(f"could not build the scene descriptor: {err}") from err
+            raise SceneUnavailable(f"could not build the scene: {err}") from err
         finally:
             clear_stage(key)
-        if not is_cached(key):
+        scene = os.path.join(out_dir, SCENE_FILE)
+        if not os.path.isfile(scene):
             shutil.rmtree(out_dir, ignore_errors=True)
             raise SceneUnavailable(
-                "the scene generator reported success but wrote no scene.json/scene.bin — refusing to "
-                "cache an incomplete descriptor.")
+                f"the scene generator reported success but wrote no {SCENE_FILE} — refusing to "
+                "cache an incomplete scene. A simulator image older than the glTF scene export "
+                "cannot build one: re-run the campaign with a current image.")
+        _precompress(scene)
         _write_identity(out_dir, identity, key, max_tex_dim)
         clear_failure(key)
         evict(cache_root())
         return out_dir
+
+
+def _precompress(path: str) -> None:
+    """Write :data:`PRECOMPRESSED` beside the scene at *path*, atomically, with no timestamp in it
+    so equal scenes give equal bytes."""
+    target = os.path.join(os.path.dirname(path), PRECOMPRESSED)
+    with open(path, "rb") as source:
+        data = gzip.compress(source.read(), compresslevel=9, mtime=0)
+    with open(f"{target}.tmp", "wb") as handle:
+        handle.write(data)
+    os.replace(f"{target}.tmp", target)
 
 
 def _write_identity(out_dir, identity, key, max_tex_dim) -> None:
@@ -779,9 +807,8 @@ DEFAULT_MAX_CACHE_BYTES = 4 * 1024 ** 3
 def evict(root: str, max_bytes: int | None = None) -> list:
     """Trim the cache to *max_bytes*, dropping least-recently-used entries whole.
 
-    No cache in this codebase evicts, and at 13-31 MB per world this one is a slow disk leak without it.
-    Entries are dropped whole because half a descriptor is not a smaller descriptor — the loader fetches
-    ``scene.bin`` and every texture as siblings of ``scene.json``.
+    No cache in this codebase evicts, and one entry per world is a slow disk leak without it. Entries
+    are dropped whole: an entry without its scene is no smaller scene.
 
     Recency is the entry directory's ``st_atime``, refreshed by :func:`touch`, so a world in daily use
     survives and one nobody has opened since a paper was written does not.
@@ -827,7 +854,7 @@ def clear(root: str, *, dry_run: bool = False) -> "tuple[list, list]":
 
     Each is a list of ``(name, bytes)``. With *dry_run* nothing is removed and ``removed`` is
     what would be. An entry whose lock is held is kept -- the rule :func:`evict` follows -- so a
-    clear never pulls a descriptor out from under a viewer loading it.
+    clear never pulls a scene out from under a viewer loading it.
     """
     removed, kept = [], []
     for _atime, size, name in _entries(root):

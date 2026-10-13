@@ -130,6 +130,10 @@ const TRIAL_PHASES: ReadonlySet<string> = new Set<CampaignPhase>(['running', 'fi
 export const hasResults = (c: CampaignSummary) =>
   hasRecordedRuns(c) || TRIAL_PHASES.has(c.phase)
 
+/** The campaigns every Results view (Explorer, Run view, Data browser) offers: {@link hasResults}. */
+export const resultsCampaigns = (campaigns: readonly CampaignSummary[]): CampaignSummary[] =>
+  campaigns.filter(hasResults)
+
 export type CreateCampaignRequest = Schemas['CreateCampaignRequest']
 
 // Mirrors interface.py:DESCRIPTION_MAX_LEN. Enforced here only to keep the field from
@@ -383,7 +387,7 @@ export class RobovastError extends Error {
 // -- the file address space -------------------------------------------------
 // One address per file, and it is also the URL that serves it. Segments are encoded
 // individually so the '/' separators survive: a resource that fetches siblings by
-// *relative* URL (scene.json -> scene.bin) must stay inside its own directory.
+// *relative* URL (a .gltf naming its .bin) must stay inside its own directory.
 
 const encodePath = (path: string) =>
   path.split('/').map(encodeURIComponent).join('/')
@@ -1028,7 +1032,7 @@ export const robovast = {
 
   // URL of one run artifact file (fetched directly, e.g. by the scene3d loader). The
   // address is the run's real directory — <config>/<run>/<path> under the campaign —
-  // so a relative sibling fetch (scene.json -> scene.bin) resolves within it.
+  // so a relative sibling fetch resolves within it.
   runFileUrl: (campaignId: string, configName: string, runId: number | string, path: string) =>
     `${BASE}${resultsUrl(campaignId, `${configName}/${runId}/${path}`)}`,
 

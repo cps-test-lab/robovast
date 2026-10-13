@@ -16,7 +16,7 @@ import ClearRoundedIcon from '@mui/icons-material/ClearRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import { useTheme } from '@mui/material/styles'
 import {
-  robovast, hasRecordedRuns, hasResults, type CampaignSummary,
+  robovast, hasResults, resultsCampaigns, type CampaignSummary,
 } from '@/lib/robovastClient'
 import {
   isLiveRow,
@@ -69,7 +69,7 @@ export function ExplorerView({
   // campaign's are fixed — so this is a derivation, not something to keep watching.
   // The container's own predicate, so this view admits exactly what the three share a selection
   // over. Kept defensive like the Data browser's own filter, since `campaigns` is a prop.
-  const explorable = useMemo(() => campaigns.filter(hasResults), [campaigns])
+  const explorable = useMemo(() => resultsCampaigns(campaigns), [campaigns])
 
   // Looked up in `explorable`, not in every campaign handed over: a campaign this view declines is
   // one it must not query either.
@@ -196,7 +196,7 @@ export function ExplorerView({
             sel={resolved.sel}
             tab={tab}
             onTab={(next) => commit(resolved.sel, next)}
-            canReplay={!!campaign && hasRecordedRuns(campaign)}
+            canReplay={!!campaign && hasResults(campaign)}
             canConfig={!!campaign && mayHaveStagedConfig(campaign.phase)}
             live={liveRun}
           />

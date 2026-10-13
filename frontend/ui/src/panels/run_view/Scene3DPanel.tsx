@@ -2,8 +2,8 @@
 //
 // It reads two things, and nothing else:
 //
-//   * the **scene** descriptor (`scene.json`/`scene.bin`) -- the geometry: a body tree with rest
-//     transforms and named joints. Static per *world*, so it is not a per-run artifact and is not
+//   * the **scene** (one glTF file) -- the geometry: a body tree with named joints, sensor cameras
+//     and the world's initial view. Static per *world*, so it is not a per-run artifact and is not
 //     shipped by every campaign: the service compiles it on demand, in the campaign's own image, the
 //     first time somebody opens a 3D view, and caches it by world identity. The panel asks
 //     `GET /campaigns/{id}/scene`, POSTs once if nothing is cached, and loads the URL it is handed.
@@ -27,7 +27,7 @@
 // its own is a complete panel.
 //
 // `Scene3DView` with a `look` is the camera panel's `kind: scene`: the same replay, shown through a
-// camera the descriptor places on a body or a free view the panel places (lib/scene3d/sceneCameras.ts)
+// camera the scene places on a body or a free view the panel places (lib/scene3d/sceneCameras.ts)
 // instead of the orbit camera -- rendered from the geometry and poses this view loads anyway, so
 // nothing is stored for it. The scene3d panel itself is always the free orbit view.
 
@@ -74,8 +74,26 @@ interface Mismatch {
 }
 
 /** The 3D view of a run, through the orbit camera -- or, given a `look`, through that camera of the
- *  scene or that free view, with no orbit camera at all: what the camera panel's `kind: scene` shows. */
-export function Scene3DView({ spec, clock, data, look }: PanelProps & { look?: SceneLook }) {
+ *  scene or that free view, with no orbit camera at all: what the camera panel's `kind: scene` shows.
+ *
+ *  `registerReset` is where the orbit camera's reset is offered: the run view header's channel
+ *  unless the host has its own control for it, as a view outside the run view does.
+ *
+ *  `reserveRight` is a strip, in pixels, along the top of the right edge that the host floats its
+ *  own controls in: the warnings at the top of the view keep clear of it rather than sit under
+ *  them. */
+export function Scene3DView({
+  spec,
+  clock,
+  data,
+  look,
+  registerReset = registerSceneReset,
+  reserveRight = 0,
+}: PanelProps & {
+  look?: SceneLook
+  registerReset?: (reset: () => void) => () => void
+  reserveRight?: number
+}) {
   const sensor = look && 'camera' in look ? look.camera : undefined
   const view = look && 'view' in look ? look.view : undefined
   const viewKey = view ? JSON.stringify(view) : ''
@@ -156,7 +174,7 @@ export function Scene3DView({ spec, clock, data, look }: PanelProps & { look?: S
     const viewport = new SceneViewport(el)
     viewportRef.current = viewport
     // A camera panel's view has no free camera for the header's reset to re-frame.
-    const unregister = look ? () => undefined : registerSceneReset(() => viewport.resetView())
+    const unregister = look ? () => undefined : registerReset(() => viewport.resetView())
     return () => {
       unregister()
       viewportRef.current = null
@@ -164,9 +182,9 @@ export function Scene3DView({ spec, clock, data, look }: PanelProps & { look?: S
     }
   }, [])
 
-  // Resolving a descriptor is the same protocol in both scene panels, so it is one hook.
+  // Resolving a scene is the same protocol in both scene panels, so it is one hook.
   // Two distinct failures, kept apart: `resolveError` is the service refusing or failing to build
-  // the descriptor, `loadError` is bytes that arrived and would not parse. Both mean "no geometry",
+  // the scene, `loadError` is bytes that arrived and would not parse. Both mean "no geometry",
   // but only one of them is worth retrying.
   const [loadError, setLoadError] = useState<string | null>(null)
   const {
@@ -336,19 +354,22 @@ export function Scene3DView({ spec, clock, data, look }: PanelProps & { look?: S
   // Only once the scene is loaded can a missing sensor be told from one still on its way.
   const missingSensor = sensor && cameras && !shown ? sensor : null
   const missingKind = cameras?.find((c) => c.name === missingSensor)?.kind
+  // The top edge's warnings stop short of the host's controls; one anchored left keeps its width.
+  const topRight = 8 + reserveRight
+  const topLeftMaxWidth = (w: number) => `min(${w}px, calc(100% - ${8 + topRight}px))`
 
   return (
     <Box sx={{ position: 'relative', width: '100%', height: '100%', bgcolor: CANVAS }}>
       <Box ref={containerRef} sx={{ position: 'absolute', inset: 0 }} />
       {missingBody !== null ? (
-        <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, right: 8 }}>
+        <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, right: topRight }}>
           The view is attached to body <code>{missingBody}</code>, which this run&apos;s scene does
           not have. Bodies it has: <code>{modelRef.current?.bodies.filter(Boolean).slice(0, 12).join(', ')}</code>
           {(modelRef.current?.bodies.length ?? 0) > 12 ? ', …' : ''}.
         </Alert>
       ) : null}
       {missingSensor ? (
-        <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, right: 8 }}>
+        <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, right: topRight }}>
           This run&apos;s scene has no colour camera <code>{missingSensor}</code>
           {missingKind ? ` (its image is ${missingKind}, which a scene render would misstate)` : ''}
           .{' '}
@@ -359,7 +380,7 @@ export function Scene3DView({ spec, clock, data, look }: PanelProps & { look?: S
           ) : (
             <>
               It places no colour camera: a camera view needs the simulator&apos;s scene export to
-              place its camera sensors (see the scene descriptor in the simulator documentation).
+              place its camera sensors (see the scene contract in the simulator documentation).
             </>
           )}
         </Alert>
@@ -374,7 +395,7 @@ export function Scene3DView({ spec, clock, data, look }: PanelProps & { look?: S
         <Alert
           severity="info"
           icon={<CircularProgress size={16} />}
-          sx={{ position: 'absolute', top: 8, left: 8, maxWidth: 560 }}
+          sx={{ position: 'absolute', top: 8, left: 8, maxWidth: topLeftMaxWidth(560) }}
         >
           {buildingText}
           {scene?.world ? (
@@ -406,13 +427,14 @@ export function Scene3DView({ spec, clock, data, look }: PanelProps & { look?: S
             top: 8,
             left: '50%',
             transform: 'translateX(-50%)',
-            maxWidth: 'min(620px, calc(100% - 16px))',
+            // Centred, so it keeps clear of a strip on the right by staying as far off the left.
+            maxWidth: `min(620px, calc(100% - ${2 * topRight}px))`,
           }}
         >
           No 3D geometry: {resolveError || loadError || scene?.error}
         </Alert>
       ) : scene && !scene.overrides_known ? (
-        <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, maxWidth: 620 }}>
+        <Alert severity="warning" sx={{ position: 'absolute', top: 8, left: 8, maxWidth: topLeftMaxWidth(620) }}>
           {scene.note}
         </Alert>
       ) : null}
