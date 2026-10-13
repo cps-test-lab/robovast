@@ -2886,12 +2886,16 @@ What ends a campaign
 — no Kubernetes Job, no execution image, no containers of its own — beside the
 campaign on the results volume:
 
-1. the campaign's own ``results_processing.postprocessing`` steps, in order (plugins by
+1. the runs' recordings packed (:mod:`robovast_decode.pack`): every closed mcap file below a
+   run and its job rewritten in place into zstd chunks with message indexes and a summary,
+   behind the run's lock, and the run's table entries current against the old size carried to
+   the new one; a file that could not be packed is as it was and fails postprocessing;
+2. the campaign's own ``results_processing.postprocessing`` steps, in order (plugins by
    entry-point name or ``./path.py:Class``; :ref:`extending-postprocessing`), after writing the
    decoder's configuration; with ``force``, the campaign's built tables are cleared first
    (:func:`~robovast.results_processing.campaign_tables.clear_tables`), so everything declared is
    built again from the records;
-2. the campaign-end pass (:mod:`robovast.results_processing.campaign_tables`):
+3. the campaign-end pass (:mod:`robovast.results_processing.campaign_tables`):
    :func:`~robovast.results_processing.campaign_tables.declared_tables` — the derived tables every
    run view reads, the tables the campaign's declared plots query, and ``videos`` when a
    ``rosbags_to_webm`` entry asks for it — are built for every run
@@ -2900,9 +2904,9 @@ campaign on the results volume:
    campaign's tables) and ``postprocessing_steps`` (one row per step's output, one per decoded
    table) are written as campaign-level tables. A table that could not be built for a run fails
    postprocessing rather than being skipped;
-3. the provenance record ``_transient/postprocessing.yaml``, written last among the derived data,
+4. the provenance record ``_transient/postprocessing.yaml``, written last among the derived data,
    because its presence is what ``Status.postprocessed`` reads;
-4. the campaign's metadata.
+5. the campaign's metadata.
 
 Everything the campaign does not declare is built when first asked for. Building ahead is never
 needed for an answer, but a campaign about to be analyzed at length can pay for it now: "Build

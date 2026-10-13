@@ -18,15 +18,19 @@
 
 An image topic is bulk data (:data:`~robovast_decode.registry.BULK_TYPES`): its messages
 never become rows. What a viewer needs of it is one frame at a moment, so a
-:class:`FrameIndex` walks a recording's message *headers* -- no message is deserialized --
-and keeps, per message of the topic, its stamp and where it lies in which segment. One
-frame is then read from that place alone (:meth:`FrameIndex.read_frame`), as JPEG no
-wider than :data:`MAX_WIDTH`.
+:class:`FrameIndex` keeps, per message of the topic, its stamp and where it lies in which
+segment, and no message is deserialized to build it. A closed segment whose chunks carry
+message indexes -- every packed one does (:mod:`robovast_decode.pack`) -- gives both from them
+without decompressing anything; any other segment is walked, its message headers read. One
+frame is then read from its place alone (:meth:`FrameIndex.read_frame`) -- of a chunked
+segment, its one chunk decompressed -- as JPEG no wider than :data:`MAX_WIDTH`.
 
 The stamp is the message's ``log_time`` in seconds, the same time base as the ``timestamp``
 of every table decoded from the recording, so a moment found in a table is directly a
 frame here. An index is extended from where its last walk stopped, so the index of a
-recording still being written follows its open segment.
+recording still being written follows its open segment. A segment replaced since the index
+saw it -- a closed recording packed in place -- makes the index :meth:`~FrameIndex.replaced`,
+and a read through it refuses rather than reading another file at its places.
 
 A :class:`FrameTap` is the same index fed by a :class:`~robovast_decode.live.Session` as
 it advances, rather than by walking the recording itself, and it keeps the newest message's
@@ -46,7 +50,9 @@ from PIL import Image as PILImage
 
 from .decode import channel_type, segments
 from .definitions import TypeCatalog
-from .framing import Channel, McapTail, Message, Schema
+from .framing import (OP_CHUNK, OP_MESSAGE, Channel, IndexedFile, McapFormatError, McapTail,
+                      Message, Schema, chunk_messages, chunk_payload, file_identity, message_at,
+                      parse_message, read_record)
 from .images import IMAGE_TYPES, decode, to_pil
 
 #: Widest a frame is served: a wider one is downscaled, keeping its aspect ratio.
@@ -59,14 +65,16 @@ JPEG_QUALITY = 85
 class FrameRef:
     """Where one message of an image topic lies: its stamp, and its place in a segment.
 
-    *offset* is the start of the top-level mcap record that holds the message, *index*
-    which of that record's messages it is: a message written outside a chunk is the only
-    one of its record, one inside a chunk is the *index*-th message the chunk holds.
+    *offset* is the start of the top-level mcap record that holds the message. Which of that
+    record's messages it is: *inner*, its offset in the chunk's records, where a message
+    index said so; otherwise *index*, its ordinal -- a message written outside a chunk is the
+    only one of its record, one inside a chunk is the *index*-th message the chunk holds.
     """
     t: float
     segment: str
     offset: int
     index: int = 0
+    inner: Optional[int] = None
 
 
 class Frames:
@@ -88,6 +96,8 @@ class Frames:
         self.catalog = TypeCatalog()
         self.catalog.add_sidecar(self.bag_dir)
         self._times: List[float] = []
+        #: ``{segment: identity}`` of the segments the entries were taken from, where known.
+        self._identities: Dict[str, Tuple[int, int]] = {}
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -130,21 +140,34 @@ class Frames:
         ref = self.nearest()
         return None if ref is None else (ref.t, self.read_frame(ref))
 
+    def replaced(self) -> bool:
+        """Whether a segment the entries were taken from is gone or another file now."""
+        for path, identity in self._identities.items():
+            try:
+                if file_identity(os.stat(path)) != identity:
+                    return True
+            except FileNotFoundError:
+                return True
+        return False
+
     def _message_data(self, ref: FrameRef) -> bytes:
-        tail = McapTail(ref.segment, ref.offset)
-        records = tail.read()
-        index = 0
-        try:
-            for record in records:
-                if tail.offset != ref.offset:
-                    break
-                if not isinstance(record, Message):
-                    continue
-                if index == ref.index:
-                    return record.data
-                index += 1
-        finally:
-            records.close()
+        with open(ref.segment, "rb") as fh:
+            identity = self._identities.get(ref.segment)
+            if identity is not None and file_identity(os.fstat(fh.fileno())) != identity:
+                raise McapFormatError(f"{ref.segment} was replaced after it was indexed")
+            op, body = read_record(fh, ref.offset)
+        if op == OP_CHUNK:
+            records = chunk_payload(body)
+            if ref.inner is not None:
+                return message_at(records, ref.inner).data
+            messages = chunk_messages(records)
+        elif op == OP_MESSAGE and ref.inner is None:
+            messages = iter((parse_message(body),))
+        else:
+            messages = iter(())
+        for index, message in enumerate(messages):
+            if index == ref.index:
+                return message.data
         raise KeyError(f"{ref.segment} holds no message {ref.index} at offset {ref.offset}: "
                        "the recording changed under the index")
 
@@ -170,14 +193,24 @@ class FrameIndex(Frames):
     def __init__(self, bag_dir: str, topic: str):
         super().__init__(bag_dir, topic)
         self._tails: Dict[str, McapTail] = {}
+        self._indexed: set = set()
         self.extend()
 
     def extend(self) -> int:
         """Add what the recording gained since the last walk; how many frames that was."""
         added = 0
         for path in segments(self.bag_dir):
+            if path in self._indexed:
+                continue
             tail = self._tails.get(path)
             if tail is None:
+                indexed = IndexedFile.open(path)
+                if indexed is not None:
+                    self._identities[path] = indexed.identity
+                    self._indexed.add(path)
+                    added += self._add_indexed(indexed)
+                    continue
+                self._identities[path] = file_identity(os.stat(path))
                 # Schema and channel ids are per file: every segment has its own maps.
                 tail = self._tails[path] = McapTail(path)
             if tail.finished:
@@ -187,6 +220,24 @@ class FrameIndex(Frames):
                     self.typename, self.encoding = typename, encoding
                 self._add(ref)
                 added += 1
+        return added
+
+    def _add_indexed(self, indexed: IndexedFile) -> int:
+        """The topic's messages of a segment with message indexes, from them alone."""
+        channel = indexed.channel(self.topic)
+        if channel is None:
+            return 0
+        schemas = indexed.summary.schemas
+        for schema in schemas.values():
+            self.catalog.add_schema(schema)
+        if self.typename is None:
+            self.typename = channel_type(channel, schemas)
+            self.encoding = channel.message_encoding
+        added = 0
+        for entry in indexed.entries(channel.id):
+            self._add(FrameRef(entry.log_time / 1e9, indexed.path, entry.chunk.offset,
+                               inner=entry.inner))
+            added += 1
         return added
 
 

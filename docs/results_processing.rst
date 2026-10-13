@@ -298,6 +298,39 @@ recorded topics and message counts, appears only when the recorder stops -- a ba
 exactly when it is closed. It is distinct from the job-level ``/rosout`` recording under
 ``_jobs/job-N/logs/``.
 
+.. _results-packed-recordings:
+
+**A finished run's recordings are packed.** Written through, a bag has no chunks, no
+compression and no index: it is several times larger than it needs to be, and finding one
+message in it means reading it from the start. Postprocessing therefore rewrites every closed
+``*.mcap`` file below a run's directory and its job's -- the bag's segments, the job's
+``/rosout`` recording -- in place as an indexed MCAP file: zstd chunks of about 4 MiB, a
+message index per channel after each chunk, and a summary with the statistics, every schema
+and channel and the index of every chunk. A reader that wants the message at one moment reads
+the summary and the topic's message index and decompresses only the chunk that holds it; the
+camera-frame and point-cloud routes read a packed recording that way, and ``ros2 bag``, the
+``mcap`` CLI and ``rosbags`` read it like any other bag.
+
+* **Nothing recorded changes**: every message keeps its topic, sequence number, log and
+  publish times and bytes, in order; schemas, channels, metadata records and attachments are
+  carried over. ``metadata.yaml`` and ``message_definitions.json`` are
+  not touched.
+* **Only what is closed**: a run is packed once it has its ``test.xml``, every recording of it
+  is closed and no live session still reads it, and within it only a file that ends with its
+  footer. A file a killed recorder
+  cut off is read as it is and listed in the postprocessing log as left as recorded. A file
+  that is packed already -- roqsim writes ``roqsim_bag/`` chunked and compressed -- is not
+  touched.
+* **One copy**: the packed file is written beside the original as ``<name>.mcap.tmp``, synced,
+  and renamed over it. A rewrite that fails removes the temporary file, leaves the original as
+  it was, and fails postprocessing with the file and the reason; running postprocessing again
+  packs what is left.
+* **Tables built before stay built**: packing changes a recording's size and none of its
+  messages, so the run's tables built from it are not built again.
+
+The size it saves depends on what was recorded; ``ls -l`` of a bag directory before and after
+``vast campaign postprocess`` shows it for a campaign of your own.
+
 A write-through recorder's I/O pattern differs from a cached one's -- more, smaller writes
 while the run is going instead of a burst at the end. A metric sensitive to the recorder's
 own load (a control-loop rate, a latency measured on the recording host) is therefore not
@@ -1246,9 +1279,12 @@ Postprocessing
 --------------
 
 Postprocessing is what runs when a campaign's runs end. It runs **in the service process** —
-no Kubernetes Job, no container, no execution image — in four parts:
+no Kubernetes Job, no container, no execution image — in five parts:
 
-1. **The campaign's own steps**: the non-``rosbags_*`` entries of
+1. **The runs' recordings are packed** (:ref:`packed recordings <results-packed-recordings>`),
+   so every part after reads the packed files. A file that could not be packed is as it was
+   and fails postprocessing, naming the file and why.
+2. **The campaign's own steps**: the non-``rosbags_*`` entries of
    ``results_processing.postprocessing``, in order — plugins named by entry point
    (``robovast.postprocessing_commands``) or by ``./path.py:Class`` beside the config (see
    :ref:`extending-postprocessing`). A step's output files are tables like any other run file.
@@ -1256,12 +1292,12 @@ no Kubernetes Job, no container, no execution image — in four parts:
    the ``nav2_behavior_tree`` table and writes each run's ``nav2_behaviors.csv``. List them
    with ``vast results postprocess-commands``. A tarball of the campaign is not a step: the
    archive and an export (:ref:`results-export`) are built on request.
-2. **The campaign-end pass** (:ref:`results-campaign-end`).
-3. **The provenance record**, ``_transient/postprocessing.yaml``, written **last** among the
+3. **The campaign-end pass** (:ref:`results-campaign-end`).
+4. **The provenance record**, ``_transient/postprocessing.yaml``, written **last** among the
    derived data: its presence is what makes a campaign read as postprocessed (``postprocessed``
    in the status, the *(postprocessed)* archive variant). A pass that is cancelled or fails before
    it never writes it.
-4. **Metadata**: ``metadata.yaml`` and the provenance graph (:ref:`results-metadata`).
+5. **Metadata**: ``metadata.yaml`` and the provenance graph (:ref:`results-metadata`).
 
 It runs automatically when a campaign's runs finish. To run it again — after editing a
 postprocessing step, or on a campaign imported raw — name the campaign:
