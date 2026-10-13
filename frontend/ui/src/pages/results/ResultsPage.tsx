@@ -5,7 +5,7 @@ import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
 import { useActiveView } from '@/lib/activeView'
 import {
-  robovast, hasRecordedRuns, hasResults, isRunning, type CampaignSummary,
+  robovast, hasRecordedRuns, isRunning, resultsCampaigns, type CampaignSummary,
 } from '@/lib/robovastClient'
 import { KeepAlive } from '@/components/KeepAlive'
 import { lazyView } from '@/lib/lazyView'
@@ -24,9 +24,9 @@ const RunView = lazyView('Run view', () => import('./RunView')
 const DataBrowser = lazyView('Data browser', () => import('./DataBrowser')
   .then((m) => ({ default: m.DataBrowser })))
 
-// Remember the campaign across *sessions* (kept from the old Eval page). Within a session the URL
-// carries it; this is only the seed used when the URL names none — a fresh tab, or a return to the
-// topic after browsing elsewhere.
+// Remember the campaign across *sessions*. Within a session the URL carries it; this is only the
+// seed used when the URL names none — a fresh tab, or a return to the topic after browsing
+// elsewhere.
 const LAST_CAMPAIGN_KEY = 'eval.campaignId'
 
 // The Results topic container: fetches the campaign list once and distributes the campaign selection
@@ -76,7 +76,7 @@ export function ResultsPage({
   // running or not. Everything downstream (Explorer, Run, Data) shares one list because they share
   // one selection, and each filters it to what it can actually show.
   const live = useMemo(
-    () => (campaigns.data?.campaigns ?? []).filter(hasResults),
+    () => resultsCampaigns(campaigns.data?.campaigns ?? []),
     [campaigns.data],
   )
 
@@ -109,7 +109,7 @@ export function ResultsPage({
   // Take the service's answer as the new snapshot. A failed refetch carries no data; keep the list
   // that is on screen rather than blanking every view.
   const adopt = (res: { data?: { campaigns: CampaignSummary[] } }) => {
-    if (res.data) setShown(res.data.campaigns.filter(hasResults))
+    if (res.data) setShown(resultsCampaigns(res.data.campaigns))
   }
 
   const shownIds = new Set(list.map((c) => c.campaign_id))

@@ -3,7 +3,7 @@
 // Markup stays in `pages/admin/`; this is the same split `lib/runMeter.ts` and `lib/eta.ts`
 // make, and the reason those have tests while the panels do not.
 
-import type { ServiceEvent } from './robovastClient'
+import { robovast, type ServiceEvent, type ServiceEvents } from './robovastClient'
 
 /** Palette name for a severity, defaulting rather than throwing on one this build predates. */
 export function eventTone(severity: string): 'error' | 'warning' | 'info' | 'success' {
@@ -34,4 +34,14 @@ export function newestFirst(events: readonly ServiceEvent[]): ServiceEvent[] {
  */
 export function hasMore(returned: number, limit: number): boolean {
   return returned >= limit
+}
+
+/**
+ * What the panel shows: the newest *limit* events.
+ *
+ * The tail of the record, not its beginning: read from the start, a record longer than one
+ * page would show the oldest events and never what just happened.
+ */
+export function fetchPanelEvents(limit: number): Promise<ServiceEvents> {
+  return robovast.latestServiceEvents(limit)
 }

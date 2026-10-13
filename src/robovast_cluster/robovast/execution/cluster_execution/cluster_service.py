@@ -844,6 +844,17 @@ class ClusterService(ServiceBase):
         to order and a rank means something."""
         return True
 
+    def _table_builder(self, campaign_id, campaign_dir, state=None):
+        """Jobs on this cluster, sized from the campaign's record (``table_jobs``)."""
+        from robovast.execution.control_server import stop_checker  # noqa: PLC0415
+
+        from .table_jobs import cluster_pod_builder  # noqa: PLC0415
+        del campaign_id
+        return cluster_pod_builder(
+            str(campaign_dir), namespace=self.namespace, kube_context=self.kube_context,
+            cluster_config=self._cluster_config, admission=self._admission_controller,
+            should_stop=stop_checker(state))
+
     def _admit_scheduling(self, request) -> None:
         """Admit a rank or a hold: see :meth:`_queues_campaigns`."""
         del request
@@ -1144,6 +1155,7 @@ class ClusterService(ServiceBase):
         jobs = [
             JobSummary(job_name=listed.job.metadata.name, status=listed.phase,
                        kind=self._job_kind(listed.job),
+                       **self._job_run(listed.job),
                        display_name=self._job_display_name(campaign_id, listed.job),
                        detail=listed.detail, node=listed.node,
                        started_at=self._job_started_at(listed.job),
@@ -1330,6 +1342,29 @@ class ClusterService(ServiceBase):
         return (JobKind.CALIBRATION
                 if labels.get(JOB_KIND_LABEL) == CALIBRATION_JOB_KIND else JobKind.RUN)
 
+    @classmethod
+    def _job_run(cls, job) -> dict:
+        """``config_name`` and ``run_id`` of the run a Job executes, as :class:`JobSummary` fields.
+
+        Read off the Job's ``RUN_OUTPUT_DIR``, which the backend stamps on every run's pod
+        (:func:`~.kubernetes_backend.run_of_output_dir`): the Job's *name* is a Kubernetes name
+        and carries no run. Empty -- both fields absent -- for a calibration probe, which executes
+        no run, and for a Job that carries no such variable.
+        """
+        from .kubernetes_backend import RUN_OUTPUT_DIR_ENV, run_of_output_dir
+        if cls._job_kind(job) != JobKind.RUN:
+            return {}
+        try:
+            containers = job.spec.template.spec.containers or []
+        except AttributeError:
+            return {}
+        for container in containers:
+            for var in getattr(container, "env", None) or []:
+                if var.name == RUN_OUTPUT_DIR_ENV:
+                    run = run_of_output_dir(var.value)
+                    return {"config_name": run[0], "run_id": run[1]} if run else {}
+        return {}
+
     @staticmethod
     def _job_display_name(campaign_id, job) -> "str | None":
         """The Job's ``job-name-full`` pod annotation, minus the campaign prefix."""
@@ -1349,6 +1384,15 @@ class ClusterService(ServiceBase):
         """
         del campaign_id
         return self._job_artifact_dir(job_name)
+
+    def _job_is_queued(self, campaign_id: str, job_name: str) -> bool:
+        """Whether the admission queue holds *job_name* as planned: admitted, no Job yet."""
+        from .node_admission import PLANNED
+
+        with self._admission_lock:
+            admission = self._admission
+        return admission is not None and \
+            admission.states(campaign_id).get(job_name) == PLANNED
 
     # -- image builds (in-cluster BuildKit Job) -----------------------------
 
@@ -1845,10 +1889,11 @@ class ClusterService(ServiceBase):
         This re-walks the statuses ``pod_block_reason`` just matched, because that function
         reports the reason and not where it came from -- a signature every campaign caller
         shares and none of them needs widened. The two agree by construction: same statuses,
-        same order, same :data:`POD_BLOCKED_REASONS`. An unschedulable pod matches nothing
-        here, which is the empty string, and the caller reads that as "not a container".
+        same order, same :data:`POD_BLOCKED_REASONS`, then the same
+        :func:`pod_wedged_init_container`. An unschedulable pod matches nothing here, which
+        is the empty string, and the caller reads that as "not a container".
         """
-        from .cluster_execution import POD_BLOCKED_REASONS
+        from .cluster_execution import POD_BLOCKED_REASONS, pod_wedged_init_container
         statuses = list(getattr(pod.status, "init_container_statuses", None) or []) + \
             list(getattr(pod.status, "container_statuses", None) or [])
         for cs in statuses:
@@ -1856,7 +1901,8 @@ class ClusterService(ServiceBase):
             waiting = getattr(state, "waiting", None) if state else None
             if waiting and getattr(waiting, "reason", None) in POD_BLOCKED_REASONS:
                 return getattr(cs, "name", None) or ""
-        return ""
+        wedged = pod_wedged_init_container(pod)
+        return (getattr(wedged, "name", None) or "") if wedged is not None else ""
 
     def _retire_build_context(self, build_id: str) -> None:
         """Discard a just-finished build's staged context."""
@@ -1922,6 +1968,11 @@ class ClusterService(ServiceBase):
             "mirror). Nothing about the project's build: section is involved"),
     }
 
+    #: The pull hints above name an image; an init step killed for memory names none.
+    _BUILD_OOM_HINT = (
+        "the build pod's context-fetch step exceeded its memory limit, so the build never "
+        "started. This is the build infrastructure, not the project's build: section")
+
     def _blocked_build_error(self, build_id: str, reason: str, message: str,
                              container: str, terminal: bool):
         """The structured error for a builder pod that cannot start.
@@ -1941,7 +1992,8 @@ class ClusterService(ServiceBase):
         from robovast.service.interface import ImageBuildError
 
         from .cluster_execution import BLOCKED_GRACE_SECONDS
-        hint = self._BUILD_CONTAINER_HINTS.get(container)
+        hint = (self._BUILD_OOM_HINT if reason == "OOMKilled"
+                else self._BUILD_CONTAINER_HINTS.get(container))
         if hint is None:
             # An unschedulable pod has no offending container -- the scheduler never got
             # that far -- and its message is the per-node accounting, which is the diagnosis.
@@ -2251,9 +2303,9 @@ class ClusterService(ServiceBase):
 
     #: The run dirs inside a Job, newest first. Only **real** run dirs: a campaign root holds
     #: ``_jobs/`` beside them (and the other names in
-    #: :data:`~robovast.common.campaign_data.RESERVED_CAMPAIGN_DIRS`), and an earlier version of
-    #: this took the newest file anywhere under the root -- which was reliably a job artifact, so
-    #: it named the run ``_jobs/batch-0`` and pointed every reader at a subtree with no run in it.
+    #: :data:`~robovast.common.campaign_data.RESERVED_CAMPAIGN_DIRS`), and the newest file
+    #: anywhere under the root is reliably a job artifact -- taking it would name the run
+    #: ``_jobs/batch-0`` and point every reader at a subtree with no run in it.
     #:
     #: The shape is the filter: ``<config>/<run-number>``, the run number being digits. Matched on
     #: the layout rather than on a list of names to exclude, because the layout is what the readers
@@ -2546,8 +2598,7 @@ class ClusterService(ServiceBase):
         **scenario Jobs** running on purpose (see :meth:`_adopts_on_restart`), so this
         must never widen to them. Aux pods are owned by the service pod and thus
         garbage-collected by Kubernetes when it is replaced; this is the backstop for
-        the cases GC misses (e.g. the ownerReference could not be resolved), and the
-        successor to the old launcher-side ``reap_orphaned_runs``. Best-effort.
+        the cases GC misses (e.g. the ownerReference could not be resolved). Best-effort.
         """
         try:
             core = self._k8s()

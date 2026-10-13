@@ -1,8 +1,8 @@
 // Shared-candidate code: this file imports only 'three' / 'three/addons' and its siblings in this
 // directory -- keep it free of robovast imports (see README.md here).
 //
-// A plain-three viewport for the scene descriptor: renderer + camera + lights + ground grid +
-// orbit controls + the Z-up wrapper group (the descriptor is Z-up like ROS; the wrapper rotates it
+// A plain-three viewport for the scene: renderer + camera + lights + ground grid +
+// orbit controls + the Z-up wrapper group (the scene is Z-up like ROS; the wrapper rotates it
 // -PI/2 about X into three's Y-up -- sceneLoader's skin binding relies on exactly this rotation).
 // Hosts mount it into a container element, hand it the loader's scene root, and animate through
 // the loader's imperative API (jointMap/basePose); the viewport just renders continuously.
@@ -36,8 +36,9 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import { CANVAS, GRID, GRID_CENTER } from '@/colors'
 import { dollyToCursor } from './cursorDolly'
 import { MIN_PIVOT_M, frameObject, measureDepth, pickObject, retargetPivot } from './pivot'
+import { letterbox, type SceneCamera } from './sceneCameras'
 
-/** The descriptor's optional baked initial camera (a MuJoCo free camera, Z-up world frame). */
+/** The scene's optional baked initial camera (a MuJoCo free camera, Z-up world frame). */
 export interface SceneViewSpec {
   lookat?: number[]
   distance?: number
@@ -54,7 +55,7 @@ export interface ViewportOptions {
 // The Z-up -> Y-up wrapper rotation; also used to bring the (Z-up) camera spec into three coords.
 const UP_MATRIX = new Matrix4().makeRotationX(-Math.PI / 2)
 
-// Floor for the assumed scene extent, matching the ground grid: a descriptor holding one small robot
+// Floor for the assumed scene extent, matching the ground grid: a scene holding one small robot
 // should still see the grid it stands on, and an empty one has no bounds to measure at all.
 const MIN_SCENE_RADIUS_M = 20
 
@@ -67,12 +68,16 @@ const NEAR_FLOOR_M = 0.01
 // somewhere else and scrolling again re-measures.
 const WHEEL_GESTURE_GAP_MS = 150
 
+// What surrounds a sensor's picture where the canvas is not its shape: the bars of a letterbox, so the
+// picture's edge is the sensor's and not the world's background running on past it.
+const LETTERBOX = new Color(0x000000)
+
 // How long a double-click's flight to its target takes. Long enough to read as travel rather than a
 // cut, short enough not to be something to sit through.
 const FOCUS_MS = 260
 
 /**
- * How far below z=0 to sink the ground grid so a descriptor's floor plane hides it, when the plane
+ * How far below z=0 to sink the ground grid so a scene's floor plane hides it, when the plane
  * the two share is `viewDistance` metres from the camera.
  *
  * A fixed millimetre does not do it. A 24-bit depth buffer resolves roughly z^2 / (near * 2^24)
@@ -134,7 +139,7 @@ export class SceneViewport {
   private sceneRadius = MIN_SCENE_RADIUS_M
   private sceneCenter = new Vector3()
   // The view last framed, so `resetView` has a home to return to. It starts as the empty spec the
-  // constructor frames with, which is exactly where a descriptor carrying no baked camera stands.
+  // constructor frames with, which is exactly where a scene carrying no baked camera stands.
   private view: SceneViewSpec = {}
   private onWheel: (event: WheelEvent) => void
   private onPointerDown: (event: PointerEvent) => void
@@ -148,6 +153,8 @@ export class SceneViewport {
   // The in-flight double-click focus, if any: where the camera is travelling from and to.
   private focus: { from: Vector3; to: Vector3; fromT: Vector3; toT: Vector3; t0: number } | null =
     null
+  // The sensor camera the scene is shown through, or null for the free orbit view.
+  private viewpoint: SceneCamera | null = null
 
   constructor(container: HTMLElement, opts: ViewportOptions = {}) {
     this.container = container
@@ -173,7 +180,7 @@ export class SceneViewport {
     fill.position.set(-2.2, 2.0, -1.8)
     this.scene.add(fill)
 
-    // Ground grid below z=0, so a descriptor's floor plane covers it rather than fighting it; how
+    // Ground grid below z=0, so a scene's floor plane covers it rather than fighting it; how
     // far below is a function of where the camera is (updateGridDepth, every frame).
     this.grid = new GridHelper(
       40,
@@ -194,12 +201,13 @@ export class SceneViewport {
     // Drag bindings stay OrbitControls'; its dolly does not, because shrinking the orbit radius
     // stalls the wheel a short way from the pivot -- cursorDolly.ts flies instead.
     this.controls.enableZoom = false
-    this.setView({}) // sane default until the descriptor's baked view arrives
+    this.setView({}) // sane default until the scene's baked view arrives
 
     // Native listener, non-passive: a passive one cannot preventDefault, and without that the wheel
     // scrolls the page under the panel instead of moving the camera.
     this.onWheel = (event: WheelEvent) => {
       event.preventDefault()
+      if (this.viewpoint) return // a sensor's view is where the sensor is, not where the wheel goes
       const now = event.timeStamp
       if (now - this.lastWheelAt > WHEEL_GESTURE_GAP_MS) this.anchor(event)
       this.lastWheelAt = now
@@ -221,12 +229,15 @@ export class SceneViewport {
     // pointerdown runs. Both rotate and pan read the pivot distance, so this one hook is what scales
     // them: it costs one raycast per gesture, and never one per frame.
     this.onPointerDown = (event: PointerEvent) => {
+      if (this.viewpoint) return
       this.focus = null
       this.anchor(event)
     }
     this.renderer.domElement.addEventListener('pointerdown', this.onPointerDown, { capture: true })
 
-    this.onDoubleClick = (event: MouseEvent) => this.focusUnderCursor(event)
+    this.onDoubleClick = (event: MouseEvent) => {
+      if (!this.viewpoint) this.focusUnderCursor(event)
+    }
     this.renderer.domElement.addEventListener('dblclick', this.onDoubleClick)
 
     this.resizeObserver = new ResizeObserver(() => this.resize())
@@ -234,12 +245,61 @@ export class SceneViewport {
     this.resize()
 
     this.renderer.setAnimationLoop(() => {
+      if (this.viewpoint) {
+        this.renderViewpoint(this.viewpoint)
+        return
+      }
       this.advanceFocus()
       this.controls.update()
       this.updateFrustum()
       this.updateGridDepth()
       this.renderer.render(this.scene, this.camera)
     })
+  }
+
+  /**
+   * Show the scene through a sensor camera of the loaded scene, or (`null`) through the free orbit
+   * camera again, which keeps the framing it had.
+   *
+   * The sensor camera is a node of the scene graph, so it moves with its body as the motion source
+   * seats poses, and its projection is the sensor's own. The picture is letterboxed to the sensor's
+   * aspect, and the ground grid -- a viewer's aid, not part of the world -- is hidden while it shows.
+   */
+  setViewpoint(viewpoint: SceneCamera | null): void {
+    this.viewpoint = viewpoint
+    this.focus = null
+    this.controls.enabled = viewpoint === null
+    this.grid.visible = viewpoint === null
+    if (!viewpoint) {
+      const { width, height } = this.canvasSize()
+      this.renderer.setScissorTest(false)
+      this.renderer.setViewport(0, 0, width, height)
+    }
+  }
+
+  private canvasSize(): { width: number; height: number } {
+    return { width: this.container.clientWidth, height: this.container.clientHeight }
+  }
+
+  /** One frame through *viewpoint*: bars over the whole canvas, then the scene in the box. */
+  private renderViewpoint(viewpoint: SceneCamera): void {
+    const { width, height } = this.canvasSize()
+    if (!width || !height) return
+    const box = letterbox(width, height, viewpoint.aspect ?? width / height)
+    const camera = viewpoint.camera
+    const aspect = viewpoint.projectionAspect ?? box.width / box.height
+    if (camera.aspect !== aspect) {
+      camera.aspect = aspect
+      camera.updateProjectionMatrix()
+    }
+    this.renderer.setScissorTest(false)
+    this.renderer.setViewport(0, 0, width, height)
+    this.renderer.setClearColor(LETTERBOX)
+    this.renderer.clear()
+    this.renderer.setViewport(box.x, box.y, box.width, box.height)
+    this.renderer.setScissor(box.x, box.y, box.width, box.height)
+    this.renderer.setScissorTest(true)
+    this.renderer.render(this.scene, camera)
   }
 
   /** Normalized device coordinates of a pointer event within the canvas. */
@@ -312,7 +372,7 @@ export class SceneViewport {
     else this.sceneCenter.set(0, 0, 0)
   }
 
-  /** Frame the camera per the descriptor's baked view (or defaults for missing fields). */
+  /** Frame the camera per the scene's baked view (or defaults for missing fields). */
   setView(view: SceneViewSpec): void {
     this.view = view
     const { position, target } = cameraFromView(view)
@@ -323,7 +383,7 @@ export class SceneViewport {
     this.controls.update()
   }
 
-  /** Put the camera back where the scene opened -- the descriptor's baked view, or the default one.
+  /** Put the camera back where the scene opened -- the scene's baked view, or the default one.
    *
    *  The way *out* of a lost view, and it exists because there is no way back by hand: the wheel
    *  flies rather than orbiting, so a few notches at a wall can leave the camera inside geometry or

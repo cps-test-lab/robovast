@@ -11,8 +11,8 @@
 // is the finished run's.
 //
 // Two "dropdown dialogs" drive it: a Run picker (the shared Explorer campaign→config→run tree) and an
-// Edit-visualization editor (Monaco, same style as the config editor) that saves the campaign's
-// `visualization:` block as a .vast override and reloads the panels.
+// Edit-visualization editor (Monaco, same style as the config editor) that writes the campaign's
+// `visualization:` block back into its `_config/<name>.vast` in place and reloads the panels.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -40,7 +40,7 @@ import EditRoundedIcon from '@mui/icons-material/EditRounded'
 import PodcastsRoundedIcon from '@mui/icons-material/PodcastsRounded'
 import SensorsRoundedIcon from '@mui/icons-material/SensorsRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
-import { robovast, hasRecordedRuns, isRunning, type CampaignSummary } from '@/lib/robovastClient'
+import { robovast, isRunning, resultsCampaigns, type CampaignSummary } from '@/lib/robovastClient'
 import {
   firstRunSelection,
   resolveSelection,
@@ -52,22 +52,17 @@ import { CAMPAIGN_SEL, type ResultsSel } from '@/lib/hashNav'
 import { openCampaignConfig, openResultsView } from '@/lib/nav'
 import { mayHaveStagedConfig } from '@/lib/campaignConfig'
 import { ConfigIcon, ExplorerIcon } from '@/components/viewIcons'
-import { PlaybackClock, useClock, type DataRow } from '@robovast/panel-kit'
+import { PlaybackClock, useClock } from '@robovast/panel-kit'
 import { dbDataProvider, describeQuery } from '@/lib/panels/dataProvider'
-import { ANY_TABLE } from '@/lib/panels/liveFeed'
 import { parsePanels } from '@/lib/panels/parsePanels'
 import { PanelHost } from '@/lib/panels/PanelHost'
+import { useRunTimeline } from '@/lib/panels/runTimeline'
 import { ResultsTree, runsQuery } from './ResultsTree'
 import { panelTopics, useTap } from './tap'
-import { jobNameOf } from '@/components/runLog/useJobLogStream'
+import { jobOfRun } from '@/lib/jobRun'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 import { resetSceneViews, useSceneResetAvailable } from '@/panels/run_view/sceneReset'
 import '@/panels/run_view' // registers the built-in panels
-
-// Tables whose timestamp column can define the run's timeline; the union of their ranges is used.
-// The fallback for a campaign that declares no `visualization.timeline`: the simulator's own pose
-// table, and the postprocessed rosbag tables.
-const TIME_TABLES = ['sim_poses', 'poses', 'behaviors', 'scenario_timestamps']
 
 /** The run view's settings menu: does the run end at its scenario's verdict or run on through the
  *  teardown, and -- when a 3D view is mounted -- put its camera back where the scene opened.
@@ -263,19 +258,6 @@ function TapTail({ tap }: { tap: ReturnType<typeof useTap> }) {
   )
 }
 
-/** The widest time span the rows of a batch cover in `timeCol`, or null when none carries one. */
-function batchSpan(rows: DataRow[], timeCol: string): [number, number] | null {
-  let lo = Infinity
-  let hi = -Infinity
-  for (const row of rows) {
-    const t = Number(row[timeCol])
-    if (!Number.isFinite(t)) continue
-    if (t < lo) lo = t
-    if (t > hi) hi = t
-  }
-  return lo <= hi ? [lo, hi] : null
-}
-
 export function RunView({
   active,
   campaignId,
@@ -299,12 +281,11 @@ export function RunView({
 
   const [runAnchor, setRunAnchor] = useState<HTMLElement | null>(null)
 
-  // Only campaigns that recorded runs can be replayed, so they are the only ones this view offers —
-  // the picker never lists a campaign whose store was never written, and a selection inherited from
-  // another Results view (the campaign is shared) is treated as no selection here rather than
-  // queried into a "no store to read" error. A campaign still running is offered like any other:
-  // its `run_view` answers while it runs, and a run still recording is read live.
-  const replayable = useMemo(() => campaigns.filter(hasRecordedRuns), [campaigns])
+  // The campaigns every Results view offers (`resultsCampaigns`): recorded runs, or trials under
+  // way, whose `run_view` answers while they run and whose runs still recording are read live. A
+  // selection inherited from another Results view that this one does not offer is treated as no
+  // selection rather than queried into a "no store to read" error.
+  const replayable = useMemo(() => resultsCampaigns(campaigns), [campaigns])
   const available = !!campaignId && replayable.some((c) => c.campaign_id === campaignId)
   const summary = replayable.find((c) => c.campaign_id === campaignId)
   const running = !!summary && isRunning(summary)
@@ -397,7 +378,21 @@ export function RunView({
   // live, since a tap is recorded against the run it was opened on and nothing else.
   const [nowOn, setNowOn] = useState(false)
   useEffect(() => setNowOn(false), [runKey])
-  const tapJob = run && live ? jobNameOf(run.configName, run.runId) : null
+  // A tap takes a listed job, and a run is not one: the run's job is the one the service says
+  // executes it. Listed only while the tap is wanted, under the Monitor's key, and polled so a run
+  // whose job starts later is found.
+  const jobs = useQuery({
+    queryKey: ['jobs', campaignId],
+    queryFn: () => robovast.listJobs(campaignId),
+    enabled: nowOn && live,
+    refetchInterval: 5000,
+  })
+  const tapJob = run && live && jobs.data ? (jobOfRun(jobs.data.jobs, run)?.job_name ?? null) : null
+  const noTap = jobs.isError
+    ? `The campaign's jobs could not be listed: ${(jobs.error as Error).message}`
+    : jobs.data && !tapJob
+      ? 'No listed job executes this run, so there is nothing to tap.'
+      : null
   const topics = useMemo(() => panelTopics(specs), [specs])
   const tap = useTap(nowOn && live, campaignId, tapJob, topics)
   // The served list is never empty -- the playback transport is contributed for every campaign --
@@ -408,85 +403,9 @@ export function RunView({
   // that declares nothing is not bare.
   const bare = !!panels.data?.transport_only
 
-  // Discover the timeline range and set it on the clock, in order of authority:
-  //   1. an explicit `visualization.timeline` (a sim's own table with a `t` column);
-  //   2. the union of the standard time tables (the simulator's poses, the postprocessed nav ones).
-  // Depend on scalars rather than object identity, which churns on every panels refetch.
-  //
-  // For a live run the range is read the same way once, then grows with the rows: every batch the
-  // provider's stream delivers -- whichever table, since the tables the panels read are the ones
-  // the socket carries -- moves `hi` to its latest sample, and the clock follows. When the stream
-  // ends the range is read once more (the finalised tables) and following ends there.
-  const tlTable = panels.data?.timeline?.table
-  const tlCol = panels.data?.timeline?.time_column
-  useEffect(() => {
-    if (!provider || !run) return
-    let alive = true
-    const timeCol = tlCol ?? 'timestamp'
-
-    const readRange = async (): Promise<[number, number] | null> => {
-      const lookups = tlTable
-        ? [provider.timeRange(tlTable, tlCol).catch(() => null)]
-        : TIME_TABLES.map((t) => provider.timeRange(t).catch(() => null))
-      const valid = (await Promise.all(lookups)).filter((r): r is [number, number] => !!r)
-      if (!valid.length) return null
-      return [Math.min(...valid.map((r) => r[0])), Math.max(...valid.map((r) => r[1]))]
-    }
-
-    let haveRange = false
-    readRange().then((range) => {
-      if (!alive || !range) return
-      haveRange = true
-      clock.setRange(range[0], range[1])
-      if (provider.live) clock.follow()
-    })
-
-    const unsubscribe = provider.live
-      ? provider.subscribeLive(ANY_TABLE, (event) => {
-          if (!alive) return
-          if (event.kind === 'batch') {
-            // A table with its own time column is not the timeline's; the declared one, or the
-            // default, is what the rows are measured in.
-            if (tlTable && event.table !== tlTable) return
-            const span = batchSpan(event.rows, timeCol)
-            if (!span) return
-            const { lo, hi } = clock.getSnapshot()
-            if (haveRange) {
-              clock.setRange(Math.min(lo, span[0]), Math.max(hi, span[1]))
-            } else {
-              haveRange = true
-              clock.setRange(span[0], span[1])
-              clock.follow()
-            }
-          } else if (event.kind === 'eof') {
-            readRange().then((range) => {
-              if (!alive) return
-              if (range) clock.setRange(range[0], range[1])
-              clock.finish()
-            })
-          }
-        })
-      : null
-
-    // Where the *trial* ended, which the range above deliberately does not encode: `setRange`
-    // is the whole recording, so showing the shutdown phase restores it without re-querying.
-    // Not for a live run: it has no verdict yet by definition, and the toggle says there is
-    // nothing to trim, which is true until the run ends and the view becomes the finished run's.
-    if (provider.live) clock.setVerdict(null)
-    else provider
-      .timeRange('scenario_timestamps')
-      .catch(() => null)
-      .then((range) => {
-        // `[t, t]`: one row per run. Null for a run that reached no verdict, and for a
-        // campaign postprocessed before the verdict was recorded -- the toggle then says
-        // there is nothing to trim rather than trimming to an invented moment.
-        if (alive) clock.setVerdict(range ? range[1] : null)
-      })
-    return () => {
-      alive = false
-      unsubscribe?.()
-    }
-  }, [provider, clock, tlTable, tlCol, run])
+  // The run's timeline on the clock: read once, and for a live run grown with its rows while the
+  // clock follows the edge (see `useRunTimeline`).
+  const liveError = useRunTimeline(provider, clock, panels.data?.timeline)
 
   // The two dropdown dialogs are Popovers anchored to their trigger buttons.
   const [editAnchor, setEditAnchor] = useState<HTMLElement | null>(null)
@@ -561,10 +480,10 @@ export function RunView({
         {/* Beside the picker it feeds: the reload is what puts a newly finished campaign into
             that tree. */}
         <RefreshResultsButton state={refresh} />
-        {/* Refused while the campaign runs: saving writes a .vast override into the campaign's own
-            `_config/`, which the runs that have not started yet are configured from. Editing the
-            view would change the experiment. A tooltip on a span, since a disabled button fires
-            no events for one to listen to. */}
+        {/* Refused while the campaign runs: saving writes into the campaign's own
+            `_config/<name>.vast`, which the runs that have not started yet are configured from.
+            Editing the view would change the experiment. A tooltip on a span, since a disabled
+            button fires no events for one to listen to. */}
         <Tooltip
           title={running
             ? 'Not while the campaign is running — saving edits its configuration, which its '
@@ -701,7 +620,16 @@ export function RunView({
               <b>Edit visualization</b> — to show anything else.
             </Alert>
           )}
-          {nowOn && live ? <TapTail tap={tap} /> : null}
+          {liveError ? (
+            <Alert severity="error" variant="outlined">
+              The live stream of this run failed: {liveError}
+            </Alert>
+          ) : null}
+          {nowOn && live
+            ? noTap
+              ? <Alert severity="info" variant="outlined">{noTap}</Alert>
+              : <TapTail tap={tap} />
+            : null}
           <Box
             // The panels are the point of this view, so they get the whole window rather than
             // sitting inside the page gutter: the negative margins cancel App's `p: 3` on the main
@@ -718,7 +646,8 @@ export function RunView({
 }
 
 // The 'edit visualization' dropdown: loads the campaign's `visualization:` block, edits it in Monaco
-// (same style as the config editor), and on Save writes a .vast override, then reloads the panels.
+// (same style as the config editor), and on Save writes it into the campaign's `_config/<name>.vast`
+// in place, then reloads the panels.
 // Save is enabled only when the text actually changed — reloading is otherwise pointless.
 function VisualizationEditor({
   campaignId,

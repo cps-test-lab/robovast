@@ -150,8 +150,8 @@ def test_composing_to_run_still_asks_and_still_fails(exec_path_down):
 def test_a_generator_needing_a_container_is_skipped_rather_than_failing_the_report(
         no_helper_container):
     """The generate step is the third thing composition asks a container for, after the
-    world query and a variation's helper image -- and the one whose absence used to take
-    the whole report with it. What it would have written does not change how many
+    world query and a variation's helper image -- and its absence must not take the whole
+    report with it. What it would have written does not change how many
     configurations the file expands to, so the count is still the answer."""
     report = validate_project_file(GENERATE_VAST)
     assert report["configs"] == 4, "four noise levels, and none of them need a container"

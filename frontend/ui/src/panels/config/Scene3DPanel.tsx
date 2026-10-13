@@ -68,7 +68,7 @@ function Scene3DPanel({ spec, config, source }: ConfigPanelProps) {
     }
   }, [])
 
-  // The world. Loaded once per descriptor; the markers below re-attach without touching it, which
+  // The world. Loaded once per scene; the markers below re-attach without touching it, which
   // is what makes clicking through configurations instant.
   useEffect(() => {
     if (!url) return

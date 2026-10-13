@@ -38,12 +38,14 @@ The pure helpers (hash, Dockerfile, error classification) are shared with the lo
 path in ``robovast.service.image_build``.
 """
 
+import copy
 import logging
 from pathlib import Path
 
 from robovast.common.execution import GIT_TOKEN_SECRET_ID, resolve_sidecar_image
 
 from . import pod_access
+from .node_placement import BUILD_CLIENT_RESOURCES, transient_pod_affinity
 
 logger = logging.getLogger(__name__)
 
@@ -383,13 +385,11 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
         #
         # SSL_CERT_FILE stays HERE as well, and the duplication is deliberate. It covers Go's
         # *system* pool, which is what fetches the OAuth token from the realm named in
-        # WWW-Authenticate -- and with only the toml in place that fetch once failed with
-        # "x509: certificate signed by unknown authority" *after* the image had been built and
-        # exported. That evidence was gathered when client and daemon were one process, so it
-        # cannot say which of them made the request, and BuildKit has paths for both depending
-        # on what the session negotiates. Splitting the process is exactly what would turn that
-        # ambiguity into a failure, so both sides carry the bundle; one of them may be
-        # redundant and there is no way to tell which from what we know.
+        # WWW-Authenticate -- and with only the toml in place that fetch can fail with
+        # "x509: certificate signed by unknown authority" *after* the image has been built and
+        # exported. Which of client and daemon makes that request is not known: BuildKit has
+        # paths for both depending on what the session negotiates. So both sides carry the
+        # bundle; one of them may be redundant and there is no way to tell which.
         command = ['sh', '-c',
                    f"{{ cat {_SYSTEM_CA_BUNDLE} 2>/dev/null || true; "
                    f"cat {_CA_MOUNT}/ca.pem; }} > {_CA_BUNDLE} && "
@@ -452,7 +452,10 @@ def build_job_manifest(*, build_id: str, image_ref: str, campaign_label: str,
                         # relaxed: a client needs no privilege the daemon has.
                         'securityContext': {'runAsUser': 1000, 'runAsGroup': 1000},
                         'volumeMounts': build_mounts,
+                        # A client: the build's own work is the daemon's.
+                        'resources': copy.deepcopy(BUILD_CLIENT_RESOURCES),
                     }],
+                    'affinity': transient_pod_affinity(),
                 },
             },
         },

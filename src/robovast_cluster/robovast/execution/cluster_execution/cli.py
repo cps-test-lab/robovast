@@ -880,10 +880,12 @@ def run_cleanup(campaign, namespace, context):
     # level they would make `vast login` and `vast campaign wait` pay for the cluster stack.
     from .cluster_execution import _label_safe_campaign  # pylint: disable=import-outside-toplevel
     from .cluster_execution import cleanup_cluster_campaign, get_cluster_job_counts_per_campaign
+    from .kube_client import core_v1_client  # pylint: disable=import-outside-toplevel
     from .kubernetes import check_kubernetes_access  # pylint: disable=import-outside-toplevel
-    from .kubernetes import get_kubernetes_client
     try:
-        k8s_client = get_kubernetes_client(context=context)
+        # Raises naming both configuration sources when neither loads, rather than handing
+        # the access check a client that is not there.
+        k8s_client = core_v1_client(context)
         click.echo("Checking Kubernetes cluster access...")
         k8s_ok, k8s_msg = check_kubernetes_access(k8s_client, namespace=namespace)
         if not k8s_ok:
@@ -1053,6 +1055,9 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
             raise click.ClickException(
                 f"no robovast-service found in namespace {namespace!r}. "
                 "Run 'vast cluster setup <flavor>' first.")
+        from .cluster_setup import get_cluster_config  # pylint: disable=import-outside-toplevel
+        cluster_config = get_cluster_config(config_name)
+        cluster_config.restore_from_setup_kwargs(dict(config_kwargs or {}))
         # Recovered from the live Ingress, not remembered: an upgrade is run by whoever
         # is upgrading, not necessarily by whoever set the cluster up. It doubles as the
         # registry prefix, so passing it is what stops an upgrade from rebuilding the
@@ -1246,7 +1251,7 @@ def upgrade(namespace, kube_context, timeout, no_restart, yes, results_storage_s
         # The echo is free: these refs were resolved in order to declare the DaemonSet.
         click.echo("✓ upgraded and ready")
         from .image_warm import warm_family_images  # pylint: disable=import-outside-toplevel
-        warmed = warm_family_images(namespace, kube_context)
+        warmed = warm_family_images(namespace, kube_context, cluster_config=cluster_config)
         if warmed:
             click.echo("  prewarming on the nodes: "
                        + ", ".join(ref.rsplit("/", 1)[-1] for ref in warmed))

@@ -20,10 +20,10 @@ Every campaign is driven by a :class:`~robovast.execution.controller.CampaignCon
 that runs **in the driving process** — the ``robovast-service``. The controller advances a shared
 :class:`ControllerState`; the service reads its :meth:`~ControllerState.snapshot`
 directly to answer ``GET /campaigns/{id}/status`` (no separate control server, no
-pod-IP hop — those existed only when the controller lived in its own pod).
+pod-IP hop).
 
 The status *contract* it carries (``Phase``, ``Status`` and the phase-group
-predicates) now lives in :mod:`robovast.client.status`, so foundational ``common``
+predicates) lives in :mod:`robovast.client.status`, so foundational ``common``
 modules can depend on it downward instead of ``common`` reaching up into
 ``execution``. It is **re-exported here verbatim**, so ``from
 robovast.execution.control_server import Status`` (and ``Phase`` etc.) keeps

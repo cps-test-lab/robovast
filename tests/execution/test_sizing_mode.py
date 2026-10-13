@@ -189,6 +189,45 @@ def test_heavy_throttling_on_the_bootstrap_stops_the_campaign(monkeypatch):
         r._refuse_a_bootstrap_that_did_not_hold("/campaign", "j-0")
 
 
+def test_the_bootstrap_is_judged_over_the_trial_the_job_ran(monkeypatch, tmp_path):
+    """As a probe is: the job's counters span its containers' bring-up and teardown too, and
+    only the trial is what the allocation was for."""
+    (tmp_path / "cfg/1").mkdir(parents=True)
+    (tmp_path / "cfg/1" / "test.xml").write_text(
+        '<testsuite errors="0" failures="0" tests="1"><testcase name="t" time="89.0">'
+        '<properties><property name="start_time" value="1200.0"/></properties>'
+        '</testcase></testsuite>')
+    r = _runner_on_bootstrap(None)
+    r._job_runs_by_name = {"j-0": ["cfg/1"]}
+    seen = {}
+
+    def _read(*a, **k):
+        seen["windows"] = k.get("windows")
+        return {}
+
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.node_calibration.read_probe_measurement", _read)
+    r._refuse_a_bootstrap_that_did_not_hold(str(tmp_path), "j-0")
+    assert seen["windows"] == [(1200.0, 1289.0)]
+
+
+def test_a_run_with_no_window_leaves_the_bootstrap_on_the_whole_life(monkeypatch, tmp_path):
+    """The stricter reading, never a looser one: a run whose verdict records no window
+    cannot be cut to its trial."""
+    r = _runner_on_bootstrap(None)
+    r._job_runs_by_name = {"j-0": ["cfg/0"]}
+    seen = {}
+
+    def _read(*a, **k):
+        seen["windows"] = k.get("windows", "unset")
+        return {}
+
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.node_calibration.read_probe_measurement", _read)
+    r._refuse_a_bootstrap_that_did_not_hold(str(tmp_path), "j-0")
+    assert seen["windows"] is None
+
+
 def test_a_calibrated_campaign_is_not_second_guessed(monkeypatch):
     """Where the figure was MEASURED on the node, a run that hits it is reported and kept --
     `run_validity_view`'s job. Discarding it would be worse than labelling it."""
@@ -601,6 +640,28 @@ def test_a_probe_that_lost_a_container_fails_the_campaign(monkeypatch):
     assert "n1" in message and "simulation" in message and "exit 1" in message
     assert r.captured, "the dead container's log outlives its pod by minutes, not hours"
     assert r.deleted == ["probe-a"], "a pinned pod restarting holds its node until deleted"
+    assert r.freed == [("n1", "probe-a")] and not r._probes
+
+
+def test_a_probe_whose_scenario_ended_without_its_marker_fails_the_campaign(monkeypatch):
+    """Its uploader would wait for the marker until the deadline, holding the node, and the
+    probe would be reported only as not completing. Every run would meet the same fault."""
+    from robovast.execution.backends import CampaignConfigError
+
+    detail = ("NoDoneMarker: container robovast ended (Error, exit 1) without writing its "
+              "done marker")
+    ended = {"probe-a": {"detail": detail, "containers": [], "node": "n1",
+                         "pod_name": "a-probe-pod", "witness": "uploader"}}
+    r = _sweep_runner(monkeypatch, {})
+    r._MARKER_CHECK_GRACE_SECONDS = 0
+    monkeypatch.setattr(kb, "scenario_ended_job_forensics",
+                        lambda core, ns, label, job_names=None: ended)
+    monkeypatch.setattr(kb, "scenario_done_marker_written", lambda ns, pod, witness: False)
+    with pytest.raises(CampaignConfigError) as raised:
+        _sweep(r)
+    message = str(raised.value)
+    assert "n1" in message and "robovast" in message and "exit 1" in message
+    assert r.captured and r.deleted == ["probe-a"]
     assert r.freed == [("n1", "probe-a")] and not r._probes
 
 

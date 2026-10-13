@@ -202,7 +202,7 @@ else
 
     # The scenario's recording, <run>/rosbag2: started here, before the runner, rather than
     # by a bag_record action in the scenario, so that what a run records is a property of
-    # the campaign (its `recording:` block, arriving as the RECORD_* variables) and not of
+    # the campaign (its `execution.recording` block, arriving as the RECORD_* variables) and not of
     # the scenario text. The bag goes into the run's directory, which a campaign job names
     # (RUN_OUTPUT_DIR); a container started outside a campaign -- a scenario tried in an
     # image -- has no run directory and records the infrastructure bag alone.
@@ -210,9 +210,13 @@ else
     # RECORD_TOPICS is `all` or space-separated entries, a regex when it starts with `^`:
     # names go to --topics, regexes joined to one -e pattern. RECORD_EXCLUDE is one regex,
     # RECORD_EXCLUDE_TYPES space-separated type names, RECORD_USE_SIM_TIME true or false.
-    # Absent, everything is recorded in wall time. Hidden topics are always admitted: an
-    # action's `/<name>/_action/feedback` and `status` are hidden, rosbag2 drops a hidden
-    # topic even when it is named, and the action tables are read from exactly those.
+    # RECORD_LEFT_OUT is space-separated topic names, each excluded by exact match: the
+    # simulator's streams it computes only while subscribed, which a recording of every topic
+    # would otherwise make it compute (frozen per configuration at composition, empty when the
+    # campaign names its topics). Absent, everything is recorded in wall time.
+    # Hidden topics are always admitted: an action's `/<name>/_action/feedback` and `status`
+    # are hidden, rosbag2 drops a hidden topic even when it is named, and the action tables
+    # are read from exactly those.
     scenario_record_args() {
         SCENARIO_RECORD_ARGS=(bag record -o "${RUN_OUTPUT_DIR}/rosbag2" ${RECORD_OPTIONS} --include-hidden-topics)
         if [ "${RECORD_USE_SIM_TIME:-false}" = "true" ]; then
@@ -235,8 +239,12 @@ else
                 SCENARIO_RECORD_ARGS+=(-e "${_regex}")
             fi
         fi
-        if [ -n "${RECORD_EXCLUDE:-}" ]; then
-            SCENARIO_RECORD_ARGS+=(--exclude-regex "${RECORD_EXCLUDE}")
+        local _exclude="${RECORD_EXCLUDE:-}"
+        if [ -n "${RECORD_LEFT_OUT:-}" ]; then
+            _exclude="${_exclude:+(${_exclude})|}^(${RECORD_LEFT_OUT// /|})\$"
+        fi
+        if [ -n "${_exclude}" ]; then
+            SCENARIO_RECORD_ARGS+=(--exclude-regex "${_exclude}")
         fi
         if [ -n "${RECORD_EXCLUDE_TYPES:-}" ]; then
             SCENARIO_RECORD_ARGS+=(--exclude-topic-types ${RECORD_EXCLUDE_TYPES})
@@ -245,6 +253,9 @@ else
     start_scenario_recorder() {
         scenario_record_args
         mkdir -p "${RUN_OUTPUT_DIR}"
+        if [ -n "${RECORD_LEFT_OUT:-}" ]; then
+            log "Scenario recording leaves out the simulator's on-demand streams (computed only while subscribed; recorded in _config/recording.config): ${RECORD_LEFT_OUT}"
+        fi
         # --no-close: the recorder's own output (the topics it subscribed, or why it refused
         # its arguments) belongs in the run log, not in /dev/null.
         log "Starting scenario recording: ros2 ${SCENARIO_RECORD_ARGS[*]}"
@@ -316,21 +327,38 @@ else
     #   auto -> detect: the ROS runner when ros2 is on PATH, otherwise the bare
     #           `scenario_execution` console script (pip/non-ROS images only)
     SCENARIO_MODE="${SCENARIO_MODE:-auto}"
+    ROS_RUNNER_CMD="ros2 run scenario_execution_ros scenario_execution_ros"
     if [ "${SCENARIO_MODE}" = "ros2" ]; then
-        RUNNER_CMD="ros2 run scenario_execution_ros scenario_execution_ros"
+        RUNNER_CMD="${ROS_RUNNER_CMD}"
     elif [ "${SCENARIO_MODE}" = "base" ]; then
         RUNNER_CMD="ros2 run scenario_execution scenario_execution"
     elif command -v ros2 > /dev/null 2>&1; then
-        RUNNER_CMD="ros2 run scenario_execution_ros scenario_execution_ros"
+        RUNNER_CMD="${ROS_RUNNER_CMD}"
     else
         RUNNER_CMD="scenario_execution"
     fi
+    # The scenario's clock (SCENARIO_USE_SIM_TIME, from execution.use_sim_time or the simulator
+    # backend). Under use_sim_time the ROS runner measures a scenario's durations on /clock;
+    # otherwise on wall time. Last on the command line: --ros-args takes everything after it.
+    SIM_TIME_PARAM=""
+    case "${SCENARIO_USE_SIM_TIME:-false}" in
+        true)
+            if [ "${RUNNER_CMD}" != "${ROS_RUNNER_CMD}" ]; then
+                log "ERROR: SCENARIO_USE_SIM_TIME=true needs the ROS runner, but this run starts '${RUNNER_CMD}'."
+                exit 1
+            fi
+            SIM_TIME_PARAM="--ros-args -p use_sim_time:=true" ;;
+        false) ;;
+        *)
+            log "ERROR: SCENARIO_USE_SIM_TIME must be true or false, not '${SCENARIO_USE_SIM_TIME}'."
+            exit 1 ;;
+    esac
     if [ -e "${SCENARIO_PARAMETER_FILE}" ]; then
         log "Starting scenario execution (mode=${SCENARIO_MODE}) with config file..."
-        log "Commandline: ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}"
-        run_scenario ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+        log "Commandline: ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS} ${SIM_TIME_PARAM}"
+        run_scenario ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} --scenario-parameter-file ${SCENARIO_PARAMETER_FILE} ${PER_SCENARIO_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS} ${SIM_TIME_PARAM}
     else
         log "Starting scenario execution (mode=${SCENARIO_MODE}) without config file..."
-        run_scenario ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS}
+        run_scenario ${RUNNER_CMD} -o ${SCENARIO_OUTPUT_DIR} /config/${SCENARIO_FILE} ${POST_COMMAND_PARAM} ${SIMULATION_PARAM} ${BT_LOG_PARAM} ${SCENARIO_EXECUTION_PARAMETERS} ${SIM_TIME_PARAM}
     fi
 fi

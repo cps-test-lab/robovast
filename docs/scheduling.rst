@@ -294,6 +294,30 @@ the campaign would end on a node it could not measure while naming a cause nobod
   ``preflight`` ran once on the declared sizing and is never re-asked per node.
 
 
+**Work that shrinks when it runs out of memory.** For the same work over many independent units
+whose memory need is only known by trying -- a campaign's runs, whose tables build in parts
+(:ref:`tables built in parts <results-tables-in-parts>`) --
+:class:`~robovast.execution.cluster_execution.shrinking_jobs.ShrinkingJobs` runs Jobs a level at a
+time over ``AdmittedJobs``::
+
+    level 0:  make_items(units, 0)  -> submit under <owner>/g0
+    poll      -> a Job OOM-killed at level g:
+                 cancel(<owner>/g<g>)            the queue's planned items and holds, dropped
+                 delete the level's running Jobs
+                 make_items(units not delivered, g + 1) -> submit under <owner>/g<g+1>
+              -> a Job killed where at_floor(item, g) -> fail, naming its units
+              -> any other failure, or a pod that cannot start -> fail, no retry
+
+A pod that cannot start is one ``AdmittedJobs`` reads as blocked past its grace -- among them
+a pod stuck behind a one-shot init container that ended ``OOMKilled``, which the shared
+detector (``pod_block_reason``) reports for every caller, the run loop included.
+
+The caller decides what a level is -- fewer units per Job, fewer workers -- and never more
+memory: a Job larger than what the node was calibrated for is one the queue may not place. A
+level's owner is a sub-scope like ``<campaign>#probes``, so taking a level back is one
+``cancel`` and every surface keeps counting the campaign's own items apart from it.
+
+
 Failure modes worth knowing
 ---------------------------
 
@@ -334,9 +358,24 @@ Where the numbers come from
 ---------------------------
 
 Nothing is remembered between deployments. Capacity is measured each cycle from what the nodes
-advertise, minus bound pod requests, minus the per-node headroom
+advertise, minus bound pod requests, minus the headroom
 (``ROBOVAST_NODE_HEADROOM_CPU`` / ``ROBOVAST_NODE_HEADROOM_MEMORY``, set on the service
-Deployment). Calibration is measured per campaign and deliberately never inherited by the next
+Deployment). The headroom is held on the node labelled ``robovast.io/build-node``: the build
+daemon runs there, and RoboVAST's other short-lived pods -- image build clients, a campaign's
+aux composition pod, ``exec_in_container`` sessions -- declare their own requests and prefer that
+node. Every other node offers its whole allocatable. A cluster with no build node label keeps the
+headroom on every node, since that work can then land anywhere.
+
+Free disk is the smaller of ``allocatable - requested`` and what the kubelet measures
+free on the node's filesystem less its own ``evictionHard`` ``nodefs.available`` threshold (read
+from the node's ``configz``, the kubelet's 10% default where it states none): a node's disk also
+holds images and logs no pod requested, and a job placed by requests alone could fill it past the
+threshold and be evicted. A node whose disk cannot be read keeps the request figure.
+
+A node too small for a campaign's calibration probe is left out of the campaign when its probes
+are planned, with the probe's size and the node's in the campaign log, rather than held as
+"being measured" for the whole batch. Calibration is measured per campaign and deliberately
+never inherited by the next
 one — figures taken under one campaign's contention describe a load the next never meets.
 
 That is also why there is no cached per-node factor anywhere: a container's cost per simulated

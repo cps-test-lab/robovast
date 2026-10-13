@@ -16,6 +16,10 @@ from pydantic import ValidationError
 
 from robovast.common.variation.base_variation import (SCENARIO_CHANNEL, SIM_CHANNEL,
                                                       DestinationConfig, Variation)
+from robovast.common.variation.container_runner import ContainerSpec
+
+#: The image a stub query names; nothing here starts it.
+SIM_SPEC = ContainerSpec(image="vendor/sim:1")
 
 
 class OneOutput(DestinationConfig):
@@ -407,7 +411,7 @@ def test_the_query_reply_keeps_only_what_the_campaign_owns(tmp_path):
     import robovast.common.config_generation as cg
     original, cg._make_container_runner = cg._make_container_runner, lambda spec, **_: _Runner()
     try:
-        assert _run_input_files_query(ContainerQuery(None, []), str(tmp_path)) == ["w.yaml"]
+        assert _run_input_files_query(ContainerQuery(SIM_SPEC, []), str(tmp_path)) == ["w.yaml"]
     finally:
         cg._make_container_runner = original
 
@@ -458,7 +462,7 @@ def test_the_query_mounts_the_campaign_where_its_command_looks(tmp_path):
     import robovast.common.config_generation as cg
     original, cg._make_container_runner = cg._make_container_runner, lambda spec, **_: _Runner()
     try:
-        assert _run_input_files_query(ContainerQuery(None, []), str(tmp_path)) == ["w.yaml"]
+        assert _run_input_files_query(ContainerQuery(SIM_SPEC, []), str(tmp_path)) == ["w.yaml"]
     finally:
         cg._make_container_runner = original
     assert exposed == {"/config": str(tmp_path)}
@@ -468,7 +472,6 @@ def test_the_local_runner_gets_a_ref_docker_can_pull(monkeypatch):
     """``docker`` cannot pull ``family:<member>`` -- that name is RoboVAST's, not a registry's."""
     from robovast.common.config_generation import _make_container_runner
     from robovast.common.execution import MEMBER_ROQSIM, family_image_ref
-    from robovast.common.variation.container_runner import ContainerSpec
 
     monkeypatch.setenv("ROBOVAST_PROJECT", "registry.example/proj")
     runner = _make_container_runner(ContainerSpec(image=family_image_ref(MEMBER_ROQSIM)))
@@ -496,7 +499,6 @@ def test_the_factory_keeps_the_family_ref_because_it_names_a_container(monkeypat
                                                    _make_container_runner,
                                                    set_container_runner_factory)
     from robovast.common.execution import MEMBER_ROQSIM, family_image_ref
-    from robovast.common.variation.container_runner import ContainerSpec
 
     seen = []
     token = set_container_runner_factory(lambda spec: seen.append(spec.image) or "runner")
@@ -523,7 +525,7 @@ def test_a_query_that_prints_no_json_fails_loudly(tmp_path):
     original, cg._make_container_runner = cg._make_container_runner, lambda spec, **_: _Runner()
     try:
         with pytest.raises(RuntimeError, match="printed no JSON"):
-            _run_input_files_query(ContainerQuery(None, []), str(tmp_path))
+            _run_input_files_query(ContainerQuery(SIM_SPEC, []), str(tmp_path))
     finally:
         cg._make_container_runner = original
 
@@ -627,7 +629,7 @@ def test_a_query_document_is_written_where_its_command_looks(tmp_path):
         workspace = str(tmp_path)
 
     mounted = {}
-    query = ContainerQuery(None, [], {"/aux/sim.overrides.yaml": {"components": {"boxes": {}}}})
+    query = ContainerQuery(SIM_SPEC, [], {"/aux/sim.overrides.yaml": {"components": {"boxes": {}}}})
     _stage_query_documents(_Runner(), query, lambda host, at: mounted.update({at: host}))
 
     assert list(mounted) == ["/aux/sim.overrides.yaml"]

@@ -32,8 +32,8 @@ in the store, not a directory level, so batch and search share the flat layout.
 **Where this runs:** always *in the driving process*, against the backend for
 that deployment — the ``robovast-service`` with a ``KubernetesBackend`` (one
 worker thread per campaign). This module is a **library**, not an entrypoint:
-the per-campaign controller *pod* (and its in-pod ``main()`` / control server)
-is gone, so cluster and local now share the same driver-hosting shape.
+there is no per-campaign controller pod, in-pod ``main()`` or control server, so
+cluster and local share the same driver-hosting shape.
 """
 
 import logging
@@ -974,9 +974,8 @@ class CampaignController:
         not merely wasteful but unrecordable -- the result directory is addressed by
         ``ParamSet.id``, so a second evaluation of one cell writes into the first's
         directory, over its runs, and the campaign dies on the conflicting job link that
-        guards exactly that ("one run's artifacts cannot live in two jobs"). Measured on a
-        four-cell space: batch 0 scored three cells, batch 1 re-proposed one of them and the
-        campaign ended there, on batch 1 of 2.
+        guards exactly that ("one run's artifacts cannot live in two jobs"). On a small space
+        that happens as early as the second batch.
 
         So a cell is measured once per campaign. The recalled evaluation is the one that
         cell produced -- not a substitute for it -- and re-running would spend a batch's
@@ -1341,6 +1340,9 @@ def _chain_postprocessing(backend: ExecutionBackend, campaign_root: str,
             output_callback=stage_output_callback(state, logger.info),
             # A stop reaches this phase through the same flag the run loop reads.
             should_stop=stop_checker(state),
+            # Where the runs ran builds the tables, while the campaign still holds its
+            # calibration: a cluster in parts, one Job each.
+            table_builder=backend.table_builder(campaign_root, stop_checker(state)),
         )
         logger.info("Analysis postprocessing: %s", message)
         if state is not None:
@@ -1664,8 +1666,8 @@ def _share_campaign(backend: ExecutionBackend, campaign_root: str,
         state.update(share_error=None)
     if notifier is not None:
         # The resolved provider isn't in scope here; the configured share type is what
-        # the service was handed via env (ROBOVAST_SHARE_TYPE), matching the old
-        # controller's ``provider.SHARE_TYPE``.
+        # the service was handed via env (ROBOVAST_SHARE_TYPE), the same name as the
+        # provider's ``SHARE_TYPE``.
         notifier.uploaded(os.environ.get("ROBOVAST_SHARE_TYPE") or "share")
 
 
@@ -1808,10 +1810,10 @@ class UploadProgress:
     def _publish(self, *, force: bool = False, final: bool = False) -> None:
         now = time.time()
         pct = self._percent()
-        # Throttle on whichever signal exists. The previous rule ANDed a
-        # `sent < total` clause in, which on the streamed path (total always 0)
-        # is false for every sample -- so nothing was ever throttled and a large
-        # campaign published a status update per 256 KiB chunk.
+        # Throttle on whichever signal exists. A `sent < total` condition would be
+        # false for every sample on the streamed path (total always 0), so nothing
+        # would be throttled and a large campaign would publish a status update per
+        # chunk.
         # Landing on 100% is never throttled: the bar's last frame is the one a reader
         # is most likely to be looking at, and a transfer that stops at 97% reads as one
         # that stopped.
@@ -1832,9 +1834,8 @@ class UploadProgress:
             self._last_pct = pct
         self._state.update(extra={"upload": {
             "sent": self._sent,
-            # A back-compat alias for `source_total`: this key predates the two-counter
-            # record and meant "the denominator", which is what it still is. New readers
-            # want the explicit pair below.
+            # The same value as `source_total`, for a reader that takes one denominator.
+            # The explicit pair below says what it counts.
             "total": self._source_total,
             "source_done": self._source_done,
             "source_total": self._source_total,

@@ -13,8 +13,8 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from robovast.client.safe_path import UnsafePathError, check_relative
 from robovast.common.execution import IPC_DIR, MEMBER_ROQSIM, family_image_ref
-from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER, SHAPE_ROS, SHAPE_STEPPED,
-                                        SIM_OVERRIDES_MOUNT, SIM_QUERY_OVERRIDES_MOUNT,
+from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER, SCENE_FILE, SHAPE_ROS,
+                                        SHAPE_STEPPED, SIM_OVERRIDES_MOUNT, SIM_QUERY_OVERRIDES_MOUNT,
                                         SIMULATION_CONTAINER, ContainerQuery, SimulatorBackend,
                                         shape_for, simulator_image)
 from robovast.common.variation.container_runner import ContainerSpec
@@ -168,10 +168,12 @@ class RoqsimBackend(SimulatorBackend):
             # entry point: the same command debugs the world by hand, so there is no
             # second way the simulator can be started.
             #
-            # No transport flags: which topics a world speaks, under which namespace, and
-            # whether it serves a control plane are the WORLD's to declare. A campaign
+            # No middleware flags: which topics a world speaks, under which namespace, and
+            # whether it serves the ROS control plane are the WORLD's to declare. A campaign
             # runner configuring a simulator's middleware would be reaching a layer down,
-            # and headless/pacing are the only two the deployment owns.
+            # and headless/pacing are the only two the deployment owns. Where roqsim's own
+            # control socket lives is the deployment's, since it depends on how the job's
+            # containers share a filesystem: :meth:`env` sets it.
             command = ["roqsim", "sim", _config_in_container(cfg.config),
                        "--headless", "--pacing", "realtime"]
             if cfg.overrides:
@@ -189,14 +191,14 @@ class RoqsimBackend(SimulatorBackend):
         return cfg.adapter or ADAPTER
 
     def env(self, cfg, execution: dict, recording) -> dict:
-        """What has one correct value for any campaign, plus what ``recording.roqsim`` asks.
+        """What has one correct value for any campaign, plus what ``execution.recording.roqsim`` asks.
 
         Not a "session" block in the world YAML and not keys in the ``.vast``: a campaign
         is always headless, always wants the recording its 3D run view replays, and always
         wants a GL backend that works on the node it landed on. There is nothing to
         decide, so there is nothing to declare. What a campaign *may* decide -- the sample
         rate and which tracks the recording holds -- comes from the ``.vast``'s
-        ``recording.roqsim`` block, and only the keys it sets are passed on, so the
+        ``execution.recording.roqsim`` block, and only the keys it sets are passed on, so the
         simulator's own defaults stay the simulator's.
         """
         env = {
@@ -262,6 +264,14 @@ class RoqsimBackend(SimulatorBackend):
                 env["ROQSIM_WORLD_OVERRIDES"] = SIM_OVERRIDES_MOUNT
         return env
 
+    def publishes_clock(self, cfg, execution: dict) -> bool:
+        """``True``: in the ROS shape a world speaks ROS through roqsim's ROS 2 bridge, which
+        publishes ``/clock`` unless the world sets ``clock_rate_hz: 0``. Such a world states
+        ``execution.use_sim_time: false``; left unstated, scenario-execution fails the run
+        for want of a ``/clock`` rather than measuring against the wrong timeline."""
+        del cfg, execution
+        return True
+
     def sim_document(self, cfg, execution: dict):
         """The overrides, which is the half of the config that is a *document*.
 
@@ -275,6 +285,60 @@ class RoqsimBackend(SimulatorBackend):
 
     def records_scene_state(self, cfg, execution: dict) -> bool:
         return True
+
+    def ground_truth(self, cfg, execution: dict) -> dict:
+        """The robots' bodies in the run's own recording, which :meth:`env` always asks for.
+
+        Taken inside the simulator on its own clock, so a world needs no ground-truth frame,
+        and a stepped run with no ROS at all has ground truth as well.
+        """
+        return {"table": "sim_poses", "entity_kind": "robot"}
+
+    def on_demand_streams(self, cfg, execution: dict):
+        """``roqsim check --json``, in the image this campaign runs, with its overrides.
+
+        Which streams a world has, under which topic, whether each is read only while
+        subscribed (``lazy``) and what it costs to produce (``cost``) is settled only once the
+        world is loaded with this configuration's overrides, and ``roqsim check`` reports each
+        endpoint with exactly those. :meth:`on_demand_from_reply` reads the report.
+        """
+        command = ["roqsim", "check", _config_in_container(cfg.config), "--json"]
+        document = self.sim_document(cfg, execution)
+        if document:
+            command += ["--override", SIM_QUERY_OVERRIDES_MOUNT]
+        return ContainerQuery(
+            ContainerSpec(image=simulator_image(execution, self.containers(cfg, execution))),
+            command,
+            {SIM_QUERY_OVERRIDES_MOUNT: document} if document else None)
+
+    def on_demand_from_reply(self, cfg, execution: dict, reply: dict) -> list:
+        """Every ``lazy`` ROS output whose ``cost`` is ``render``: images, depth, their encodings.
+
+        Rendering is what a subscription costs most and what no stack reads by accident. A
+        ``raycast`` stream -- a lidar scan, a range sensor -- is cheap beside it and is, more
+        often than not, an input the stack runs on, so it stays in the bag.
+
+        A report whose endpoints do not say what they cost comes from a roqsim that cannot
+        answer, and is refused rather than read as "nothing is on demand".
+        """
+        del cfg, execution
+        world = reply.get("world") if isinstance(reply, dict) else None
+        if not isinstance(world, dict):
+            problems = "; ".join(str(p.get("message", p)) for p in reply.get("problems") or []
+                                 if isinstance(p, dict)) if isinstance(reply, dict) else ""
+            raise ValueError(f"roqsim check reported no world: {problems or str(reply)[:200]}")
+        rows = []
+        for endpoint in world.get("endpoints") or []:
+            if endpoint.get("direction") != "out" or not endpoint.get("topic"):
+                continue
+            if "lazy" not in endpoint or "cost" not in endpoint:
+                raise ValueError(
+                    "the roqsim in this image does not report what its endpoints cost (no "
+                    "'lazy'/'cost' in roqsim check's endpoints); use an image whose roqsim does")
+            if endpoint["lazy"] and endpoint["cost"] == "render":
+                rows.append({"topic": _ros2_name(endpoint.get("namespace"), endpoint["topic"]),
+                             "type": _ros2_type(endpoint.get("type"))})
+        return rows
 
     def default_panels(self, cfg, execution: dict) -> list:
         """The 3D scene, always -- for the same reason :meth:`env` asks for the recording.
@@ -371,7 +435,10 @@ class RoqsimBackend(SimulatorBackend):
 
     def scene_export(self, cfg, execution: dict, *, world: str, max_tex_dim: int,
                      overrides: dict, overrides_file: Optional[str] = None) -> str:
-        """``roqsim-export-web``, roqsim's own exporter, run in roqsim's own image.
+        """``roqsim export gltf``, roqsim's own exporter, run in roqsim's own image.
+
+        Compressed for the browser: vertex and index data with ``EXT_meshopt_compression`` and
+        every image as WebP, which the run view's loader decodes.
 
         *world* is passed through as the recording names it -- a package ref, or the
         ``/config/...`` path a campaign file had in the job, which RoboVAST reproduces for
@@ -389,8 +456,9 @@ class RoqsimBackend(SimulatorBackend):
         recorded overrides travel.
         """
         override_arg = f" --override {overrides_file}" if overrides_file else ""
-        return (f"roqsim-export-web --world {world}{override_arg} --out {{out}} "
-                f"--max-tex-dim {int(max_tex_dim)} --manifest {{out}}/.generated.json")
+        return (f"roqsim export gltf --world {world}{override_arg} --out {{out}}/{SCENE_FILE} "
+                f"--meshopt --texture-format webp --max-tex-dim {int(max_tex_dim)} "
+                f"--manifest {{out}}/.generated.json")
 
     def run_state_file(self, cfg, execution: dict) -> str:
         """The recording :meth:`env` asks every run to write.
@@ -466,6 +534,20 @@ class RoqsimBackend(SimulatorBackend):
         return " ".join(parts)
 
 
+def _ros2_name(namespace, topic: str) -> str:
+    """The fully qualified name of *topic* under an entity's *namespace*, as ROS 2 resolves a
+    relative name; an absolute *topic* ignores the namespace."""
+    if topic.startswith("/"):
+        return "/" + topic.strip("/")
+    parts = [part.strip("/") for part in (namespace or "", topic) if part and part.strip("/")]
+    return "/" + "/".join(parts)
+
+
+def _ros2_type(name) -> str:
+    """``sensor_msgs/msg/Image`` from roqsim's ``sensor_msgs.msg.Image``; ``""`` when unnamed."""
+    return str(name).replace(".", "/") if name else ""
+
+
 def _set_arg(key: str, value) -> str:
     """One ``--set key=value`` argument that survives ``shlex.split`` as a single word.
 
@@ -473,7 +555,7 @@ def _set_arg(key: str, value) -> str:
     runs through ``shlex.split``. A vector-valued override -- ``components.parcel.pos: [11.8,
     4.55, 0.762]``, i.e. exactly what a campaign that sweeps a position records -- renders as
     ``[11.8, 4.55, 0.762]`` and was torn into three argv words at those spaces, so
-    ``roqsim-export-web`` got ``--set components.parcel.pos=[11.8,`` plus two stray arguments and
+    the exporter got ``--set components.parcel.pos=[11.8,`` plus two stray arguments and
     exited 2. The failure surfaces only when somebody opens the run view, and only for a
     world whose overrides contain a list, so it reads as "this campaign has no 3D geometry"
     rather than as a quoting bug.

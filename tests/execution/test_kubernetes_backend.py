@@ -291,7 +291,8 @@ def _restart_runner(monkeypatch, tmp_path, jobs, forensics, *, remaining_after=(
         lambda core, ns, label, job_names=None: forensics)
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.kubernetes_backend.previous_container_log",
-        lambda core, ns, pod, container, tail_lines=400: ("boom\ntraceback\n", "captured"))
+        lambda core, ns, pod, container, tail_lines=400, previous=True: (
+            "boom\ntraceback\n" if previous else "current\n", "captured"))
     monkeypatch.setattr(
         "robovast.execution.cluster_execution.admitted_jobs"
         ".blocked_and_contended_reasons", lambda core, ns, label: ({}, {}))
@@ -380,6 +381,134 @@ def test_the_evidence_is_captured_before_the_pod_is_deleted(monkeypatch, tmp_pat
     assert record["log_status"] == "captured"
     assert "traceback" in record["log_tail"]
     assert record["runs"] == ["cfgA/0"]
+
+
+def test_an_oom_killed_scenario_container_is_dropped_with_its_own_log(monkeypatch, tmp_path):
+    """The scenario container is not restarted, so what it printed before the kill is its
+    current log, not a previous instance's."""
+    import json
+
+    record = dict(_SUT_CRASH["containers"][0], container="robovast", role="scenario",
+                  restart_count=0, reason="OOMKilled", exit_code=137, signal=9,
+                  signal_name="SIGKILL", log="current",
+                  detail="container robovast was OOMKilled (exit 137, SIGKILL)")
+    killed = {"detail": f"ContainerKilled: {record['detail']}", "containers": [record]}
+    runner = _restart_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
+        {"rrroqs-x-0": killed}, remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+
+    assert runner.k8s_batch_client.deleted == ["rrroqs-x-0"]
+    captured, = json.loads(
+        (tmp_path / "_execution" / "container_failures.json").read_text())
+    assert captured["container"] == "robovast"
+    assert captured["log_tail"] == "current\n"
+
+
+_NO_MARKER = {
+    "detail": "NoDoneMarker: container robovast ended (Error, exit 1) without writing its "
+              "done marker",
+    "containers": [dict(
+        _SUT_CRASH["containers"][0], container="robovast", role="scenario", restart_count=0,
+        exit_code=1, signal=None, signal_name=None, log="current",
+        detail="container robovast ended (Error, exit 1) without writing its done marker")],
+    "node": "a-node", "pod_name": "rrroqs-x-0-pod", "witness": "uploader",
+}
+
+
+def _marker_answers(monkeypatch, answer, ended=None):
+    """Patch the ended-scenario candidates to *ended* and the marker check to *answer*;
+    returns the pods asked about."""
+    asked = []
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend.scenario_ended_job_forensics",
+        lambda core, ns, label, job_names=None: dict(
+            {"rrroqs-x-0": _NO_MARKER} if ended is None else ended))
+
+    def check(namespace, pod_name, witness):
+        asked.append((pod_name, witness))
+        return answer
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend.scenario_done_marker_written",
+        check)
+    return asked
+
+
+def test_a_scenario_container_that_ended_without_its_marker_is_dropped(monkeypatch, tmp_path):
+    """The uploader and the file agent wait for a marker that never comes, so the pod would
+    run to its deadline. The trial is dropped at once, with the container's own log."""
+    import json
+
+    runner = _restart_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")], {},
+        remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
+    runner._MARKER_CHECK_GRACE_SECONDS = 0
+    asked = _marker_answers(monkeypatch, False)
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+
+    assert asked[0] == ("rrroqs-x-0-pod", "uploader")
+    assert runner.k8s_batch_client.deleted == ["rrroqs-x-0"]
+    captured, = json.loads(
+        (tmp_path / "_execution" / "container_failures.json").read_text())
+    assert captured["container"] == "robovast" and captured["exit_code"] == 1
+    assert captured["log_tail"] == "current\n"
+    entry, = json.loads((tmp_path / "_execution" / "interventions.json").read_text())
+    assert entry["kind"] == "invalid" and entry["runs"] == ["cfgA/0"]
+    assert "container robovast ended (Error, exit 1)" in entry["detail"]
+
+
+def test_a_scenario_that_wrote_its_marker_is_left_to_deliver(monkeypatch):
+    """A finished run's upload can outlast any fixed wait; the marker says it is one, and a
+    pod found holding it is not asked again."""
+    runner = BatchJobRunner()
+    runner._batch_tag = "b"
+    runner.namespace = "ns"
+    runner.k8s_client = object()
+    runner._MARKER_CHECK_GRACE_SECONDS = 0
+    asked = _marker_answers(monkeypatch, True)
+    for _ in range(3):
+        assert runner._scenarios_ended_without_marker("sel", ["rrroqs-x-0"]) == {}
+    assert asked == [("rrroqs-x-0-pod", "uploader")]
+
+
+def test_an_unanswered_marker_check_is_asked_again_rather_than_acted_on(monkeypatch):
+    runner = BatchJobRunner()
+    runner._batch_tag = "b"
+    runner.namespace = "ns"
+    runner.k8s_client = object()
+    runner._MARKER_CHECK_GRACE_SECONDS = 0
+    asked = _marker_answers(monkeypatch, None)
+    for _ in range(2):
+        assert runner._scenarios_ended_without_marker("sel", ["rrroqs-x-0"]) == {}
+    assert len(asked) == 2
+
+
+def test_the_marker_is_asked_for_only_after_the_grace(monkeypatch):
+    runner = BatchJobRunner()
+    runner._batch_tag = "b"
+    runner.namespace = "ns"
+    runner.k8s_client = object()
+    asked = _marker_answers(monkeypatch, False)
+    assert runner._scenarios_ended_without_marker("sel", ["rrroqs-x-0"]) == {}
+    assert asked == []
+    runner._scenario_ended_seen = {"rrroqs-x-0-pod": 0.0}
+    assert runner._scenarios_ended_without_marker("sel", ["rrroqs-x-0"]) == {
+        "rrroqs-x-0": _NO_MARKER}
+
+
+def test_a_restart_record_wins_over_the_marker_question(monkeypatch, tmp_path):
+    """A job both checks report is dropped once, under the restart's reason."""
+    import json
+
+    runner = _restart_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
+        {"rrroqs-x-0": _SUT_CRASH}, remaining_after=["rrroqs-x-0", "rrroqs-x-1"])
+    runner._MARKER_CHECK_GRACE_SECONDS = 0
+    _marker_answers(monkeypatch, False)
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+
+    entry, = json.loads((tmp_path / "_execution" / "interventions.json").read_text())
+    assert entry["detail"] == _SUT_CRASH["detail"]
 
 
 def test_a_job_is_invalidated_only_once(monkeypatch, tmp_path):
@@ -561,6 +690,118 @@ def test_a_batch_whose_every_job_was_dropped_still_fails(monkeypatch, tmp_path):
 
     with pytest.raises(CampaignConfigError, match="every job in batch"):
         runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+
+
+# --- A run pod stuck behind an OOM-killed init step is a pod that cannot start -------
+#
+# The kubelet records a one-shot init container that ended OOMKilled, then neither starts
+# the next container nor fails the pod: it stays Pending with no event and its Job reads
+# active. Read through the real pod list, not a patched reason, so the shared detector is
+# what is under test.
+
+def _init_status(name, *, oom):
+    term = types.SimpleNamespace(reason="OOMKilled", exit_code=0) if oom else None
+    return types.SimpleNamespace(
+        name=name, restart_count=0, last_state=None,
+        state=types.SimpleNamespace(waiting=None, running=None, terminated=term))
+
+
+def _run_pod(job_name, *, oom_in, sidecar_oom=False):
+    """A Pending scenario pod: one-shot ``fetch-inputs``, then the native sidecar ``sim``."""
+    init_specs = [types.SimpleNamespace(name="fetch-inputs", restart_policy=None),
+                  types.SimpleNamespace(name="sim", restart_policy="Always")]
+    statuses = [_init_status("fetch-inputs", oom=oom_in == "fetch-inputs"),
+                _init_status("sim", oom=sidecar_oom)]
+    return types.SimpleNamespace(
+        metadata=types.SimpleNamespace(name=f"{job_name}-pod", namespace="ns",
+                                       labels={"job-name": job_name}),
+        spec=types.SimpleNamespace(node_name="a-node", init_containers=init_specs,
+                                   containers=[types.SimpleNamespace(name="scenario")]),
+        status=types.SimpleNamespace(phase="Pending", init_container_statuses=statuses,
+                                     container_statuses=None, conditions=None,
+                                     start_time=None, reason=None))
+
+
+class _PodListCore(_FakeCore):
+    def __init__(self, pods):
+        super().__init__()
+        self.pods = pods
+
+    def list_namespaced_pod(self, namespace, label_selector=None, **_kw):
+        return types.SimpleNamespace(items=list(self.pods))
+
+
+def _wedged_runner(monkeypatch, tmp_path, jobs, pods, *, blocked_grace=0.0):
+    _no_config_preparation(monkeypatch)
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend.restarted_job_forensics",
+        lambda core, ns, label, job_names=None: {})
+    monkeypatch.setattr(
+        "robovast.execution.cluster_execution.kubernetes_backend._short_job_name",
+        lambda campaign, tag, index: f"rrroqs-x-{index}")
+    runner = _runner_for_batch_test([{"name": "cfgA"}])
+    runner.k8s_client = _PodListCore(pods)
+    runner._build_jobs = lambda: jobs
+    runner.create_job_manifest = lambda job, total, node_figures=None: {
+        "metadata": {"name": f"rrroqs-x-{job.index}"}}
+    runner._BLOCKED_GRACE_SECONDS = blocked_grace
+    runner._CONTENDED_GRACE_SECONDS = 900.0
+    names = [f"rrroqs-x-{j.index}" for j in jobs]
+    polls = [names, []]
+    runner.get_remaining_jobs = lambda _names: polls.pop(0) if polls else []
+    return runner
+
+
+def test_a_run_pod_wedged_behind_an_oom_killed_fetch_inputs_is_dropped_naming_it(
+        monkeypatch, tmp_path):
+    import json
+
+    runner = _wedged_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
+        [_run_pod("rrroqs-x-0", oom_in="fetch-inputs")])
+
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)  # a part of the batch: must NOT raise
+
+    assert runner.k8s_batch_client.deleted == ["rrroqs-x-0"]
+    entry, = json.loads((tmp_path / "_execution" / "interventions.json").read_text())
+    assert entry["kind"] == "invalid"
+    assert entry["runs"] == ["cfgA/0"]
+    assert "never started" in entry["detail"]
+    assert "OOMKilled: init container fetch-inputs" in entry["detail"]
+
+
+def test_a_wedged_run_pod_is_left_alone_inside_its_grace(monkeypatch, tmp_path):
+    runner = _wedged_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
+        [_run_pod("rrroqs-x-0", oom_in="fetch-inputs")], blocked_grace=900.0)
+
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+
+    assert runner.k8s_batch_client.deleted == []
+
+
+def test_a_whole_batch_wedged_behind_fetch_inputs_fails_naming_the_step(monkeypatch,
+                                                                       tmp_path):
+    runner = _wedged_runner(
+        monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")],
+        [_run_pod("rrroqs-x-0", oom_in="fetch-inputs"),
+         _run_pod("rrroqs-x-1", oom_in="fetch-inputs")])
+
+    with pytest.raises(CampaignConfigError, match="init container fetch-inputs"):
+        runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+
+
+def test_an_oom_killed_native_sidecar_is_not_a_wedged_init_step(monkeypatch, tmp_path):
+    """The kubelet restarts a ``restartPolicy: Always`` init container; its death is a
+    restart, judged elsewhere, not a pod that cannot start."""
+    from robovast.execution.cluster_execution.cluster_execution import pod_block_reason
+
+    pod = _run_pod("rrroqs-x-0", oom_in=None, sidecar_oom=True)
+    assert pod_block_reason(pod) is None
+
+    runner = _wedged_runner(monkeypatch, tmp_path, [_job(0, "cfgA"), _job(1, "cfgA")], [pod])
+    runner.run_batch_in_pod(str(tmp_path), _TOKEN)
+    assert runner.k8s_batch_client.deleted == []
 
 
 # --- Every container says which image bytes it wants, and how hard to look -----------

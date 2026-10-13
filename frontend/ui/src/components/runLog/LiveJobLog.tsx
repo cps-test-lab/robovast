@@ -4,7 +4,7 @@
 
 import Alert from '@mui/material/Alert'
 import { RunLogView } from './RunLogView'
-import { jobNameOf, useJobLogStream } from './useJobLogStream'
+import { runKeyOf, useJobLogStream } from './useJobLogStream'
 
 export function LiveJobLog({ campaignId, jobName }: { campaignId: string; jobName: string }) {
   const log = useJobLogStream(campaignId, jobName)
@@ -37,5 +37,5 @@ export function LiveRunLog({
         from the files its job writes.
       </Alert>
     )
-  return <LiveJobLog campaignId={campaignId} jobName={jobNameOf(configName, runId)} />
+  return <LiveJobLog campaignId={campaignId} jobName={runKeyOf(configName, runId)} />
 }

@@ -1,21 +1,28 @@
 # scene3d — the 3D scene viewer core
 
-Renders the browser scene descriptor (`scene.json` + `scene.bin`, plus `tex_<i>.png`) that
-roqsim exports — via the `roqsim-export-web` CLI or the `MujocoSim` adapter's
-`ROQSIM_SCENE_EXPORT_DIR` hook. Any simulator that emits the same descriptor renders here too;
-the format is owned by roqsim (`roqsim/export_web.py`), the reference loader is this one.
-The descriptor states `format: "roqsim.web_scene"` and a `version`; the loader refuses another
-format or a version newer than `SCENE_VERSION`, naming both, and reads an unstamped one as version 1.
+Renders the scene a simulator backend exports for the run view: one binary glTF file (`.glb`),
+written for roqsim by `roqsim export gltf`. Any simulator that writes the same file renders here
+too; what it carries beyond core glTF -- bodies and their joints, sensor cameras, the joint values
+and the initial view -- is in `extras`, specified in `docs/simulators.rst` ("The scene"). The
+scene's extras state `format: "roqsim.scene"` and a `version`; the loader refuses another format
+or a version newer than `SCENE_VERSION`, naming both.
 
-- `sceneLoader.ts` — descriptor → three.js `Group`, plus an imperative animation API:
-  `jointMap[name](value)` for hinge/slide joints and `basePose(body, pos, quat)` for world-frame
-  body poses.
+- `sceneLoader.ts` — the file → three.js `Group` (Z-up, the world's frame), parsed by three's
+  `GLTFLoader` with the meshopt decoder (both fetched with the first scene), plus an imperative
+  animation API: `jointMap[name](value)` for hinge/slide joints and `basePose(body, pos, quat)` for
+  world-frame body poses.
+- `sceneCameras.ts` — the scene's sensor cameras: glTF perspective cameras on
+  their bodies (`docs/simulators.rst`, "Camera sensors"), each built into a three
+  `PerspectiveCamera` parented to its body's node; `viewport.ts`'s `setViewpoint` renders through
+  one, letterboxed to the sensor's shape. `parseFreeView`/`buildFreeCamera` make the same kind of
+  camera from a position and a look-at point, in the world's frame or a body's. Used by the camera
+  panel's `kind: scene` only; the `scene3d` panel stays on the orbit camera.
 - `motionSource.ts` — what a run's *motion* looks like to a viewer: a time base plus named joint
   and pose tracks, pushed into the scene model as the sink. `rowMotion.ts` is the source over a
   run's `sim_poses` / `joint_states` rows, windowed around the clock and paged at the query's row
   cap, following a run still recording through a reader the panel adapts its data provider to.
 - `sceneModelCache.ts` — parsed models leased per viewer mount and parked on release, keyed by the
-  content-addressed descriptor URL, so a remount on the same world skips the fetch and the rebuild.
+  content-addressed scene URL, so a remount on the same world skips the fetch and the rebuild.
 - `sceneTf.ts` — TF-chain composition (`map -> odom -> base_link`) for data sources that deliver
   raw `/tf` transforms; unused by the playback path (poses arrive already map-frame), kept for the
   future live view.
@@ -31,28 +38,8 @@ format or a version newer than `SCENE_VERSION`, naming both, and reads an unstam
   length why the objection (a series converging on a pivot that can never be passed) does not apply
   to a pivot re-chosen every gesture with a floored step.
 
-## Texture mapping
-
-Two contract points a second implementation of this loader has to get right, both of them things
-the descriptor cannot express any other way:
-
-- **`meshes[].uv` is optional, and when present it wins.** This mirrors MuJoCo: a mesh with baked
-  UV coordinates is mapped by those coordinates and *ignores* the material's `texrepeat` /
-  `texuniform`; a mesh without them is auto-projected, and then `texrepeat` sets the tile scale
-  (metres per tile when `texuniform`, tiles across the object otherwise). Getting this backwards
-  projects a texture *atlas* by world position, which samples arbitrary regions of it — every
-  surface ends up wearing some other surface's texture.
-- **UVs are in MuJoCo's convention: `v` is measured from the image's top row.** three's
-  `TextureLoader` defaults to `flipY = true` and would sample from the bottom, so image textures
-  are loaded with `flipY = false`. `DataTexture` (the raw procedural textures packed into
-  `scene.bin`) already defaults to `flipY = false`, so both paths agree.
-
-`texture.repeat` is a property of the *Texture*, but the repeat a geom needs depends on the geom's
-size — so a material shared across geoms of different size needs one Texture clone per distinct
-repeat, not one mutated in place.
-
 **Extractability rule: files in this directory import only `three` (and `three/addons`) — never
 `@/…` or anything robovast-specific.** The directory is shared-candidate code for other projects
-rendering the same descriptor, so keeping this boundary makes extraction into a common package
+rendering the same scene, so keeping this boundary makes extraction into a common package
 mechanical. Host-specific wiring (data providers, clocks, panel/config plumbing) belongs in the
 consumer — here, `frontend/ui/src/panels/Scene3DPanel.tsx`.

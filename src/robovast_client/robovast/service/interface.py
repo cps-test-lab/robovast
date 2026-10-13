@@ -21,21 +21,17 @@ pydantic request/response models. Three bindings mirror this contract 1:1:
 
 * the **service** HTTP endpoints (:mod:`robovast.service.app`) call an
   implementation of :class:`RobovastInterface`;
-* the **client** (:class:`robovast.service.client.RobovastClient`) implements it
-  over a transport (HTTP to the service, or in process inside it);
-* the **MCP tools** and **``vast`` CLI commands** are thin wrappers over the
-  client.
+* the **HTTP transport** (:class:`robovast.service.http_client.HTTPTransport`, built by
+  :func:`~robovast.service.http_client.RobovastClient`) implements it by calling those
+  endpoints;
+* the **MCP tools** and **``vast`` CLI commands** are thin wrappers over an
+  implementation.
 
-Campaign **status** reuses :class:`robovast.client.status.Status`
-verbatim — the same model the per-campaign controller already serves over its
-``/status`` channel and the ``vast ... monitor`` command already consumes — so
-the persistent service is a superset of the existing control channel, not a new
-vocabulary.
+Campaign **status** is :class:`robovast.client.status.Status`, the model the campaign
+controller writes, served with its stall verdict as :class:`~robovast.client.status.StatusResponse`.
 
-This module is intentionally dependency-light (only ``pydantic`` + the existing
-``Status`` model) so it imports cleanly in any binding. Phase 0 defines the
-campaign-lifecycle + version operations; workspace, postprocessing, and data
-operations extend :class:`RobovastInterface` in later phases.
+This module is intentionally dependency-light (``pydantic`` and the client's own models)
+so it imports cleanly in any binding, a client-only install included.
 """
 
 from abc import ABC, abstractmethod
@@ -46,9 +42,7 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from robovast.client import file_address
-# Reused verbatim — the controller's live status model. (The old ``Command`` /
-# ``CommandResult`` RPC envelopes are gone: the controller runs in-process now, so
-# ``stop`` is a direct call rather than an HTTP command to a controller pod.)
+# Reused verbatim: the controller's live status model and the config view's geometry.
 from robovast.client.scene_markers import ConfigViewContribution, SceneMarker  # noqa: F401  # pylint: disable=unused-import
 from robovast.client.status import (Phase, Status, StatusResponse, StepProgress,  # noqa: F401  # pylint: disable=unused-import
                                     status_response)
@@ -660,9 +654,10 @@ class JobSummary(BaseModel):
     """One execution unit of a campaign's current batch.
 
     A "job" is whatever the backend fans a batch out into: a **Kubernetes Job** on the
-    cluster backend, running one run. ``job_name`` is the id
-    :meth:`RobovastInterface.get_job_log` takes; ``display_name`` is an optional
-    human-friendly label (batch/job-index on the cluster).
+    cluster backend, running one run. ``job_name`` is the id the job operations take
+    (:meth:`RobovastInterface.get_job_log`, :meth:`~RobovastInterface.tap_job`, ...) and names
+    the job, not its run; ``config_name`` and ``run_id`` say which run it executes.
+    ``display_name`` is an optional human-friendly label (batch/job-index on the cluster).
     """
 
     job_name: str
@@ -674,6 +669,12 @@ class JobSummary(BaseModel):
     #: older than this field -- which is why a reader must test for the kinds it cares about
     #: (``== "calibration"``) and never for ``!= "run"``.
     kind: str = JobKind.RUN
+    #: The run this job executes, keyed as the campaign's tables key it (``run_view``'s
+    #: ``config_name`` and ``run_id``). Absent for a job that executes none -- a calibration
+    #: probe -- and for one the service cannot tie to its run yet: on the cluster, a job still
+    #: queued for capacity, which has no Kubernetes object to read it from.
+    config_name: Optional[str] = None
+    run_id: Optional[int] = None
     # running | pending | waiting | completed | failed | killed | blocked
     status: str = "pending"
     display_name: Optional[str] = None
@@ -1530,7 +1531,8 @@ class ServiceEvents(BaseModel):
     """A page of the event log, oldest first, with the cursor to resume from.
 
     Oldest first because a caller is resuming a position rather than browsing: it holds
-    :attr:`next_seq` and asks for what came after. Presenting newest-first is the reader's job.
+    :attr:`next_seq` and asks for what came after. A page asked for with ``newest=true`` is the
+    tail of the record in the same order. Presenting newest-first is the reader's job.
     """
 
     events: list[ServiceEvent] = Field(default_factory=list)
@@ -2313,7 +2315,7 @@ class SceneStatus(BaseModel):
     """Whether this run's 3D geometry is ready, and if not, what is happening about it.
 
     *Say why you are about to wait, before you wait.* A
-    scene descriptor is compiled on demand, in the campaign's own image, and cached by world identity;
+    scene is compiled on demand, in the campaign's own image, and cached by world identity;
     the first viewer of a given world pays for it and everyone after reads it from disk.
 
     Reading it never starts anything: that is ``POST .../scene/run``. A ``GET`` that launched a 2 GB
@@ -2323,7 +2325,7 @@ class SceneStatus(BaseModel):
     campaign_id: str
     config_name: str = ""
     run_id: str = ""
-    #: Ready to fetch: the descriptor is in the cache and ``url`` points at it.
+    #: Ready to fetch: the scene is in the cache and ``url`` points at it.
     cached: bool = False
     #: Nothing cached yet, so a viewer must POST to have it built. False when cached.
     generation_required: bool = False
@@ -2339,9 +2341,10 @@ class SceneStatus(BaseModel):
     #: this is what only a human can read. It is why a wait that will never end says so in seconds
     #: rather than at the build's deadline.
     stage_detail: str = ""
-    #: Size of the cached descriptor, 0 when there is none. A browser fetches this much.
+    #: Size of the cached scene, 0 when there is none: what a browser fetches at most, since one
+    #: that accepts gzip is served the compressed copy.
     bytes: int = 0
-    #: Where the descriptor's ``scene.json`` is served from, once cached.
+    #: Where the scene (one glTF file) is served from, once cached.
     url: str = ""
     #: The world identity this run needs, for display and for diagnosis when geometry looks wrong.
     world: str = ""
@@ -2405,9 +2408,8 @@ class CampaignPanelsResponse(BaseModel):
     transport_only: bool = False
 
 
-# NOTE: the costmap frame endpoint (``CostmapFrame`` model + ``get_costmap_frame`` +
-# ``Routes.campaign_costmap``) moved out of core: it is now a package-provided service
-# endpoint shipped by ``robovast_nav`` (``robovast.service_endpoints`` group). See
+# The costmap frame endpoint is not on this interface: ``robovast_nav`` ships it as a
+# package-provided service endpoint (``robovast.service_endpoints`` group). See
 # ``robovast.service.endpoint_plugin`` for the generic mechanism.
 
 
@@ -2606,7 +2608,7 @@ def campaign_archive_query(raw: bool) -> dict:
 
 class Routes:
     """Canonical HTTP paths — shared by the service app and the HTTP client so
-    the two bindings cannot drift. Phase 0 (campaign lifecycle + version)."""
+    the two bindings cannot drift."""
 
     VERSION = "/version"
     HEALTHZ = "/healthz"
@@ -2967,7 +2969,7 @@ class Routes:
 
     @staticmethod
     def campaign_scene_asset(campaign_id: str, path: str) -> str:
-        # The descriptor's bytes, served from the shared cache like a panel bundle. A separate first
+        # The scene's bytes, served from the shared cache like a panel bundle. A separate first
         # segment from ``scene`` on purpose: ``scene/run`` would otherwise collide with a cached file
         # called ``run``.
         return f"/campaigns/{campaign_id}/scene_assets/{path}"
@@ -3059,7 +3061,7 @@ class Routes:
 
 
 class RobovastInterface(ABC):
-    """The full RoboVAST operation surface (Phase 0 subset defined here).
+    """The full RoboVAST operation surface.
 
     Implemented by the server core and by the client transports; both satisfy
     the identical contract so callers are transport-agnostic.
@@ -3187,8 +3189,8 @@ class RobovastInterface(ABC):
     @abstractmethod
     def read_file_bytes(self, address: str) -> bytes:
         """Return one file's raw bytes — the representation a browser or ``vast files
-        get`` wants (e.g. the run view's ``scene/scene.json`` and its sibling
-        ``scene.bin``). Same errors as :meth:`read_file`, minus the binary refusal."""
+        get`` wants (e.g. a camera panel's recorded frame). Same errors as :meth:`read_file`,
+        minus the binary refusal."""
 
     def local_file(self, address: str) -> Path:
         """A real filesystem path for *address*, so the HTTP layer can stream the file.
@@ -3364,6 +3366,11 @@ class RobovastInterface(ABC):
     def get_job_log(self, campaign_id: str, job_name: str, cursor: str = "") -> JobLogChunk:
         """Return a job's log rows after *cursor*, running or finished.
 
+        *job_name* is a job as :meth:`list_jobs` reports it, or the key ``<config>/<run>`` of
+        one of the campaign's runs, which reads the log of the job that executes that run. The
+        run key is resolved through the campaign's job-link manifest, so it also reads a run's log
+        once its job is no longer listed; it is not a job's name.
+
         Read from the job's ``logs/system*.log`` files in the campaign directory, which grow
         while it runs. Resume with :attr:`JobLogChunk.cursor`; stop at
         :attr:`JobLogChunk.eof`. Raises ``KeyError`` for a job the campaign does not have.
@@ -3428,8 +3435,8 @@ class RobovastInterface(ABC):
                 -- the concrete name is the implementation's to choose. Spelled literally rather
                 than imported from ``robovast.common.config``: this package deliberately does
                 not depend on the core (see ``test_client_needs_no_core``).
-            source: Which surface asked, for the ledger. Not an identity: the service is
-                unauthenticated.
+            source: Which surface asked, for the ledger. Not an identity: who asked is
+                the request's authenticated principal.
 
         Not abstract, for the reason :meth:`get_job_state` is not: a transport that cannot do this
         inherits a refusal rather than being made to write one.
@@ -3527,8 +3534,8 @@ class RobovastInterface(ABC):
                 on the cluster.
             reason: The operator's optional explanation, stored with the record.
             source: Which surface asked — ``"webui"``, ``"mcp"``, ``"cli"``. Recorded for
-                the audit trail; not a user identity, since the service is
-                unauthenticated.
+                the audit trail; not a user identity, which is the request's
+                authenticated principal.
 
         Raises:
             KeyError: No such campaign, or no such job in it.
@@ -3854,7 +3861,7 @@ class RobovastInterface(ABC):
         are unused — only the addressing fields matter.
         """
 
-    # -- postprocessing (editable, re-runnable; never mutates _config) ------
+    # -- postprocessing (editable, re-runnable) ------------------------------
 
     @abstractmethod
     def get_postprocessing(self, campaign_id: str) -> PostprocessingInfo:
@@ -3875,8 +3882,8 @@ class RobovastInterface(ABC):
     def update_postprocessing_source(
         self, request: UpdatePostprocessingSourceRequest
     ) -> PostprocessingSource:
-        """Persist an edited postprocessing block as a new `.vast` override
-        revision (validated; never mutates ``_config/``)."""
+        """Validate an edited postprocessing block and write it into the campaign's
+        ``_config/<name>.vast`` in place, replacing only that block."""
 
     @abstractmethod
     def run_postprocessing(self, request: RunPostprocessingRequest) -> ActionResult:
@@ -3940,7 +3947,7 @@ class RobovastInterface(ABC):
 
         Wraps ``config_validation.validate_project_file``. ``path`` selects which
         ``.vast`` (workspace-relative); empty picks the sole ``.vast`` (error if
-        there are several — pass ``path``). Empty ``workspace_id`` → the CWD project.
+        there are several — pass ``path``). An empty ``workspace_id`` raises ``ValueError``.
         Returns every problem at once (schema, scenario file, plugin refs) + counts.
 
         Two checks run a container, and each catches a failure that is otherwise
@@ -4103,7 +4110,7 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def resolve_workspace_scene_asset(self, workspace_id: str, path: str) -> str:
-        """Filesystem path of one file of a cached descriptor, for the workspace route."""
+        """Filesystem path of one file of a cached scene, for the workspace route."""
 
     @abstractmethod
     def campaign_screenshot(self, campaign_id: str, config_name: str, run_id: str, *,
@@ -4136,7 +4143,7 @@ class RobovastInterface(ABC):
 
     @abstractmethod
     def resolve_campaign_scene_asset(self, campaign_id: str, path: str) -> str:
-        """Absolute path of one file of this campaign's cached descriptor.
+        """Absolute path of one file of this campaign's cached scene.
 
         Raises ``KeyError`` when it is not cached or the path escapes the entry -- the same contract
         :meth:`resolve_campaign_panel_asset` has, so the route serves both the same way.
@@ -4188,9 +4195,9 @@ class RobovastInterface(ABC):
     def update_panels_source(
         self, request: UpdatePanelsSourceRequest
     ) -> PanelsSource:
-        """Persist an edited ``visualization:`` block as a new `.vast` override
-        revision (never mutates ``_config/``). The run view reloads its panels
-        from the effective `.vast` afterwards."""
+        """Write an edited ``visualization:`` block into the campaign's
+        ``_config/<name>.vast`` in place. The run view reloads its panels from it
+        afterwards."""
 
 
     @abstractmethod

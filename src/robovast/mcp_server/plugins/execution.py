@@ -402,18 +402,19 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         campaign_id: The id from ``start_campaign``.
 
     Returns:
-        ``{jobs, counts}`` where each job is ``{job_name, kind, status, display_name,
-        detail, node, started_at, usage}`` and counts tallies
-        ``running/pending/waiting/completed/failed/blocked/total`` over the campaign's own
-        runs, plus ``calibration`` and ``postprocessing`` beside them. Or ``{error}``.
+        ``{jobs, counts}`` where each job is ``{job_name, kind, config_name, run_id, status,
+        display_name, detail, node, started_at, usage}`` and counts tallies
+        ``running/pending/waiting/completed/failed/killed/blocked/total`` over the campaign's
+        own runs, plus ``calibration`` beside them. Or ``{error}``.
 
-        ``kind`` is ``run`` for one of the campaign's trials, ``calibration`` for a
+        ``kind`` is ``run`` for one of the campaign's trials, or ``calibration`` for a
         node-sizing probe (a cluster job that measures a machine before work is placed on
-        it), or ``postprocessing`` for the conversion of the campaign's rosbags, which is
-        what a campaign in its ``postprocessing`` phase is doing — ``get_job_log`` on it
-        reads the conversion live. Both are listed because they hold real capacity, and
-        both are counted apart because neither is one of the campaign's runs; neither can
-        be stopped individually.
+        it). A probe is listed because it holds real capacity, and counted apart because it
+        is not one of the campaign's runs; it cannot be stopped individually.
+
+        ``config_name`` and ``run_id`` are the run a job executes, keyed as the campaign's
+        tables key it -- the job's ``job_name`` is a Kubernetes name and says nothing about
+        its run. Absent on a probe and on a job still ``waiting`` for capacity.
 
         ``node`` is the machine the job's pod was placed on -- absent on a job the scheduler
         has not placed yet. Reading it across a listing says whether a
@@ -564,8 +565,9 @@ def tap_job(campaign_id: str, job_name: str, selection: list[str] | None = None,
         max_seconds: How long to collect; capped at 30 here.
 
     Returns:
-        ``{lines, count, exit_code, timed_out, max_seconds, stream_url}`` (the tap as
-        server-sent events, for longer), or ``{error}``.
+        ``{lines, count, exit_code, timed_out, max_seconds}``, plus ``stream_url`` (the
+        tap as server-sent events, for longer) when this service declares an origin; or
+        ``{error}``.
     """
     client = service_access.require_service()
     if max_seconds < 1:
@@ -582,11 +584,12 @@ def tap_job(campaign_id: str, job_name: str, selection: list[str] | None = None,
         lines.append(item.line)
     query = "?" + urlencode({"job_name": job_name, "selection": ",".join(names),
                              "max_seconds": seconds})
+    stream_url = service_access.web_url(client, Routes.job_tap(campaign_id) + query)
     return {"lines": lines, "count": len(lines),
             "exit_code": None if end is None else end.exit_code,
             "timed_out": bool(end is not None and end.timed_out),
             "max_seconds": seconds,
-            "stream_url": service_access.web_url(client, Routes.job_tap(campaign_id) + query)}
+            **({"stream_url": stream_url} if stream_url else {})}
 
 
 def _job_log_text(rows: list) -> str:
@@ -612,12 +615,12 @@ def get_job_log(campaign_id: str, job_name: str, cursor: str = "",
     **This is what a stalled status points at. Call it with ``summarize=True`` first:**
     a wedged run repeats one message thousands of times, which summarizes to one line.
 
-    A **finished** job is served as readily as a running one: both are read from the job's
-    log files in the campaign. Every container is in one stream, tagged ``[<container>]``.
+    A **finished** job is served as readily as a running one, from its log files in the
+    campaign. Every container is in one stream, tagged ``[<container>]``.
 
     Args:
         campaign_id: The id from ``start_campaign``.
-        job_name: A ``job_name`` from ``list_campaign_jobs``.
+        job_name: A ``job_name`` from ``list_campaign_jobs``, or a run's ``<config>/<run>``.
         cursor: Pass back the previous call's ``cursor`` to read only what arrived since.
             It marks the *unfiltered* log, so filtering never breaks a poll loop.
         hide_shutdown, grep, tail, min_severity, summarize, top: The filters
@@ -653,11 +656,14 @@ def stop_campaign(campaign_id: str) -> dict:
         campaign_id: The id from ``start_campaign``.
 
     Returns:
-        ``{campaign_id, stopped, status, note}`` or ``{error}``.
+        ``{campaign_id, stopped, status, note}``, or ``{error}`` naming why the stop was
+        refused.
     """
     client = service_access.require_service()
     res = client.stop(campaign_id)
-    return {"campaign_id": campaign_id, "stopped": res.ok,
+    if not res.ok:
+        return {"error": res.message or f"stopping {campaign_id} was refused"}
+    return {"campaign_id": campaign_id, "stopped": True,
             "status": "stopping", "note": res.message}
 
 
@@ -675,14 +681,17 @@ def stop_job(campaign_id: str, job_name: str, reason: str = "") -> dict:
         reason: Why — the only record explaining the kill later.
 
     Returns:
-        ``{campaign_id, job_name, stopped, note}`` or ``{error}``.
+        ``{campaign_id, job_name, stopped, note}``, or ``{error}`` naming why the kill was
+        refused.
     """
     from robovast.mcp_server.client_text import unescape_client_text
     client = service_access.require_service()
     res = client.stop_job(campaign_id, job_name,
                           unescape_client_text(reason) or None, "mcp")
+    if not res.ok:
+        return {"error": res.message or f"stopping job {job_name} was refused"}
     return {"campaign_id": campaign_id, "job_name": job_name,
-            "stopped": res.ok, "note": res.message}
+            "stopped": True, "note": res.message}
 
 
 def get_resource_usage() -> dict:
@@ -712,30 +721,15 @@ def get_resource_usage() -> dict:
     return resource_usage_report(client)
 
 
-def _build_wait_next_step(build_id: str, builds: dict | None, cached: bool,
-                          cached_builds: dict | None = None) -> str:
+def _build_wait_next_step(builds: dict, cached_builds: dict) -> str:
     """The literal command to run next, ids already filled in — as ``_wait_next_step``.
 
-    A build that hands back only ids offered nothing but "poll this" prose, which is the
-    same defect that seam fixes for campaigns: the operation returns while its work runs
-    on, and nothing waits for it.
-
-    Waits on exactly the builds that are **not** cache hits. Previously it waited on all of
-    them or none, and "none" was chosen from one container's ``cached`` flag: a project whose
-    scenario image was cached and whose ``sut`` image was still building was told "nothing to
-    wait for", and the caller went straight on to a container whose image did not exist yet.
-    That is the reported bug this line is the other half of.
-
-    Everything cached needs no wait at all, and names both destinations: which of them the
-    caller wanted is not knowable from here.
+    Waits on exactly the builds that are not cache hits, judged per container: one
+    container's cache hit says nothing about another's. With every image cached there is
+    nothing to wait for, and the step names both destinations, since which one the caller
+    wanted is not knowable from here.
     """
-    per_container = cached_builds or {}
-    if per_container:
-        ids = [bid for name, bid in (builds or {}).items() if not per_container.get(name)]
-    else:
-        # An older service that reports no per-container verdicts: wait on everything rather
-        # than trusting one aggregate flag, which is what went wrong.
-        ids = [] if cached else (list((builds or {}).values()) or [build_id])
+    ids = [bid for name, bid in builds.items() if not cached_builds.get(name)]
     if not ids:
         return ("every image is built — start_campaign(...) to run it, or "
                 "exec_in_container(...) to look inside it")
@@ -801,11 +795,8 @@ def build_experiment_image(workspace_id: str = "", config_path: str = "",
         workspace_id=workspace_id, config_path=config_path,
         container=container or None))
     return {"build_id": ref.build_id, "tag": ref.tag, "cached": ref.cached,
-            "builds": ref.builds,
-            "cached_builds": getattr(ref, "cached_builds", {}) or {},
-            "next_step": _build_wait_next_step(
-                ref.build_id, ref.builds, ref.cached,
-                getattr(ref, "cached_builds", None))}
+            "builds": ref.builds, "cached_builds": ref.cached_builds,
+            "next_step": _build_wait_next_step(ref.builds, ref.cached_builds)}
 
 
 def get_image_build_status(build_id: str) -> dict:

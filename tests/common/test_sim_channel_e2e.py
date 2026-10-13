@@ -39,8 +39,20 @@ _WORLD = "sim: {pacing: realtime}\n"
 pytestmark = pytest.mark.requires_simulator
 
 
+#: A stream the image reports roqsim renders only on demand.
+CAMERA = {"topic": "/robot/camera/image_raw", "type": "sensor_msgs/msg/Image"}
+
+#: What `roqsim check --json` reports of such a world: the camera, rendered only while
+#: subscribed, and a scan that stays in the bag.
+CHECK_REPORT = {"ok": True, "problems": [], "world": {"endpoints": [
+    {"name": "image", "direction": "out", "namespace": "robot", "topic": "camera/image_raw",
+     "type": "sensor_msgs.msg.Image", "lazy": True, "cost": "render", "rebuildable": True},
+    {"name": "scan", "direction": "out", "namespace": "", "topic": "scan",
+     "type": None, "lazy": False, "cost": "raycast", "rebuildable": True}]}}
+
+
 class _InputsRunner:
-    """Answers the backend's ``roqsim scenes inputs`` query as its image would.
+    """Answers the backend's ``roqsim scenes inputs`` and ``roqsim check`` as its image would.
 
     What a world is made of is the simulator's to say, so composing a roqsim campaign asks
     it -- which needs a container, which a unit test has no business starting. The worlds
@@ -53,6 +65,11 @@ class _InputsRunner:
 
     def run(self, command, emit):
         self._sink.append(list(command))
+        if command[:2] == ["roqsim", "check"]:
+            # Indented, as `roqsim check --json` prints its report.
+            for line in json.dumps(CHECK_REPORT, indent=2).splitlines():
+                emit(line)
+            return
         emit(json.dumps({"packaged": False, "inputs": [command[-1]]}))
 
     def image_digest(self):
@@ -219,6 +236,31 @@ def test_every_configuration_records_what_its_simulator_was_given(tmp_path):
             (out / config["name"] / "_config" / SIM_CONFIG_FILE).read_text())
         assert recorded["config"] == config["sim"]["config"]
         assert (out / config["name"] / "_config" / "scenario.config").is_file()
+
+
+def test_every_configuration_records_which_streams_its_bag_left_out(tmp_path):
+    """The simulator's on-demand streams are asked once per world, frozen into each
+    configuration, recorded beside ``sim.config`` with the reason, and handed to its jobs."""
+    from robovast.common.execution import RECORDING_CONFIG_FILE, recording_env
+
+    vast = _project(tmp_path, textwrap.indent(textwrap.dedent("""\
+        - name: sweep
+          variations:
+          - ParameterVariationList:
+              sim: config
+              values: [worlds/depot.yaml, worlds/warehouse.yaml]
+        """), "        ").lstrip())
+    data = _compose(vast, tmp_path)
+    out = tmp_path / "campaign"
+    prepare_campaign_configs(str(out), data)
+
+    for config in data["configs"]:
+        assert config["recording"] == {"ros2": {"left_out": [CAMERA]}}
+        recorded = yaml.safe_load(
+            (out / config["name"] / "_config" / RECORDING_CONFIG_FILE).read_text())
+        assert recorded["ros2"]["left_out"] == [CAMERA]
+        assert "only while subscribed" in recorded["ros2"]["reason"]
+        assert recording_env(data["execution"], config) == {"RECORD_LEFT_OUT": CAMERA["topic"]}
 
 
 def test_the_world_reaches_the_container_that_runs_it(tmp_path):

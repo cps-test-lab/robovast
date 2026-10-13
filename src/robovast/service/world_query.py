@@ -49,6 +49,7 @@ import logging
 import os
 import re
 import shlex
+import subprocess  # nosec B404 - only its CalledProcessError
 import tempfile
 
 from robovast.common.config_channels import SIM, channel
@@ -68,12 +69,18 @@ _STAGE_DIR = "/tmp/robovast-world-query"
 _HEREDOC_EOF = "ROQSIM_QUERY_DOCUMENT_EOF"
 
 
-class QueryCommandFailed(RuntimeError):
-    """The command ran and failed. Carries the output so a caller can read the reason."""
+class QueryCommandFailed(subprocess.CalledProcessError):
+    """The command ran and failed. Carries the output so a caller can read the reason.
 
-    def __init__(self, message: str, output: str = ""):
-        super().__init__(message)
-        self.output = output
+    A :class:`subprocess.CalledProcessError`, as every other runner's failed command is, so a
+    caller reading the reason out of a failed query's output reads it from this one too.
+    """
+
+    def __init__(self, returncode: int, cmd, output: str = ""):
+        super().__init__(returncode, cmd, output=output)
+
+    def __str__(self) -> str:
+        return f"command failed with exit {self.returncode}"
 
 
 class ExecSlotContainerRunner:
@@ -165,8 +172,7 @@ class ExecSlotContainerRunner:
                 progress_update_callback(line)
         if result.exit_code != 0:
             self.command_failed = True
-            raise QueryCommandFailed(
-                f"command failed with exit {result.exit_code}", output=combined)
+            raise QueryCommandFailed(result.exit_code, command, output=combined)
 
     def close(self) -> None:
         import shutil
@@ -462,9 +468,85 @@ def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: s
             payload or {}, image=image, exec_call=exec_call, resolve_call=resolve_call,
             request_kwargs={"workspace_id": workspace_id, "config_path": config_path},
             config=config_name)
+        recording = _recording_problems(exec_call, workspace_id=workspace_id,
+                                        config_path=config_path, vast_dir=vast_dir,
+                                        parameters=parameters, block=block, world=world,
+                                        config=config_name)
+        problems += [p for p in recording if p["severity"] != "advice"]
+        advice += [p for p in recording if p["severity"] == "advice"]
     # Advice is kept out of the collapse: that folds one exec failure repeated per world, and an
     # advisory about a checked world is neither.
     return _collapse_identical(problems, len(blocks)) + _merge_repeated(advice)
+
+
+def _recording_problems(exec_call, *, workspace_id: str, config_path: str, vast_dir: str,
+                        parameters: dict, block: dict, world: str, config) -> list:
+    """What the run's ROS bag does with the simulator's on-demand streams, for one world.
+
+    Recording every topic leaves them out, and that is said as advice, naming each stream, so
+    a topic missing from the bag is never a surprise. Naming one explicitly records it, and
+    that is said as well: the simulator then computes it every frame for the recorder.
+
+    The simulator failing to answer is an error, not advice: composing the campaign asks the
+    same question and refuses to start without the answer.
+    """
+    from robovast.common.config import recording_config, records_every_ros2_topic
+    from robovast.common.config_generation import (left_out_streams, query_on_demand_streams,
+                                                   set_container_runner_factory)
+    from robovast.common.config_validation import topic_is_recorded
+    from robovast.common.errors import ExecPathUnavailable
+
+    execution = parameters.get("execution", {}) or {}
+    runner = ExecSlotContainerRunner(exec_call, workspace_id=workspace_id,
+                                     config_path=config_path)
+    token = set_container_runner_factory(lambda _spec, _r=runner: _r)
+    try:
+        streams = query_on_demand_streams(execution, block, vast_dir)
+    except ExecPathUnavailable as exc:
+        return [_problem(_unchecked(exc), config=config, field=_RECORDING_FIELD,
+                         severity="unchecked")]
+    except Exception as exc:  # noqa: BLE001 - the reason is the finding
+        return [_problem(
+            f"{world}: which streams the simulator computes only on demand could not be "
+            f"asked, and a campaign starts only once it is: {exc}",
+            config=config, field=_RECORDING_FIELD)]
+    finally:
+        _reset_factory(token)
+        runner.close()
+    if not streams:
+        return []
+    if records_every_ros2_topic(execution):
+        left_out = left_out_streams(parameters, streams)
+    else:
+        ros2 = recording_config(execution.get("recording")).ros2
+        left_out = [s for s in streams
+                    if not topic_is_recorded(s["topic"], ros2.topics, ros2.exclude)
+                    or s["type"] in ros2.exclude_types]
+    problems = []
+    if left_out and records_every_ros2_topic(execution):
+        problems.append(_problem(
+            f"{world}: the run's ROS bag leaves out the simulator's on-demand streams "
+            f"{', '.join(_stream(s) for s in left_out)}. The simulator computes them only while "
+            "subscribed, so recording them would make it render each one every frame. Name one "
+            "in execution.recording.ros2.topics to record it.",
+            config=config, field=_RECORDING_FIELD, severity="advice"))
+    problems += [_problem(
+        f"{world}: this campaign records {_stream(s)}, which it names in "
+        "execution.recording.ros2.topics or for its results side -- a stream the simulator "
+        "computes only while subscribed, so recording it makes the simulator render it every "
+        "frame, whether or not the stack reads it.",
+        config=config, field=_RECORDING_FIELD, severity="advice")
+        for s in streams if s not in left_out]
+    return problems
+
+
+def _stream(stream: dict) -> str:
+    """``/topic (type)``, or the topic alone when the simulator named no type."""
+    return f"{stream['topic']} ({stream['type']})" if stream["type"] else stream["topic"]
+
+
+#: The ``.vast`` field a recording finding is about.
+_RECORDING_FIELD = "execution.recording.ros2"
 
 
 def _start_state_advice(warning: dict, world: str, config) -> dict:

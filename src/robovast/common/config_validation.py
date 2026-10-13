@@ -33,7 +33,7 @@ variation types, the ``results_processing``/``search`` postprocessing commands,
 and the search ``strategy`` and ``extract.plugin`` — whether they are installed
 entry-point names or local ``./path.py:Class`` file refs. Those non-variation
 plugins are otherwise only resolved when a campaign runs, so a broken local
-plugin would surface as a cryptic controller-pod log; here it is caught up front.
+plugin would surface as a cryptic error in the campaign log; here it is caught up front.
 This function is the shared core behind both the ``validate_config`` MCP tool
 and the ``vast configuration validate`` CLI command.
 """
@@ -52,6 +52,7 @@ from robovast.common import yaml_strict
 from robovast.common.config_extends import resolve_extends
 from robovast.common.config_presets import expand_configuration_presets
 from robovast.common.config import PINNED_REF
+from robovast.common.config_channels import SCENARIO, channel
 from robovast.common.containers import ros_repo_name
 
 logger = logging.getLogger(__name__)
@@ -327,6 +328,29 @@ def _config_name_from_loc(raw, loc):
                 return block.get("name", f"configuration[{loc[1]}]")
         return f"configuration[{loc[1]}]"
     return None
+
+
+def _scenario_clock_problems(raw, vast_dir):
+    """Which clock the scenario runs on must be decidable before any compute is spent.
+
+    The same rule the run applies (:func:`~robovast.common.simulators.scenario_use_sim_time`),
+    asked here so a ROS campaign whose simulator cannot say whether it publishes ``/clock``
+    is refused at validation rather than at its first job.
+    """
+    from robovast.common.simulators import (  # pylint: disable=import-outside-toplevel
+        apply_backend, scenario_use_sim_time)
+    execution = raw.get("execution") or {}
+    if not isinstance(execution, dict):
+        return []
+    try:
+        applied = apply_backend(dict(execution), vast_dir)
+    except Exception:  # noqa: BLE001 - an unresolvable backend is reported by the schema
+        return []
+    try:
+        scenario_use_sim_time(applied)
+    except ValueError as exc:
+        return [_problem("execution", str(exc), field="execution.use_sim_time")]
+    return []
 
 
 def _schema_problems(raw):
@@ -617,23 +641,29 @@ def _scene_descriptor_problems(raw, vast_dir):
     return problems
 
 
-def _env_names(raw):
-    """Names declared in ``execution.env``, accepting both shapes it is written in.
+def _scene_replay(raw):
+    """``(backend name, capabilities)`` of the configured simulator for a 3D replay.
 
-    The documented form is a list of single-key mappings (``- MY_VAR: "..."``); a plain
-    mapping is accepted too.
+    ``capabilities`` is ``{"records": <records_scene_state>, "exports": <has a scene_export>}``,
+    or ``None`` when there is no backend or it does not resolve -- a campaign with no backend is
+    not second-guessed, and an unresolvable one is reported by the schema.
     """
-    env = (raw.get("execution") or {}).get("env")
-    names = set()
-    if isinstance(env, dict):
-        names.update(str(k) for k in env)
-    elif isinstance(env, list):
-        for item in env:
-            if isinstance(item, dict):
-                names.update(str(k) for k in item)
-            elif isinstance(item, str):
-                names.add(item.split("=", 1)[0])
-    return names
+    from robovast.common.simulators import backend_name  # pylint: disable=import-outside-toplevel
+    from robovast.common.simulators import resolve_backend
+    execution = raw.get("execution") or {}
+    name = backend_name(execution)
+    if not name:
+        return name, None
+    try:
+        backend = resolve_backend(name)
+        cfg = (execution.get("containers") or {}).get("simulation") or {}
+        return name, {
+            "records": bool(backend.records_scene_state(cfg, execution)),
+            "exports": backend.scene_export(cfg, execution, world="", max_tex_dim=0,
+                                            overrides={}) is not None,
+        }
+    except Exception:  # noqa: BLE001 - an unresolvable backend is reported by the schema
+        return name, None
 
 
 def _scene3d_problems(raw):
@@ -645,34 +675,21 @@ def _scene3d_problems(raw):
     cannot be looked for on disk -- what *can* be established is whether the configured
     simulator records one at all, which is the mistake actually made.
 
-    Asked of the **backend**, not inferred from the campaign's wheel names. The old check
-    pattern-matched ``roqsim`` in the simulation ref and the installed packages, which was the
-    only signal available before a simulator was a first-class thing -- and which now finds
-    nothing at all in the shape where the simulator runs from its own image and the campaign
-    installs no simulator packages whatsoever.
+    Asked of the **backend**, not inferred from the campaign's wheel names. Pattern-matching
+    ``roqsim`` in the simulation ref and the installed packages finds nothing at all in the
+    shape where the simulator runs from its own image and the campaign installs no simulator
+    packages whatsoever.
 
     A campaign with no backend is not second-guessed: nothing here could tell where its
     recording would come from.
     """
-    problems = []
     panels = [(i, entry) for i, entry in enumerate(_run_view_panels(raw))
               if _panel_entry(entry)[0] == "scene3d"]
     if not panels:
-        return problems
-
-    from robovast.common.simulators import backend_name  # pylint: disable=import-outside-toplevel
-    from robovast.common.simulators import resolve_backend
-    execution = raw.get("execution") or {}
-    name = backend_name(execution)
-    if not name:
-        return problems
-    try:
-        backend = resolve_backend(name)
-        cfg = (execution.get("containers") or {}).get("simulation") or {}
-        if backend.records_scene_state(cfg, execution):
-            return problems
-    except Exception:  # noqa: BLE001 - an unresolvable backend is reported by the schema
-        return problems
+        return []
+    name, replay = _scene_replay(raw)
+    if replay is None or replay["records"]:
+        return []
 
     return [_problem(
         "panel",
@@ -690,6 +707,9 @@ def _camera_panel_problems(raw):
     shows "this run registered no video" to whoever finally opens it — after the compute is
     spent.
 
+    Only the ``recorded`` kind (the default) plays such a video; the other kinds read frames,
+    renders or the scene, and :func:`_scene_camera_panel_problems` checks the scene kind.
+
     Only the ``videos``-table path is checked. A panel naming ``source.path`` points at a
     file it takes responsibility for (the escape hatch for a video no producer registered),
     and second-guessing that would reject the one case the hatch exists for.
@@ -704,7 +724,8 @@ def _camera_panel_problems(raw):
 
     problems = []
     panels = [(i, props) for i, entry in enumerate(_run_view_panels(raw))
-              for ptype, props in [_panel_entry(entry)] if ptype == "camera"]
+              for ptype, props in [_panel_entry(entry)]
+              if ptype == "camera" and _camera_kind(props) == "recorded"]
     if not panels:
         return problems
 
@@ -724,13 +745,100 @@ def _camera_panel_problems(raw):
         for i, props in panels if not ((props or {}).get("source") or {}).get("path")]
 
 
+def _camera_kind(props):
+    """A camera panel's ``kind`` as the panel resolves it: its ``kind``; else ``scene`` when it
+    names a ``camera`` or a ``view``, and ``recorded`` otherwise. ``render`` is never inferred."""
+    if not isinstance(props, dict):
+        return "recorded"
+    if props.get("kind"):
+        return str(props["kind"])
+    return "scene" if "camera" in props or "view" in props else "recorded"
+
+
+#: The keys a ``scene`` camera panel's free ``view`` takes (the panel's ``parseFreeView``).
+FREE_VIEW_KEYS = ("position", "look_at", "fov", "attach", "up", "near", "far", "width",
+                  "height", "aspect")
+
+
+def _is_vec3(value):
+    return (isinstance(value, list) and len(value) == 3
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value))
+
+
+def _scene_look_problems(props):
+    """What is wrong with a ``scene`` panel's ``camera``/``view``, as ``(field, message)``."""
+    if "camera" in props and "view" in props:
+        return [("", "give `camera` (a camera the scene places) or `view`, not both")]
+    if "view" not in props:
+        camera = props.get("camera")
+        if isinstance(camera, str) and camera:
+            return []
+        return [("camera", "a camera panel with kind: scene needs a `camera` (the name of a "
+                           "camera the scene places) or a `view` (position and look_at)")]
+    view = props["view"]
+    if not isinstance(view, dict):
+        return [("view", "a free view is a mapping with position and look_at")]
+    found = []
+    unknown = sorted(set(view) - set(FREE_VIEW_KEYS))
+    if unknown:
+        found.append(("view", f"unknown {', '.join(unknown)}; a free view takes "
+                              f"{', '.join(FREE_VIEW_KEYS)} (azimuth/elevation/distance/lookat "
+                              f"are the server render's view, which needs kind: render)"))
+    for key in ("position", "look_at"):
+        if not _is_vec3(view.get(key)):
+            found.append((f"view.{key}", f"{key} must be [x, y, z] in metres"))
+    if "up" in view and not _is_vec3(view["up"]):
+        found.append(("view.up", "up must be [x, y, z]"))
+    fov = view.get("fov", 60)
+    if not (isinstance(fov, (int, float)) and 0 < fov < 180):
+        found.append(("view.fov", "fov is a vertical field of view in degrees, in (0, 180)"))
+    if "attach" in view and not (isinstance(view["attach"], str) and view["attach"]):
+        found.append(("view.attach", "attach names a body of the scene"))
+    return found
+
+
+def _scene_camera_panel_problems(raw):
+    """A ``scene`` camera panel renders the 3D scene through a camera the scene places or a
+    free view the panel places.
+
+    It needs what a ``scene3d`` panel needs -- runs that record the simulator state, and a
+    simulator whose scene export the geometry comes from -- plus a well-formed ``camera`` or
+    ``view``. Which cameras and bodies a world has is only known once its scene is exported,
+    on first view, so a name the scene lacks is reported by the panel, with the names it has.
+    """
+    panels = [(i, props) for i, entry in enumerate(_run_view_panels(raw))
+              for ptype, props in [_panel_entry(entry)]
+              if ptype == "camera" and _camera_kind(props) == "scene"]
+    if not panels:
+        return []
+    problems = [_problem("panel", message,
+                         field=f"{RUN_VIEW_PANELS}[{i}]" + (f".{where}" if where else ""))
+                for i, props in panels
+                for where, message in _scene_look_problems(props if isinstance(props, dict)
+                                                            else {})]
+    name, replay = _scene_replay(raw)
+    if replay is None:
+        return problems
+    missing = [what for what, ok in (
+        ("records no scene state to move the camera with", replay["records"]),
+        ("exports no scene for it to render", replay["exports"])) if not ok]
+    if missing:
+        problems.extend(_problem(
+            "panel",
+            f"a camera panel with kind: scene renders the run's 3D scene in the browser, "
+            f"and the '{name}' simulator {' and '.join(missing)}. Use kind: recorded or "
+            f"kind: topic for a camera this simulator records.",
+            field=f"{RUN_VIEW_PANELS}[{i}]") for i, _props in panels)
+    return problems
+
+
 #: What a scenario writes when it starts a bag recorder of its own. Matched on the text of
 #: the ``.osc`` rather than its parse tree: the action is reached through its name, and a
 #: name with a call paren is what appears at a use site and nowhere else.
 _SCENARIO_RECORDER_CALL = "bag_record("
 
 
-def _named_recorded_topics(raw):
+def named_recorded_topics(raw):
     """Every topic the campaign's results side expects the run's bag to hold, with where.
 
     The decoder entries name theirs under ``topic`` / ``topics``; a camera panel names the
@@ -758,7 +866,7 @@ def _named_recorded_topics(raw):
     return named
 
 
-def _topic_is_recorded(topic, topics, exclude):
+def topic_is_recorded(topic, topics, exclude):
     """Whether ``ros2 bag record`` with these arguments captures *topic*.
 
     A ``topics`` entry starting with ``^`` is a regex passed to ``-e``, which rosbag2 matches
@@ -780,25 +888,26 @@ def _topic_is_recorded(topic, topics, exclude):
 
 
 def _recording_problems(raw, scenario_file):
-    """The ``recording:`` block against the rest of the campaign.
+    """The ``execution.recording`` block against the rest of the campaign.
 
     Each of these is a campaign that runs and passes, and then has not recorded what its
     results side reads -- found after the compute is spent, in a table that is empty or a
     panel with nothing to play. So each is refused here, before any of that:
 
-    * ``recording.roqsim`` on a campaign whose simulator is not roqsim: the knobs would be
-      set for a process that never reads them;
-    * a topic a decoder entry or a camera panel names that ``recording.ros2.topics`` does not
-      capture, by name, by regex, or because an exclude removes it;
+    * ``execution.recording.roqsim`` on a campaign whose simulator is not roqsim: the knobs
+      would be set for a process that never reads them;
+    * a topic a decoder entry or a camera panel names that ``execution.recording.ros2.topics``
+      does not capture, by name, by regex, or because an exclude removes it;
     * a scenario that starts a bag recorder of its own: RoboVAST records the run's bag at
       ``<run>/rosbag2``, and a second recorder would write the same directory.
 
-    The world's entity roster is deliberately not checked against ``recording.roqsim.tracks``:
+    The world's entity roster is deliberately not checked against
+    ``execution.recording.roqsim.tracks``:
     only the simulator knows it, and roqsim refuses a pattern naming nothing at run start.
     """
     problems = []
     execution = raw.get("execution") if isinstance(raw.get("execution"), dict) else {}
-    recording = raw.get("recording")
+    recording = execution.get("recording")
     if isinstance(recording, dict):
         if recording.get("roqsim") is not None:
             from robovast.common.simulators import \
@@ -808,23 +917,23 @@ def _recording_problems(raw, scenario_file):
                 have = f"'{backend}'" if backend else "no simulator backend"
                 problems.append(_problem(
                     "recording",
-                    f"recording.roqsim configures the roqsim simulator's recording, but this "
+                    f"execution.recording.roqsim configures the roqsim simulator's recording, but this "
                     f"campaign declares {have} (execution.containers.simulation.backend). "
                     "Remove the block, or declare backend: roqsim.",
-                    field="recording.roqsim"))
+                    field="execution.recording.roqsim"))
         ros2 = recording.get("ros2") if isinstance(recording.get("ros2"), dict) else {}
         topics = ros2.get("topics", "all")
         exclude = [e for e in (ros2.get("exclude") or []) if isinstance(e, str)]
         if topics == "all" or (isinstance(topics, list)
                                and all(isinstance(t, str) for t in topics)):
-            for topic, field in _named_recorded_topics(raw):
-                if not _topic_is_recorded(topic, topics, exclude):
+            for topic, field in named_recorded_topics(raw):
+                if not topic_is_recorded(topic, topics, exclude):
                     problems.append(_problem(
                         "recording",
-                        f"{field} names topic '{topic}', which recording.ros2 does not "
-                        "record: it is neither listed in topics, matched by a regex there, "
+                        f"{field} names topic '{topic}', which execution.recording.ros2 "
+                        "does not record: it is neither listed in topics, matched by a regex there, "
                         "nor spared by exclude. The table or video built from it would be "
-                        "empty. Add the topic to recording.ros2.topics, or drop the entry.",
+                        "empty. Add the topic to execution.recording.ros2.topics, or drop the entry.",
                         field=field))
 
     if scenario_file:
@@ -839,7 +948,7 @@ def _recording_problems(raw, scenario_file):
                 f"{os.path.basename(scenario_file)} calls bag_record(...), but RoboVAST "
                 "records the run's bag itself at <run>/rosbag2, from before the scenario "
                 "starts until it ends. Both would write the same directory. Remove the "
-                "action; what the bag holds is the .vast's recording: block to say "
+                "action; what the bag holds is the .vast's execution.recording block to say "
                 "(use_sim_time included).",
                 field="execution.scenario_file"))
     return problems
@@ -1058,17 +1167,13 @@ def _config_block_problems(config, vast_dir, valid_param_names, declared_plugins
 
     # Scenario-parameter references (only checkable if the scenario was readable).
     if valid_param_names is not None:
-        config_dict = {}
-        for param in config.get("parameters", []) or []:
-            if isinstance(param, dict):
-                config_dict.update(param)
-        unknown = [p for p in config_dict if p not in valid_param_names]
+        unknown = [p for p in channel(config, SCENARIO) if p not in valid_param_names]
         if unknown:
             problems.append(_problem(
                 "parameters",
                 f"Unknown scenario parameter(s): {', '.join(unknown)}. "
                 f"Declared by the scenario: {', '.join(valid_param_names) or '(none)'}.",
-                config=name, field="parameters"))
+                config=name, field="parameters.scenario"))
     return problems
 
 
@@ -1077,8 +1182,8 @@ def _postprocessing_problems(entries, vast_dir, field_prefix):
 
     Uses the same resolver the runtime uses (``resolve_postprocessing_plugin``),
     so a broken local ``./path.py:Class`` — unknown name, import error, missing
-    class, not a ``BasePostprocessingPlugin`` — is caught here instead of in a
-    controller-pod log after launch. Collect-all: never raises.
+    class, not a ``BasePostprocessingPlugin`` — is caught here instead of in the
+    campaign log after launch. Collect-all: never raises.
 
     The decoder entries (``rosbags_*``, ``rosbags_process``) configure how the campaign's
     tables are built rather than naming a plugin, so they are checked as that configuration:
@@ -1274,33 +1379,30 @@ def _plugin_ref_problems(raw, vast_dir):
     return problems
 
 
-def _build_problems(raw, vast_dir):
-    """Fail-fast checks on a ``build:`` section's workspace-path references.
+def _python_packages_problems(raw, vast_dir):
+    """Every container's workspace-path ``python_packages`` entry must exist in the project.
 
-    A ``build.python_packages`` entry that is a workspace path (a source dir or a
-    ``.whl``) must actually exist in the project; index pins / git URLs are pip
-    specs and are not checked here (not resolvable offline). Tag shape and the
-    ``execution.image`` <-> ``build.tag`` consistency are enforced by the schema.
-
-    Entries may be grouped (a list of specs installed in one pip pass), so this
-    walks one level in: a path is a path in either form.
+    A path entry (a source dir or a ``.whl``) is copied into the image build context, so one
+    that is not there fails the image build after submission. Index pins and git URLs are
+    pip specs and are not checked (not resolvable offline). Entries may be grouped (a list
+    of specs installed in one pip pass), so this walks one level in.
     """
     problems = []
-    build = raw.get("build")
-    if not isinstance(build, dict):
+    containers = (raw.get("execution") or {}).get("containers")
+    if not isinstance(containers, dict):
         return problems
-    authored = build.get("python_packages", []) or []
-    entries = [spec for e in authored
-               for spec in (e if isinstance(e, list) else [e])]
-    for entry in entries:
-        if not isinstance(entry, str) or not entry.strip():
+    for name, block in containers.items():
+        authored = (block or {}).get("python_packages") if isinstance(block, dict) else None
+        if not isinstance(authored, list):
             continue
-        if _missing_workspace_path(entry, vast_dir):
-            problems.append(_problem(
-                "build",
-                f"'{entry}' looks like a workspace path but no such directory/wheel "
-                "exists in the project",
-                field="build.python_packages"))
+        field = f"execution.containers.{name}.python_packages"
+        for entry in (spec for e in authored for spec in (e if isinstance(e, list) else [e])):
+            if _missing_workspace_path(entry, vast_dir):
+                problems.append(_problem(
+                    "build",
+                    f"'{entry}' looks like a workspace path but no such directory/wheel "
+                    "exists in the project",
+                    config=name, field=field))
     return problems
 
 
@@ -1388,7 +1490,7 @@ def _ros_packages_problems(raw):
 def _missing_workspace_path(entry: str, vast_dir: str) -> bool:
     """Whether *entry* reads as a workspace path that is not in the project.
 
-    Shared by ``build.python_packages`` and the top-level ``plugins:`` list: both are pip
+    Shared by a container's ``python_packages`` and the top-level ``plugins:`` list: both are pip
     requirement specs where a *path* form is resolved against the project, so one rule and
     one message for both. Index pins and git URLs are not checked --- they are not
     resolvable offline, and guessing would fail a spec that is simply remote.
@@ -1412,8 +1514,8 @@ def _plugins_problems(raw, vast_dir):
     the network:
 
     * a **workspace path** entry that is not in the project --- the same check
-      ``build.python_packages`` already gets, which top-level ``plugins:`` never had, so a
-      wheel named with a typo surfaced only when a campaign tried to install it;
+      a container's ``python_packages`` gets, so a wheel named with a typo is reported
+      before a campaign tries to install it;
     * a plugin **already installed** in this workspace whose metadata declares a
       dependency on robovast itself. Harmless while the install resolves against the host,
       but it is what would otherwise put a second robovast in the workspace, and only the
@@ -1490,19 +1592,20 @@ def validate_project_file(config_path):
     # a run_files pattern — otherwise the panel 404s only once someone opens the run.
     problems.extend(_scene_descriptor_problems(raw, vast_dir))
     problems.extend(_scene3d_problems(raw))
+    problems.extend(_scenario_clock_problems(raw, vast_dir))
     problems.extend(_image_provenance_problems(raw))
     problems.extend(_unresolvable_image_problems(raw))
     problems.extend(_migration_marker_problems(raw))
-    # ...and a camera panel needs a step that produces the video it plays.
+    # ...and a camera panel needs a step that produces the video it plays, or, looking
+    # through a sensor of the scene, a simulator that replays one.
     problems.extend(_camera_panel_problems(raw))
+    problems.extend(_scene_camera_panel_problems(raw))
     # ...and the run's bag has to hold what the tables and panels read from it.
     problems.extend(_recording_problems(raw, scenario_file))
 
-    # A build: section's workspace-path python_packages must exist (fail-fast at
-    # submit, before any image build runs). Schema-level checks (tag shape, the
-    # execution.image <-> build.tag consistency) are already covered by the config
-    # model in _schema_problems.
-    problems.extend(_build_problems(raw, vast_dir))
+    # A container's workspace-path python_packages must exist (fail-fast at submit,
+    # before any image build runs).
+    problems.extend(_python_packages_problems(raw, vast_dir))
     # ...and a container's source-built ROS packages must be declared in a form a build could
     # act on: a repository, a ref that pins, and no two repos landing in one src/ directory.
     problems.extend(_ros_packages_problems(raw))

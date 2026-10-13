@@ -4,7 +4,7 @@
 // a reason to withhold it.
 import { describe, expect, it } from 'vitest'
 
-import { hasResults, type CampaignSummary } from './robovastClient'
+import { hasResults, resultsCampaigns, type CampaignSummary } from './robovastClient'
 
 const summary = (over: Partial<CampaignSummary>): CampaignSummary =>
   ({
@@ -35,5 +35,15 @@ describe('hasResults admits every campaign with recorded runs', () => {
   it('admits a search whose every draw failed to compose', () => {
     // Zero runs, and yet fully recorded: the one campaign most in need of inspection.
     expect(hasResults(summary({ num_runs: 0, num_composition_failed: 3 }))).toBe(true)
+  })
+})
+
+describe('resultsCampaigns is the one gate of every Results view', () => {
+  it('offers a campaign whose first trial is still recording', () => {
+    // A single-run campaign has no recorded run until it ends; its run is watched live.
+    const live = summary({ campaign_id: 'live', phase: 'running', num_runs: 0 })
+    const idle = summary({ campaign_id: 'idle', phase: 'building', num_runs: 0 })
+    const done = summary({ campaign_id: 'done' })
+    expect(resultsCampaigns([live, idle, done]).map((c) => c.campaign_id)).toEqual(['live', 'done'])
   })
 })

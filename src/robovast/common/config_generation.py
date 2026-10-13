@@ -451,6 +451,100 @@ def _stage_query_documents(runner, query, expose):
         expose(staged, container_path)
 
 
+def _run_json_query(query, vast_dir, *, what, image_project=None, image_project_tag=None,
+                    digests=None) -> dict:
+    """Run a :class:`~robovast.common.simulators.ContainerQuery` and return its JSON reply.
+
+    The campaign's files are exposed at :data:`CONFIG_MOUNT`, where the backend's command names
+    them -- the same mount a real run gives the simulator -- and the documents the query
+    declares are staged where its command reads them. Every way the question can go unanswered
+    raises, naming *what* was being asked: a caller holding no answer must not carry on as if
+    it held an empty one.
+
+    The command runs in the environment the simulator has in a run (:func:`_query_spec`). A
+    command that fails and prints its report anyway is refused with the report's own
+    ``problems`` (:func:`_report_problems`), so a world that does not load stops the caller
+    with the reason it does not.
+
+    *digests* collects ``{container name: digest}`` of the image that answered.
+    """
+    runner = _make_container_runner(_query_spec(query.spec), image_project=image_project,
+                                    image_project_tag=image_project_tag,
+                                    purpose=what)
+    if runner is None:
+        raise RuntimeError(f"{what}: no container runner is available here")
+    lines = []
+    try:
+        expose = getattr(runner, "expose", None)
+        if expose is not None:
+            from robovast.common.simulators import \
+                CONFIG_MOUNT  # pylint: disable=import-outside-toplevel
+            expose(vast_dir, CONFIG_MOUNT)
+            if getattr(query, "documents", None):
+                _stage_query_documents(runner, query, expose)
+        runner.run(query.command, lines.append)
+        if digests is not None:
+            digests[query.spec.container_name()] = aux_image_digest(query.spec, runner)
+    except subprocess.CalledProcessError as exc:
+        # The container's own words, not the runner's exit status. ``CalledProcessError``
+        # renders as "returned non-zero exit status N" and nothing else, and the failure this
+        # meets most -- an image with no simulator in it, so the exec never starts -- states
+        # its reason ONLY on the exception, never through the line callback.
+        output = lines or str(exc.output or "").splitlines()
+        spoke = (_report_problems(_last_json_line(output) or _last_json_block(output))
+                 or _command_failure(str(exc.output or "").splitlines())
+                 or _command_failure(lines))
+        raise RuntimeError(
+            f"{what} failed in {getattr(query.spec, 'image', '') or 'its image'}: "
+            f"{spoke or exc}") from exc
+    finally:
+        runner.close()
+
+    payload = _last_json_line(lines)
+    if payload is None:
+        payload = _last_json_block(lines)
+    if payload is None:
+        raise RuntimeError(
+            f"{what} printed no JSON; its output was: "
+            + " | ".join(str(line) for line in lines[-3:]))
+    return payload
+
+
+def _query_spec(spec):
+    """*spec*, with its commands run in the environment a run's own processes have.
+
+    A :class:`~robovast.common.simulators.ContainerQuery` asks the image a run uses about the
+    world the run loads, and loading it loads the plugins that environment installs: a ROS
+    simulator's bridge lives in the overlay the run's entrypoint sources. A runner enters an
+    auxiliary container without that entrypoint -- ``docker run --entrypoint``, an exec into a
+    kept-alive container -- so the environment is set up by the command itself
+    (:func:`~robovast.common.execution.run_env_prefix`).
+    """
+    from dataclasses import replace  # pylint: disable=import-outside-toplevel
+
+    from robovast.common.execution import \
+        run_env_prefix  # pylint: disable=import-outside-toplevel
+    return replace(spec, command_prefix=run_env_prefix() + list(spec.command_prefix))
+
+
+def _report_problems(report) -> str:
+    """The problems a failed query's JSON report states, as ``stage: message``; ``""`` if none.
+
+    A query command that fails may still print its report, and the report says why where the
+    last line of output is only its closing brace (:class:`~robovast.common.simulators.ContainerQuery`).
+    """
+    if not isinstance(report, dict):
+        return ""
+    stated = []
+    for problem in report.get("problems") or []:
+        if isinstance(problem, dict) and problem.get("message"):
+            stage = problem.get("stage")
+            stated.append(f"{stage}: {problem['message']}" if stage else str(problem["message"]))
+        elif isinstance(problem, str) and problem:
+            stated.append(problem)
+    return "; ".join(stated)[:2000]
+
+
 def _run_input_files_query(query, vast_dir, *, image_project=None, image_project_tag=None,
                            digests=None):
     """Ask the simulator's own image which files a world is made of.
@@ -459,9 +553,6 @@ def _run_input_files_query(query, vast_dir, *, image_project=None, image_project
     settles on, and the meshes that MJCF names -- and enumerating that needs the simulator,
     which a backend must not import. So the backend states the question and the answer comes
     from the image that will run the campaign.
-
-    Until this existed, a world extending another *campaign* file staged only the YAML: the
-    run then failed in the container on a parent that never travelled, after the image pull.
 
     The answer comes back in the CONTAINER's paths, and is translated: the campaign tree is
     exposed at :data:`CONFIG_MOUNT`, which is also where the command named the world, so
@@ -472,44 +563,9 @@ def _run_input_files_query(query, vast_dir, *, image_project=None, image_project
 
     *digests* collects ``{container name: digest}`` of the image that answered.
     """
-    runner = _make_container_runner(query.spec, image_project=image_project,
-                                    image_project_tag=image_project_tag,
-                                    purpose="the simulator's input-files query")
-    if runner is None:
-        return []
-    lines = []
-    try:
-        expose = getattr(runner, "expose", None)
-        if expose is not None:
-            # The campaign's own files, at the CONFIG_MOUNT path the backend's command
-            # already names -- the same mount a real run gives the simulator. Without it the
-            # container was handed a path relative to a directory it does not have, and said
-            # the world did not exist.
-            from robovast.common.simulators import \
-                CONFIG_MOUNT  # pylint: disable=import-outside-toplevel
-            expose(vast_dir, CONFIG_MOUNT)
-        runner.run(query.command, lines.append)
-        if digests is not None:
-            digests[query.spec.container_name()] = aux_image_digest(query.spec, runner)
-    except subprocess.CalledProcessError as exc:
-        # The container's own words, not the runner's exit status. ``CalledProcessError``
-        # renders as "returned non-zero exit status N" and nothing else, and the failure this
-        # query meets most -- an image with no simulator in it, so the exec never starts --
-        # states its reason ONLY on the exception, never through the line callback. Dropping
-        # it leaves a bare number standing for a cause that names itself.
-        spoke = (_command_failure(str(exc.output or "").splitlines())
-                 or _command_failure(lines))
-        raise RuntimeError(
-            "the simulator backend's input-files query failed in "
-            f"{getattr(query.spec, 'image', '') or 'its image'}: {spoke or exc}") from exc
-    finally:
-        runner.close()
-
-    payload = _last_json_line(lines)
-    if payload is None:
-        raise RuntimeError(
-            "the simulator backend's input-files query printed no JSON; its output was: "
-            + " | ".join(str(line) for line in lines[-3:]))
+    payload = _run_json_query(query, vast_dir, what="the simulator backend's input-files query",
+                              image_project=image_project, image_project_tag=image_project_tag,
+                              digests=digests)
     if payload.get("packaged"):
         return []
 
@@ -550,6 +606,28 @@ def _last_json_line(lines):
             continue
         if isinstance(payload, dict):
             return payload
+    return None
+
+
+def _last_json_block(lines):
+    """The last indented JSON object a container command printed, or ``None``.
+
+    A tool printing a report with ``indent`` spreads it over lines, opening with a lone ``{``
+    and closing with a lone ``}``; the runner's own lines may surround it, never interleave.
+    """
+    texts = [str(line).rstrip() for line in lines]
+    for end in range(len(texts) - 1, -1, -1):
+        if texts[end] != "}":
+            continue
+        for start in range(end, -1, -1):
+            if texts[start] != "{":
+                continue
+            try:
+                payload = json.loads("\n".join(texts[start:end + 1]))
+            except ValueError:
+                return None
+            return payload if isinstance(payload, dict) else None
+        return None
     return None
 
 
@@ -783,7 +861,7 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
         raise WorldQueryUnavailable(
             f"this campaign's world is described by its own built image ({image}), which does "
             "not exist yet -- build the experiment image first")
-    runner = _make_container_runner(query.spec, purpose="the world description")
+    runner = _make_container_runner(_query_spec(query.spec), purpose="the world description")
     if runner is None:
         raise WorldQueryUnavailable("no container runner is available here")
     lines = []
@@ -1233,6 +1311,12 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
             if rel not in run_files:
                 run_files.append(rel)
 
+    if container_queries:
+        _resolve_recording_left_out(configs, parameters, vast_dir, seen_blocks,
+                                    image_project=image_project,
+                                    image_project_tag=image_project_tag,
+                                    aux_images=aux_images, aux_digests=aux_digests)
+
     try:
         _check_sim_against_world(execution, configs, vast_dir, scenario_parameters)
     except ValueError:
@@ -1240,6 +1324,78 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
         raise
     except Exception as exc:  # noqa: BLE001 - an unavailable checker is not a bad campaign
         logger.debug("sim overrides were not pre-checked: %s", exc)
+
+
+def query_on_demand_streams(execution, block, vast_dir, *, image_project=None,
+                            image_project_tag=None, aux_images=None, aux_digests=None,
+                            answers=None):
+    """The streams the simulator computes only on demand, for one resolved ``sim`` block.
+
+    ``None`` when the backend cannot say; otherwise ``[{"topic", "type"}, ...]``, asked of the
+    campaign's own image where the backend needs the world loaded to answer. Raises when the
+    question cannot be answered: the alternative -- recording every stream -- is exactly what
+    the answer exists to prevent, and it would look like a run that went fine.
+
+    *answers* memoizes replies by what a query asks (:func:`_query_key`), so blocks that ask the
+    same question share one container round trip.
+    """
+    from robovast.common.simulators import \
+        sim_on_demand_streams  # pylint: disable=import-outside-toplevel
+
+    def ask(query):
+        key = _query_key(query)
+        if answers is not None and key in answers:
+            return answers[key]
+        if aux_images is not None and getattr(query, "spec", None) is not None:
+            aux_images[query.spec.container_name()] = query.spec.image
+        reply = _run_json_query(query, vast_dir,
+                                what="the simulator backend's on-demand streams query",
+                                image_project=image_project, image_project_tag=image_project_tag,
+                                digests=aux_digests)
+        if answers is not None:
+            answers[key] = reply
+        return reply
+
+    return sim_on_demand_streams(execution, block, vast_dir, run_query=ask)
+
+
+def left_out_streams(parameters, streams) -> list:
+    """*streams* less those the campaign itself names for its results side.
+
+    A decoder entry or a camera panel naming a topic is the campaign asking for it, as surely
+    as listing it under ``execution.recording.ros2.topics`` -- and validation already holds
+    every such topic to be recorded -- so it is never left out.
+    """
+    from robovast.common.config_validation import \
+        named_recorded_topics  # pylint: disable=import-outside-toplevel
+    named = {topic for topic, _field in named_recorded_topics(parameters or {})}
+    return [s for s in (streams or []) if s["topic"] not in named]
+
+
+def _resolve_recording_left_out(configs, parameters, vast_dir, blocks, **query_kwargs):
+    """Freeze into each configuration which of the simulator's streams its ROS bag leaves out.
+
+    Asked per distinct ``sim`` block, because which streams exist and which are rendered on
+    demand is a property of the world and of its overrides. The answer is part of the
+    configuration (``recording.ros2.left_out``): every run of it records the same topic set, and
+    the record of why a topic is absent sits beside the configuration rather than in a log.
+
+    Nothing is asked when the campaign names its topics, nor when the backend cannot say; a
+    stream the campaign's results side names is kept (:func:`left_out_streams`).
+    """
+    from robovast.common.config import \
+        records_every_ros2_topic  # pylint: disable=import-outside-toplevel
+    execution = parameters.get("execution", {}) or {}
+    if not records_every_ros2_topic(execution):
+        return
+    answers, by_block = {}, {}
+    for key, block in blocks.items():
+        by_block[key] = query_on_demand_streams(execution, block, vast_dir, answers=answers,
+                                                **query_kwargs)
+    for config in configs:
+        streams = by_block.get(json.dumps(config.get("sim"), sort_keys=True, default=str))
+        if streams is not None:
+            config["recording"] = {"ros2": {"left_out": left_out_streams(parameters, streams)}}
 
 
 def _backend_cfg(backend, execution, name):
@@ -1584,8 +1740,8 @@ def _collect_analysis_input_files(parameters, base_dir=None):
     # file in each bundle dir so remoteEntry.js + its chunks land in _config/ and are served
     # per campaign at runtime. Package panels (entry-point types) ship their own assets and
     # are not collected here.
-    visualization = parameters.get('visualization')
-    panels = visualization.get('panels') if isinstance(visualization, dict) else None
+    panels = _section(_section(_section(_section(parameters, 'visualization'), 'results'),
+                               'run_view'), 'panels')
     if base_dir and panels:
         for entry in panels:
             if isinstance(entry, dict) and 'type' not in entry and len(entry) == 1:
@@ -1665,7 +1821,9 @@ COMPOSITION_ONLY_EXECUTION_KEYS = frozenset({"scenario_file", "run_files", "gene
 # beyond the key (:func:`_cached_entry_is_current`), without which a hit cannot be checked.
 # 13: each configuration carries its ``.vast`` block and the files its variations read
 # (``_read_files``), both part of its identity; an entry from 12 carries neither.
-_CACHE_FORMAT_VERSION = 13
+# 14: each configuration carries the simulator streams its recording leaves out
+# (``recording.ros2.left_out``); an entry from 13 has none, and its jobs would be refused.
+_CACHE_FORMAT_VERSION = 14
 
 
 def _build_generate_cache_key(
@@ -2240,8 +2398,8 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # About to compose (cache miss, or caching disabled). Ensure any variation-plugin
     # packages the .vast declares in ``plugins:`` are installed into the workspace's
     # ``.robovast_plugins/`` dir and on ``sys.path`` before resolving variation types
-    # from entry points. Idempotent: in a controller pod the dir was staged with the
-    # project so this only adjusts ``sys.path``. Skipped when the caller supplies
+    # from entry points. Idempotent: where the dir was staged with the project this
+    # only adjusts ``sys.path``. Skipped when the caller supplies
     # precomputed ``variation_classes``. In the isolated worker this is where the
     # plugin actually gets installed/imported (``_ISOLATED_ENV`` is set, so we reach
     # here rather than re-forking).
@@ -2482,11 +2640,9 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
     # downstream -- the container plan, the image builds, the run environment -- reads
     # one already-complete picture instead of each re-asking the backend and risking a
     # different answer. The campaign always wins; a backend fills in what was left out.
-    from robovast.common.config import recording_config  # pylint: disable=import-outside-toplevel
     from robovast.common.simulators import apply_backend  # pylint: disable=import-outside-toplevel
     execution_section = apply_backend(parameters.get('execution', {}) or {},
-                                      base_dir=os.path.dirname(variation_file),
-                                      recording=recording_config(parameters.get('recording')))
+                                      base_dir=os.path.dirname(variation_file))
     # And immediately resolve the ``family:`` refs a backend (or the default) contributed,
     # so the campaign data carries concrete images from here on. The project/tag arrive as
     # arguments rather than being read from the environment here: this runs in the
@@ -2557,9 +2713,6 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
                if rel not in key_run_files and os.path.isfile(os.path.join(vast_dir, rel))]),
         "_output_dir": os.path.abspath(output_dir),
         "execution": execution_params,
-        # The `recording:` block as written, or None. Not underscore-prefixed for the same
-        # reason: the backend derives the run's RECORD_* environment from it.
-        "recording": parameters.get('recording'),
         "created_at": datetime.now().isoformat()
     }
 

@@ -1259,18 +1259,21 @@ class ServiceBase(RobovastInterface):
             raise RuntimeError("no auth token bound to this service; build it with build_app")
         return auth.scoped_token(token, scope)
 
-    def campaign_tar_stream(self, campaign_id: str, raw: bool = False):
+    def campaign_tar_stream(self, campaign_id: str, raw: bool = False, *, part: str = "",
+                            compress: bool = True):
         """Tar this host's campaign directory straight into the response.
 
         With its built tables, or *raw* (``campaign_archive.download_skip``). A campaign
         that is still running carries a snapshot marker (see
         ``campaign_archive.iter_campaign_tar``) so what lands cannot be mistaken for a
-        finished one; liveness is this transport's knowledge, from its registry.
+        finished one; liveness is this transport's knowledge, from its registry. *part* and
+        *compress* stage one part of a table build for its pod (``DataPlane``).
         """
         live = self.campaign_is_live(campaign_id)
         return self._data_plane().campaign_tar_stream(
             campaign_id, raw=raw, live=live,
-            facts=self._snapshot_facts(campaign_id) if live else None)
+            facts=self._snapshot_facts(campaign_id) if live and not part else None,
+            part=part, compress=compress)
 
     def campaign_live(self, campaign_id: str, run: str, tables):
         """A subscription to a run's tables as it records; the data plane's, over this root.
@@ -1755,14 +1758,13 @@ class ServiceBase(RobovastInterface):
         the campaign's own ``_config/<name>.vast``. ``output_callback`` is what puts the
         step-by-step narrative ("[2/4] Executing: …", "✓ …") into whichever campaign log
         handler the caller opened. Without it those lines default to ``print`` and land on
-        the service's stdout, so the phase file held only what modules logged themselves --
-        the campaign log looked empty for the run you had just asked for.
+        the service's stdout, and the campaign log holds only what modules log themselves.
 
         With *state*, those same lines also become the live ``stage`` marker -- see
         :func:`~robovast.execution.control_server.stage_output_callback`. Both callers have
         one, and both are watched from the campaign view, so a re-run narrates itself there
-        exactly as an auto-chained run does; without it a retrigger was the case where the
-        view showed ``postprocessing`` and nothing else for the whole run.
+        exactly as an auto-chained run does rather than showing ``postprocessing`` alone for
+        the whole run.
         """
         from robovast.execution.control_server import \
             stage_output_callback  # pylint: disable=import-outside-toplevel
@@ -1774,7 +1776,8 @@ class ServiceBase(RobovastInterface):
             output_callback=stage_output_callback(state, logger.info),
             # A re-run is a tracked campaign like any other while it is going, so
             # ``stop_campaign`` reaches it -- and with this, ends it.
-            should_stop=stop_checker(state))
+            should_stop=stop_checker(state),
+            table_builder=self._table_builder(campaign_id, campaign_dir, state))
 
     def run_postprocessing(self, request) -> ActionResult:
         self._admit_storage(f"postprocess {request.campaign_id}")
@@ -2246,6 +2249,16 @@ class ServiceBase(RobovastInterface):
         """
 
     @abstractmethod
+    def _table_builder(self, campaign_id: str, campaign_dir: Path, state=None):
+        """What builds a campaign's tables where its runs ran, for a postprocessing this
+        service runs; ``None`` to build them in this process.
+
+        The cluster answers with Jobs sized from the campaign's own record
+        (``cluster_execution.table_jobs``) -- the same builder the campaign-end pass uses, so
+        a postprocessing started later, or after a restart, builds as that pass would have.
+        """
+
+    @abstractmethod
     def _admit_scheduling(self, request) -> None:
         """Admit or refuse a rank or a hold at launch, for this implementation.
 
@@ -2542,7 +2555,7 @@ class ServiceBase(RobovastInterface):
         # mapping, which is what the author wrote.
         raw_config = load_config(target.config_path)
         campaign_config = validate_config(raw_config)
-        # The shared root, asked for directly: it never varied per workspace.
+        # The shared root, asked for directly: it does not vary per workspace.
         results_dir = str(self._campaigns_root())
         campaign_id = target.campaign_id or campaign_id_for(
             campaign_config, request.campaign_name or None)
@@ -2550,17 +2563,15 @@ class ServiceBase(RobovastInterface):
         config_filter = request.config_filter or None
 
         # NOTE: the config_filter is deliberately **not** validated here. Doing so
-        # meant expanding the whole campaign synchronously on the caller's thread,
-        # which (a) broke this method's documented "returns immediately" contract —
-        # the POST hung for the entire expansion, holding an anyio threadpool slot —
-        # (b) expanded twice (once here, once in the worker), and (c) could not work
+        # would mean expanding the whole campaign synchronously on the caller's thread,
+        # which (a) breaks this method's documented "returns immediately" contract —
+        # the POST would hang for the entire expansion, holding an anyio threadpool
+        # slot — (b) expands twice (once here, once in the worker), and (c) cannot work
         # for campaigns needing an auxiliary container, whose runner only exists
-        # inside the worker's _campaign_context. Expansion now happens exactly once,
-        # in the worker. A bad filter surfaces there as phase=failed with the same
-        # "Available configs:" message in Status.error (+ outcome.json) — which the
-        # in-process driver makes visible immediately; the old submit-time check
-        # existed only because a doomed *controller pod* would have hidden it in
-        # kubectl logs, and there is no such pod any more.
+        # inside the worker's _campaign_context. Expansion happens exactly once, in
+        # the worker. A bad filter surfaces there as phase=failed with the
+        # "Available configs:" message in Status.error (+ outcome.json), which the
+        # in-process driver makes visible immediately.
 
         self._guard_new_campaign()
 
@@ -3178,8 +3189,7 @@ class ServiceBase(RobovastInterface):
         # family. The stepped shape is unaffected: there the simulator genuinely *is* the
         # scenario container, and the backend says so.
         execution = apply_backend(campaign_config.execution.model_dump(),
-                                  os.path.dirname(os.path.abspath(vast_file)),
-                                  recording=campaign_config.recording)
+                                  os.path.dirname(os.path.abspath(vast_file)))
         plan = plan_containers(execution)
         target = plan.by_name(container) if container else plan.main
 
@@ -3297,9 +3307,9 @@ class ServiceBase(RobovastInterface):
                            exc_info=True)
         try:
             state.set_phase(Phase.POSTPROCESSING)
-            # Through the seam every other caller uses, so the implementation decides HOW
-            # to postprocess. Running the pipeline here instead would run it in this process
-            # where the cluster postprocesses in a pod of its own.
+            # Through the seam every other caller uses -- a re-run and an import -- so a
+            # campaign's end is postprocessed exactly as asking for it later would be;
+            # NullService refuses, and every other implementation runs the pipeline here.
             ok, message = self._postprocess_campaign(
                 campaign_id, Path(results_dir) / campaign_id, state=state)
             if ok:
@@ -3494,6 +3504,15 @@ class ServiceBase(RobovastInterface):
         del campaign_id, job_name
         return ""
 
+    def _job_is_queued(self, campaign_id: str, job_name: str) -> bool:
+        """Whether *job_name* is a job of the campaign queued for capacity, not created yet.
+
+        Such a job has no directory and no log yet, and will have both. ``False`` for a
+        service that queues nothing of its own.
+        """
+        del campaign_id, job_name
+        return False
+
     def _job_log_dir(self, campaign_id: str, job_name: str) -> Tuple[Optional[Path], List[str]]:
         """``(job directory, runs placed in it)``, or ``(None, [])`` before it is known.
 
@@ -3513,7 +3532,10 @@ class ServiceBase(RobovastInterface):
             rel = self._job_artifact_hint(campaign_id, job_name)
         if not rel:
             # Before the first job starts there is no manifest yet: a run the campaign has
-            # is a job whose log does not exist yet, anything else is not a job of it.
+            # is a job whose log does not exist yet, as is a job queued for capacity;
+            # anything else is not a job of it.
+            if self._job_is_queued(campaign_id, job_name):
+                return None, []
             try:
                 run_dir = safe_join(campaign_dir, job_name)
             except UnsafePathError as exc:
@@ -4984,10 +5006,10 @@ class ServiceBase(RobovastInterface):
         block = campaign_sim_block(execution)
         started = time.monotonic()
         # Through the exec runner's held query container, never a `docker run` on the
-        # service host: in a controller pod that would run on whatever host the service
-        # happens to sit on -- a different image cache, or no docker at all -- with nothing
-        # in the reply to say the answer did not come from the cluster. Outside a campaign's
-        # composition the cluster has no other runner.
+        # service host: that would run on whatever host the service happens to sit on --
+        # a different image cache, or no docker at all -- with nothing in the reply to say
+        # the answer did not come from the cluster. Outside a campaign's composition the
+        # cluster has no other runner.
         from robovast.common.config_generation import set_container_runner_factory
         from robovast.service.world_query import ExecSlotContainerRunner, _reset_factory
         runner = ExecSlotContainerRunner(
@@ -5277,7 +5299,6 @@ class ServiceBase(RobovastInterface):
         return self._run_state_path(campaign_id, config_name, run_id, filename)
 
     @abstractmethod
-    @abstractmethod
     def _scene_runner_context(self, identity: dict, on_wait=None):
         """A zero-argument callable returning a context that yields the runner factory a scene
         build or capture of *identity*'s image runs through.
@@ -5365,8 +5386,8 @@ class ServiceBase(RobovastInterface):
             "in_progress": running,
             "stage": stage,
             "stage_detail": stage_detail,
-            "bytes": scene_cache.entry_bytes(key) if cached else 0,
-            "url": (Routes.campaign_scene_asset(campaign_id, f"{key}/scene.json")
+            "bytes": scene_cache.scene_bytes(key) if cached else 0,
+            "url": (Routes.campaign_scene_asset(campaign_id, f"{key}/{scene_cache.SCENE_FILE}")
                     if cached else ""),
             "world": identity["world"],
             "overrides_known": identity["overrides_known"],
@@ -5480,8 +5501,8 @@ class ServiceBase(RobovastInterface):
             "in_progress": running,
             "stage": stage,
             "stage_detail": stage_detail,
-            "bytes": scene_cache.entry_bytes(key) if cached else 0,
-            "url": (Routes.workspace_scene_asset(workspace_id, f"{key}/scene.json")
+            "bytes": scene_cache.scene_bytes(key) if cached else 0,
+            "url": (Routes.workspace_scene_asset(workspace_id, f"{key}/{scene_cache.SCENE_FILE}")
                     if cached else ""),
             "world": identity["world"],
             "overrides_known": True,
@@ -5519,7 +5540,7 @@ class ServiceBase(RobovastInterface):
         return ActionResult(ok=True, message="building this world's geometry; poll the scene status")
 
     def resolve_workspace_scene_asset(self, workspace_id: str, path: str) -> str:
-        """One file of a cached descriptor. The cache is keyed by content and shared, so the
+        """One file of a cached scene. The cache is keyed by content and shared, so the
         workspace only scopes the *route*, not the bytes."""
         del workspace_id
         return self.resolve_campaign_scene_asset("", path)
@@ -5562,12 +5583,11 @@ class ServiceBase(RobovastInterface):
         return str(screenshot.kept(campaign_id, name))
 
     def resolve_campaign_scene_asset(self, campaign_id: str, path: str) -> str:
-        """Resolve ``<key>/<file>`` within the shared descriptor cache.
+        """Resolve ``<key>/<file>`` within the shared scene cache.
 
-        The **key is in the path** rather than re-derived from a run, for two reasons: the descriptor's
-        loader fetches ``scene.bin`` and every texture as *relative siblings* of ``scene.json``, so one
-        URL prefix has to address the whole entry; and an entry is shared by every campaign that used
-        that world, so there is no single run it belongs to. The client never builds this URL -- the
+        The **key is in the path** rather than re-derived from a run, because the key names the
+        bytes -- which is what lets the route serve them as immutable -- and an entry is shared by
+        every campaign that used that world, so there is no single run it belongs to. The client never builds this URL -- the
         status response hands it over -- and ``asset_path`` refuses anything escaping the entry.
         """
         del campaign_id  # scopes the route, but a cache entry belongs to a world, not a campaign

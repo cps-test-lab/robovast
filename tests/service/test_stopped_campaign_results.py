@@ -222,8 +222,8 @@ def _ran_postprocessing(monkeypatch, tmp_path):
 
 
 def test_postprocess_ends_in_the_phase_it_was_given(svc, tmp_path, monkeypatch):
-    """``_postprocess`` no longer hardcodes ``finished``: a stopped campaign's analysis runs
-    to completion and the campaign is still ``stopped`` afterwards."""
+    """``_postprocess`` ends in the phase it is given, not always ``finished``: a stopped
+    campaign's analysis runs to completion and the campaign is still ``stopped`` afterwards."""
     _ran_postprocessing(monkeypatch, tmp_path)
     state = _PhaseState()
     svc._record_outcome = lambda *a, **k: None

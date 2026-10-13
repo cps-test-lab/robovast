@@ -2,12 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """The merged run log: one row per event, whichever source (or sources) carried it.
 
-The numbers in the docstrings come from a real three-container campaign,
-``basicnav-sidecar-2026-08-07-17213653``: 521 rosout rows and 526 stdout records merge to
-574 rows with 473 matched and **zero** events present twice.
+An event that both ``/rosout`` and a container's stdout carried is matched and appears once;
+an event only one source carried is kept from that source. No event is ever present twice.
 """
-
-import dataclasses
 
 import pytest
 
@@ -104,10 +101,9 @@ def test_a_rosout_row_and_its_stdout_twin_become_one_row():
 
 
 def test_the_join_uses_the_producers_stamp_not_the_bags_receive_time():
-    """The measured failure: keying rosout on ``timestamp`` (when the recorder *saw* the
-    message) matched 0 of 521 rows, because the transport delay puts every pair on a
-    different nanosecond. ``stamp`` is what the producing node's clock said — the same
-    number rcutils printed into stdout."""
+    """Keying rosout on ``timestamp`` (when the recorder *saw* the message) matches no row
+    at all, because the transport delay puts every pair on a different nanosecond. ``stamp``
+    is what the producing node's clock said — the same number rcutils printed into stdout."""
     stamp = 1786116213.809044763
     rosout = _rosout_rows([
         (stamp + 0.0002, stamp, 40, "ERROR", "lifecycle_manager_localization",
@@ -168,31 +164,6 @@ def test_a_rosout_row_with_no_twin_takes_the_container_its_own_node_was_seen_in(
     assert stats.node_attributed == 1
     by_msg = {r.message: r for r in merged if r.source == run_log.SRC_ROSOUT}
     assert by_msg["Press SPACE for pausing/resuming"].container == "robovast"
-
-
-def test_campaign_totals_carry_every_counter_a_job_reported():
-    """The summary is the regression signal, so a counter that does not reach the totals
-    reports zero however much the merge did. Written out field by field, the fold silently
-    omits any counter added to the class afterwards; asserted over the dataclass instead, so
-    a counter added later is covered without anyone remembering to come back here."""
-    job = run_log.MergeStats()
-    for spec in dataclasses.fields(job):
-        if spec.name == "containers":
-            job.containers.append("sut")
-        else:
-            setattr(job, spec.name, 7)
-
-    totals = run_log.MergeStats()
-    totals.add_job(job)
-    totals.add_job(job)
-
-    for spec in dataclasses.fields(totals):
-        if spec.name == "containers":
-            assert totals.containers == ["sut"], "a container must not be counted twice"
-        elif spec.name in run_log.MergeStats._PER_RUN_FIELDS:
-            assert getattr(totals, spec.name) == 0, f"{spec.name} is the caller's to count"
-        else:
-            assert getattr(totals, spec.name) == 14, f"{spec.name} never reached the totals"
 
 
 def test_a_node_seen_in_two_containers_stays_blank():

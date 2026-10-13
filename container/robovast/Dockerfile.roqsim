@@ -33,7 +33,7 @@
 # the remote, so a branch default serves the tree from the first build forever (see the caching
 # note below). build.sh and CI resolve their own ref to a sha and pass it, overriding this.
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
-ARG ROQSIM_REF=86667204b710a51831cdc1bdeda2700d071c6528
+ARG ROQSIM_REF=1bb5e37fcc0bca4823cb839dbd93e6b4902d316d
 
 # Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
 # declared before the FIRST FROM in the file, or it is out of scope and the base name resolves
@@ -169,6 +169,19 @@ RUN apt-get update && \
         ros-"${ROS_DISTRO}"-pilz-industrial-motion-planner \
         ros-"${ROS_DISTRO}"-moveit-kinematics \
         ros-"${ROS_DISTRO}"-moveit-simple-controller-manager && \
+    rm -rf /var/lib/apt/lists/*
+
+##############################################################
+####              UR driver service interfaces            ####
+##############################################################
+# A simulated UR arm answers to ur_robot_driver's names (roqsim's `ur_driver_interface`), among
+# them `io_and_status_controller/set_speed_slider`, whose type is ur_msgs/SetSpeedSliderFraction.
+# The bridge serves it with that type, so a world that declares the interface stops the bridge at
+# start-up without these messages. Only the interfaces: the driver itself drives real hardware.
+# hadolint ignore=DL3008
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ros-"${ROS_DISTRO}"-ur-msgs && \
     rm -rf /var/lib/apt/lists/*
 
 ##############################################################

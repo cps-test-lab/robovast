@@ -311,17 +311,25 @@ Four rules make those answers trustworthy:
   :func:`~robovast.common.simulators.simulator_image` is the one place that decides, because
   :func:`~robovast.common.simulators.apply_backend` applies the same precedence to the *run* and
   a second copy would be free to disagree with it.
+* **In the environment the run has.** Loading a world loads its plugins, and a ROS simulator's
+  bridge is installed in the overlay a run's entrypoint sources. A runner enters a query's
+  container without that entrypoint, so the query's command sets the environment up itself
+  (:func:`~robovast.common.execution.run_env_prefix`, the same setup the entrypoint runs); asked
+  without it, the world the query loads is not the one the run will.
 * **An unanswerable question says so.** ``WorldQueryUnavailable`` names which reason it is -- no
   backend, an unbuilt ``build:<tag>``, no container runner here, a command that failed. A
   pre-check that logged this at debug and carried on would be indistinguishable from a check
   that passed, and a misspelled plugin key would first surface in the container.
 * **Half an answer beats none.** A simulator that exits non-zero having still *printed* a payload
-  answered what it could, and that payload is taken. A world whose model does not compile in the
-  image (a ``*_ros`` world described where the colcon-packaged bridge does not resolve) can still
-  say which plugin keys it has -- that half needs no build -- and discarding the reply would
+  answered what it could, and the world description takes that payload. A world whose model does
+  not compile in the image can still say which plugin keys it has -- that half needs no build -- and discarding the reply would
   cost the campaign a check it could have had. The rule is generic: nothing here knows which half was lost,
   because the simulator says so in the payload's own ``errors``, and each half that goes unchecked
   is warned about by name.
+* **A failed check is refused with its own reason.** A query that must be answered whole -- the
+  input files, the on-demand streams -- stops the caller when its command exits non-zero, and a
+  report the command printed anyway names the reason: each entry of its ``problems`` list
+  (``{stage, message}``) is quoted, rather than the last line of output.
 * **A container runner is not implied.** The query runs a container, and in-cluster a container
   runner exists only *inside* a composition, which creates the aux pod it asks for, so outside one
   the query is refused with that reason rather than quietly running ``docker run`` on the serve host. A standalone aux pod for
@@ -910,8 +918,10 @@ so it is lifted onto the ``campaign`` row. Applied to what a campaign writes:
      - File — what was done to a campaign's runs *other than running them*, keyed by job
        artifact dir, each entry tagged ``kind`` (``killed`` — ``stop_job``; ``probed`` — a
        live read; ``invalid`` — the runner discarded the trial after a container restarted
-       under it) and ``source`` naming the actor (``webui``/``mcp``/``cli`` for a person,
-       ``runner`` for the campaign itself — the ledger is not only human acts).
+       under it, or its scenario container was OOM-killed or ended without its done
+       marker) and ``source`` naming the actor
+       (``webui``/``mcp``/``cli`` for a person, ``runner`` for the campaign itself — the
+       ledger is not only human acts).
        It *becomes* table content: ``read_run_outcome`` turns a **kill** into
        ``campaign.run.status = 'killed'`` for the runs it cut short, while a **probe** becomes
        the separate ``runs.probed`` column — orthogonal on purpose, since a
@@ -1110,7 +1120,7 @@ service cannot serve a path when it can. It answers or it refuses by name; there
 probe. The service answers, because a campaign's results are under its own results root.
 
 **Screenshots are the deliberate opposite of geometry.** ``scene_cache`` builds a scene
-descriptor per *world*, so one build serves every run that used it — worth a background thread,
+per *world*, so one build serves every run that used it — worth a background thread,
 a cache and a status to poll. ``robovast.service.screenshot`` renders one moment of one run from
 a caller's viewpoint, so its key would be a camera pose and a time and would never be hit twice:
 no cache, no thread, one synchronous ``POST`` that returns the image or the reason. That second
@@ -1188,9 +1198,14 @@ lives in the ``results`` MCP plugin):
   (the current batch's execution units and a job's log). ``list_jobs`` lists the campaign's
   Kubernetes Jobs, whose sim and SUT containers are *native sidecars* in
   ``spec.initContainers``, found via ``cluster_execution.kube_client.pod_workload_containers``.
+  A Job's name is a Kubernetes name and carries no run, so the run a job executes
+  (``JobSummary.config_name`` / ``run_id``) is read off the Job's ``RUN_OUTPUT_DIR``, which the
+  backend stamps on it (``kubernetes_backend.run_of_output_dir``, beside the function that
+  writes it); a client that needs a job's run, or a run's job, reads those two fields.
   ``get_job_log`` is ``ServiceBase``'s (:mod:`robovast.service.job_log`): it reads the job's
   ``logs/system*.log`` files in the campaign directory, which grow while the job runs because
-  the pod's file agent delivers their growth as it happens. It returns **rows** (one per log
+  the pod's file agent delivers their growth as it happens. It takes a listed job or a run's
+  ``<config>/<run>``, resolved through the job-link manifest. It returns **rows** (one per log
   event, every container of the job in one stream) after an opaque cursor, and its SSE stream
   pushes new rows as the files change. The campaign's own log is served the same way by
   ``get_campaign_logs`` (:mod:`robovast.service.campaign_log`): rows after a cursor, read

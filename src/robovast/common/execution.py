@@ -43,13 +43,15 @@ from robovast.execution.data.collect_sysinfo import node_label  # noqa: F401
 from robovast.execution.campaign_archive import JOB_DOCUMENT_SUFFIXES
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
-from .config import SIMULATION_CONTAINER, Ros2RecordingConfig, recording_config
+from .config import (SIMULATION_CONTAINER, Ros2RecordingConfig, recording_config,
+                     records_every_ros2_topic)
 from .config_identifier import (compute_config_identifier, hash_file_content, hash_run_files,
                                 variation_refs)
 from .sut_channel import SUT_CONFIG_FILE
 from .sut_channel import source_paths as sut_source_paths
 from .errors import CampaignConfigError, missing_input_error
-from .simulators import SIM_CONFIG_FILE, SIM_OVERRIDES_MOUNT
+from .simulators import (SIM_CONFIG_FILE, SIM_OVERRIDES_MOUNT, backend_name,
+                         declares_on_demand_streams, scenario_use_sim_time)
 
 # The host <-> container protocol: what host scripts assume about an image's entrypoint,
 # paths and environment. Bump COMPAT_VERSION when that contract changes (a new required
@@ -57,24 +59,23 @@ from .simulators import SIM_CONFIG_FILE, SIM_OVERRIDES_MOUNT
 # Dockerfiles as the org.robovast.compat-version label -- one marker, and the CI gate in
 # .github/workflows/image.yml is what keeps it equal to this constant.
 #
-# A **window**, not a single value, and that is the whole point. This was compared with `!=`
-# at every site, so the first bump orphaned every image already published: a campaign whose
-# results pin an image by digest could never be re-run again, even with those exact bytes
-# still sitting in the registry. Since re-running a year-old campaign is a thing robovast is
-# supposed to support, equality was refusing the case it exists for.
+# A **window**, not a single value, and that is the whole point. Compared with `!=`, a bump
+# would orphan every image already published: a campaign whose results pin an image by digest
+# could never be re-run, even with those exact bytes still sitting in the registry. Re-running
+# a year-old campaign is a thing robovast is supposed to support.
 #
-# So the host declares the RANGE it can drive. Bumping the max is now cheap and harmless.
-# Dropping support becomes a separate, deliberate act -- raising the min -- which is also
-# where "we stopped speaking protocol N" gets recorded.
+# So the host declares the RANGE it can drive. Bumping the max is cheap and harmless.
+# Dropping support is a separate, deliberate act -- raising the min -- which is also where
+# "we stopped speaking protocol N" gets recorded.
 #
 # The honesty requirement: the window is a CLAIM. Raise the min when support is genuinely
-# dropped, or this replaces a safe refusal with a broken run. Equality was wrong for the use
-# case, but it was wrong in the safe direction. configs/examples/camera_smoke is the cheap
+# dropped, or this replaces a safe refusal with a broken run. Equality would be wrong for the
+# use case, but wrong in the safe direction. configs/examples/camera_smoke is the cheap
 # way to keep the claim true -- it runs a container and produces an artifact in seconds.
 COMPAT_VERSION = 3
 
 #: The oldest image protocol this host still knows how to drive. Equal to
-#: :data:`COMPAT_VERSION` means "only the current one", which is where equality left us.
+#: :data:`COMPAT_VERSION` means "only the current one".
 MIN_IMAGE_COMPAT = 3
 
 #: Image label carrying the protocol version -- the only marker there is.
@@ -126,7 +127,7 @@ FAMILY_IMAGE_PREFIX = "family:"
 #: retagged, and a rebuild a year from now can read what the original installed and install
 #: exactly that.
 #:
-#: Here rather than beside the build that writes it, because it is now read by two layers that
+#: Here rather than beside the build that writes it, because it is read by two layers that
 #: must not depend on each other -- the service's build code from a local image, and the
 #: cluster's registry client from a layer blob. A second literal in either would be a path that
 #: drifts silently, and the reader would simply find nothing.
@@ -1043,8 +1044,9 @@ def scenario_env(campaign_data):
     """The scenario-shaping env vars a run's config implies, for ``entrypoint.sh``.
 
     Covers only what is derived from the ``.vast``: which scenario file to run, the
-    simulation backend, the runner selection, and whether the behaviour tree status log is
-    recorded. Shared by the Kubernetes backend and container-exec, so the two cannot drift.
+    simulation backend, the runner selection and its clock, and whether the behaviour tree
+    status log is recorded. Shared by the Kubernetes backend and container-exec, so the two
+    cannot drift.
 
     Deliberately *not* here:
 
@@ -1067,6 +1069,9 @@ def scenario_env(campaign_data):
     mode = execution.get("mode", "auto")
     if mode and mode != "auto":
         env['SCENARIO_MODE'] = str(mode)
+    # Which clock a scenario's durations run on. Always stated, like BT_LOG, so the pod spec
+    # says outright what the run did; independent of the bag's RECORD_USE_SIM_TIME below.
+    env['SCENARIO_USE_SIM_TIME'] = 'true' if scenario_use_sim_time(execution) else 'false'
     # Always on, and stated rather than left to the entrypoint's own default, so the compose
     # file / pod spec says outright what the run did. A run that did not record how its
     # behaviour tree progressed cannot be explained after the fact, and the file costs
@@ -1087,11 +1092,11 @@ def scenario_env(campaign_data):
     # when the campaign says so and spans the scenario. Exactly what the ``run_log`` table
     # needs and no more: ``/rosout`` for the lines, ``/clock`` to put a wall-stamped line
     # on the playback clock. Stated for the same reason BT_LOG is, and not configurable:
-    # what a run records beyond this is the ``recording:`` block's to say.
+    # what a run records beyond this is ``execution.recording``'s to say.
     env['LOG_TOPICS'] = '/rosout /clock'
 
     # The run's own bag (``<run>/rosbag2``), which the entrypoint records for a single-run
-    # job from before the scenario starts. Derived from the ``.vast``'s ``recording.ros2``
+    # job from before the scenario starts. Derived from the ``.vast``'s ``execution.recording.ros2``
     # block and always stated, defaults included, so the compose file / pod spec says
     # outright what the run recorded: an absent block records every topic.
     #
@@ -1099,7 +1104,7 @@ def scenario_env(campaign_data):
     # topic name carries no whitespace (the model refuses one that does) and the shell
     # splits them back for free; the excludes are joined into one regex because that is the
     # one argument ``--exclude-regex`` takes.
-    recording = recording_config(campaign_data.get("recording"))
+    recording = recording_config(execution.get("recording"))
     ros2 = (recording.ros2 if recording is not None else None) or Ros2RecordingConfig()
     env['RECORD_TOPICS'] = 'all' if ros2.topics == 'all' else ' '.join(ros2.topics)
     env['RECORD_EXCLUDE'] = '|'.join(ros2.exclude)
@@ -1110,6 +1115,48 @@ def scenario_env(campaign_data):
     # every emitter applies one rule: the campaign's own execution.env wins, because a
     # backend supplies defaults it knows, not decisions it takes away.
     env.update(_backend_env_for(execution))
+    return env
+
+
+#: Where a configuration records which streams its ROS bag left out, beside ``sim.config``.
+RECORDING_CONFIG_FILE = "recording.config"
+
+#: Why a stream in that record is absent from the bag, stated with it.
+LEFT_OUT_REASON = ("computed by the simulator only while subscribed; left out of a recording "
+                   "of every topic so that recording does not make the simulator compute it. "
+                   "Name it in execution.recording.ros2.topics to record it.")
+
+
+def recording_left_out(execution: dict, config: dict, base_dir: str = "") -> list:
+    """The simulator streams this configuration's ROS bag leaves out, as composition froze them.
+
+    ``[{"topic", "type"}, ...]`` from the configuration's ``recording.ros2.left_out``; ``[]``
+    when the campaign names its topics or the backend cannot say which streams are on demand.
+    A configuration whose backend can say but which carries no answer was composed without
+    asking, and is refused: running it would record the streams it exists to leave out.
+    """
+    resolved = ((config or {}).get("recording") or {}).get("ros2") or {}
+    if "left_out" in resolved:
+        return list(resolved["left_out"] or [])
+    if not records_every_ros2_topic(execution) or not declares_on_demand_streams(
+            execution, (config or {}).get("sim") or {}, base_dir):
+        return []
+    raise CampaignConfigError(
+        f"Config '{(config or {}).get('name')}': simulator backend "
+        f"'{backend_name(execution)}' computes some "
+        "streams only on demand, but this configuration was composed without asking which, so "
+        "its recording would subscribe them. Compose the campaign again.")
+
+
+def recording_env(execution: dict, config: dict, base_dir: str = "") -> dict:
+    """The per-configuration half of the recorder's environment: ``RECORD_LEFT_OUT``.
+
+    Space-separated topic names the entrypoint leaves out of ``<run>/rosbag2`` by exact match.
+    Always stated, empty included, so a job's spec says outright what its bag left out.
+    """
+    env = {}
+    env['RECORD_LEFT_OUT'] = " ".join(
+        row["topic"] for row in recording_left_out(execution, config, base_dir))
     return env
 
 
@@ -1137,7 +1184,7 @@ def sidecar_backend_env(execution: dict, container_name: str) -> dict:
     ``scene3d`` panel with nothing to replay. The stepped shape hid it, because there the
     two containers are one.
 
-    The ``recording:`` block's knobs arrive by the same route: :func:`apply_backend` hands
+    The ``execution.recording`` knobs arrive by the same route: :func:`apply_backend` hands
     the block to the backend's ``env`` hook, so what is stored on ``execution`` already
     says what the simulator was asked to record.
 
@@ -1235,9 +1282,30 @@ def in_run_env(command: str) -> list:
     The notes go to **stderr**, where they join whatever the command says about its own failure
     rather than being mixed into the JSON a caller parses.
     """
-    prelude = (f'{_RUN_ENV_NOTE_FN}() {{ echo "{RUN_ENV_NOTE} $*" >&2; }}\n'
-               f'ROS_SETUP_ANNOUNCE={_RUN_ENV_NOTE_FN}\n')
-    return ["/bin/bash", "-c", f"{prelude}{ROS_SETUP_BLOCK}\n{command}"]
+    return ["/bin/bash", "-c", f"{_run_env_prelude()}\n{command}"]
+
+
+def run_env_prefix() -> list:
+    """argv that runs the argv appended to it in the environment a run's own processes have.
+
+    :func:`in_run_env` for a command that is already argv: a
+    :class:`~robovast.common.variation.container_runner.ContainerSpec` ``command_prefix``, for
+    a question asked of the image a run uses -- a simulator command that loads the world loads
+    the plugins the ROS overlay installs, and an auxiliary container is entered without the
+    entrypoint that sources it. The appended words reach the command as they are (``exec
+    "$@"``), so a runner that rewrites a path argument still finds it as its own word.
+    """
+    return ["/bin/bash", "-c", f'{_run_env_prelude()}\nexec "$@"', RUN_ENV_ARGV0]
+
+
+def _run_env_prelude() -> str:
+    """The note function, the announce seam and :data:`ROS_SETUP_BLOCK`, as shell."""
+    return (f'{_RUN_ENV_NOTE_FN}() {{ echo "{RUN_ENV_NOTE} $*" >&2; }}\n'
+            f'ROS_SETUP_ANNOUNCE={_RUN_ENV_NOTE_FN}\n{ROS_SETUP_BLOCK}')
+
+
+#: ``$0`` of :func:`run_env_prefix`'s shell, so the appended argv is ``$@`` from its first word.
+RUN_ENV_ARGV0 = "robovast-run-env"
 
 
 #: Shell function name the notes go through. Named rather than inlined so the block's
@@ -1962,6 +2030,18 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
                 yaml.dump(convert_dataclasses_to_dict(copy.deepcopy(sim_block)), f,
                           default_flow_style=False, sort_keys=False)
 
+        # What the run's ROS bag leaves out of "every topic", and why: the simulator's streams
+        # it computes only on demand (`recording_left_out`). Frozen at composition, so every
+        # run of this configuration records the same topic set, and a topic absent from the
+        # bag is explained here rather than only in a log line.
+        left_out = ((config_data.get("recording") or {}).get("ros2") or {}).get("left_out")
+        if left_out is not None:
+            os.makedirs(run_config_dir, exist_ok=True)
+            with open(os.path.join(run_config_dir, RECORDING_CONFIG_FILE), "w") as f:
+                yaml.dump({"ros2": {"left_out": list(left_out),
+                                    "reason": LEFT_OUT_REASON}}, f,
+                          default_flow_style=False, sort_keys=False)
+
         # The same, for how the system under test is configured. The rewritten files are
         # what the cell runs; this is what a reader consults to see which factor produced
         # which value, without diffing two copies of a stack's config.
@@ -2302,7 +2382,7 @@ def create_execution_yaml(runs, output_dir, execution_params=None, context=None,
         image_labels: ``{role: {label: value}}`` already read for each container's image, when
             the caller has them. The service does -- it reads them from the registry to
             check the container protocol -- and must pass them, because this function runs in
-            the controller pod where the docker probes it would otherwise use cannot work.
+            the service, where the docker probes it would otherwise use cannot work.
         image_digest: The immutable ``repo@sha256:…`` the run pods actually used, when
             known (see ``KubernetesBackend._capture_image_digest``). Recorded as
             ``image_revision`` so a floating ``:latest`` is pinned to the exact image the

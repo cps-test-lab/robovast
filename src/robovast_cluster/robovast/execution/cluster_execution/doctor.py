@@ -134,21 +134,17 @@ def _check_capacity() -> Check:
     if not nodes:
         return Check("capacity", False, "no nodes", "The cluster reports no nodes.")
 
-    def _cpu(value: str) -> float:
-        return float(value[:-1]) / 1000 if value.endswith("m") else float(value)
-
-    def _gib(value: str) -> float:
-        units = {"Ki": 1 / 1024 / 1024, "Mi": 1 / 1024, "Gi": 1.0, "Ti": 1024.0}
-        for suffix, factor in units.items():
-            if value.endswith(suffix):
-                return float(value[:-len(suffix)]) * factor
-        return float(value) / (1024 ** 3)
+    # The quantity grammar admission reads with, so this check cannot crash on -- or misread --
+    # a unit the scheduler accepts (``64G``, ``65536000k``) or a node advertising nothing.
+    def _allocatable(node, key) -> float:
+        return kube_client.parse_resource(
+            ((node.status.allocatable if node.status else None) or {}).get(key))
 
     # The largest single node, not the sum: a pod runs on one node, so total capacity
     # spread thinly is what a cluster with "plenty of room" and nothing schedulable looks
     # like -- and it is the number an operator needs when admission refuses a request.
-    best_cpu = max(_cpu(n.status.allocatable.get("cpu", "0")) for n in nodes)
-    best_mem = max(_gib(n.status.allocatable.get("memory", "0")) for n in nodes)
+    best_cpu = max(_allocatable(n, "cpu") for n in nodes)
+    best_mem = max(_allocatable(n, "memory") for n in nodes) / (1024 ** 3)
     detail = f"largest node: {best_cpu:.1f} CPU, {best_mem:.1f} GiB"
     if best_cpu > 0 and best_mem > 0:
         return Check("capacity", True, detail)

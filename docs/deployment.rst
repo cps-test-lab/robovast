@@ -190,6 +190,19 @@ one process on its one port. There the isolation buys nothing and a second proce
 cost every client a port. The front's configuration is rendered by ``setup`` and
 ``upgrade`` into a ConfigMap and never edited on the cluster.
 
+The front also **compresses** what the two processes answer uncompressed, when the client
+accepts gzip: JSON, CSV, Arrow query results, SVG, scripts and styles. It
+leaves alone the live event streams, which a compressor would hold back, and what is
+compressed already or of unknown kind -- images, video, recordings, tar and gzip
+downloads, results files served as ``application/octet-stream``. A range request is
+answered uncompressed, so a download still resumes. A compressed response's ``ETag``
+becomes weak, which revalidation still matches; the cache headers are unchanged. The web
+UI's bundle and a run view's 3D scene arrive precompressed from the control plane
+(:ref:`web-ui-internals`, :ref:`scene-descriptor`) and pass through. The types and level are ``GZIP_TYPES`` and ``GZIP_LEVEL`` in
+:mod:`~robovast.execution.cluster_execution.front_deploy`. A ``vast serve`` started by
+hand serves the bundle and the scene precompressed the same way and every other response
+uncompressed.
+
 Keeping the service up to date
 ------------------------------
 
@@ -422,6 +435,14 @@ once: the bound is per query, so several at a time add up. An invalid value is a
 the variable, not a fallback. Every engine the service builds honours them -- a query, a table
 build, an export, a track deviation -- and so does a notebook rendered in the Results Explorer;
 a notebook on a laptop passes the same options to ``Campaign(..., threads=, memory_limit=)``.
+
+A campaign's tables are built at its end by Jobs on the cluster, a part of its runs each
+(:ref:`tables built in parts <results-tables-in-parts>`). How many runs a part starts with is read
+and carried the same way:
+
+.. code-block:: bash
+
+   ROBOVAST_TABLE_PART_RUNS=100   # runs a table-building part starts with; halved on OOM
 
 Checking a deployment
 ---------------------

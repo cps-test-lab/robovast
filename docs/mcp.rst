@@ -341,8 +341,8 @@ Using it: search an identifier, not a word
 
 The search is a case-insensitive substring match over lines, and results are grouped by page
 in **name order, not relevance order** — so the first page returned is not the best one. That
-makes the query the thing that decides whether a reply is useful. Measured against the corpus
-as it stands, 50 pages:
+makes the query the thing that decides whether a reply is useful. How many pages a query
+matches, for a few kinds of term:
 
 .. list-table::
    :header-rows: 1
@@ -352,19 +352,19 @@ as it stands, 50 pages:
      - pages
      - 
    * - ``world``
-     - 31
+     - most
      - a prose word matches most of the corpus
    * - ``osc``
-     - 25
+     - about half
      - so does a short token that occurs inside other words
    * - ``spawn_robot``
-     - 8
+     - a few
      - an identifier narrows to the pages that define and use it
    * - ``sensor_coverage_probe``
-     - 2
+     - two
      - the more exact the spelling, the closer to one answer
    * - ``Config::``
-     - 1
+     - one
      - punctuation included, and it lands on the page that defines it
 
 **Search for the thing as a file spells it.** A plugin name, a YAML key with its colon, a
@@ -738,14 +738,13 @@ plans rather than about the campaign in front of the assistant, and every tool's
 is injected into the model's context on every request, so the surface is spent on what
 an assistant is actually the right one to decide.
 
-**Image builds wait the same way**, through ``vast image wait <build-id>…``.
-That was once the exception — a blocking ``wait_for_image_build`` tool, on the
-argument that a build is minutes rather than days — and the exception did not
-hold. The tool could block for at most 600s, so a ROS build doing apt + pip +
-colcon returned unfinished and had to be called again, blocking again, in
-exactly the case where blocking cost most. A cap on how long a tool may block
-does not make a long wait tool-shaped; it moves the overrun to the caller. The
-rule that survives: **if a wait can outlive a turn, it is not a tool.**
+**Image builds wait the same way**, through ``vast image wait <build-id>…``,
+although a build is minutes rather than days. A tool may block only for a
+capped time, so a blocking wait would return a ROS build doing apt + pip +
+colcon unfinished and have to be called again, blocking again, in exactly the
+case where blocking costs most. A cap on how long a tool may block does not
+make a long wait tool-shaped; it moves the overrun to the caller. The rule:
+**if a wait can outlive a turn, it is not a tool.**
 
 ``next_step`` is how those commands reach the caller: a literal command with the
 ids already filled in, in band with the answer, because a reply carrying only an
@@ -849,6 +848,12 @@ ids apart. The launcher in the web UI has the same field.
    status (running / pending / completed / failed) and aggregate counts, and the
    log of a single job. A **finished** job is served as readily as a running one: a pod
    that has gone is read from the campaign's own files instead.
+
+   A job's ``job_name`` names the job, not its run -- on the cluster it is the Kubernetes
+   Job's name. Each run's job also carries ``config_name`` and ``run_id``, the run it
+   executes as the campaign's tables key it; both are absent on a calibration probe and on a
+   job still ``waiting`` for capacity. ``get_job_log`` also takes a run's
+   ``<config>/<run>`` in place of a job name, and reads the log of the job that executed it.
 
    Each job also carries ``node`` — where its pod was placed, ``None`` on a job the
    scheduler has not placed yet — and ``started_at`` (epoch seconds — the *job's* start, so a job that
@@ -1253,7 +1258,8 @@ blocked for a minute, which is long enough for a registry blip to clear and shor
 not to be a hang. ``fixable_by`` is ``infra`` and ``error_detail.phase`` is
 ``builder-pod``: nothing about the project's ``build:`` section is involved, and the
 message names which image could not be pulled (the ``robovast-sidecar`` init container, or
-the BuildKit builder) or which resource no node could satisfy. **Neither waiting nor
+the BuildKit builder), which resource no node could satisfy, or that the ``context-fetch``
+init container exceeded its memory limit. **Neither waiting nor
 rebuilding helps** — the two things a caller would otherwise try.
 * ``get_image_build_log`` — the raw builder log for deep dives, while the build exists.
 
@@ -1323,9 +1329,8 @@ only there is it refused, because resolving a world's ``extends`` chain needs th
 
 Two halves, at the two costs they actually have. ``components`` names each component under the
 address an override names it by, with the dotted paths that already exist — cheap, no model
-built. (It was ``plugins`` until the world document's own key was renamed to ``components``;
-the payload lagged that, and a ``.vast``'s unrelated top-level ``plugins:`` made the old name a
-collision as well as a mismatch.)
+built. The name matches the world document's own ``components`` key, and keeps clear of a
+``.vast``'s unrelated top-level ``plugins:``.
 ``overridable`` says which **model values a run may change while it is running** (the
 ``model_override`` plugin: friction, contact masks, actuator force limits, mass); its ``fields``
 half is a property of the simulator rather than of the world and so is always there, while

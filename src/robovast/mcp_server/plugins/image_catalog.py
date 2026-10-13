@@ -53,7 +53,6 @@ import time
 from fastmcp import FastMCP
 
 from robovast.mcp_server import service_access
-from robovast.mcp_server.service_access import NO_SERVICE
 # The catalog commands, their parsing and the per-image cache live in the service, where the
 # world check in validate_project reads the same catalogs: one cache for both readers.
 from robovast.service.image_catalog import (CACHE_LOCK, CATALOG_COMMANDS, CATALOG_CONTAINERS,
@@ -100,9 +99,7 @@ def _address_to_request_kwargs(address: str) -> dict:
             "catalog is answered by the image this project resolves to, which only "
             "the service knows how to reach")
     workspace_id, rel_path = target
-    client = service_access.service_client()
-    if client is None:
-        raise ValueError(NO_SERVICE)
+    client = service_access.require_service()
     return {"workspace_id": _resolve_workspace_id(client, workspace_id), "config_path": rel_path}
 
 
@@ -120,17 +117,11 @@ def _fetch(group: str, address: str, family: str = "") -> dict:
     try:
         request_kwargs = ({"image_family": family} if family and not address
                           else _address_to_request_kwargs(address))
-    except ValueError as e:
-        return {"error": str(e)}
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
-
-    try:
+        client = service_access.require_service()
         resolved = client.resolve_image(
             ExecRequest(**request_kwargs, container=CATALOG_CONTAINERS[group]))
     except Exception as e:  # noqa: BLE001
-        return {"error": str(e)}
+        return service_access.error_result(e)
     image = resolved.image
 
     key = (image, group)
@@ -256,12 +247,7 @@ def _fetch_detail(group: str, address: str, name: str) -> dict:
         return {"error": f"{name!r} is not an entry-point name"}
     try:
         request_kwargs = _address_to_request_kwargs(address)
-    except ValueError as e:
-        return {"error": str(e)}
-    client = service_access.service_client()
-    if client is None:
-        return {"error": NO_SERVICE}
-    try:
+        client = service_access.require_service()
         resolved = client.resolve_image(
             ExecRequest(**request_kwargs, container=CATALOG_CONTAINERS[group]))
     except Exception as e:  # noqa: BLE001

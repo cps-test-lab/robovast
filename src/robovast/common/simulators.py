@@ -42,11 +42,12 @@ it declares strings and container specs, and anything needing the simulator itse
 
 from __future__ import annotations
 
+import re
 import shlex
 from typing import Optional
 
 from robovast.common.config import (ALWAYS_ON_PANELS, SCENARIO_CONTAINER, SIMULATION_CONTAINER,
-                                    RecordingConfig,
+                                    RecordingConfig, recording_config,
                                     SUT_CONTAINER, flatten_panel_shorthand)
 
 #: Entry-point group backends register in.
@@ -62,6 +63,10 @@ SHAPE_ROS = "ros"
 #: and a backend that guessed it wrong would fail after the image pull and the pod
 #: schedule, i.e. at the cost of a whole cell.
 CONFIG_MOUNT = "/config"
+
+#: The file :meth:`SimulatorBackend.scene_export` writes into its output directory: the scene as
+#: one binary glTF file, to the contract of ``docs/simulators.rst`` ("The scene").
+SCENE_FILE = "scene.glb"
 
 #: Where RoboVAST mounts the job's resolved simulator overrides, in every container of the
 #: job. A constant rather than a per-backend choice for the same reason ``/ipc`` is one: a
@@ -175,9 +180,9 @@ class SimulatorBackend:
         A campaign's own ``execution.env`` wins over this: these are defaults a backend
         knows, not decisions it takes away.
 
-        *recording* is the campaign's ``recording:`` block, or ``None`` when it has none --
-        which means "record everything", not "record nothing". A backend that records
-        reads its own section of it here (roqsim reads ``recording.roqsim``) and asks the
+        *recording* is the campaign's ``execution.recording`` block, or ``None`` when it has
+        none -- which means "record everything", not "record nothing". A backend that records
+        reads its own section of it here (roqsim reads ``execution.recording.roqsim``) and asks the
         simulator for exactly that, so the knobs a campaign sets reach the process that
         honours them by the same route as every other variable the backend contributes.
         """
@@ -266,6 +271,64 @@ class SimulatorBackend:
         """
         return False
 
+    def publishes_clock(self, cfg, execution: dict) -> Optional[bool]:
+        """Whether the simulator publishes ``/clock`` in the ROS shape.
+
+        It decides the scenario's clock: ``True`` starts scenario-execution with
+        ``use_sim_time``, so a scenario's durations run on the simulator's timeline rather
+        than on wall time. Asked in the ROS shape only.
+
+        ``None`` -- the default -- means the backend cannot say, and a campaign using it
+        must state ``execution.use_sim_time`` itself: the wrong guess either measures a
+        scenario against wall time while the simulator runs at another rate, or waits for
+        a ``/clock`` that never comes.
+        """
+        return None
+
+    def ground_truth(self, cfg, execution: dict) -> Optional[dict]:
+        """Where a run's ``ground_truth_poses`` come from, or ``None`` for the ROS convention.
+
+        A simulator that records its own state names the table and the selector its truth is
+        read with, in the decoder's vocabulary (:func:`robovast_decode.ground_truth.source_of`)
+        -- roqsim answers ``{"table": "sim_poses", "entity_kind": "robot"}``. ``None``, the
+        default, is a simulator that records nothing of its own: its ground truth is the
+        ``*_gt`` frame its world publishes on ``/tf``, read from ``poses``.
+        """
+        return None
+
+    def on_demand_streams(self, cfg, execution: dict):
+        """The ROS topics this simulator computes only while something subscribes, and at a cost.
+
+        A rendered camera image, a depth image, their compressed forms: a simulator that renders
+        them lazily spends nothing on them until a subscriber appears -- and a recorder of every
+        topic is such a subscriber. So the run's ROS bag leaves these out unless the campaign
+        names them, and the run does not pay for streams nothing in the stack reads.
+
+        ``[{"topic": "/oakd/rgb/preview/image_raw", "type": "sensor_msgs/msg/Image"}, ...]``,
+        each topic fully qualified. Which streams those are is a property of the world and of
+        this configuration's overrides, so a backend that has to load the world to know returns
+        a :class:`ContainerQuery` instead: answered once per distinct ``sim`` block at
+        composition, in the campaign's own image, its JSON reply read by
+        :meth:`on_demand_from_reply`, and the result frozen into the configuration.
+
+        ``None`` -- the default -- means the backend cannot say, and nothing is left out.
+        """
+        return None
+
+    def on_demand_from_reply(self, cfg, execution: dict, reply: dict) -> list:
+        """The list :meth:`on_demand_streams` describes, read from its query's JSON *reply*.
+
+        The default reads RoboVAST's shape, ``{"on_demand": [...]}``; a backend whose
+        simulator answers in its own vocabulary translates it here. Raise when the reply cannot
+        say: a stream that cannot be named is one the run would record after all.
+        """
+        del cfg, execution
+        rows = reply.get("on_demand") if isinstance(reply, dict) else None
+        if not isinstance(rows, list):
+            raise ValueError("the reply does not list the on-demand streams: expected "
+                             f"{{\"on_demand\": [...]}}, got {str(reply)[:200]}")
+        return rows
+
     def default_panels(self, cfg, execution: dict) -> list:
         """Run-view panels this backend contributes, as ``{<type>: <props>}`` entries.
 
@@ -287,7 +350,7 @@ class SimulatorBackend:
 
     def scene_export(self, cfg, execution: dict, *, world: str, max_tex_dim: int,
                      overrides: dict, overrides_file: Optional[str] = None) -> Optional[str]:
-        """Command that compiles *world* into a web scene descriptor, or ``None``.
+        """Command that compiles *world* into the run view's scene, or ``None``.
 
         Returned as a **string**, run through ``shlex.split`` by the ``shell`` input
         generator, with ``{out}`` for the output directory. It runs in the campaign's own
@@ -298,10 +361,10 @@ class SimulatorBackend:
         rebuilt. ``None`` -- the default -- means this backend has no exporter, which is a
         normal answer: Gazebo has none.
 
-        The descriptor *format* is RoboVAST's (``scene.json`` + ``scene.bin``, and a
-        ``.generated.json`` manifest; see the scene descriptor section of
-        ``docs/simulators.rst``), so a second backend implements against it rather than
-        inventing one. What belongs here is only the
+        What the command writes is RoboVAST's contract: :data:`SCENE_FILE` in ``{out}``, a
+        binary glTF file with the ``extras`` the scene section of ``docs/simulators.rst``
+        states, and a ``.generated.json`` manifest -- so a second backend implements against
+        it rather than inventing one. What belongs here is only the
         command: which tool, and how it spells its arguments -- ``overrides`` in particular,
         whose serialization is the simulator's own convention.
 
@@ -553,6 +616,19 @@ def scene_export_command(execution: dict, *, world: str, max_tex_dim: int,
                                 overrides=overrides, overrides_file=overrides_file)
 
 
+def ground_truth_source(execution: dict, base_dir: str = "") -> Optional[dict]:
+    """The configured backend's :meth:`SimulatorBackend.ground_truth`, or ``None``.
+
+    A campaign with no backend -- a simulator its scenario launches itself -- has the base
+    class's answer: the ROS convention.
+    """
+    if not (name := backend_name(execution or {})):
+        return None
+    backend = resolve_backend(name, base_dir)
+    block = ((execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {})
+    return backend.ground_truth(_validated_cfg(backend, block, name), execution)
+
+
 def merge_default_panels(raw_panels: list, execution: dict, base_dir: str = "") -> list:
     """*raw_panels* with the contributed panels prepended: the always-on set plus the
     configured backend's own.
@@ -618,8 +694,7 @@ def backend_name(execution: dict) -> Optional[str]:
     return (block or {}).get("backend") if isinstance(block, dict) else None
 
 
-def apply_backend(execution: dict, base_dir: str = "",
-                  recording: Optional[RecordingConfig] = None) -> dict:
+def apply_backend(execution: dict, base_dir: str = "") -> dict:
     """Return *execution* with its backend's contributions merged in.
 
     Called once, where the raw ``execution`` mapping is turned into what the execution
@@ -629,10 +704,9 @@ def apply_backend(execution: dict, base_dir: str = "",
     The campaign always wins: a backend supplies defaults for keys the author left out,
     and never overrides one they set.
 
-    *recording* is the campaign's ``recording:`` block, handed to :meth:`SimulatorBackend.env`
-    so the environment stored here already carries what the simulator is asked to record.
-    A caller that only wants the container plan may leave it out: the plan does not read
-    the environment, and an absent block means the simulator records everything.
+    *execution*'s ``recording`` block is handed to :meth:`SimulatorBackend.env` as its model,
+    so the environment stored here already carries what the simulator is asked to record; an
+    absent block means the simulator records everything.
     """
     name = backend_name(execution)
     if not name:
@@ -676,10 +750,41 @@ def apply_backend(execution: dict, base_dir: str = "",
         ref = backend.simulation_ref(cfg, execution)
         if ref:
             result["simulation"] = ref
-    contributed = backend.env(cfg, execution, recording)
+    contributed = backend.env(cfg, execution, recording_config(execution.get("recording")))
     if contributed:
         result["_backend_env"] = contributed
+    if shape == SHAPE_ROS:
+        result["_publishes_clock"] = backend.publishes_clock(cfg, execution)
     return result
+
+
+def scenario_use_sim_time(execution: dict) -> bool:
+    """Whether scenario-execution runs with ``use_sim_time``, for an applied *execution*.
+
+    Only the ROS shape has a choice. There the campaign's ``execution.use_sim_time`` wins,
+    then the backend's :meth:`SimulatorBackend.publishes_clock`; where neither answers, this
+    refuses rather than guessing. Outside it a ``use_sim_time`` would be ignored -- the stepped
+    shape's scenario clock is the simulation's step count -- so it is refused instead.
+    """
+    authored = execution.get("use_sim_time")
+    if shape_for(execution.get("mode", "auto")) != SHAPE_ROS:
+        if authored is not None:
+            raise ValueError(
+                "execution.use_sim_time applies to the ROS shape (mode: ros2) only, not to "
+                f"mode '{execution.get('mode', 'auto')}'. Remove it, or set mode: ros2.")
+        return False
+    if authored is not None:
+        return bool(authored)
+    answer = execution.get("_publishes_clock")
+    if answer is not None:
+        return bool(answer)
+    name = backend_name(execution)
+    who = (f"simulator backend '{name}' does not say" if name
+           else "no simulator backend is declared to say")
+    raise ValueError(
+        f"execution.use_sim_time is required: {who} whether the simulator publishes /clock. "
+        "Set true to run the scenario's durations on the simulator's clock, or false to run "
+        "them on wall time (for instance when the scenario starts the simulator itself).")
 
 
 class ContainerQuery:
@@ -699,6 +804,11 @@ class ContainerQuery:
     and nothing has to travel. ``inputs`` are absolute paths **as the container sees them**;
     the runner mounts the campaign's directory at its own path, so anything under it is a file
     the campaign owns and everything else came with the image.
+
+    The command runs in the environment a run's own processes have (the ROS overlay a run's
+    entrypoint sources), whichever runner starts it. A command that exits non-zero may still
+    print a JSON report; its ``problems`` (``[{"stage": ..., "message": ...}]``) are what the
+    refusal quotes.
 
     *documents* is ``{container path: mapping}`` the query needs mounted as YAML -- an override
     tree, which argv cannot carry. It travels on the query rather than being re-derived by the
@@ -993,8 +1103,70 @@ def sim_input_files(execution: dict, block: dict, base_dir: str = "",
     return [str(p) for p in (declared or [])]
 
 
-def sim_job_overlay(execution: dict, block: dict, base_dir: str = "",
-                    recording: Optional[RecordingConfig] = None) -> dict:
+#: A fully qualified ROS 2 topic name: what an on-demand stream is matched on, exactly. Anything
+#: else -- a relative name, a substitution, whitespace -- would not match the topic the recorder
+#: sees, so the stream would be recorded while the record says it was left out.
+_ROS_TOPIC = re.compile(r"^(/[A-Za-z_][A-Za-z0-9_]*)+$")
+
+
+def checked_streams(rows, who: str) -> list:
+    """*rows* -- ``[{"topic", "type"}, ...]`` -- checked, deduplicated and sorted by topic.
+
+    Refused rather than repaired when a row names no fully qualified topic: a stream this
+    cannot name is one the run would record while its record says it was left out.
+    """
+    if not isinstance(rows, list):
+        raise ValueError(f"{who} did not list its on-demand streams; got {str(rows)[:200]}")
+    streams = {}
+    for row in rows:
+        topic = row.get("topic") if isinstance(row, dict) else None
+        if not isinstance(topic, str) or not _ROS_TOPIC.match(topic):
+            raise ValueError(f"{who} named an on-demand stream that is not a fully qualified "
+                             f"ROS 2 topic: {row!r}")
+        streams[topic] = {"topic": topic, "type": str(row.get("type") or "")}
+    return [streams[topic] for topic in sorted(streams)]
+
+
+def sim_on_demand_streams(execution: dict, block: dict, base_dir: str = "", run_query=None):
+    """:meth:`SimulatorBackend.on_demand_streams` for one resolved ``sim`` block.
+
+    ``None`` when the backend cannot say. A query is answered by *run_query* (the reply's
+    JSON) and read by :meth:`SimulatorBackend.on_demand_from_reply`; without *run_query* this
+    raises, since leaving the question unasked would record every stream it exists to leave
+    out.
+    """
+    name = backend_name(execution or {})
+    if not name:
+        return None
+    backend = resolve_backend(name, base_dir)
+    cfg = _validated_cfg(backend, dict(block or {}), name)
+    declared = backend.on_demand_streams(cfg, execution)
+    if declared is None:
+        return None
+    who = f"simulator backend '{name}'"
+    if isinstance(declared, ContainerQuery):
+        if run_query is None:
+            raise RuntimeError(f"{who} answers which streams it computes on demand with a "
+                               "query in its image, and nothing here can run one")
+        try:
+            declared = backend.on_demand_from_reply(cfg, execution, run_query(declared))
+        except ValueError as exc:
+            raise ValueError(f"{who} could not say which streams it computes on demand: "
+                             f"{exc}") from exc
+    return checked_streams(declared, who)
+
+
+def declares_on_demand_streams(execution: dict, block: dict, base_dir: str = "") -> bool:
+    """Whether the configured backend can say which of its streams are on demand, for *block*."""
+    name = backend_name(execution or {})
+    if not name:
+        return False
+    backend = resolve_backend(name, base_dir)
+    cfg = _validated_cfg(backend, dict(block or {}), name)
+    return backend.on_demand_streams(cfg, execution) is not None
+
+
+def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
     """What one job's resolved ``sim`` block contributes: ``{command, env, document}``.
 
     :func:`apply_backend`'s per-job twin, and deliberately the *same* hooks: the command and
@@ -1004,9 +1176,9 @@ def sim_job_overlay(execution: dict, block: dict, base_dir: str = "",
 
     ``document`` is what the execution backend writes to :data:`SIM_OVERRIDES_MOUNT`, or ``None``.
 
-    *recording* is the same block :func:`apply_backend` was given: the overlay's ``env`` is
-    merged over the campaign-level contribution, so a job asked with a different block
-    would silently rewrite what the run records.
+    The recording block is read from *execution*, the one :func:`apply_backend` read: the
+    overlay's ``env`` is merged over the campaign-level contribution, so a job asked with a
+    different block would silently rewrite what the run records.
     """
     empty = {"command": None, "env": {}, "document": None}
     name = backend_name(execution or {})
@@ -1018,7 +1190,7 @@ def sim_job_overlay(execution: dict, block: dict, base_dir: str = "",
     sim_container = contributed.get(SIMULATION_CONTAINER) or {}
     return {
         "command": sim_container.get("command"),
-        "env": backend.env(cfg, execution, recording) or {},
+        "env": backend.env(cfg, execution, recording_config(execution.get("recording"))) or {},
         "document": backend.sim_document(cfg, execution),
     }
 
@@ -1098,12 +1270,16 @@ __all__ = [
     "backend_name",
     "backend_own_keys",
     "campaign_sim_block",
+    "checked_streams",
+    "declares_on_demand_streams",
     "flatten_sim_block",
+    "ground_truth_source",
     "merge_sim_block",
     "resolve_backend",
     "resolve_sim_path",
     "ros_tap_command",
     "shape_for",
     "sim_job_overlay",
+    "sim_on_demand_streams",
     "tap_command",
 ]

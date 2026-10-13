@@ -11,9 +11,11 @@ module each time, for a subcommand almost nobody in a given run is about to type
 
 Click asks for the names it can offer (``list_commands``) separately from the one it is
 about to run (``get_command``), so the names come from entry-point *metadata* and only the
-chosen subcommand is loaded. A subcommand that fails to import is reported and skipped,
-the same way `load_plugins()` treats a missing plugin: an install without the cluster
-package should be short a subcommand, not broken.
+chosen subcommand is loaded. An entry point exists only where its distribution is
+installed, so an install without the cluster package is short those subcommands and never
+lists them. One that is listed but fails to import is a broken install: it is warned about
+and skipped, as `load_plugins()` does, and kept in ``load_failures`` for a caller that
+answers from the command tree.
 
 This is the *cross-distribution* mechanism only. A verb living in the same module as its
 group stays an ordinary ``@group.command()`` -- entry points live in installed metadata,
@@ -22,6 +24,12 @@ makes them vanish silently (see the note on ``run_startup_hooks`` in ``cli.py``)
 """
 
 import click
+
+
+def plugin_load_failure(ep, exc: BaseException) -> str:
+    """Why the registered entry point *ep* could not be loaded, naming where it comes from."""
+    dist = getattr(getattr(ep, "dist", None), "name", None) or "an unknown distribution"
+    return f"{ep.value}, from {dist}: {type(exc).__name__}: {exc}"
 
 
 class LazyPluginGroup(click.Group):
@@ -41,6 +49,8 @@ class LazyPluginGroup(click.Group):
     def __init__(self, *args, plugin_group="", **kwargs):
         super().__init__(*args, **kwargs)
         self.plugin_group = plugin_group
+        #: ``{subcommand: reason}`` for each listed entry point that failed to load.
+        self.load_failures: dict[str, str] = {}
 
     def _plugins(self):
         from importlib.metadata import entry_points  # pylint: disable=import-outside-toplevel
@@ -60,6 +70,7 @@ class LazyPluginGroup(click.Group):
             return None
         try:
             return entry.load()
-        except Exception as exc:  # noqa: BLE001 - a missing package is not a crash
+        except Exception as exc:  # noqa: BLE001 - reported and recorded, never dropped
+            self.load_failures[cmd_name] = plugin_load_failure(entry, exc)
             click.echo(f"Warning: '{cmd_name}' could not be loaded: {exc}", err=True)
             return None

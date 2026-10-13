@@ -36,6 +36,7 @@ from importlib.metadata import entry_points
 import click
 
 from robovast.client.errors import handle_cli_exception
+from robovast.client.lazy_group import plugin_load_failure
 from robovast.client.logging_config import (get_logger, setup_default_logging,
                                             setup_logging)
 from robovast.client.service_target import echo_target as _echo_target
@@ -1066,29 +1067,20 @@ def image_build(workspace_id, config_path, wait):  # pylint: disable=redefined-o
         _echo_target(target)
         ref = client.build_image(BuildImageRequest(
             workspace_id=workspace_id, config_path=config_path))
-        # Report every container, not just the one the handle happens to name. Both lines
-        # below say more than `ref.tag`: a project building two images would otherwise print
-        # one cache-hit line for the scenario image and never mention the other — a reader
-        # could not tell whether the second was covered, still building, or absent. The
-        # per-container verdict is in `cached_builds`; the aggregate `ref.cached` is their
-        # conjunction, so a cache-hit line means every image, which is what it reads as.
-        cached_builds = getattr(ref, "cached_builds", None) or {}
-        for name in sorted(cached_builds):
-            if cached_builds[name]:
+        # Report every container, not just the one the handle happens to name: a project
+        # may build several images, and each has its own cache verdict in `cached_builds`.
+        for name in sorted(ref.cached_builds):
+            if ref.cached_builds[name]:
                 click.echo(f"✓ image 'build:{name}' already up to date (cache hit)")
-        if ref.cached:
-            if not cached_builds:      # a service predating the per-container verdicts
-                click.echo(f"✓ image 'build:{ref.tag}' already up to date (cache hit)")
-            return
         # Wait only on what is actually building. Waiting on a cache hit is harmless but
         # says "building" about an image that is already there.
-        pending = {name: bid for name, bid in (ref.builds or {}).items()
-                   if not cached_builds.get(name)}
-        ids = list(pending.values()) or list((ref.builds or {}).values()) or [ref.build_id]
+        pending = {name: bid for name, bid in ref.builds.items()
+                   if not ref.cached_builds.get(name)}
+        if not pending:
+            return
+        ids = list(pending.values())
         for name, bid in sorted(pending.items()):
             click.echo(f"building 'build:{name}' (build_id={bid}) ...")
-        if not pending:
-            click.echo(f"building 'build:{ref.tag}' (build_id={' '.join(ids)}) ...")
         if not wait:
             click.echo(f"started; wait with 'vast image wait {' '.join(ids)}'")
             return
@@ -1224,10 +1216,10 @@ def run_startup_hooks():
     **A missing hook is checked for, not assumed absent.** Entry points are baked into a
     distribution's installed metadata, so adding one to `pyproject.toml` does nothing
     until the package is reinstalled -- and an editable checkout looks completely normal
-    in the meantime. That silence cost real damage once: with the core installed but its
-    hook unregistered, no `.env` was read, and `vast service upgrade` concluded the
-    registry and git credentials "configuration is gone" and deleted both Secrets. So if
-    the core is installed and contributed nothing, say so instead of running on.
+    in the meantime. With the core installed but its hook unregistered, no `.env` is
+    read, and ``vast service upgrade``, which reconciles Secrets from the environment,
+    would take the registry and git credentials for removed and delete both Secrets. So
+    if the core is installed and contributed nothing, say so instead of running on.
     """
     hooks = list(entry_points(group=STARTUP_HOOK_GROUP))
     if not hooks and _core_installed():
@@ -1254,31 +1246,32 @@ def _core_installed() -> bool:
         return False
 
 
-def load_plugins():
-    """Dynamically load all VAST CLI plugins from entry points."""
-    # Map of long plugin names to their short aliases. `execution`/`exec` is gone with the
-    # group: every group is now named after what it acts on, and none of those names is
-    # long enough to want a short form.
+def load_plugins() -> dict[str, str]:
+    """Load every ``robovast.cli_plugins`` entry point onto the root ``vast`` group.
+
+    An entry point exists only where the distribution declaring it is installed, so an
+    absent distribution contributes nothing and is not reported. One that is registered
+    but fails to load is a broken install: it is warned about on stderr so ``vast`` still
+    starts, and returned as ``{entry point name: reason}`` so a caller answering from the
+    command tree can refuse rather than answer from part of it.
+    """
+    # Map of long plugin names to their short aliases. Every other group is named after
+    # what it acts on, and none of those names is long enough to want a short form.
     aliases = {
         'configuration': 'config',
     }
-    try:
-        eps = entry_points(group='robovast.cli_plugins')
-
-        for ep in eps:
-            try:
-                # Load the entry point (should return a Click group or command)
-                plugin_group = ep.load()
-                # Add it as a subcommand to the main CLI
-                cli.add_command(plugin_group, name=ep.name)
-
-                # Add short alias if defined
-                if ep.name in aliases:
-                    cli.add_command(plugin_group, name=aliases[ep.name])
-            except Exception as e:
-                click.echo(f"Warning: Failed to load plugin '{ep.name}': {e}", err=True)
-    except Exception as e:
-        click.echo(f"Warning: Failed to load plugins: {e}", err=True)
+    failures: dict[str, str] = {}
+    for ep in entry_points(group='robovast.cli_plugins'):
+        try:
+            plugin_group = ep.load()
+        except Exception as e:  # noqa: BLE001 - reported and returned, never dropped
+            failures[ep.name] = plugin_load_failure(ep, e)
+            click.echo(f"Warning: Failed to load plugin '{ep.name}': {e}", err=True)
+            continue
+        cli.add_command(plugin_group, name=ep.name)
+        if ep.name in aliases:
+            cli.add_command(plugin_group, name=aliases[ep.name])
+    return failures
 
 
 def main():

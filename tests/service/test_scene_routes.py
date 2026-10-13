@@ -7,11 +7,11 @@
 What is pinned here is the *shape* of the interaction, because each part copies an existing pattern and a
 drift would be silent: status is pure (a GET that built things would fire on a browser prefetch), starting
 is a POST returning ActionResult like ``postprocessing/run``, and the bytes are served from the shared
-cache like a panel bundle — including the **sibling** fetch, since the descriptor's loader reads
-``scene.bin`` and every texture as relatives of ``scene.json``.
+cache like a panel bundle, compressed when the request accepts it from the sibling the cache wrote.
 """
 
-import json
+import gzip
+
 import time
 from pathlib import Path
 
@@ -62,9 +62,7 @@ def client(tmp_path, monkeypatch):
     write_store(results / CAMPAIGN, {"goal-1": {"runs": {0: "passed"}}})
 
     fake = tmp_path / "fake.sh"
-    fake.write_text('#!/bin/sh\nmkdir -p "$1"\n'
-                    'echo \'{"bodies":[]}\' > "$1/scene.json"\nprintf xyz > "$1/scene.bin"\n',
-                    encoding="utf-8")
+    fake.write_text('#!/bin/sh\nmkdir -p "$1"\nprintf glTF-xyz > "$1/scene.glb"\n', encoding="utf-8")
     fake.chmod(0o755)
     monkeypatch.setattr(scene_cache, "_generate_entry",
                         lambda i, k, m: {"shell": {"out": k, "command": f"{fake} {{out}}"}})
@@ -96,17 +94,26 @@ def test_status_is_pure_then_post_builds_then_assets_resolve(client):
 
     ready = _wait_ready(client)
     assert ready["cached"] is True and ready["generation_required"] is False
-    assert ready["bytes"] > 0
-    assert "/scene_assets/" in ready["url"] and ready["url"].endswith("/scene.json")
+    assert ready["bytes"] == len(b"glTF-xyz"), "what a browser fetches: the scene, not the entry"
+    assert "/scene_assets/" in ready["url"] and ready["url"].endswith("/scene.glb")
 
-    asset = client.get(ready["url"])
-    assert asset.status_code == 200
-    assert json.loads(asset.content) == {"bodies": []}
+    asset = client.get(ready["url"], headers={"Accept-Encoding": "identity"})
+    assert asset.status_code == 200 and asset.content == b"glTF-xyz"
+    assert asset.headers["content-type"] == "model/gltf-binary"
+    assert "content-encoding" not in asset.headers and asset.headers["vary"] == "Accept-Encoding"
 
-    # The loader fetches scene.bin as a *sibling* of scene.json, so one URL prefix must address the
-    # whole entry -- which is why the cache key is in the path rather than re-derived per file.
-    sibling = client.get(ready["url"].rsplit("/", 1)[0] + "/scene.bin")
-    assert sibling.status_code == 200 and sibling.content == b"xyz"
+
+def test_a_scene_is_served_compressed_to_a_request_that_takes_gzip(client):
+    """The sibling the cache wrote, not a compression per request; the type stays the scene's."""
+    client.post(f"/campaigns/{CAMPAIGN}/scene/run", params=QUERY)
+    ready = _wait_ready(client)
+    response = client.get(ready["url"], headers={"Accept-Encoding": "br;q=0, gzip"})
+    assert response.headers["content-encoding"] == "gzip"
+    assert response.headers["content-type"] == "model/gltf-binary"
+    assert response.headers["cache-control"] == "private, max-age=31536000, immutable"
+    # The test client decodes the body as a browser does; the bytes on the wire are the sibling's.
+    assert response.content == b"glTF-xyz"
+    assert int(response.headers["content-length"]) == len(gzip.compress(b"glTF-xyz", 9, mtime=0))
 
 
 def test_a_second_post_joins_rather_than_rebuilding(client):
@@ -130,9 +137,9 @@ def test_a_key_that_is_not_one_entry_names_no_file(tmp_path, monkeypatch, key):
     """``..`` would make the cache root's parent the entry, and every file under it servable."""
     monkeypatch.setenv("ROBOVAST_SCENE_CACHE", str(tmp_path / "cache"))
     (tmp_path / "cache" / "k").mkdir(parents=True)
-    (tmp_path / "cache" / "k" / "scene.json").write_text("{}")
+    (tmp_path / "cache" / "k" / "scene.glb").write_text("{}")
     (tmp_path / "beside.txt").write_text("not a scene")
-    rel = {"..": "beside.txt", ".": "k/scene.json"}[key]
+    rel = {"..": "beside.txt", ".": "k/scene.glb"}[key]
     with pytest.raises(KeyError):
         NullService().resolve_campaign_scene_asset(CAMPAIGN, f"{key}/{rel}")
 
@@ -154,10 +161,10 @@ def test_an_unrecorded_override_set_is_flagged_not_assumed(client, tmp_path):
     assert "carries no overrides" in body["note"]
 
 
-def test_the_scene_names_are_reserved_against_plugin_endpoints():
-    """A plugin endpoint called `scene` would shadow these routes silently."""
-    from robovast.service.endpoint_plugin import RESERVED_CAMPAIGN_ENDPOINTS
-    assert {"scene", "scene_assets"} <= RESERVED_CAMPAIGN_ENDPOINTS
+def test_the_scene_names_are_reserved_against_plugin_endpoints(client):
+    """A plugin endpoint called `scene` would sit behind these routes and never answer."""
+    from robovast.service.endpoint_plugin import core_campaign_segments
+    assert {"scene", "scene_assets"} <= core_campaign_segments(client.app.routes)
 
 
 def test_a_failed_build_reports_its_reason_instead_of_looking_unbuilt(client, monkeypatch, tmp_path):
@@ -183,7 +190,7 @@ def test_a_failed_build_reports_its_reason_instead_of_looking_unbuilt(client, mo
         time.sleep(0.05)
     assert body["cached"] is False
     assert body["in_progress"] is False, "a dead build must not keep the panel polling"
-    assert "could not build the scene descriptor" in body["error"]
+    assert "could not build the scene" in body["error"]
     assert body["error"] == body["note"], "the reason is what a viewer shows"
 
 
@@ -202,8 +209,7 @@ def test_a_retry_clears_the_previous_reason(client, monkeypatch, tmp_path):
         time.sleep(0.05)
 
     good = tmp_path / "good.sh"
-    good.write_text('#!/bin/sh\nmkdir -p "$1"\necho \'{"bodies":[]}\' > "$1/scene.json"\n'
-                    'printf xyz > "$1/scene.bin"\n', encoding="utf-8")
+    good.write_text('#!/bin/sh\nmkdir -p "$1"\nprintf glTF > "$1/scene.glb"\n', encoding="utf-8")
     good.chmod(0o755)
     monkeypatch.setattr(scene_cache, "_generate_entry",
                         lambda i, k, m: {"shell": {"out": k, "command": f"{good} {{out}}"}})
@@ -221,8 +227,8 @@ def test_scene_assets_are_cached_for_good_and_results_files_are_not(client):
     """
     client.post(f"/campaigns/{CAMPAIGN}/scene/run", params=QUERY)
     ready = _wait_ready(client)
-    for url in (ready["url"], ready["url"].rsplit("/", 1)[0] + "/scene.bin"):
-        response = client.get(url)
+    for encoding in ("identity", "gzip"):
+        response = client.get(ready["url"], headers={"Accept-Encoding": encoding})
         assert response.status_code == 200
         assert response.headers["cache-control"] == "private, max-age=31536000, immutable"
 
@@ -281,3 +287,17 @@ def _freeze_backend(campaign: Path) -> None:
         "version: 5\nexecution:\n  mode: ros2\n  containers:\n    simulation:\n"
         "      backend: roqsim\n      config: pkg:depot\n      image: harbor/x@sha256:"
         + "a" * 64 + "\n", encoding="utf-8")
+
+
+def test_a_scene_is_sent_as_gltf_whatever_the_platform_knows(client, monkeypatch):
+    """The media type is the service's own answer, not the host's mimetypes table, which may lack
+    ``.glb`` -- then a scene went out as text, plain or compressed."""
+    import mimetypes
+    real = mimetypes.guess_type
+    monkeypatch.setattr(mimetypes, "guess_type", lambda url, strict=True: (
+        (None, None) if str(url).endswith(".glb") else real(url, strict)))
+    client.post(f"/campaigns/{CAMPAIGN}/scene/run", params=QUERY)
+    ready = _wait_ready(client)
+    for encoding in ("identity", "gzip"):
+        response = client.get(ready["url"], headers={"Accept-Encoding": encoding})
+        assert response.headers["content-type"] == "model/gltf-binary", encoding

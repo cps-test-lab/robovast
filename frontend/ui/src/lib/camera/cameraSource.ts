@@ -1,7 +1,7 @@
 // Where a camera panel gets its picture, and the one thing it needs besides the pixels: where the
 // picture sits on the run's timeline.
 //
-// Three kinds, chosen by the panel's `kind`:
+// Four kinds, chosen by the panel's `kind`:
 //
 //  - `recorded`: a `.webm` a producer registered in the `videos` table (or named by `source.path`).
 //    The video file alone cannot place itself: `rosbags_to_webm` re-times every frame onto a constant
@@ -12,10 +12,19 @@
 //    is the smooth-playback derivative of the same recording.
 //  - `render`: a run with no camera topic at all. The screenshot route re-renders the run's
 //    recorded state at the clock's moment, from a camera the world defines or a free viewpoint.
+//  - `scene`: the scene drawn in the browser from the geometry and the recorded poses the 3D view
+//    replays, through a camera the scene descriptor places (`camera`) or one the panel places
+//    (`view`) -- every moment at once, with nothing stored or rendered on the service. Its time base
+//    is the motion's own, so there is nothing to place.
+//
+// Which kind: `kind` when the panel says; else `scene` when it names a `camera` or a `view`, and
+// `recorded` otherwise. `render` is never inferred -- running the simulator per frame on the service
+// is asked for by name -- which is what lets `camera` and `view` mean the scene's in every other case.
 
 import type { DataProvider, PanelSpec } from '@robovast/panel-kit'
 import { cameraRoutes, type RenderView, type RunRef } from './frameRoutes'
 import { parseFrameIndex } from './frameIndex'
+import { parseFreeView, type FreeViewSpec } from '@/lib/scene3d/sceneCameras'
 
 /** A resolved camera: everything the panel needs to put a picture on the clock. The panel branches
  *  on `kind` and never sees a file path. */
@@ -45,6 +54,14 @@ export type CameraSource =
       run: RunRef
       view: RenderView
     }
+  | {
+      kind: 'scene'
+      look: SceneLook
+    }
+
+/** What a `scene` panel looks through: a camera the scene descriptor places, by name, or a free view
+ *  the panel places. */
+export type SceneLook = { camera: string } | { view: FreeViewSpec }
 
 export type CameraKind = CameraSource['kind']
 
@@ -54,17 +71,19 @@ export type CameraKind = CameraSource['kind']
  *     - camera: { source: { topic } }            which video, for a run that recorded several
  *     - camera: { source: { path, t0 } }         a video no producer registered
  *     - camera: { kind: topic, topic: /cam }     the recorded frames of an image topic
- *     - camera: { kind: render, camera: top }    a render of the recorded state
+ *     - camera: { kind: render, camera: top }    a render of the recorded state, on the service
  *     - camera: { kind: render, view: { azimuth: 90, distance: 12 } }
+ *     - camera: { camera: robot.oakd.oakd_camera }   the scene through a camera it places
+ *     - camera: { view: { position: [x, y, z], look_at: [x, y, z], attach: base_link } }
  */
 export interface CameraConfig {
   kind?: CameraKind
   /** `kind: topic`: the image topic. Falls back to `source.topic`, so one name serves both. */
   topic?: string
-  /** `kind: render`: a camera the world defines. */
+  /** `scene`: a camera of the scene descriptor; `render`: a camera the world defines. */
   camera?: string
-  /** `kind: render`: free-camera settings. */
-  view?: Record<string, string | number>
+  /** `scene`: a free view (`parseFreeView`); `render`: the screenshot route's free-camera settings. */
+  view?: Record<string, unknown>
   source?: CameraBinding
 }
 
@@ -85,12 +104,13 @@ export interface CameraBinding {
  *  `rosbags_to_webm` is the first, a simulator that renders its own video may be the next. */
 export const VIDEOS_TABLE = 'videos'
 
-const KINDS: ReadonlySet<string> = new Set<CameraKind>(['recorded', 'topic', 'render'])
+const KINDS: ReadonlySet<string> = new Set<CameraKind>(['recorded', 'topic', 'render', 'scene'])
 
-/** Which kind a panel config asks for. `recorded` unless it says, so a config written before the
- *  other kinds existed reads the same. */
+/** Which kind a panel config asks for: its `kind`; else `scene` when it names a `camera` or a
+ *  `view`, and `recorded` otherwise. */
 export function cameraKind(config: CameraConfig): CameraKind {
-  const kind = config.kind ?? 'recorded'
+  const kind =
+    config.kind ?? (config.camera !== undefined || config.view !== undefined ? 'scene' : 'recorded')
   if (!KINDS.has(kind)) {
     throw new Error(
       `camera panel: kind '${String(kind)}' is not one of ${[...KINDS].join(', ')}`,
@@ -109,6 +129,20 @@ export function cameraTopic(config: CameraConfig): string {
     )
   }
   return topic
+}
+
+/** What a `scene` panel looks through, or throws: exactly one of `camera` (a name) and `view`. A
+ *  scene may place several cameras, and picking one for the panel would show a view nobody chose. */
+export function sceneLook(config: CameraConfig): SceneLook {
+  if (config.camera !== undefined && config.view !== undefined)
+    throw new Error('camera panel: give `camera` (a camera the scene places) or `view`, not both.')
+  if (config.view !== undefined) return { view: parseFreeView(config.view) }
+  if (typeof config.camera !== 'string' || !config.camera)
+    throw new Error(
+      "camera panel: kind 'scene' needs a `camera` (the name of a camera the scene places) or a " +
+        '`view` (position and look_at).',
+    )
+  return { camera: config.camera }
 }
 
 export const runRef = (data: DataProvider): RunRef => ({
@@ -142,7 +176,13 @@ export async function resolveCameraSource(
     case 'topic':
       return resolveTopic(config, data, fetchJson)
     case 'render':
-      return { kind: 'render', run: runRef(data), view: { camera: config.camera, view: config.view } }
+      return {
+        kind: 'render',
+        run: runRef(data),
+        view: { camera: config.camera, view: config.view as RenderView['view'] },
+      }
+    case 'scene':
+      return { kind: 'scene', look: sceneLook(config) }
     case 'recorded':
       return resolveRecorded(config.source ?? {}, data)
   }

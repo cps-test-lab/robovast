@@ -116,8 +116,8 @@ class BaseShareProvider(ABC):
 
     A share provider encapsulates everything needed to upload a tar.gz archive
     to a remote storage service (Nextcloud, Google Drive, …) and to download it
-    back. Both directions run **in-process** in the controller pod (no archiver
-    sidecar, no ``kubectl exec``): see
+    back. Both directions run **in-process** in the service that drives the campaign
+    (no archiver sidecar, no ``kubectl exec``): see
     :mod:`robovast.execution.cluster_execution.in_pod_upload`.
 
     Subclasses must:
@@ -125,9 +125,9 @@ class BaseShareProvider(ABC):
     * Set :attr:`SHARE_TYPE` to the provider name (matching the entry-point key).
     * Declare all required environment variables in :meth:`required_env_vars`.
     * Implement :meth:`upload_archive` (the in-process transfer).
-    * Provide environment variables for the controller pod via
-      :meth:`build_pod_env` (the launcher resolves host credentials — e.g. a key
-      *file* into inline JSON/PEM — and injects them into the pod environment).
+    * Provide environment variables for the service pod via
+      :meth:`build_pod_env` (deploying the service resolves host credentials — e.g. a
+      key *file* into inline JSON/PEM — into a Secret the service pod reads as env).
 
     The constructor automatically validates that all required env vars are
     present; it raises :class:`ShareError` if any are missing.  Values
@@ -191,9 +191,10 @@ class BaseShareProvider(ABC):
     ) -> None:
         """Upload the local *archive_path* to the share as *object_name*.
 
-        Runs in-process in the controller pod. Credentials and target settings
-        are read from ``os.environ`` (populated by :meth:`build_pod_env` at
-        launch). Implementations should be resumable where the backend allows it.
+        Runs in-process in the service that drives the campaign. Credentials and
+        target settings are read from ``os.environ`` (populated from
+        :meth:`build_pod_env` when the service is deployed). Implementations should be
+        resumable where the backend allows it.
 
         Args:
             archive_path: Absolute path to the local ``<campaign>.tar.gz``.
@@ -251,7 +252,7 @@ class BaseShareProvider(ABC):
     def verify_access(self) -> None:
         """Verify the share is reachable with the configured credentials.
 
-        Called by the in-cluster controller **before** any batches start, so a
+        Called by the campaign's driver **before** any batches start, so a
         campaign that could never be delivered fails fast instead of wasting
         compute. Implementations should perform the cheapest authenticated
         operation that proves write access (a HEAD/PROPFIND, a token exchange,

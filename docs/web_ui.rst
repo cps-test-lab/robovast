@@ -36,9 +36,9 @@ here by what they do:
   will not be done. So when the service says a stopping criterion is about to fire, the cell reads
   **may stop early** instead of a duration — the more useful fact, and the one the duration would
   otherwise misstate — and the ring's arc turns amber beside it. Hovering gives the criterion's own
-  sentence ("not improved for 2 of 3 rounds"). A search bounded only by convergence, which had an
-  empty cell before, now reads **stops on convergence**: no duration is projected, but the
-  mechanism that will end it is named.
+  sentence ("not improved for 2 of 3 rounds"). A search bounded only by convergence reads
+  **stops on convergence**: no duration is projected, but the mechanism that will end it is
+  named.
 
   Only ``no_improvement`` can be "about to fire". It counts rounds, so its distance is real;
   ``target_objective`` and ``metric`` fire on a value that can move any distance in a single round,
@@ -154,6 +154,20 @@ here by what they do:
   simulator and the system under test have their own containers and a failure is only legible
   when their output is read against the scenario's. The rows come from the job's log files in
   the campaign as they are written, so a finished job opens the same way.
+  Where the campaign's run view has a :ref:`3D scene <scene3d-panel>` -- declared, or
+  contributed by a simulator backend that records scene state -- the job's log has **the run's
+  3D view beside it**, on the right and the same height: the run view's scene panel with its
+  free orbit camera, following the edge of the recording as the log follows its newest line.
+  A job whose run has not started recording says so until it does, and a run that has finished
+  stays on where it ended. The scene fills the pane, with its controls floating in its top-right
+  corner, each naming its run on hover: **open in run view** opens that run in the
+  :ref:`run view <run-view>` with all of its panels, following it there too while it records;
+  **reset** puts the camera back where the scene opened; **close** folds the view into a narrow
+  strip whose button brings it back, and this browser remembers which you chose. A dot below
+  them is red while the view follows a recording run and grey once the run has finished. The 3D
+  view is loaded only while the log is open and stops its stream when the log closes, and
+  nothing is stored for it. On a narrow window the log keeps the whole width. A campaign with no
+  3D scene shows the log alone.
   On the cluster, every placed row also names **the node its pod landed on**, as a coloured
   chip. The name is the information and the colour only a scanning aid -- one machine is one
   colour down the whole list, so a batch that has piled onto a single node is visible without
@@ -445,10 +459,10 @@ whole reason it exists separately. That log is this process's recent output and 
 pod; these survive a restart, which is when they are most worth having.
 
 What they carry is the two things this app otherwise shows once and forgets. **Refusals**:
-an action the service would not do — a retrigger it could not accept — was composed in the
+an action the service would not do — a retrigger it could not accept — is composed in the
 request that refused it and shown for thirty seconds. And **campaign lifecycle**: the same
-starts, endings and failures the toasts and the OS notifications announce, which until they
-scrolled away were held by nothing. Each row carries the service's own words, the time, the
+starts, endings and failures the toasts and the OS notifications announce, which are gone
+once they scroll away. Each row carries the service's own words, the time, the
 severity, who was refused where they said, and the status the caller got.
 
 Repeats collapse: an identical refusal inside a minute of the last one recorded is counted
@@ -456,9 +470,11 @@ rather than recorded again, and the next row of it carries the count (shown as `
 before it``), so a panel polling something that cannot answer it does not push the rest of the
 record out.
 
-Newest first here, though the route (``GET /admin/events``) serves oldest-first from a cursor:
-a caller *resuming* a position wants what came after its ``seq``, and a person opening a panel
-wants what just happened.
+The panel shows the newest events, newest first, though the route (``GET /admin/events``)
+serves oldest-first from a cursor: a caller *resuming* a position wants what came after its
+``seq``, and a person opening a panel wants what just happened, so the panel asks the route for
+the end of the record (``newest=true``) rather than its beginning. A log the service cannot
+read is shown as that error, so "Nothing recorded yet" always means an empty record.
 
 .. _web-ui-freshness:
 
@@ -516,10 +532,10 @@ that order alone, and that one is closed while the campaign page is not the one 
 nothing reads it there, and the service orders every campaign it knows about on every tick it
 sends.
 
-The gate is also what stops a hidden page from spending on the service's behalf: before it,
-the Admin page cost a container-registry round trip every minute for as long as the tab was
-open, whichever page you were actually looking at, and each running campaign cost a
-Kubernetes API call every two seconds from a card nobody could see.
+The gate is also what stops a hidden page from spending on the service's behalf: without it,
+the Admin page would cost a container-registry round trip every minute for as long as the tab
+was open, whichever page you were actually looking at, and each running campaign a Kubernetes
+API call every two seconds from a card nobody could see.
 
 **The file open in the config editor is a stronger case than the rest**, because that editor
 autosaves on every keystroke. A buffer holding a file's old contents does not merely show you
@@ -1109,7 +1125,7 @@ The built-in panels:
 
 **Scenario parameters** (``parameters``) — what the trial is given, as YAML, and nothing
 else. Not the ``_``-prefixed keys a variation writes for other readers (``_map_file``,
-``_path``, ``_goal_parameter_name``), and not a preview of each factor's value list with this
+``_path``, ``_slot_bindings``), and not a preview of each factor's value list with this
 configuration's value marked: both would restate in a second notation what the ``.vast`` in
 the next column already says, and the column is too narrow to spend on that.
 
@@ -1829,6 +1845,72 @@ playback is not a seek storm. Outside the recording — a camera that came up la
 ran past the last frame — it dims and says *"No frames at this time"* rather than showing
 frame 0 as though it were the current moment.
 
+**Through a camera of the scene** (``kind: scene``). The panel draws the :ref:`3D scene
+<scene3d-panel>` in the browser, from the world's cached scene and the run's recorded poses, through
+a camera instead of the orbit view. The ``scene3d`` panel itself stays the orbit view; a camera's
+view is only ever this panel, where a campaign declares one. It looks through one of two cameras:
+
+* ``camera: <name>`` -- a camera the scene places, by its sensor name in the scene
+  (:ref:`camera sensors <scene-descriptor-cameras>`): a robot's camera sensor, from its mount on its
+  body, with its field of view and image shape, following the body as the run plays. Nothing else
+  is given; all of it comes from the scene.
+* ``view: {...}`` -- a camera the panel places, for a viewpoint no sensor has:
+
+  .. list-table::
+     :header-rows: 1
+     :widths: 18 82
+
+     * - key
+       - meaning
+     * - ``position``
+       - ``[x, y, z]`` in metres, where the camera is. Required.
+     * - ``look_at``
+       - ``[x, y, z]`` in metres, the point it looks at. Required.
+     * - ``attach``
+       - a body of the scene. Without it, ``position`` and ``look_at`` are in the world frame (z up);
+         with it, they are in that body's frame and the camera follows the body -- a chase or
+         onboard view.
+     * - ``fov``
+       - vertical field of view in degrees, default 60.
+     * - ``up``
+       - ``[x, y, z]``, the direction that is up in the picture, default ``[0, 0, 1]``.
+     * - ``near``/``far``
+       - clip planes in metres, default 0.05 and 1000.
+     * - ``width``/``height`` or ``aspect``
+       - the picture's shape, letterboxed in the panel; default the panel's own shape.
+
+.. code-block:: yaml
+
+   - camera:
+       title: OAK-D camera
+       camera: robot.oakd.oakd_camera     # a camera the scene places
+       position: {anchor: top-center, width: 360, height: 300}
+       minimizable: true
+       minimized: true                    # collapsed until the viewer opens it
+   - camera:
+       title: Chase view
+       view: {attach: base_link, position: [-2.0, 0.0, 1.2], look_at: [2.0, 0.0, 0.0]}
+       minimizable: true
+       minimized: true
+
+**Which kind a panel is.** ``kind`` when it says; otherwise ``scene`` when it names a ``camera`` or a
+``view``, and ``recorded`` otherwise. ``render`` -- the service re-rendering the recorded state per
+moment, through a camera the *world* defines (``camera``) or from its own free-camera settings
+(``view: {azimuth, elevation, distance, lookat}``) -- is never inferred, so it is always written
+``kind: render``. A ``view`` with those keys and no ``kind`` is refused, naming the kind it needs.
+
+A minimized panel renders nothing, so a view that starts collapsed costs nothing until somebody
+opens it from its title bar; there is no other way to show or hide a panel in the view. Nothing is
+recorded for it either, so it plays at the view's frame rate and seeks instantly, and it needs no
+``rosbags_to_webm`` step. It shows the simulated geometry under the viewer's lighting, without a
+sensor's noise or the simulator's own renderer — a view of where the camera looked, not a sensor's
+pixels. Only colour cameras of the scene can be shown: a depth sensor's image is a distance per
+pixel, which a render of the scene's colours would misstate. Validation refuses a ``scene`` panel
+with neither or both of ``camera`` and ``view``, a malformed ``view``, or a simulator that records no
+scene state or exports no scene. Which cameras and bodies a world has is known only once its scene is
+exported, on first view, so a ``camera`` or ``attach`` the scene lacks is reported in the panel, with
+the names it has.
+
 Where the video comes from: a producer writes it into the run directory and registers it in
 the ``videos`` table. ``rosbags_to_webm`` is the first such producer (see the
 :ref:`worked example <videos-table>`), but the table is a contract any of them may write.
@@ -1945,10 +2027,10 @@ the world was authored with.
 
 It needs no bindings at all — ``- scene3d:`` on its own is a complete panel — because the run's
 **recording** names the world it used (its ``sim_recording`` row) and the service builds the
-matching **geometry** on demand. The descriptor is specified in :ref:`scene-descriptor`.
+matching **geometry** on demand. The scene is specified in :ref:`scene-descriptor`.
 
-*Geometry is compiled when somebody looks, not when a campaign runs.* A descriptor is 13–31 MB and takes
-5–9 s to compile, for an artifact whose only consumer is this panel — so a campaign does not ship one.
+*Geometry is compiled when somebody looks, not when a campaign runs.* A scene takes seconds to compile
+and megabytes to keep, for an artifact whose only consumer is this panel — so a campaign does not ship one.
 On the first view the service compiles it **inside that campaign's own pinned image** (the world is
 generally installed there from a wheel, and a host that merely happens to have the tooling could be a
 different version, which renders plausible but wrong geometry) and caches it keyed by *world identity*:
@@ -1976,7 +2058,7 @@ table-fed panels need no geometry, so playback and the costmap keep working — 
 and shows its reason.
 
 Nothing is listed under the panel. A recording's pose and joint rows name the bodies and joints they
-drive exactly as the descriptor spells them, so what gets animated is discovered from the artifact
+drive exactly as the scene spells them, so what gets animated is discovered from the artifact
 pair; a name matching nothing is reported, with the recording's own ``world``, rather than leaving a
 silently static world.
 
@@ -2175,10 +2257,9 @@ campaign shares, as the ``scene3d`` panel does.) See the developer guide for the
 
 .. _scene-descriptor-delivery:
 
-**3D scene data delivery.** The ``scene3d`` panel renders a **scene descriptor** — ``scene.json`` +
-``scene.bin`` + one PNG per texture, a compact browser-renderable export of the simulated world, defined
-in :ref:`scene-descriptor` and produced for roqsim by ``roqsim/export_web.py``. It is a *directory*, not a file: the
-loader fetches ``scene.bin`` and the textures as **relative siblings** of ``scene.json``.
+**3D scene data delivery.** The ``scene3d`` panel renders a **scene**: the simulated world as one
+binary glTF file, specified in :ref:`scene-descriptor` and produced for roqsim by ``roqsim export
+gltf``.
 
 A campaign does not deliver it. The service resolves it per view:
 
@@ -2192,8 +2273,11 @@ The split matters: a ``GET`` that started a build would fire on a browser prefet
 strict-mode double render, and each of those would launch an image pull. Status is its own
 cheap ``GET`` (*say why you are about to wait, before you wait*), starting work is a ``POST`` returning
 ``ActionResult`` as ``postprocessing/run`` is, and the bytes are served like a panel bundle because they
-live in the service's cache rather than in the campaign's results. The cache key is in the asset path so
-one URL prefix addresses the whole entry, which is what makes the loader's sibling fetches resolve.
+live in the service's cache rather than in the campaign's results. The cache writes a gzip copy beside
+the scene when it builds it, and a request that accepts gzip is served that copy, so the service never
+compresses a scene per download; with ``EXT_meshopt_compression`` and WebP inside, the file and its
+gzip copy are a fraction of the raw geometry and images they hold. The bytes a browser fetches for a
+world are the status's ``bytes`` at most.
 
 Because the key names what an entry was compiled from, and an entry is never rewritten under its key,
 an asset URL names its bytes. So the assets are served ``Cache-Control: private, max-age=31536000,

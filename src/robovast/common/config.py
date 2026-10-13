@@ -215,7 +215,7 @@ class ResourcesConfig(BaseModel):
     (``"500m"``), not only whole cores. On the cluster a campaign's throughput is
     ``quota // pod_request``, so rounding a measured 0.3-core sidecar up to a whole core is
     paid on **every job of the sweep** — and the Kubernetes manifest takes ``str(cpu)``, so
-    the integer-only annotation was the only thing rejecting a fractional value.
+    the type annotation alone decides whether a fractional value is accepted.
     """
     # ``int`` first so a whole-core declaration stays an int: the manifest renders it with
     # ``str()``, and coercing 4 to 4.0 would rewrite every existing campaign's manifest from
@@ -243,12 +243,13 @@ class ResourcesConfig(BaseModel):
     #:   and clipping is not proportional, so a search proposing harder configurations can
     #:   exceed it -- ``run_validity_view.quota_bound`` says when that happened.
     #: * The **simulator and scenario** are not under test and should split. The simulator's
-    #:   peak-to-mean ratio is roughly 18 (measured: 0.34 cores sustained, 5.98 at its
-    #:   startup burst), so there is no honest single number: reserving the peak costs more
-    #:   than the un-tuned campaign did, and capping at the sustained figure clips a burst
-    #:   that changes nothing the robot experiences. Realtime pacing already normalises what
-    #:   the simulated world looks like, and ``runs.clock_map_*`` records per run whether it
-    #:   kept pace -- so the guard that makes a soft limit safe here is already in the data.
+    #:   peak-to-mean ratio can be an order of magnitude (a fraction of a core sustained,
+    #:   several at its startup burst), so there is no honest single number: reserving the
+    #:   peak costs more than leaving the container un-tuned, and capping at the sustained
+    #:   figure clips a burst that changes nothing the robot experiences. Realtime pacing
+    #:   already normalises what the simulated world looks like, and ``runs.clock_map_*``
+    #:   records per run whether it kept pace -- so the guard that makes a soft limit safe
+    #:   here is already in the data.
     #:
     #: The reservation is what the cluster packs by, so lowering it is what buys concurrency;
     #: the limit only decides when the kernel starts throttling.
@@ -798,13 +799,15 @@ RESERVED_ENV_NAMES = frozenset({
     'OUTPUT_DIR', 'SCENARIO_OUTPUT_DIR', 'RUN_OUTPUT_DIR', 'OUTPUT_RESULT_PER_SCENARIO',
     # what the run executes, and with what
     'SCENARIO_FILE', 'SCENARIO_PARAMETER_FILE', 'SCENARIO_EXECUTION_PARAMETERS',
-    'SCENARIO_MODE', 'SIMULATION', 'CONTAINER_NAME', 'ROBOVAST_CONTAINER_COMMAND',
+    'SCENARIO_MODE', 'SCENARIO_USE_SIM_TIME', 'SIMULATION', 'CONTAINER_NAME',
+    'ROBOVAST_CONTAINER_COMMAND',
     # hooks the campaign declares by their own keys, not by env
     'PRE_COMMAND', 'POST_COMMAND',
     # logging derived from the .vast
     'BT_LOG', 'LOG_TOPICS',
     # what the run's ROS bag holds, derived from the .vast's recording: block
     'RECORD_TOPICS', 'RECORD_EXCLUDE', 'RECORD_EXCLUDE_TYPES', 'RECORD_USE_SIM_TIME',
+    'RECORD_LEFT_OUT',
     # what the container is allowed to use
     'AVAILABLE_CPUS', 'AVAILABLE_MEM',
     # how the pod reaches the service's data plane
@@ -955,6 +958,132 @@ def _drop_archived_kubernetes_keys(config: dict) -> dict:
     return config
 
 
+def _entries(value, what, *, forbid=" \t\n\r"):
+    """A list of non-empty strings none of which carries a character *forbid* names.
+
+    The lists below travel to the run as one environment variable each, joined on a
+    separator, so an entry containing the separator would read as two -- and a topic name
+    or a path pattern never legitimately contains whitespace or a comma anyway.
+    """
+    if not isinstance(value, list) or not value:
+        raise ValueError(f"{what} must be 'all' or a non-empty list of strings")
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ValueError(f"every {what} entry must be a non-empty string; got {entry!r}")
+        if any(c in entry for c in forbid):
+            raise ValueError(f"{what} entry {entry!r} must not contain whitespace or a separator")
+    return value
+
+
+class Ros2RecordingConfig(BaseModel):
+    """What the run's ROS bag (``<run>/rosbag2``) holds.
+
+    RoboVAST's entrypoint starts the recorder for a single-run job before the scenario, and
+    stops it after; what it captures is decided here and nowhere in the scenario. Every
+    field maps onto one ``ros2 bag record`` option, spelled the way rosbag2 spells it.
+    """
+    model_config = ConfigDict(extra='forbid')
+    #: ``all`` (``-a``), or a list of topic names (``--topics``) and regular expressions
+    #: (``-e``); an entry is a regex when it starts with ``^``.
+    topics: Union[Literal['all'], list[str]] = 'all'
+    #: Regular expressions over the topic name (``--exclude-regex``). An exclude wins over
+    #: ``topics``, as it does in rosbag2.
+    exclude: list[str] = Field(default_factory=list)
+    #: Message types left out wholesale (``--exclude-topic-types``), such as
+    #: ``sensor_msgs/msg/Image`` for a campaign that keeps the compressed stream only.
+    exclude_types: list[str] = Field(default_factory=list)
+    #: Stamp each message with the simulator's clock rather than the recorder's wall clock
+    #: (``--use-sim-time``). The right choice for every campaign that reads its tables in
+    #: sim seconds; ``false`` is rosbag2's own default and stays it here.
+    use_sim_time: bool = False
+
+    @field_validator('topics')
+    @classmethod
+    def _topics(cls, v):
+        return v if v == 'all' else _entries(v, 'execution.recording.ros2.topics')
+
+    @field_validator('exclude')
+    @classmethod
+    def _exclude(cls, v):
+        return _entries(v, 'execution.recording.ros2.exclude') if v else v
+
+    @field_validator('exclude_types')
+    @classmethod
+    def _exclude_types(cls, v):
+        return _entries(v, 'execution.recording.ros2.exclude_types') if v else v
+
+
+def _track_patterns(value, what):
+    """Path patterns over ``<entity>/<body-or-joint>``: ``**`` is all of an entity, ``*`` one
+    segment. A pattern without a ``/`` names no track, so it is refused here rather than
+    matching nothing at run time."""
+    for entry in _entries(value, what, forbid=" \t\n\r,"):
+        if '/' not in entry:
+            raise ValueError(
+                f"{what} entry {entry!r} must be an <entity>/<body-or-joint> pattern "
+                "('robot/**' for all of an entity, 'robot/*' for its direct children)")
+    return value
+
+
+class RoqsimRecordingConfig(BaseModel):
+    """What the simulator's own recording (``<run>/roqsim_bag``) holds, for a roqsim campaign."""
+    model_config = ConfigDict(extra='forbid')
+    #: The capture rate in Hz. Absent, the simulator records at its own default.
+    rate_hz: Optional[float] = Field(default=None, gt=0)
+    #: ``all``, or path patterns over ``<entity>/<body-or-joint>``.
+    tracks: Union[Literal['all'], list[str]] = 'all'
+    #: Patterns of the same shape that are left out; an exclude wins.
+    exclude: list[str] = Field(default_factory=list)
+
+    @field_validator('tracks')
+    @classmethod
+    def _tracks(cls, v):
+        return v if v == 'all' else _track_patterns(v, 'execution.recording.roqsim.tracks')
+
+    @field_validator('exclude')
+    @classmethod
+    def _exclude(cls, v):
+        return _track_patterns(v, 'execution.recording.roqsim.exclude') if v else v
+
+
+class RecordingConfig(BaseModel):
+    """What every run records, per recorder (``execution.recording``). Absent altogether, both
+    record everything.
+
+    Under ``execution:`` because it configures processes that run during the trial, and its
+    clock (``ros2.use_sim_time``) sits beside the scenario's (``execution.use_sim_time``).
+    """
+    model_config = ConfigDict(extra='forbid')
+    ros2: Optional[Ros2RecordingConfig] = None
+    roqsim: Optional[RoqsimRecordingConfig] = None
+
+
+def recording_config(raw) -> Optional[RecordingConfig]:
+    """The ``execution.recording`` block as its model, or ``None`` for an absent block.
+
+    One place to go from the raw mapping campaign data carries to the model the run
+    environment is derived from, so an emitter and a backend read the same defaults.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, RecordingConfig):
+        return raw
+    if not isinstance(raw, dict):
+        raise ValueError(f"'execution.recording' must be a mapping; got {type(raw).__name__}")
+    return RecordingConfig.model_validate(raw)
+
+
+def records_every_ros2_topic(execution) -> bool:
+    """Whether the run's ROS bag is asked for every topic (``topics: all``, also by default).
+
+    The one case the simulator's on-demand streams are left out of: a campaign that names its
+    topics records exactly those, whatever they cost.
+    """
+    recording = recording_config((execution or {}).get("recording"))
+    ros2 = recording.ros2 if recording is not None else None
+    return ros2 is None or ros2.topics == 'all'
+
+
 class ExecutionConfig(BaseModel):
     # A key this block does not declare is refused: the backend reads the raw block, so a
     # misspelled one would run the campaign as if it had not been written.
@@ -1013,6 +1142,13 @@ class ExecutionConfig(BaseModel):
     # ticks the SimulationInterface in its spin loop). ``base`` forces the non-ROS CLI
     # (scenario_execution) even when ros2 is on PATH -- for pure non-ROS scenarios (e.g. growth_sim).
     mode: str = "auto"
+    # Whether the ROS runner is started with ``use_sim_time``, so a scenario's durations run on
+    # /clock. ROS shape only; unset, the simulator backend answers, and with no backend to
+    # answer the campaign must state it (robovast.common.simulators.scenario_use_sim_time).
+    use_sim_time: Optional[bool] = None
+    #: What every run records, per recorder (:class:`RecordingConfig`). Absent, both the
+    #: ROS bag and the simulator's recording hold everything.
+    recording: Optional[RecordingConfig] = None
     # Size of the pod's shared ``/dev/shm``. One tmpfs is mounted into every container of
     # the run, which is what lets ROS 2's default Fast DDS use its shared-memory transport
     # across the scenario / sut / simulation boundary.
@@ -1291,120 +1427,6 @@ class ResultsConfig(BaseModel):
     #: to run, so a missing row cannot be confused with a plugin that was not installed on
     #: whichever machine did the postprocessing.
     health_checks: Optional[list[str | dict[str, Any]]] = None
-
-
-def _entries(value, what, *, forbid=" \t\n\r"):
-    """A list of non-empty strings none of which carries a character *forbid* names.
-
-    The lists below travel to the run as one environment variable each, joined on a
-    separator, so an entry containing the separator would read as two -- and a topic name
-    or a path pattern never legitimately contains whitespace or a comma anyway.
-    """
-    if not isinstance(value, list) or not value:
-        raise ValueError(f"{what} must be 'all' or a non-empty list of strings")
-    for entry in value:
-        if not isinstance(entry, str) or not entry.strip():
-            raise ValueError(f"every {what} entry must be a non-empty string; got {entry!r}")
-        if any(c in entry for c in forbid):
-            raise ValueError(f"{what} entry {entry!r} must not contain whitespace or a separator")
-    return value
-
-
-class Ros2RecordingConfig(BaseModel):
-    """What the run's ROS bag (``<run>/rosbag2``) holds.
-
-    RoboVAST's entrypoint starts the recorder for a single-run job before the scenario, and
-    stops it after; what it captures is decided here and nowhere in the scenario. Every
-    field maps onto one ``ros2 bag record`` option, spelled the way rosbag2 spells it.
-    """
-    model_config = ConfigDict(extra='forbid')
-    #: ``all`` (``-a``), or a list of topic names (``--topics``) and regular expressions
-    #: (``-e``); an entry is a regex when it starts with ``^``.
-    topics: Union[Literal['all'], list[str]] = 'all'
-    #: Regular expressions over the topic name (``--exclude-regex``). An exclude wins over
-    #: ``topics``, as it does in rosbag2.
-    exclude: list[str] = Field(default_factory=list)
-    #: Message types left out wholesale (``--exclude-topic-types``), such as
-    #: ``sensor_msgs/msg/Image`` for a campaign that keeps the compressed stream only.
-    exclude_types: list[str] = Field(default_factory=list)
-    #: Stamp each message with the simulator's clock rather than the recorder's wall clock
-    #: (``--use-sim-time``). The right choice for every campaign that reads its tables in
-    #: sim seconds; ``false`` is rosbag2's own default and stays it here.
-    use_sim_time: bool = False
-
-    @field_validator('topics')
-    @classmethod
-    def _topics(cls, v):
-        return v if v == 'all' else _entries(v, 'recording.ros2.topics')
-
-    @field_validator('exclude')
-    @classmethod
-    def _exclude(cls, v):
-        return _entries(v, 'recording.ros2.exclude') if v else v
-
-    @field_validator('exclude_types')
-    @classmethod
-    def _exclude_types(cls, v):
-        return _entries(v, 'recording.ros2.exclude_types') if v else v
-
-
-def _track_patterns(value, what):
-    """Path patterns over ``<entity>/<body-or-joint>``: ``**`` is all of an entity, ``*`` one
-    segment. A pattern without a ``/`` names no track, so it is refused here rather than
-    matching nothing at run time."""
-    for entry in _entries(value, what, forbid=" \t\n\r,"):
-        if '/' not in entry:
-            raise ValueError(
-                f"{what} entry {entry!r} must be an <entity>/<body-or-joint> pattern "
-                "('robot/**' for all of an entity, 'robot/*' for its direct children)")
-    return value
-
-
-class RoqsimRecordingConfig(BaseModel):
-    """What the simulator's own recording (``<run>/roqsim_bag``) holds, for a roqsim campaign."""
-    model_config = ConfigDict(extra='forbid')
-    #: The capture rate in Hz. Absent, the simulator records at its own default.
-    rate_hz: Optional[float] = Field(default=None, gt=0)
-    #: ``all``, or path patterns over ``<entity>/<body-or-joint>``.
-    tracks: Union[Literal['all'], list[str]] = 'all'
-    #: Patterns of the same shape that are left out; an exclude wins.
-    exclude: list[str] = Field(default_factory=list)
-
-    @field_validator('tracks')
-    @classmethod
-    def _tracks(cls, v):
-        return v if v == 'all' else _track_patterns(v, 'recording.roqsim.tracks')
-
-    @field_validator('exclude')
-    @classmethod
-    def _exclude(cls, v):
-        return _track_patterns(v, 'recording.roqsim.exclude') if v else v
-
-
-class RecordingConfig(BaseModel):
-    """What every run records, per recorder. Absent altogether, both record everything.
-
-    Top level rather than under ``execution:`` because it describes the run's *record*,
-    which the results side reads, not how the run is dispatched.
-    """
-    model_config = ConfigDict(extra='forbid')
-    ros2: Optional[Ros2RecordingConfig] = None
-    roqsim: Optional[RoqsimRecordingConfig] = None
-
-
-def recording_config(raw) -> Optional[RecordingConfig]:
-    """The ``recording:`` block as its model, or ``None`` for an absent block.
-
-    One place to go from the raw mapping campaign data carries to the model the run
-    environment is derived from, so an emitter and a backend read the same defaults.
-    """
-    if raw is None:
-        return None
-    if isinstance(raw, RecordingConfig):
-        return raw
-    if not isinstance(raw, dict):
-        raise ValueError(f"'recording' must be a mapping; got {type(raw).__name__}")
-    return RecordingConfig.model_validate(raw)
 
 
 class PlotSpec(BaseModel):
@@ -2561,9 +2583,6 @@ class ConfigV1(BaseModel):
     execution: ExecutionConfig
     search: Optional[SearchConfig] = None
     results_processing: Optional[ResultsConfig] = None
-    #: What every run records, per recorder (:class:`RecordingConfig`). Absent, both the
-    #: ROS bag and the simulator's recording hold everything.
-    recording: Optional[RecordingConfig] = None
     #: Everything the web UI draws, shaped like the UI (see :class:`VisualizationConfig`):
     #: ``config.panels``, ``results.run_view``, ``results.explorer``, ``results.data_browser``.
     visualization: Optional[VisualizationConfig] = None

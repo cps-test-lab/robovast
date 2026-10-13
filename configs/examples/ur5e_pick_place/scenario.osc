@@ -27,8 +27,8 @@ scenario ur5e_pick_place:
 
     do serial:
         # The simulator publishes /clock, and everything downstream is on sim time -- move_group
-        # timestamps trajectories, the run's bag (recording.ros2.use_sim_time in the .vast) stamps
-        # messages. Starting the stack before the clock exists gives every node a zero time it
+        # timestamps trajectories, the run's bag (execution.recording.ros2.use_sim_time in the
+        # .vast) stamps messages. Starting the stack before the clock exists gives every node a zero time it
         # never recovers from.
         #
         # BOUNDED: an unbounded wait turns a dead simulator into a hung trial that burns the job's
@@ -51,7 +51,7 @@ scenario ur5e_pick_place:
 
             serial:
                 # The run's bag is RoboVAST's, recorded from before this scenario starts; the
-                # .vast's `recording:` block says what it holds. /tf carries the box's
+                # .vast's `execution.recording` block says what it holds. /tf carries the box's
                 # ground-truth pose, which is what the verdict reads; /detections is what the
                 # trial actually planned against, so the bag holds both what was believed and
                 # what was true.

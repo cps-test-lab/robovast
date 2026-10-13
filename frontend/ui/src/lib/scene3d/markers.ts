@@ -70,7 +70,7 @@ function solid(geometry: BufferGeometry, color: string): Mesh {
   )
 }
 
-/** A marker's mesh/line, positioned. Z-up throughout: the descriptor is MuJoCo's frame, and the
+/** A marker's mesh/line, positioned. Z-up throughout: the scene's root is the world's Z-up frame, and the
  *  viewport wraps the whole scene rather than each object, so nothing here converts. */
 function build(marker: Marker): Group | null {
   const color = marker.color || DEFAULT_COLOR

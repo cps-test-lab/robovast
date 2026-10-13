@@ -289,7 +289,7 @@ def test_deployment_runs_vast_serve_behind_the_front_on_one_port():
     assert volumes[front_deploy.SOCKET_VOLUME_NAME]["emptyDir"] == {"medium": "Memory"}
     assert volumes[front_deploy.FRONT_CONFIGMAP_NAME]["configMap"]["name"] == \
         front_deploy.FRONT_CONFIGMAP_NAME
-    # binds to the service account that can launch controllers
+    # binds to the service account whose Role drives the campaigns
     assert pod["serviceAccountName"] == sd.SERVICE_ACCOUNT
     # namespace threaded through every object
     assert all(m["metadata"].get("namespace", "ns1") == "ns1"
@@ -311,6 +311,40 @@ def test_the_front_routes_the_data_prefix_to_the_data_socket():
     assert "proxy_request_buffering off;" in data_block
     assert "proxy_buffering off;" in data_block
     assert "client_max_body_size 0;" in config
+
+
+def _front_config():
+    ms = sd.service_manifests(namespace="default", image="x")
+    cm = next(m for m in ms if m["kind"] == "ConfigMap")
+    return cm["data"][front_deploy.FRONT_CONFIG_KEY]
+
+
+def _gzip_types(block):
+    """The ``gzip_types`` of a block of the rendered config, or ``None`` if it sets none."""
+    import re
+    match = re.search(r"^\s*gzip_types ([^;]*);", block, re.MULTILINE)
+    return set(match.group(1).split()) if match else None
+
+
+def test_the_front_compresses_text_and_leaves_streams_and_compressed_formats_alone():
+    """Compressing an event stream holds events back until a block fills; compressing a
+    PNG, a gzip or a tar costs CPU on both ends for nothing. Both are pinned by type."""
+    config = _front_config()
+    http_block = config[:config.index("server {")]
+    assert "gzip on;" in http_block
+    assert f"gzip_comp_level {front_deploy.GZIP_LEVEL};" in http_block
+    assert "gzip_proxied any;" in http_block
+    assert "gzip_vary on;" in http_block
+    assert f"gzip_min_length {front_deploy.GZIP_MIN_LENGTH};" in http_block
+    types = _gzip_types(http_block)
+    assert {"application/json", "application/javascript", "text/javascript", "text/css",
+            "image/svg+xml", "application/vnd.apache.arrow.stream"} <= types
+    never = {"text/event-stream", "image/png", "image/jpeg", "video/webm", "application/gzip",
+             "application/zstd", "application/x-tar", "application/octet-stream", "text/plain"}
+    assert not types & never
+    # No location widens the list: what is worth compressing and is not text -- the web UI's
+    # bundle, a scene -- the control plane serves precompressed, and the front passes through.
+    assert all(_gzip_types(block) is None for block in config.split("location ")[1:])
 
 
 def test_deploy_context_stamped_into_service_env():

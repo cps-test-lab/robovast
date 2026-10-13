@@ -138,8 +138,8 @@ def test_the_budget_is_published_from_the_position_not_from_zero(tmp_path):
 def test_no_improvement_fires_on_schedule_across_a_restart():
     """The bug with results in it rather than pixels.
 
-    A stopping set is built from configuration alone, so a re-entered search used to start
-    believing it had just improved and ran ``patience`` batches past its own convergence
+    A stopping set is built from configuration alone, so an unseeded re-entered search starts
+    believing it has just improved and runs ``patience`` batches past its own convergence
     stop. Seeded, the flat stretch behind the restart still counts.
     """
     flat = [1.0, 1.0, 1.0]      # three batches behind the restart, all at the same best

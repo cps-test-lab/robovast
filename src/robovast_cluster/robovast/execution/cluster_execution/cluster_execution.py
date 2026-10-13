@@ -18,10 +18,10 @@
 """Shared cluster-job utilities.
 
 Helpers used across the cluster CLI (``monitor``, ``jobs-cleanup``,
-``upload-to-share``), the controller launcher's orphan reaping, and cluster
+``upload-to-share``), the service's orphan reaping, and cluster
 teardown — independent of how scenario Jobs are produced. The job-manifest
 toolkit that actually builds/submits Jobs lives in
-:mod:`.kubernetes_backend` (the in-cluster controller is the sole executor).
+:mod:`.kubernetes_backend` (the service's in-process driver is the sole executor).
 """
 
 import logging
@@ -34,10 +34,11 @@ from typing import NamedTuple
 from kubernetes import client
 
 from robovast.common.config import SCENARIO_CONTAINER
-from robovast.common.execution import node_label
+from robovast.common.execution import MAIN_CONTAINER, done_marker, node_label
 
 from .kube_client import pod_workload_containers
 from .manifests import MAIN_CONTAINER_NAME
+from .pod_upload import AGENT_CONTAINER, UPLOADER_CONTAINER
 
 logger = logging.getLogger(__name__)
 
@@ -198,10 +199,6 @@ def resolve_pull_secret(cluster_config, k8s_core, namespace: str) -> str:
 
     Everything optional: a deployment on a public registry needs no credential, so any failure
     to determine one yields ``""`` rather than an error.
-
-    The run, exec and warm paths each carry this logic inline (``kubernetes_backend``,
-    ``kube_exec_runner``, ``image_warm``). They predate this helper and can move onto it; nothing
-    is gained by leaving a fifth copy for the next pod spec that needs one.
     """
     from .service_deploy import REGISTRY_PUSH_SECRET_NAME  # noqa: PLC0415
 
@@ -221,16 +218,17 @@ def resolve_pull_secret(cluster_config, k8s_core, namespace: str) -> str:
 def pod_block_reason(pod) -> "tuple[str, str] | None":
     """``(reason, message)`` if *pod* cannot start on its own, else ``None``.
 
-    Two of the three shapes that leave a pod ``Pending`` and its Job ``active``
+    Three of the four shapes that leave a pod ``Pending`` and its Job ``active``
     indefinitely: a container stuck in an unrecoverable ``waiting`` state (see
-    :data:`POD_BLOCKED_REASONS`), or a pod the scheduler cannot place (see
-    :data:`POD_UNSCHEDULABLE_REASONS`). The third is a volume the kubelet cannot set up,
+    :data:`POD_BLOCKED_REASONS`), a one-shot init container that ended ``OOMKilled`` (see
+    :func:`pod_wedged_init_container`), or a pod the scheduler cannot place (see
+    :data:`POD_UNSCHEDULABLE_REASONS`). The fourth is a volume the kubelet cannot set up,
     which is invisible here because it is recorded in Events rather than in the pod --
     see :func:`pod_awaiting_setup` and :data:`POD_VOLUME_REASONS`.
 
     Checks init *and* regular containers; ``message`` is Kubernetes' own text -- the
     failed image ref and registry error, or the scheduler's per-node accounting --
-    possibly empty.
+    possibly empty, or for the init container, a sentence naming it.
     """
     status = pod.status
     if status is None:
@@ -242,6 +240,11 @@ def pod_block_reason(pod) -> "tuple[str, str] | None":
         waiting = getattr(state, "waiting", None) if state else None
         if waiting and getattr(waiting, "reason", None) in POD_BLOCKED_REASONS:
             return waiting.reason, (getattr(waiting, "message", None) or "").strip()
+    wedged = pod_wedged_init_container(pod)
+    if wedged is not None:
+        return "OOMKilled", (f"init container {getattr(wedged, 'name', None) or '?'} was "
+                             "killed for exceeding its memory limit, and the kubelet does "
+                             "not start the next container after that")
     # Checked after the containers because an unschedulable pod has no container
     # statuses at all -- there is no node on which to create them.
     for cond in (getattr(status, "conditions", None) or []):
@@ -249,6 +252,33 @@ def pod_block_reason(pod) -> "tuple[str, str] | None":
                 and str(getattr(cond, "status", None)) == "False"
                 and getattr(cond, "reason", None) in POD_UNSCHEDULABLE_REASONS):
             return cond.reason, (getattr(cond, "message", None) or "").strip()
+    return None
+
+
+def pod_wedged_init_container(pod):
+    """The status of the one-shot init container *pod* is stuck behind, else ``None``.
+
+    An init container a process was OOM-killed in can still succeed -- a fetch retries a
+    killed ``curl`` -- and the kubelet then records it ``terminated`` with reason
+    ``OOMKilled``, neither starts the next container nor fails the pod: it stays
+    ``Pending`` with no event, and its Job reads ``active``. The kubelet can still move
+    past such a kill, so a caller gives it the blocked grace like any other block.
+
+    A native sidecar (``restartPolicy: Always``) is excluded: the kubelet restarts it, and a
+    sidecar's death is :func:`pod_invalidating_restart`'s to judge.
+    """
+    status = getattr(pod, "status", None)
+    if getattr(status, "phase", None) != "Pending":
+        return None
+    sidecars = {getattr(c, "name", None)
+                for c in getattr(getattr(pod, "spec", None), "init_containers", None) or []
+                if getattr(c, "restart_policy", None) == "Always"}
+    for cs in getattr(status, "init_container_statuses", None) or []:
+        if getattr(cs, "name", None) in sidecars:
+            continue
+        term = getattr(getattr(cs, "state", None), "terminated", None)
+        if term is not None and getattr(term, "reason", None) == "OOMKilled":
+            return cs
     return None
 
 
@@ -437,6 +467,11 @@ def _container_role(name: str, workload_names: "set[str]") -> str:
 def pod_container_failures(pod) -> "list[dict]":
     """One record per restarted container of *pod*, newest state and all, or ``[]``.
 
+    And one for the scenario container once it is OOM-killed while its pod still runs
+    (:func:`_scenario_killed_in_running_pod`), with ``restart_count`` 0: the pod's other
+    containers wait for a marker only the scenario's post-run writes, so it is a trial
+    that has ended without its pod ending.
+
     Everything a formatted one-sentence summary would throw away. A restart is the only
     campaign signal whose evidence dies with the pod -- the
     container is gone, its logs are one API call away for a few minutes, and after that the
@@ -451,6 +486,8 @@ def pod_container_failures(pod) -> "list[dict]":
 
     ``invalidating`` marks the ones a campaign should act on: a workload container that
     died non-zero. See :func:`pod_invalidating_restart` for why that is the right cut.
+    ``log`` names which instance's log holds the death: ``previous`` for a restarted
+    container, ``current`` for the scenario container, which is not restarted.
 
     Pure -- no API calls. Enriching a record with the dead container's own log costs a
     request per container and belongs at the one place that acts on it, not in a probe
@@ -459,54 +496,203 @@ def pod_container_failures(pod) -> "list[dict]":
     status = getattr(pod, "status", None)
     if status is None:
         return []
-    workload_names = {getattr(c, "name", None) for c in pod_workload_containers(pod)}
-    workload_names.discard(None)
-    metadata = getattr(pod, "metadata", None)
+    workload_names = _workload_names(pod)
     records = []
     statuses = list(getattr(status, "init_container_statuses", None) or []) + \
         list(getattr(status, "container_statuses", None) or [])
     for cs in statuses:
         restart_count = getattr(cs, "restart_count", 0) or 0
-        if restart_count < 1:
+        if restart_count >= 1:
+            term = getattr(getattr(cs, "last_state", None), "terminated", None)
+        elif _scenario_killed_in_running_pod(pod, cs):
+            term = cs.state.terminated
+        else:
             continue
-        cname = getattr(cs, "name", None) or "?"
-        term = getattr(getattr(cs, "last_state", None), "terminated", None)
-        exit_code = getattr(term, "exit_code", None) if term else None
-        signal_number, signal_name = _signal_from_exit(
-            exit_code, getattr(term, "signal", None) if term else None)
-        # A container outside the workload set cannot be restarted by this pod's policy
-        # (``restartPolicy: Never``), so if one ever is, something is wrong in a way worth
-        # recording -- but it is not this pod's trial that was invalidated.
-        is_workload = cname in workload_names or not workload_names
-        records.append({
-            "pod_name": getattr(metadata, "name", None),
-            # The machine, hashed: this record is campaign data and ships with it, and
-            # a hostname here would reintroduce by another route exactly what the run's
-            # own sysinfo stopped recording.
-            "node_label": node_label(
-                getattr(getattr(pod, "spec", None), "node_name", None)),
-            "pod_phase": getattr(status, "phase", None),
-            "container": cname,
-            "role": _container_role(cname, workload_names),
-            "image": getattr(cs, "image", None),
-            "image_id": getattr(cs, "image_id", None),
-            "restart_count": restart_count,
-            "reason": getattr(term, "reason", None) if term else None,
-            "exit_code": exit_code,
-            "signal": signal_number,
-            "signal_name": signal_name,
-            "message": getattr(term, "message", None) if term else None,
-            "started_at": _isoformat(getattr(term, "started_at", None) if term else None),
-            "finished_at": _isoformat(getattr(term, "finished_at", None) if term else None),
-            "cpu_limit": _container_limit(pod, cname, "cpu"),
-            "memory_limit": _container_limit(pod, cname, "memory"),
-            # ``exit_code is None`` means the kubelet has not reported what the previous
-            # instance died of. Unknown is not innocent: stay on the strict side, the same
-            # way an unreadable node list makes every blocked job unrecoverable.
-            "invalidating": is_workload and exit_code != 0,
-            "detail": _restart_detail(cname, restart_count, term, signal_name),
-        })
+        records.append(_container_failure_record(pod, cs, term, restart_count, workload_names))
     return records
+
+
+def _workload_names(pod) -> "set[str]":
+    """The names of *pod*'s workload containers: the scenario container and its sidecars."""
+    names = {getattr(c, "name", None) for c in pod_workload_containers(pod)}
+    names.discard(None)
+    return names
+
+
+def _container_failure_record(pod, cs, term, restart_count, workload_names) -> dict:
+    """The record :func:`pod_container_failures` keeps for one dead container instance,
+    whose ``terminated`` state is *term*."""
+    status = getattr(pod, "status", None)
+    metadata = getattr(pod, "metadata", None)
+    cname = getattr(cs, "name", None) or "?"
+    exit_code = getattr(term, "exit_code", None) if term else None
+    signal_number, signal_name = _signal_from_exit(
+        exit_code, getattr(term, "signal", None) if term else None)
+    # A container outside the workload set cannot be restarted by this pod's policy
+    # (``restartPolicy: Never``), so if one ever is, something is wrong in a way worth
+    # recording -- but it is not this pod's trial that was invalidated.
+    is_workload = cname in workload_names or not workload_names
+    return {
+        "pod_name": getattr(metadata, "name", None),
+        # The machine, hashed: this record is campaign data and ships with it, and
+        # a hostname here would reintroduce by another route exactly what the run's
+        # own sysinfo stopped recording.
+        "node_label": node_label(
+            getattr(getattr(pod, "spec", None), "node_name", None)),
+        "pod_phase": getattr(status, "phase", None),
+        "container": cname,
+        "role": _container_role(cname, workload_names),
+        "image": getattr(cs, "image", None),
+        "image_id": getattr(cs, "image_id", None),
+        "restart_count": restart_count,
+        "reason": getattr(term, "reason", None) if term else None,
+        "exit_code": exit_code,
+        "signal": signal_number,
+        "signal_name": signal_name,
+        "message": getattr(term, "message", None) if term else None,
+        "started_at": _isoformat(getattr(term, "started_at", None) if term else None),
+        "finished_at": _isoformat(getattr(term, "finished_at", None) if term else None),
+        "cpu_limit": _container_limit(pod, cname, "cpu"),
+        "memory_limit": _container_limit(pod, cname, "memory"),
+        # ``exit_code is None`` means the kubelet has not reported what the previous
+        # instance died of. Unknown is not innocent: stay on the strict side, the same
+        # way an unreadable node list makes every blocked job unrecoverable.
+        "invalidating": is_workload and exit_code != 0,
+        "detail": _restart_detail(cname, restart_count, term, signal_name),
+        "log": "previous" if restart_count else "current",
+    }
+
+
+def _scenario_killed_in_running_pod(pod, cs) -> bool:
+    """Whether *cs* is the scenario container, OOM-killed, in a pod that is still running.
+
+    The scenario container is not restarted (``restartPolicy: Never``), so it dies into
+    ``state``. Its pod does not end with it: the uploader and the file agent are regular
+    containers that wait for ``done.main``, which the scenario's post-run writes, and an
+    OOM kill takes the whole container before any post-run can run. Left alone, the pod
+    runs on to its deadline and its trial is reported as a timeout.
+
+    OOMKilled and nothing broader. A non-zero exit, a signal's included, can be the
+    entrypoint handing on the runner's status after its post-run has written the marker,
+    and that pod is delivering a result. A pod being deleted is excluded too: its
+    containers die of the deletion, not of their own fault.
+    """
+    if getattr(cs, "name", None) != MAIN_CONTAINER_NAME:
+        return False
+    if getattr(getattr(pod, "status", None), "phase", None) != "Running":
+        return False
+    if getattr(getattr(pod, "metadata", None), "deletion_timestamp", None) is not None:
+        return False
+    term = getattr(getattr(cs, "state", None), "terminated", None)
+    return term is not None and getattr(term, "reason", None) == "OOMKilled"
+
+
+def _scenario_ended_in_running_pod(pod, cs) -> bool:
+    """Whether *cs* is the scenario container, ended for any reason but an OOM kill, in a
+    pod that is still running and not being deleted.
+
+    Only a candidate: the scenario container also ends this way after a complete run, its
+    post-run having written ``done.main``, while the uploader delivers ``/out`` -- which may
+    take longer than any fixed wait. Whether the marker exists is what tells the two apart,
+    and it is not on the pod object (:func:`scenario_done_marker_written`). An OOM kill is
+    :func:`_scenario_killed_in_running_pod`'s, which needs no such question.
+    """
+    if getattr(cs, "name", None) != MAIN_CONTAINER_NAME:
+        return False
+    if getattr(getattr(pod, "status", None), "phase", None) != "Running":
+        return False
+    if getattr(getattr(pod, "metadata", None), "deletion_timestamp", None) is not None:
+        return False
+    term = getattr(getattr(cs, "state", None), "terminated", None)
+    return term is not None and getattr(term, "reason", None) != "OOMKilled"
+
+
+#: The pod's containers that share ``/ipc`` with the scenario container and outlive it,
+#: and so can be asked whether its marker exists.
+_MARKER_WITNESSES = (UPLOADER_CONTAINER, AGENT_CONTAINER)
+
+
+def scenario_ended_job_forensics(k8s_core, namespace, label_selector,
+                                 job_names=None) -> dict:
+    """Job name → ``{"detail", "containers", "node", "pod_name", "witness"}`` for Jobs
+    whose scenario container has ended while its pod runs on
+    (:func:`_scenario_ended_in_running_pod`). Empty when none has.
+
+    Candidates, not verdicts: the caller asks *witness* -- a running container of the pod
+    that mounts ``/ipc`` -- whether ``done.main`` exists before acting on one. A pod with no
+    running witness is left out; its uploader has already ended, so it is not held.
+
+    *containers* holds the one record :func:`pod_container_failures` would keep for the
+    scenario container, invalidating whatever its exit code, since what condemns the trial
+    is the missing marker; *detail* names the container and its exit.
+    """
+    wanted = set(job_names) if job_names is not None else None
+    out = {}
+    for pod in k8s_core.list_namespaced_pod(namespace, label_selector=label_selector).items:
+        name = _pod_job_name(pod)
+        status = getattr(pod, "status", None)
+        if not name or status is None or (wanted is not None and name not in wanted):
+            continue
+        statuses = list(getattr(status, "container_statuses", None) or [])
+        scenario = next((cs for cs in statuses if _scenario_ended_in_running_pod(pod, cs)),
+                        None)
+        if scenario is None:
+            continue
+        witness = next((getattr(cs, "name", None) for cs in statuses
+                        if getattr(cs, "name", None) in _MARKER_WITNESSES
+                        and getattr(getattr(cs, "state", None), "running", None) is not None),
+                       None)
+        if witness is None:
+            continue
+        term = scenario.state.terminated
+        record = _container_failure_record(pod, scenario, term, 0, _workload_names(pod))
+        code = record["exit_code"]
+        exit_text = "exit status unknown" if code is None else f"exit {code}"
+        if record["signal_name"]:
+            exit_text += f", {record['signal_name']}"
+        record["detail"] = (f"container {record['container']} ended "
+                            f"({record['reason'] or 'terminated'}, {exit_text}) "
+                            f"without writing its done marker")
+        record["invalidating"] = True
+        out[name] = {"detail": f"NoDoneMarker: {record['detail']}",
+                     "containers": [record],
+                     "node": getattr(getattr(pod, "spec", None), "node_name", None),
+                     "pod_name": getattr(getattr(pod, "metadata", None), "name", None),
+                     "witness": witness}
+    return out
+
+
+#: How long the marker check may take. ``test -e`` answers at once; the bound is for an API
+#: server or kubelet that does not.
+_MARKER_CHECK_LIMIT_S = 15
+
+
+def scenario_done_marker_written(namespace, pod_name, witness) -> "bool | None":
+    """Whether ``done.main`` exists in *pod_name*'s ``/ipc``, asked of *witness*; ``None``
+    when the question could not be answered.
+
+    ``None`` is not ``False``: an exec that could not open, timed out, or ended in anything
+    but ``test``'s own 0 or 1 says nothing about the marker, and a caller that read it as
+    absent would discard a trial that is delivering its result.
+    """
+    from .kube_client import exec_stream  # noqa: PLC0415 - streams on a client of its own
+
+    try:
+        code, _out, err, timed_out = exec_stream(
+            pod_name, namespace, witness,
+            # The shell's builtin: the witness runs ``sh`` already, whatever else its image has.
+            ["sh", "-c", 'test -e "$0"', done_marker(MAIN_CONTAINER)],
+            limit_s=_MARKER_CHECK_LIMIT_S)
+    except Exception as exc:  # noqa: BLE001 - an unanswered question, not an answer
+        logger.warning("Could not ask %s/%s for the scenario's done marker: %s",
+                       pod_name, witness, exc)
+        return None
+    if not timed_out and code in (0, 1):
+        return code == 0
+    logger.warning("Could not ask %s/%s for the scenario's done marker: %s",
+                   pod_name, witness,
+                   "timed out" if timed_out else f"exit {code}: {err.strip()}")
+    return None
 
 
 def _isoformat(value) -> "str | None":
@@ -538,26 +724,35 @@ def _container_limit(pod, container_name: str, key: str) -> "str | None":
 
 
 def _restart_detail(cname, restart_count, term, signal_name) -> str:
-    """``container sut restarted 1x after Error (exit 135, SIGBUS)`` -- the human sentence."""
-    detail = f"container {cname} restarted {restart_count}x"
+    """``container sut restarted 1x after Error (exit 135, SIGBUS)`` -- the human sentence.
+
+    ``container robovast was OOMKilled (exit 137, SIGKILL)`` for a container that died
+    without a restart."""
     why = getattr(term, "reason", None) if term else None
     code = getattr(term, "exit_code", None) if term else None
-    if why:
-        detail += f" after {why}"
+    if restart_count:
+        detail = f"container {cname} restarted {restart_count}x"
+        if why:
+            detail += f" after {why}"
+    else:
+        detail = f"container {cname} was {why or 'terminated'}"
     if code is not None:
         detail += f" (exit {code}{f', {signal_name}' if signal_name else ''})"
     return detail
 
 
 def _format_restarts(records: "list[dict]") -> "tuple[str, str] | None":
-    """``(reason, message)`` over *records*, naming how many others there were."""
+    """``(reason, message)`` over *records*, naming how many others there were.
+
+    The reason is the first record's: ``ContainerRestarted``, or ``ContainerKilled`` for a
+    container that died without a restart."""
     if not records:
         return None
     detail = records[0]["detail"]
     if len(records) > 1:
         others = len(records) - 1
         detail += f"; and {others} other container{'s' if others > 1 else ''}"
-    return "ContainerRestarted", detail
+    return ("ContainerRestarted" if records[0]["restart_count"] else "ContainerKilled"), detail
 
 
 def pod_restarted_containers(pod) -> "tuple[str, str] | None":
@@ -620,9 +815,13 @@ PREVIOUS_LOG_TAIL_LINES = 400
 
 
 def previous_container_log(core, namespace: str, pod_name: str, container: str,
-                           tail_lines: int = PREVIOUS_LOG_TAIL_LINES) -> "tuple[str, str]":
+                           tail_lines: int = PREVIOUS_LOG_TAIL_LINES,
+                           previous: bool = True) -> "tuple[str, str]":
     """``(text, status)`` -- the output of the container instance that DIED, or why there
     is none.
+
+    That instance is the previous one of a restarted container, and the current one of a
+    container that died without a restart (``previous=False``).
 
     The one artifact that answers "what happened", and the only one with a deadline: the
     kubelet keeps a restarted container's previous log for as long as it keeps the pod, and
@@ -639,7 +838,7 @@ def previous_container_log(core, namespace: str, pod_name: str, container: str,
     try:
         text = core.read_namespaced_pod_log(
             name=pod_name, namespace=namespace, container=container,
-            previous=True, tail_lines=tail_lines, timestamps=True)
+            previous=previous, tail_lines=tail_lines, timestamps=True)
     except client.ApiException as exc:
         # 400 is what the API answers when there is no previous instance retained, 404
         # when the pod itself has gone. Both mean the same thing to a reader.
@@ -743,9 +942,8 @@ def image_pull_is_throttled(message: str) -> bool:
     campaigns start a batch together, and self-clearing in both cases.
 
     It matters because the two live on different clocks. Failing a throttled pull on the
-    sixty-second blip timer ends the campaign for the one image condition that fixes
-    itself — which is what happened to a 50-batch search on its 34th batch, with two
-    jobs of thirty-five affected and eight hours of finished work behind it.
+    sixty-second blip timer would end the campaign for the one image condition that fixes
+    itself, discarding every batch a long search has already finished.
 
     Everything else — a manifest that does not exist, a registry that refuses the
     credential, a host that does not resolve — reads identically in fifteen minutes and
@@ -788,14 +986,15 @@ def _pod_signals(k8s_core, namespace,
     keeps counting a pod that has already terminated until the job controller catches
     up (see :func:`job_phase`). ``blocked_job_reasons``: Job name →
     ``"<reason>: <message>"`` for pods that cannot start (image pull / container-config
-    errors, a pod the scheduler will not place, a volume that will not mount). ``terminated_reasons``: Job name → reason string for a pod that ended
+    errors, an init step killed for memory, a pod the scheduler will not place, a volume
+    that will not mount; see :func:`pod_block_reason`). ``terminated_reasons``: Job name → reason string for a pod that ended
     abnormally (OOMKilled / evicted / deadline — see :func:`pod_termination_reason`), so
     a *failed* job can explain itself. ``restarted``: Job name → ``{"detail", "containers"}`` for a
     pod whose container the kubelet restarted after a CRASH (see
-    :func:`pod_invalidating_restart`) -- the one signal here that condemns a job which
-    still looks healthy. The records travel with the reason because the pod they came from
-    is about to be deleted, and nothing else can answer what the container died of
-    afterwards. ``contended``: the
+    :func:`pod_invalidating_restart`), or whose scenario container was OOM-killed while the
+    pod runs on -- the one signal here that condemns a job which still looks healthy. The
+    records travel with the reason because the pod they came from is about to be deleted,
+    and nothing else can answer what the container died of afterwards. ``contended``: the
     subset of ``blocked`` that is only waiting its turn and would start on its own --
     for the node it needs (:func:`unschedulable_is_contention` plus
     :func:`pod_fits_any_node`) or for the pull it asked for
@@ -887,8 +1086,9 @@ def running_scenario_job_names(k8s_core, namespace, label_selector) -> set:
 
 def blocked_job_reasons(k8s_core, namespace, label_selector) -> dict:
     """Job name → ``"<reason>: <message>"`` for Jobs whose pod cannot start **right
-    now** -- an image pull / container-config error, a pod the scheduler cannot place, or
-    a volume the kubelet cannot mount; see :func:`_pod_signals`.
+    now** -- an image pull / container-config error, an init step killed for memory, a pod
+    the scheduler cannot place, or a volume the kubelet cannot mount; see
+    :func:`_pod_signals`.
 
     A truthy result means "these jobs are not starting", NOT "these jobs will never
     start": the mapping includes the ones merely waiting their turn for a busy node or
@@ -914,7 +1114,8 @@ def blocked_and_contended_reasons(k8s_core, namespace,
 def restarted_job_forensics(k8s_core, namespace, label_selector,
                             job_names=None) -> dict:
     """Job name → ``{"detail", "containers", "node"}`` for Jobs whose pod had a container
-    CRASH and be restarted (see :func:`pod_invalidating_restart`). Empty when nothing did.
+    CRASH and be restarted (see :func:`pod_invalidating_restart`), or had its scenario
+    container OOM-killed while it still runs. Empty when nothing did.
 
     Separate from :func:`blocked_job_reasons` because it needs the opposite response.
     Blocked means "cannot start yet", so it is given a grace period. A restart has
@@ -949,8 +1150,8 @@ def oom_killed_job_forensics(k8s_core, namespace, label_selector, job_names=None
 
     The other half of :func:`restarted_job_forensics`. A container the pod restarts -- a
     native sidecar -- dies into ``last_state``; one it does not, under ``restartPolicy:
-    Never`` the scenario container, dies into ``state`` and takes the pod to ``Failed``.
-    Nothing is dropped for it: the Job has already finished. This only says what killed it.
+    Never`` the scenario container, dies into ``state``. While its pod still runs, that
+    kill is :func:`restarted_job_forensics`' to act on; this only says what killed a pod.
 
     Each container record carries ``container``, ``reason`` and ``memory_limit``, the
     fields :func:`pod_container_failures` names them by. ``node`` is the machine's real
@@ -1115,9 +1316,8 @@ def _cleanup_cluster_campaign_resources(namespace="default", campaign=None, cont
     4. Force-clear finalizers on stuck Pods.
 
     If campaign is given, removes only resources for that run (label
-    ``jobgroup=scenario-runs,campaign-id=<campaign>``) plus that campaign's
-    controller pod. Otherwise removes all resources with label
-    ``jobgroup=scenario-runs`` and every controller pod.
+    ``jobgroup=scenario-runs,campaign-id=<campaign>``). Otherwise removes all
+    resources with label ``jobgroup=scenario-runs``.
 
     Args:
         namespace: Kubernetes namespace.

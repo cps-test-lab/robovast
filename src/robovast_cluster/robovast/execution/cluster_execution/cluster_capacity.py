@@ -25,6 +25,7 @@ available to workloads.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import List, Optional, Tuple
@@ -34,9 +35,11 @@ from .node_admission import Budget, Capacity, NodeBudget
 
 logger = logging.getLogger(__name__)
 
-#: Held back from every node so RoboVAST's own transient work -- the build daemon, the aux
-#: discovery pod, an ``exec_in_container`` session -- is not squeezed out by a campaign that
-#: filled the cluster exactly.
+#: Held back on the node RoboVAST's own transient work runs on -- the build daemon, which
+#: bursts past its own request, and the aux composition and ``exec_in_container`` pods, which
+#: prefer that node -- so a campaign that filled the cluster exactly does not squeeze it out.
+#: Where no node is labelled the build node that work can land anywhere, and every node keeps
+#: the reserve (:func:`reserved_node_names`).
 #:
 #: **Not a ``.vast`` knob.** The reserve protects tenants no single campaign owns, so letting
 #: one campaign shrink it would let it take capacity every other campaign depends on.
@@ -118,6 +121,46 @@ def headroom() -> "Tuple[float, int]":
     return float(cpu), int(mem)
 
 
+def reserved_node_names(nodes) -> "Optional[set]":
+    """The names of the nodes the reserve is held on, or ``None`` for every node.
+
+    The build node, labelled by setup, is where the transient work lands. A cluster with no
+    such label has placed that work nowhere in particular, so the reserve stays on every node
+    -- not a fallback, but the same rule: hold it where the work can run.
+    """
+    from .node_placement import BUILD_NODE_LABEL, LABEL_VALUE  # noqa: PLC0415
+
+    labelled = {node.metadata.name for node in nodes
+                if (node.metadata.labels or {}).get(BUILD_NODE_LABEL) == LABEL_VALUE}
+    return labelled or None
+
+
+def _reserve_on(name, reserved) -> "Tuple[float, int]":
+    """``(cpu, memory)`` held back on node *name*: the reserve, or nothing.
+
+    One rule for both readings, as the reserve itself is (see ``capacities``).
+    """
+    return headroom() if reserved is None or name in reserved else (0.0, 0)
+
+
+#: The kubelet's own default hard-eviction threshold for its node filesystem
+#: (``evictionHard: nodefs.available``), taken where a node's configuration cannot be read.
+DEFAULT_NODEFS_EVICTION = "10%"
+
+
+def eviction_threshold_bytes(value: str, capacity_bytes: int) -> int:
+    """``nodefs.available`` as bytes on a filesystem of *capacity_bytes*: ``5%`` or ``10Gi``."""
+    from robovast_decode.quantity import to_bytes  # noqa: PLC0415
+
+    text = str(value).strip()
+    if text.endswith("%"):
+        return int(capacity_bytes * float(text[:-1]) / 100)
+    parsed = to_bytes(text)
+    if parsed is None:
+        raise ValueError(f"nodefs.available={value!r} is neither a percentage nor a quantity")
+    return int(parsed)
+
+
 class ClusterBudgetProvider:
     """Reads the live cluster. The only implementation today; see ``BudgetProvider``."""
 
@@ -128,6 +171,9 @@ class ClusterBudgetProvider:
         # An autoscaling cluster knows a size it is not currently at. See _declared_total.
         self._cluster_config = cluster_config
         self._kube_context = kube_context
+        #: ``node name -> nodefs.available`` as the kubelet is configured; it changes only
+        #: with the node's kubelet configuration, so it is read once per node.
+        self._eviction_setting: dict = {}
 
     # -- the two questions -------------------------------------------------------------
 
@@ -135,9 +181,10 @@ class ClusterBudgetProvider:
         """What each node could hold if it were empty -- **headroom already taken off**.
 
         Subtracted here for the same reason it is subtracted from ``budget()``: the reserve is
-        never spendable by a campaign, so a node's usable size is ``allocatable - headroom``
-        in **both** answers, and they must agree. If this reported the raw figure, a sizing
-        above ``allocatable - headroom`` but at or below ``allocatable`` would pass
+        never spendable by a campaign, so a reserved node's usable size is
+        ``allocatable - headroom`` in **both** answers, and they must agree. If this reported
+        the raw figure, a sizing above ``allocatable - headroom`` but at or below
+        ``allocatable`` would pass
         :meth:`~.node_admission.AdmissionController.preflight` -- which exists precisely to
         tell "wait" from "impossible" -- and then no drain could ever place it. The campaign
         would sit in the admit loop having created ZERO jobs, invisible to every diagnosis
@@ -148,18 +195,25 @@ class ClusterBudgetProvider:
         Never below zero: a node smaller than the reserve reports as holding nothing, which is
         the truth, rather than a negative that would read as room.
         """
-        head_cpu, head_mem = headroom()
         ids = self._node_identities()
         # Carrying the node id, so a PINNED item can be asked whether the one node it may use
         # could ever hold it. Without it the only answerable question is the cluster-wide one,
         # and a probe pinned to the smallest machine of a mixed cluster is judged against the
         # biggest.
-        return [Capacity(cpu=max(0.0, parse_resource(a.get("cpu")) - head_cpu),
-                         memory=max(0, int(parse_resource(a.get("memory"))) - head_mem),
-                         gpu=int(parse_resource(a.get("nvidia.com/gpu"))),
-                         node_id=ids.get(name, (None, False))[0],
-                         ephemeral=int(parse_resource(a.get("ephemeral-storage"))))
-                for name, a in self._allocatables().items()]
+        reserved = self._reserved_nodes()
+        out = []
+        for name, a in self._allocatables().items():
+            head_cpu, head_mem = _reserve_on(name, reserved)
+            out.append(Capacity(cpu=max(0.0, parse_resource(a.get("cpu")) - head_cpu),
+                                memory=max(0, int(parse_resource(a.get("memory"))) - head_mem),
+                                gpu=int(parse_resource(a.get("nvidia.com/gpu"))),
+                                node_id=ids.get(name, (None, False))[0],
+                                ephemeral=int(parse_resource(a.get("ephemeral-storage")))))
+        return out
+
+    def _reserved_nodes(self) -> "Optional[set]":
+        """:func:`reserved_node_names` over the live node list, read once per reading."""
+        return reserved_node_names(self._core_api_factory().list_node().items)
 
     def _declared_total(self):
         """The cluster's own idea of how big it can get, or ``None``.
@@ -207,27 +261,81 @@ class ClusterBudgetProvider:
         cluster reports room -- the free cores are spread across nodes and no single node
         holding the 4.75 a pod needed.
 
-        Headroom is subtracted from **every** node, not once from the total. It protects the
-        shared tenants no campaign owns, and those run on each machine; taking it off the sum
-        would leave every node but one unprotected.
+        Headroom is subtracted **per node**, on the nodes the transient work runs on
+        (:func:`reserved_node_names`), not once from the total: a reserve taken off the sum
+        protects no machine in particular.
+
+        Free disk is the smaller of two figures: ``allocatable - requested`` and what the
+        kubelet measures free, less the node's eviction threshold (:meth:`_measured_free_disk`).
+        Requests alone count only what pods declared, and a node's disk also holds its images,
+        its logs and every write nobody requested -- so a job asking for more disk than a node
+        actually had left was placed there, filled it past the kubelet's threshold, and was
+        evicted with everything else on the node.
         """
         alloc = self._allocatables(schedulable_only=True)
         ids = self._node_identities()
         per_node, seen = self._committed(set(alloc))
-        head_cpu, head_mem = headroom()
+        reserved = self._reserved_nodes()
         nodes = []
         for name, a in alloc.items():
+            head_cpu, head_mem = _reserve_on(name, reserved)
             used = per_node.get(name, (0.0, 0, 0, 0))
             identity, pinnable = ids.get(name, (None, False))
+            free_disk = max(0, int(parse_resource(a.get("ephemeral-storage"))) - used[3])
+            measured = self._measured_free_disk(name)
+            if measured is not None:
+                free_disk = min(free_disk, measured)
             nodes.append(NodeBudget(
                 node_id=identity,
                 pinnable=pinnable,
                 free_cpu=max(0.0, parse_resource(a.get("cpu")) - used[0] - head_cpu),
                 free_memory=max(0, int(parse_resource(a.get("memory"))) - used[1] - head_mem),
                 free_gpu=max(0, int(parse_resource(a.get("nvidia.com/gpu"))) - used[2]),
-                free_ephemeral=max(
-                    0, int(parse_resource(a.get("ephemeral-storage"))) - used[3])))
+                free_ephemeral=free_disk))
         return Budget(nodes=tuple(nodes), counted_jobs=seen, growable=self._growable())
+
+    def _measured_free_disk(self, name) -> "Optional[int]":
+        """Bytes node *name* can still take before the kubelet evicts, or ``None`` if unknown.
+
+        The kubelet's measured ``nodefs`` free space less its hard-eviction threshold for it.
+        ``None`` when the node cannot be read -- no ``nodes/proxy`` access, a kubelet that does
+        not answer in time -- which leaves the request figure standing alone: an unread disk
+        is unknown, not full, and refusing every job for it would stop a cluster over a meter.
+        """
+        from .kube_client import nodefs_used_available, read_node_summary  # noqa: PLC0415
+
+        core = self._core_api_factory()
+        try:
+            used, available = nodefs_used_available(read_node_summary(core, name))
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            logger.debug("no disk reading for node %s: %s", name, exc)
+            return None
+        if available is None:
+            return None
+        threshold = eviction_threshold_bytes(self._nodefs_eviction(core, name), used + available)
+        return max(0, available - threshold)
+
+    def _nodefs_eviction(self, core, name) -> str:
+        """The node's ``evictionHard`` ``nodefs.available``, read once from its ``configz``.
+
+        :data:`DEFAULT_NODEFS_EVICTION` when the configuration does not state one -- which is
+        what the kubelet itself then applies -- or cannot be read.
+        """
+        if name not in self._eviction_setting:
+            setting = DEFAULT_NODEFS_EVICTION
+            try:
+                resp = core.connect_get_node_proxy_with_path(
+                    name, "configz", _request_timeout=2.0, _preload_content=False)
+                try:
+                    config = json.loads(resp.data)
+                finally:
+                    resp.release_conn()
+                setting = (((config.get("kubeletconfig") or {}).get("evictionHard") or {})
+                           .get("nodefs.available") or DEFAULT_NODEFS_EVICTION)
+            except Exception as exc:  # noqa: BLE001 - the kubelet's default then applies
+                logger.debug("no kubelet configuration for node %s: %s", name, exc)
+            self._eviction_setting[name] = setting
+        return self._eviction_setting[name]
 
     def _growable(self) -> bool:
         """Whether the cluster can add nodes -- the autoscaler's exception.
@@ -269,10 +377,9 @@ class ClusterBudgetProvider:
         **Every node, always.** The identity is what the accounting keys on, so a node
         without one is not "a node that cannot be pinned" -- it is a node that collides with
         every other one that has none, and the collision is invisible: two unlabelled nodes
-        are one slot in the controller's dicts, so half the cluster's free capacity is simply
-        never offered. A four-node cluster that has not been re-``setup`` since the label was
-        introduced therefore runs on one node's worth of room, with nothing anywhere saying
-        so.
+        are one slot in the controller's dicts, so most of the cluster's free capacity is
+        simply never offered. A cluster whose nodes were never labelled by ``setup`` would
+        therefore run on one node's worth of room, with nothing anywhere saying so.
 
         So the label is read where it is there, and where it is not the same value is
         **computed** -- ``node_label`` is a plain digest of the node name with no salt, which

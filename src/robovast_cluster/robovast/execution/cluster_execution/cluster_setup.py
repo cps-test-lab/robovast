@@ -90,9 +90,8 @@ def _controller_rbac_manifests(namespace):
 def apply_controller_rbac(namespace="default", kube_context=None):
     """Create/update the service's node-read ClusterRole + binding (idempotent).
 
-    The namespaced permissions moved onto the service's own Role (see
-    :mod:`.service_deploy`) when campaigns stopped running in their own pod; only
-    the cluster-scoped node access is applied here.
+    Only the cluster-scoped node access is applied here; the namespaced permissions are
+    the service's own Role (see :mod:`.service_deploy`).
     """
     from kubernetes import client  # pylint: disable=import-outside-toplevel
     from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
@@ -431,7 +430,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     ensure_nvidia_device_plugin(kube_context=kube_context, gpu_replicas=gpu_replicas,
                                 skip=no_gpu)
 
-    # RBAC for the in-cluster search controller pod (create/monitor jobs).
+    # The service's cluster-scoped node read (see _controller_rbac_manifests).
     apply_controller_rbac(namespace=namespace, kube_context=kube_context)
 
     # Every node's identity, as a schedulable selector, so admission can pin a job to a node
@@ -622,7 +621,7 @@ def setup_server(config_name=None, list_configs=False, force=False,
     # campaign would pay a full pull of robovast-roqsim before running anything. Last,
     # and fire-and-forget, because setup has already succeeded by this point.
     from .image_warm import warm_family_images  # pylint: disable=import-outside-toplevel
-    warm_family_images(namespace, kube_context)
+    warm_family_images(namespace, kube_context, cluster_config=cluster_config)
     return {
         "data_node": data_placement.node if data_placement else None,
         "data_source": data_placement.source if data_placement else None,
@@ -664,21 +663,30 @@ def _node_data_locations(namespace, kube_context):
 
     from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
     from .service_deploy import SERVICE_NAME  # pylint: disable=import-outside-toplevel
-    from .store_pod import STORE_POD_NAME  # pylint: disable=import-outside-toplevel
+    from .store_pod import STORE_DEPLOYMENT_NAME  # pylint: disable=import-outside-toplevel
 
+    # The bare pod is the one cleanup also removes (BaseConfig.cleanup_cluster).
+    reads = (lambda: client.AppsV1Api().read_namespaced_deployment(
+                 STORE_DEPLOYMENT_NAME, namespace).spec.template.spec,
+             lambda: client.CoreV1Api().read_namespaced_pod(
+                 STORE_DEPLOYMENT_NAME, namespace).spec,
+             lambda: client.AppsV1Api().read_namespaced_deployment(
+                 SERVICE_NAME, namespace).spec.template.spec)
     paths = []
     try:
         load_kube_config(context=kube_context)
-        pod = client.CoreV1Api().read_namespaced_pod(STORE_POD_NAME, namespace)
-        for volume in (pod.spec.volumes or []):
-            if volume.host_path is not None and volume.host_path.path not in paths:
-                paths.append(volume.host_path.path)
-        dep = client.AppsV1Api().read_namespaced_deployment(SERVICE_NAME, namespace)
-        for volume in (dep.spec.template.spec.volumes or []):
-            if volume.host_path is not None and volume.host_path.path not in paths:
-                paths.append(volume.host_path.path)
     except Exception as e:  # noqa: BLE001 - a teardown must finish; it reports what it saw
         logger.debug("could not read this deployment's node directories: %s", e)
+        return paths
+    for read in reads:
+        try:
+            spec = read()
+        except Exception as e:  # noqa: BLE001 - absent is normal; a teardown must finish
+            logger.debug("could not read a node directory owner: %s", e)
+            continue
+        for volume in (spec.volumes or []):
+            if volume.host_path is not None and volume.host_path.path not in paths:
+                paths.append(volume.host_path.path)
     return [p for p in paths if p]
 
 
@@ -749,12 +757,10 @@ def delete_server(config_name=None, forget_placement=False, delete_data=False,
     from .image_warm import delete_warm_daemonset  # pylint: disable=import-outside-toplevel
     delete_warm_daemonset(namespace, kube_context)
 
-    # Same class as the warm DaemonSet, and the reason it was missed: setup writes it, so
-    # only setup used to take it away. A teardown that left it kept a privileged pod on
-    # every node, re-asserting a governor for a deployment that no longer exists -- the
-    # observed symptom being governor pods days older than everything else after a
-    # cleanup + setup. Removing the DaemonSet does NOT restore the previous governor; see
-    # `remove_daemonset` and the note the CLI prints.
+    # Same class as the warm DaemonSet: setup writes it, so teardown has to remove it too. A
+    # teardown that left it would keep a privileged pod on every node, re-asserting a governor
+    # for a deployment that no longer exists. Removing the DaemonSet does NOT restore the
+    # previous governor; see `remove_daemonset` and the note the CLI prints.
     from .node_governor import delete_cpu_governor  # pylint: disable=import-outside-toplevel
     governor_removal = delete_cpu_governor(namespace, kube_context)
     # The tailnet node goes with the deployment it fronts: left behind it would answer on a

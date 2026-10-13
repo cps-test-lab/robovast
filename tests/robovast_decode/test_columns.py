@@ -6,7 +6,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 from rosbags.typesys import Stores, get_typestore
-from rosbags.typesys.msg import Nodetype
+from rosbags.interfaces import Nodetype
 
 from robovast_decode.handlers import TopicTable
 from robovast_decode.values import column_values, table_columns

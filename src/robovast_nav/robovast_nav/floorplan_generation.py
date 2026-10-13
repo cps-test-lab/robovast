@@ -205,9 +205,8 @@ def _occ_grid_command(laser_height):
 
 
 def generate_floorplan_variations(base_path, variation_files, num_variations, seed_value, output_dir, progress_update_callback, container_runner, mesh_format="stl", laser_height=None):
-    if not os.path.exists(base_path):
-        progress_update_callback(f"✗ Path not found: {base_path}")
-        return None
+    if not os.path.isdir(base_path):
+        raise FileNotFoundError(f"FloorplanVariation: campaign directory not found: {base_path}")
 
     if container_runner is None:
         raise RuntimeError(
@@ -382,9 +381,8 @@ def generate_floorplan_artifacts(base_path, floorplan_files, output_dir, progres
         subdirectory names that were generated and image is the digest of the
         scenery_builder image they were built with.
     """
-    if not os.path.exists(base_path):
-        progress_update_callback(f"✗ Path not found: {base_path}")
-        return None
+    if not os.path.isdir(base_path):
+        raise FileNotFoundError(f"FloorplanGeneration: campaign directory not found: {base_path}")
 
     if container_runner is None:
         raise RuntimeError(

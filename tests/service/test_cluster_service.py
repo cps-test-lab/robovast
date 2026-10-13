@@ -3,9 +3,8 @@
 """Unit tests for ClusterService's launch behaviour (no cluster needed).
 
 The service drives cluster campaigns **in-process** (one worker thread each) over a
-KubernetesBackend; there is no per-campaign controller pod any more, so these cover
-the launch *hooks* it answers for ServiceBase plus the aux-pod manifest that
-replaced the old controller-pod sidecar.
+KubernetesBackend; there is no per-campaign controller pod, so these cover
+the launch *hooks* it answers for ServiceBase plus the aux-pod manifest.
 """
 
 import datetime
@@ -390,6 +389,56 @@ def test_a_calibration_probe_is_listed_but_not_counted_as_a_run(cs, monkeypatch)
     assert resp.counts.calibration == 1
     assert resp.counts.failed == 0, "the probe's failure is not a run's"
     assert (resp.counts.running, resp.counts.total) == (1, 1)
+
+
+def _k8s_run_job(name, env, *, kind=None):
+    """A Job as the Kubernetes client returns one: a Kubernetes name, and its run only in the
+    environment the backend stamps on its containers."""
+    from kubernetes import client
+    labels = {"jobgroup": "scenario-runs", **({"job-kind": kind} if kind else {})}
+    return client.V1Job(
+        metadata=client.V1ObjectMeta(name=name, labels=labels),
+        status=client.V1JobStatus(active=1),
+        spec=client.V1JobSpec(template=client.V1PodTemplateSpec(
+            metadata=client.V1ObjectMeta(
+                annotations={"job-name-full": "camp-2026-07-17-120000-batch-0-job-3"}),
+            spec=client.V1PodSpec(containers=[client.V1Container(
+                name="robovast",
+                env=[client.V1EnvVar(name=k, value=v) for k, v in env])]))))
+
+
+def test_a_listed_job_names_the_run_it_executes(cs, monkeypatch):
+    """A cluster Job is named for Kubernetes, so its name says nothing about its run; the
+    listing says which run it is from what the backend stamped on it, and a client that
+    needs the run (the job log's 3D view, a tap from the run view) reads that, never the
+    name."""
+    from robovast.execution.cluster_execution.kubernetes_backend import _run_output_dir_env
+    from robovast.execution.cluster_execution.node_calibration import probe_output_dir
+    from robovast.execution.jobs import Job
+
+    run_env = [("OUTPUT_DIR", "/out/_jobs/batch-0/job-3"),
+               *_run_output_dir_env(Job(config={"name": "goal-1"}, run_number=3, index=3))]
+    probe_dir = f"/out/{probe_output_dir('node-a')}"
+    jobs = [
+        _k8s_run_job("campai-12000000-batch0dd05f94958dd31b7-3", run_env),
+        _k8s_run_job("campai-12000000-probe-node-a-0",
+                     [("OUTPUT_DIR", probe_dir), ("RUN_OUTPUT_DIR", probe_dir)],
+                     kind="calibration"),
+    ]
+
+    class _Batch:
+        def list_namespaced_job(self, namespace, label_selector):
+            return types.SimpleNamespace(items=jobs)
+
+    monkeypatch.setattr(cs, "_k8s_batch", lambda: _Batch())
+    monkeypatch.setattr(cs, "_k8s", lambda: _CoreWithPods(
+        [_job_pod(j.metadata.name) for j in jobs]))
+    listed = {j.job_name: j for j in cs.list_jobs("camp-2026-07-17-120000").jobs}
+
+    run = listed["campai-12000000-batch0dd05f94958dd31b7-3"]
+    assert (run.config_name, run.run_id) == ("goal-1", 3)
+    probe = listed["campai-12000000-probe-node-a-0"]
+    assert (probe.config_name, probe.run_id) == (None, None), "a probe executes no run"
 
 
 def _job_pod(job_name, phase="Running"):
@@ -1131,6 +1180,17 @@ def _no_pod(cs, monkeypatch, tmp_path, files):
         path.write_bytes(blob)
 
 
+def test_a_job_the_admission_queue_plans_is_queued(cs):
+    from robovast.execution.cluster_execution.node_admission import PLANNED
+
+    assert cs._job_is_queued("camp", "camp-batch0-9") is False, "no queue, nothing queued"
+    cs._admission = types.SimpleNamespace(
+        states=lambda owner: {"camp-batch0-9": PLANNED} if owner == "camp" else {})
+    assert cs._job_is_queued("camp", "camp-batch0-9") is True
+    assert cs._job_is_queued("other", "camp-batch0-9") is False
+    assert cs._job_is_queued("camp", "camp-batch0-8") is False
+
+
 # -- stop (terminates in-flight cluster workloads) --------------------------
 
 def _stop_state(flagged, phase=Phase.RUNNING):
@@ -1246,7 +1306,7 @@ def test_shutdown_leaves_running_campaigns_for_the_successor(cs, monkeypatch):
 
 def test_shutdown_never_shells_out(cs, monkeypatch):
     """Exiting leaves the running campaigns to the successor and touches no container
-    runtime: a teardown by shell would run inside the controller pod, where there is no
+    runtime: a teardown by shell would run inside the service pod, where there is no
     daemon and a container name means nothing. The answer is ClusterService's own hook, not a
     predicate on a shared ``shutdown``.
     """
@@ -1341,7 +1401,7 @@ def test_recording_the_launch_writes_it_into_the_campaign(cs, tmp_path):
     assert (tmp_path / "camp-a" / "_execution" / "launch.yaml").is_file()
 
 
-# -- aux pod (replaces the controller-pod sidecar) --------------------------
+# -- aux pod ---------------------------------------------------------------
 
 def _spec():
     return ContainerSpec(image="ghcr.io/secorolab/scenery_builder:1.2",

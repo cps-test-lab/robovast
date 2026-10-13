@@ -206,7 +206,10 @@ removing one does nothing until the owning distribution is reinstalled, and an e
 checkout looks entirely normal in the meantime. The failure mode depends on which group:
 
 * ``robovast.cli_plugins`` degrades **loudly** — ``load_plugins()`` prints
-  ``Warning: Failed to load plugin '<name>'`` and carries on.
+  ``Warning: Failed to load plugin '<name>'`` and carries on, so ``vast`` still starts.
+  The MCP ``get_cli_help`` answers from the same tree, so it refuses instead, naming the
+  plugin, rather than describing a ``vast`` without that group; the same holds for a
+  ``vast cluster`` or ``vast service`` verb that is listed but fails to load.
 * ``robovast.cli_startup`` **refuses** rather than running on, naming the reinstall.
   Degrading silently there costs real damage: with the core installed but its ``.env``
   hook unregistered, no ``./.env`` is read, and ``vast service upgrade`` — which
@@ -1650,7 +1653,7 @@ Campaign Store
 Every campaign — batch or search — is described by a single sqlite store,
 ``campaign.db`` (``robovast.common.store.STORE_FILENAME``), written at the
 root of the campaign directory. It is the **single source of truth** the results
-GUI reads, and the seam an in-cluster controller or web UI can later read/stream.
+GUI reads, and the seam the service and web UI read and stream it through.
 
 A campaign runs one or more **batches**: a batch-mode campaign (no ``search:``
 block) has exactly one batch of the enumerated configs; a search campaign has one
@@ -2245,6 +2248,16 @@ service**. The build location is ``frontend/ui/dist`` relative to the repo, over
 ``ROBOVAST_UI_DIST``; package the built assets into the service/controller image so the
 in-cluster service ships the UI. If no build is present the service runs API-only.
 
+**The bundle ships compressed.** ``npm run build`` writes a ``.br`` and a ``.gz`` beside each
+emitted text file of 1 KiB or more (``frontend/ui/precompress.ts``, a Vite plugin), and the
+mount serves the one the request's ``Accept-Encoding`` admits, Brotli first, with
+``Content-Encoding`` and ``Vary: Accept-Encoding``; a client that accepts neither gets the
+original. Each coding is its own representation with its own ``ETag``, so the cache headers
+above hold for all three. Compressing once per build rather than per request keeps the
+work off the control plane's event loop, and serves the same bytes whether the service is
+reached directly or through the cluster's front (:doc:`deployment`, "What runs in the
+service pod"), which passes an already-encoded response through.
+
 **Dev loop.** ``cd frontend/ui && npm run dev`` runs Vite (:5173) and proxies the API path
 prefixes to a running ``vast serve`` (``ROBOVAST_SERVICE_URL`` to retarget), keeping the
 browser same-origin for hot-reload development.
@@ -2424,10 +2437,8 @@ a hook. Switching while the app runs needs those panels to read from ``useTheme(
 every token a panel uses to live on the theme — that is the entire delta, and nothing in the
 current shape blocks it.
 
-Import a token instead of writing a hex. Before this module the surfaces were spread across the
-theme and two components, the panel-canvas colour was copied into six files, the series scale
-existed twice — with a comment on one copy asking the other to please stay in sync — and the
-scenario tree and the log view each had their own private green and red.
+Import a token instead of writing a hex: a colour written out in a component is a second copy
+of a token, and the two drift apart.
 
 **Extending.** Add an operation by giving ``robovastClient.ts`` a method mirroring the
 new interface op, then a page/tab that queries it.
@@ -2523,9 +2534,9 @@ touching any panel:
   Module-Federation remotes (see below) and never touch the static registry. The ``.vast``'s
   ``visualization.results.run_view.panels`` specs are normalized by ``parsePanels.ts`` (single-key
   shorthand → ``{type, ...fields}``; the same shorthand is accepted by the Pydantic schema,
-  see ``PanelConfig._flatten_shorthand``). Valid ``type`` values are the core built-ins
+  see ``PanelConfigBase._flatten_shorthand``). Valid ``type`` values are the core built-ins
   (``BUILTIN_PANEL_TYPES``) ∪ installed ``robovast.panel_types`` entry-point names ∪
-  ``custom`` — validated in ``PanelConfig._known_type`` in :mod:`robovast.common.config`
+  ``custom`` — validated in ``PanelConfigBase._known_type`` in :mod:`robovast.common.config`
   (so a package panel is valid only when its plugin is installed). Adding a core built-in
   is still one file + one ``BUILTIN_PANEL_TYPES`` entry.
 
@@ -2643,11 +2654,10 @@ the host's modules. A derived panel inherits every later improvement to the buil
 ordering, node-kind glyphs, feedback, source lines, scrolling — instead of needing them
 implemented twice.
 
-The package did once ship a full port of the built-in panel in plain React; it was deleted for
-exactly that reason. Deleting the *type* along with it was a mistake worth recording: a type name
-is not a duplicate. Configs name it (frozen ``_config`` copies of past campaigns included), and
-``PanelConfig._known_type`` validates against installed entry points, so removing the entry point
-turned every one of those configs into a validation error and an "Unknown panel type" box.
+A derived panel replaces a renderer; it never removes the *type*. A type name is not a
+duplicate: configs name it (frozen ``_config`` copies of past campaigns included), and
+``PanelConfigBase._known_type`` validates against installed entry points, so removing the entry point
+turns every one of those configs into a validation error and an "Unknown panel type" box.
 
 The rule, then: **a package needs a renderer only when the host cannot draw its data at all.**
 ``costmap`` qualifies — binary grids need their own service endpoint. A package whose data is a
@@ -2661,7 +2671,7 @@ edit and no frontend change** (the run view already reaches any such endpoint vi
 core-coupling for a self-contained analysis package: it ships a **postprocessing** plugin (writes a
 run-level data file, which is a table), a **service endpoint** (serves it), and a **panel**
 (renders it) — all via entry points; a table the decoder already builds needs only the last two. The mechanism mirrors the MCP-plugin loader: a ``ServiceEndpoint`` ``Protocol``
-(``name`` + ``handle(ctx)``) and ``load_service_endpoints()``; ``build_app`` registers one route per
+(``name`` + ``handle(ctx)``) and ``load_service_endpoints(reserved)``; ``build_app`` registers one route per
 plugin (before the SPA mount) and dispatches to ``handle`` with a **``RunDataContext``** facade —
 ``ctx.open_db()`` (a read-only connection to this campaign's tables, from the public
 ``data_query.open_data_db``, which builds what a statement names),
@@ -2670,18 +2680,23 @@ plugin (before the SPA mount) and dispatches to ``handle`` with a **``RunDataCon
 resolves the campaign dir through the public ``impl.campaign_dir(campaign_id)`` seam, which is
 a directory under the results root — so a plugin endpoint works on every deployment
 unchanged. Endpoint names should be **package-namespaced** (``nav/foo``) to avoid
-collisions; core route names are reserved (``RESERVED_CAMPAIGN_ENDPOINTS``). **Scope:** run-scoped
+collisions; every first segment a core ``/campaigns/{id}/`` route owns is reserved, read off the app's own routes (``core_campaign_segments``), and a plugin under one is skipped with a warning. **Scope:** run-scoped
 GET→JSON only — *binary/large per-run artifacts* are already served by the file address space,
 ``GET /results/<campaign>/<config>/<run>/<path>`` (``DataProvider.runFileUrl``), and
 *producing* data is a postprocessing plugin's job. **Reference:** ``robovast_nav``'s
 ``CostmapEndpoint`` (``robovast_nav/service_endpoints.py``) — it reads the ``costmaps`` table the
 decoder builds via ``ctx.open_db()`` and returns the frame dict the costmap panel decodes.
 
-**3D scene viewer core** (``frontend/ui/src/lib/scene3d/``) — renders the browser scene
-descriptor (``scene.json``/``scene.bin``), which a simulator backend's exporter produces;
-the format is RoboVAST's, see :ref:`scene-descriptor`. ``sceneLoader.ts``
-builds a three.js ``Group`` and returns an imperative animation API (``jointMap`` /
-``basePose``); ``viewport.ts`` is a plain-three viewport (renderer/camera/lights/grid/orbit
+**3D scene viewer core** (``frontend/ui/src/lib/scene3d/``) — renders the scene, one glTF file a
+simulator backend's exporter produces to RoboVAST's contract (:ref:`scene-descriptor`).
+``sceneLoader.ts`` parses it with three's ``GLTFLoader`` (with the meshopt decoder, both loaded with
+the first scene), maps it onto a Z-up ``Group`` and returns an imperative animation API
+(``jointMap`` / ``basePose``, from the body and joint ``extras``) and the scene's sensor cameras
+(``sceneCameras.ts``, the contract is the scene's
+:ref:`camera sensors <scene-descriptor-cameras>`): each a three ``PerspectiveCamera`` -- glTF's camera convention is
+three's -- parented to its body's node, so the motion that moves the body moves the camera and the
+renderer keeps its view matrix current with the rest of the graph; ``viewport.ts`` is a plain-three
+viewport (renderer/camera/lights/grid/orbit
 controls + the Z-up wrapper). The wheel is the viewport's own, not the orbit controller's
 (``cursorDolly.ts``): scaling the orbit radius toward a fixed pivot makes the travel a geometric
 series converging on that pivot, so a notch moves millimeters once you are close and the pivot can
@@ -2692,12 +2707,19 @@ from the pivot, which the wheel carries along and which is therefore constant by
 **Extractability rule: files in this directory import only
 ``three`` — never ``@/…``** (see its README) — it is shared-candidate code, so all
 robovast-specific wiring lives in the two consumers, ``frontend/ui/src/panels/run_view/Scene3DPanel.tsx``
-and ``frontend/ui/src/panels/config/Scene3DPanel.tsx``. Both resolve the descriptor through
+and ``frontend/ui/src/panels/config/Scene3DPanel.tsx``. Both resolve the scene through
 ``useSceneGeometry.ts``: the service compiles it on demand in the campaign's image and caches it
 per world (``GET /campaigns/{id}/scene`` asks, one ``POST .../scene/run`` builds; the config view
 uses the workspace's ``/workspaces/{id}/scene``). The run view's panel drives ``jointMap`` and
 ``basePose`` from the run's ``sim_poses`` and ``joint_states`` rows on the clock; the config
-view's has no clock and draws what the variations placed as markers.
+view's has no clock and draws what the variations placed as markers. ``SceneViewport.setViewpoint`` renders
+through one of those cameras instead of the orbit camera, letterboxed to the sensor's shape. Its
+one caller is the camera panel's ``kind: scene``: ``Scene3DView`` (the run view's 3D panel) with a
+``look`` -- a camera of the scene by name, or a free view ``buildFreeCamera`` poses from a position
+and a look-at point and parents to the world's node or an ``attach`` body's (``SceneModel.frameNode``),
+taking it off again on unmount because the model outlives the panel. It asks the service for nothing
+the 3D view does not already load. The
+``scene3d`` panel itself never leaves the orbit camera.
 
 Deferred: a bundle code-split (Monaco + Plotly + Vega + Module Federation make the SPA large).
 

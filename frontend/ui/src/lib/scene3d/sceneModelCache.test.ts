@@ -15,14 +15,16 @@ function fakeModel(): SceneModel {
     initialJoints: {},
     bodies: [],
     joints: [],
+    cameras: [],
+    frameNode: () => undefined,
     basePose: () => {},
     reset: vi.fn(),
     dispose: vi.fn(),
   }
 }
 
-const A = '/campaigns/c/scene_assets/keyA/scene.json'
-const B = '/campaigns/c/scene_assets/keyB/scene.json'
+const A = '/campaigns/c/scene_assets/keyA/scene.glb'
+const B = '/campaigns/c/scene_assets/keyB/scene.glb'
 
 describe('sceneModelCache', () => {
   it('reuses a released model of the same scene, seated back at rest, without loading it again', async () => {

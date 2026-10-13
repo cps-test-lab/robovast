@@ -6,8 +6,8 @@ metadata:
     A TurtleBot 4 navigates the nav2 Depot world to a per-configuration goal with nav2 + AMCL, in
     roqsim (MuJoCo). The roqsim half of the basic_nav pair: same map, same nav2 params and the same
     measurement half as basic_nav_gazebo.vast, so a difference in results is attributable to the
-    simulator. The bridge publishes the ROS graph Gazebo does, down to the ground-truth
-    turtlebot4_base_link_gt frame.
+    simulator. The bridge publishes the ROS graph nav2 needs, as Gazebo does; ground truth is
+    roqsim's own recording, read as the ground_truth_poses table like the Gazebo half's gt frame.
 
     Three containers, and no image is built. `simulation` is roqsim, started by the backend from
     its own image. `sut` is a vanilla nav2 image: RoboVAST layers scenario_execution_server onto it
@@ -59,6 +59,13 @@ visualization:
             global: {topic: /global_costmap/costmap}
             local: {topic: /local_costmap/costmap}
             poses: {table: poses}
+      # Drawn in the browser from the 3D scene and the recorded poses; no image is recorded.
+      - camera:
+          title: OAK-D camera
+          camera: robot.oakd.oakd_camera
+          position: {anchor: top-center, width: 360, height: 300}
+          minimizable: true
+          minimized: true
       - log:
           title: Run log
           position: {anchor: bottom-center, width: "calc(100% - 680px)", height: 380}
@@ -148,23 +155,21 @@ execution:
   - files/nav2_params.yaml
   - files/nav2_bt.xml
   - files/nav2_sut.launch.py
-# What every run's bag holds. Everything, by default; use_sim_time stamps each message with
-# the simulator's clock, so every derived table reads the same in sim seconds however fast the
-# machine ran, and /clock is in the bag so a wall-stamped topic (/behavior_tree_log) can still
-# be mapped back to it.
-recording:
-  ros2:
-    use_sim_time: true
+  # Every topic but the camera's on-demand streams, stamped on the simulator's clock: tables read
+  # in sim seconds, and /clock in it maps wall-stamped topics (/behavior_tree_log) back onto it.
+  recording:
+    ros2:
+      use_sim_time: true
 
 results_processing:
   health_checks:
   - nav2_control_loop_rate
-  # Identical to basic_nav_gazebo.vast, so both halves' tables hold the same frames. `require` is
-  # what the analysis reads: a run missing a frame fails rather than yielding an empty table.
+  # As basic_nav_gazebo.vast, less the gt frame: ground truth is the recording. `require` is what
+  # the analysis reads: a run missing a frame fails rather than yielding an empty table.
   postprocessing:
   - rosbags_tf_to_csv:
       frames: all
-      require: [base_link, odom, turtlebot4_base_link_gt]
+      require: [base_link, odom]
   - rosbags_nav2bt_to_csv
   - nav2_bt_tree: {bt_xml: files/nav2_bt.xml}
   - rosbags_costmap_to_csv:

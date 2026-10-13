@@ -18,10 +18,9 @@
 
 This is the in-cluster counterpart of ``vast serve``: a long-lived Deployment
 running the same FastAPI app (:mod:`robovast.service.app`), reached over a
-ClusterIP Service via ``kubectl port-forward`` (Ingress later). It generalizes
-the ephemeral, per-campaign control channel
-(:mod:`robovast.execution.control_server`) into a campaign-spanning service that
-launches and monitors controller pods on behalf of thin clients.
+ClusterIP Service -- by ``kubectl port-forward``, an Ingress, or a tailnet node. It
+drives every campaign in-process and creates their scenario Jobs itself, on behalf
+of thin clients.
 
 The manifests are pure dicts so they can be **server-side dry-run validated**
 against a real API server without scheduling anything (see
@@ -60,9 +59,9 @@ SERVICE_PORT = DEFAULT_PORT
 #: Large on purpose, and not a value to tidy down. ``ClusterService.__init__`` resumes every
 #: interrupted campaign *before* ``vast serve`` binds the port (see
 #: ``ClusterService.resume_interrupted_campaigns``), so a service that comes up owing work does
-#: not answer ``/healthz`` until that resume returns. Under the liveness probe alone -- 15 s of
-#: grace, then three 20 s strikes -- a restart with live campaigns was SIGKILLed at ~75 s, every
-#: time, forever: each attempt was killed mid-restore and the next one started over.
+#: not answer ``/healthz`` until that resume returns. Under the liveness probe alone, a restart
+#: owing more resume work than its grace would be SIGKILLed mid-restore every time, and each
+#: next attempt would start over.
 #:
 #: A startupProbe is the mechanism that fits: Kubernetes suspends BOTH liveness and readiness
 #: until it passes, so a slow start stops reading as a hung one without weakening the
@@ -313,12 +312,11 @@ def grow_results_claim(core, namespace, size, *, dry_run=False):
 
 
 def _service_rbac_manifests(namespace):
-    """ServiceAccount + Role/RoleBinding letting the service launch controllers.
+    """ServiceAccount + Role/RoleBinding letting the service drive campaigns.
 
-    The service creates and monitors **controller pods** (and their logs) in its
-    namespace — the host's role today — so it needs pod create/read/delete plus
-    the ``pods/log`` subresource. It does not itself create scenario Jobs (the
-    controllers do), so no ``batch`` verbs here.
+    The service creates, watches and deletes the scenario Jobs, their pods and the aux
+    pods itself, so its Role carries the ``batch`` and pod verbs that needs -- each rule
+    below says what it is for.
 
     Plus a cluster-scoped read-only ClusterRole (nodes + pods + node metrics) backing the
     ``/usage`` endpoint — see the ClusterRole manifest below.
@@ -400,10 +398,8 @@ def _service_rbac_manifests(namespace):
         # "used" figure across tenants. The ClusterRole name is namespaced so parallel
         # robovast deployments don't collide.
         #
-        # Entirely read-only. Admission is the in-process
-        # controller's (node_admission.py), so the service writes nothing
-        # cluster-scoped. A deployment older than that removal still tries the create and
-        # gets a 403 here -- upgrade it rather than restoring the grant.
+        # Entirely read-only. Admission is the in-process controller's
+        # (node_admission.py), so the service writes nothing cluster-scoped.
         {
             "apiVersion": "rbac.authorization.k8s.io/v1",
             "kind": "ClusterRole",
@@ -630,10 +626,9 @@ def _service_manifest(namespace, ingress_class=""):
         "spec": {
             "type": "ClusterIP",
             "selector": {"app": SERVICE_NAME},
-            # One port. The registry's `/v2` used to be the second one here; it now
-            # answers on the store pod's Service (:mod:`.store_pod`), which is what the
-            # Ingress rule points at. The published hostname and every image ref built
-            # from it are unchanged -- one Ingress may front two Services.
+            # One port. The registry's `/v2` answers on the store pod's Service
+            # (:mod:`.store_pod`), which is what the Ingress rule points at -- one Ingress
+            # may front two Services under one published hostname.
             "ports": [
                 {"port": SERVICE_PORT, "targetPort": "http", "name": "http"},
             ],
@@ -1291,27 +1286,24 @@ def _ntfy_env_from_host():
 #: default base image. Read back by ``BaseConfig.get_registry_config()``.
 REGISTRY_CONFIG_SECRET_NAME = "robovast-registry-config"
 
-#: dockerconfigjson Secret holding credentials for an **external** registry, created
-#: when ``ROBOVAST_REGISTRY_SERVER``/``_USERNAME``/``_PASSWORD`` are set at setup.
-#:
-#: Purely a *pull* credential now. Experiment images are built into the registry that
-#: runs in this pod (:mod:`.registry_deploy`), which is open, so nothing needs a push
-#: credential any more. What still needs one is a ``.vast`` naming an image in a private
-#: registry — the campaign pods, the aux/exec pods and the service's own image all pull
-#: through this Secret. The old name is kept so an existing deployment's Secret is
-#: replaced rather than orphaned beside a new one.
+#: dockerconfigjson Secret holding every registry credential this deployment uses
+#: (:func:`_registry_dockerconfig_manifest`): the built-in registry's, once the deployment
+#: is published and the registry in the ``robovast`` pod (:mod:`.store_pod`) therefore
+#: authenticates, and an **external** registry's, when ``ROBOVAST_REGISTRY_SERVER`` /
+#: ``_USERNAME`` / ``_PASSWORD`` are set at setup. The build Job pushes with it; campaign
+#: pods, aux and exec pods, the image warmer and the service's own image pull with it.
 REGISTRY_PUSH_SECRET_NAME = "robovast-registry-push"
 
 
 def _registry_env(ingress_host=""):
     """The registry config the in-pod service reads back from its own env.
 
-    Two unrelated registries meet here, and conflating them was the old bug:
+    Two unrelated registries meet here, and must not be conflated:
 
-    * the **build target** — the registry in this pod. Its prefix is just the service's
-      own Ingress host (see :func:`registry_deploy.registry_prefix`), so it is derived,
-      never configured; a site does not get to point builds somewhere the cluster cannot
-      pull from. Without an Ingress there is no reachable registry and no prefix, which
+    * the **build target** — the registry in the ``robovast`` pod (:mod:`.store_pod`).
+      Its prefix is just the service's own Ingress host (see
+      :func:`registry_deploy.registry_prefix`), so it is derived, never configured; a site
+      does not get to point builds somewhere the cluster cannot pull from. Without an Ingress there is no reachable registry and no prefix, which
       is the honest answer rather than a ref that fails at pull time.
     * the **pull credential** — for images a ``.vast`` names in someone else's private
       registry. Configured, because only the operator knows those credentials.
@@ -1679,7 +1671,7 @@ def registry_ingress_defects(ingress) -> list:
         # the pods looks wrong -- so this is a defect to repair, not a variant to tolerate.
         defects.append(
             f"{registry_deploy.REGISTRY_INGRESS_PATH} still routes to the service pod; "
-            f"the registry now runs in the {store_pod.STORE_POD_NAME} pod")
+            f"the registry now runs in the {store_pod.STORE_DEPLOYMENT_NAME} pod")
     have = getattr(getattr(ingress, "metadata", None), "annotations", None) or {}
     missing = sorted(k for k, v in registry_deploy.REGISTRY_INGRESS_ANNOTATIONS.items()
                      if have.get(k) != v)
@@ -1771,25 +1763,19 @@ def verify_store_pod_infrastructure(namespace="default", kube_context=None,
     No pod at all is refused too: nothing but setup creates it, so its absence means the
     cluster is not set up.
     """
-    from kubernetes import client  # pylint: disable=import-outside-toplevel
-    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
-
     from . import store_pod  # pylint: disable=import-outside-toplevel
 
     _load_kube_config(kube_context)
-    try:
-        pod = client.CoreV1Api().read_namespaced_pod(store_pod.STORE_POD_NAME, namespace)
-    except ApiException as exc:
-        if exc.status != 404:
-            raise
+    pod = store_pod.read_live_store(namespace)
+    if pod is None:
         raise RuntimeError(
-            f"there is no {store_pod.STORE_POD_NAME} pod in namespace {namespace}, so the "
-            f"service has no registry to push to. 'vast cluster setup' "
-            f"creates it.") from exc
+            f"there is no {store_pod.STORE_DEPLOYMENT_NAME} Deployment in namespace "
+            f"{namespace}, so the service has no registry to push to. 'vast cluster setup' "
+            f"creates it.")
     remedy = "'vast cluster cleanup' then 'vast cluster setup', which recreates the pod"
     if store_pod.carries_an_object_store(pod):
         raise RuntimeError(
-            f"the {store_pod.STORE_POD_NAME} pod in namespace {namespace} carries an "
+            f"the {store_pod.STORE_DEPLOYMENT_NAME} pod in namespace {namespace} carries an "
             f"object-store container ({store_pod.OBJECT_STORE_CONTAINER_NAME}). Campaigns "
             f"live on the service's results volume, and nothing reads that store -- so every "
             f"campaign in it is one the service cannot see. Setup keeps an existing pod as "
@@ -1799,7 +1785,7 @@ def verify_store_pod_infrastructure(namespace="default", kube_context=None,
     missing = store_pod.missing_infrastructure(pod)
     if missing:
         raise RuntimeError(
-            f"the {store_pod.STORE_POD_NAME} pod in namespace {namespace} does not run "
+            f"the {store_pod.STORE_DEPLOYMENT_NAME} pod in namespace {namespace} does not run "
             f"{', '.join(missing)}. Setup keeps an existing pod as it is, so re-running "
             f"setup cannot add them; the remedy is {remedy}. Built images are rebuilt on "
             f"demand; the campaigns on the results volume are not touched.")
@@ -1827,7 +1813,7 @@ def _warn_if_registry_auth_is_not_live(pod, namespace, registry_authenticated):
         "cluster cleanup' then 'vast cluster setup'. Built images are rebuilt on demand, "
         "and campaigns are unaffected; the clients already hold the credential and will "
         "start using it the moment the registry asks.",
-        store_pod.STORE_POD_NAME, namespace)
+        store_pod.STORE_DEPLOYMENT_NAME, namespace)
 
 
 def published_host(namespace="default", kube_context=None):
@@ -2088,6 +2074,14 @@ def service_manifests(namespace="default", image=None, env=None,
         if not any(e["name"] == var for e in env):
             env = [*env, {"name": var, "value": os.environ.get(var, "").strip()}]
 
+    # How many runs a table-building part starts with, carried and parsed the same way.
+    from .table_jobs import RUNS_PER_PART_ENV, runs_per_part  # pylint: disable=import-outside-toplevel
+
+    runs_per_part()
+    if not any(e["name"] == RUNS_PER_PART_ENV for e in env):
+        env = [*env, {"name": RUNS_PER_PART_ENV,
+                      "value": os.environ.get(RUNS_PER_PART_ENV, "").strip()}]
+
     # The pod's timezone (see _host_timezone), carried unconditionally for the same reason
     # as the family env above: "" is UTC to libc -- what an unset TZ already means.
     if not any(e["name"] == "TZ" for e in env):
@@ -2246,9 +2240,8 @@ def _resolve_data_node(core, *, workspaces_storage_class="",
     from .node_placement import (  # pylint: disable=import-outside-toplevel
         DATA_NODE_LABEL, resolve_placement)
 
-    # Only the workspaces class matters now: both volumes left in this pod (workspaces and
-    # results) are backed by it. The registry's class used to be ANDed in here and moved
-    # to the store pod with the registry itself.
+    # Only the workspaces class matters: both volumes in this pod (workspaces and results)
+    # are backed by it. The registry's volume belongs to the store pod.
     node_local = not workspaces_storage_class
     if not node_local:
         return {}
@@ -2366,7 +2359,6 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     here, so there is no deployment without authentication.
     """
     from kubernetes import client  # pylint: disable=import-outside-toplevel
-    from kubernetes.client.rest import ApiException  # pylint: disable=import-outside-toplevel
 
     from .kube_client import load_kube_config  # pylint: disable=import-outside-toplevel
 
@@ -2416,13 +2408,15 @@ def deploy_service(namespace="default", kube_context=None, image=None, env=None,
     # by this run: setup only writes it when ROBOVAST_REGISTRY_* are in the environment,
     # so on a re-run -- the normal case -- it is simply already there. Looking it up is
     # therefore the difference between a service that starts and one that sits in
-    # ImagePullBackOff while setup prints "completed successfully". Same lookup the
-    # campaign pods do (see KubernetesBackend.build_job_manifest).
-    try:
-        core.read_namespaced_secret(REGISTRY_PUSH_SECRET_NAME, namespace)
-        pull_secret = REGISTRY_PUSH_SECRET_NAME
-    except ApiException:
-        pull_secret = ""
+    # ImagePullBackOff while setup prints "completed successfully". The campaign pods'
+    # resolution, so a configured pull Secret applies here too.
+    from .cluster_execution import resolve_pull_secret  # noqa: PLC0415
+    from .cluster_setup import get_cluster_config  # noqa: PLC0415
+    cluster_config = get_cluster_config(config_name)
+    if cluster_config is None:
+        raise ValueError("deploy_service needs the cluster config name: the service's own "
+                         "pull Secret is resolved from that config's registry settings")
+    pull_secret = resolve_pull_secret(cluster_config, core, namespace)
 
     # Reuse the deployed token unless asked for a new one; mint one the first time.
     from robovast.service.auth import generate_token  # pylint: disable=import-outside-toplevel

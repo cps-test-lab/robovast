@@ -18,10 +18,10 @@
 
 These are pure data types (stdlib + pydantic only) shared by every layer: the
 controller that advances them, the service that serves them, the MCP/CLI clients
-that render them, and ``common`` readers that persist/recover them. They live in
-``common`` so that a foundational module (e.g. ``campaign_data`` reading a durable
-``outcome.json`` back into a ``Status``) can depend on the contract *downward*,
-instead of ``common`` reaching up into ``execution`` for it.
+that render them, and ``common`` readers that persist/recover them. They live in the
+client distribution, which every other one depends on, so a foundational module (e.g.
+``campaign_data`` reading a durable ``outcome.json`` back into a ``Status``) depends on
+the contract *downward*, and a client-only install renders a status without the core.
 
 The live, thread-owning holder that the controller writes —
 :class:`~robovast.execution.control_server.ControllerState` — stays in
@@ -267,10 +267,10 @@ class Status(BaseModel):
     every 1.5 seconds, so anything here is paid for once per campaign on screen, per
     poll, per open tab -- and some of it is computed per read (``health``). What belongs
     here is therefore BOUNDED state and cheap cursors: a phase, a counter, a best-so-far,
-    a batch index. A SERIES does not, however small it looks: ``batch_history`` was one
-    (a row per batch, growing all run long), nothing ever read it, and it was removed in
-    favour of ``GET /campaigns/{id}/search/history`` -- a route fetched only while
-    something is displaying it, keyed on the ``batches_done`` cursor that lives here.
+    a batch index. A SERIES does not, however small it looks: a row per batch grows all
+    run long. The search history is ``GET /campaigns/{id}/search/history`` instead -- a
+    route fetched only while something is displaying it, keyed on the ``batches_done``
+    cursor that lives here.
     The rule, and where a live run view lands, is in ``docs/http_api.rst``.
     """
     # validate_assignment so the controller can assign plain dicts to the typed

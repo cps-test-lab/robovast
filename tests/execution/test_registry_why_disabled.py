@@ -79,6 +79,6 @@ def test_both_call_sites_use_it():
     assert source.count("why_disabled()") >= 2, (
         "a refusal stopped using the shared definition; the two would drift, and the one "
         "naming a single remedy is the one that misdirects")
-    # And the old hand-written explanation is gone from both.
+    # And no hand-written explanation sits beside it in either.
     assert "an unpublished service has no address" not in source
     assert "RoboVAST's own registry is published on the service's Ingress" not in source

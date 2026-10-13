@@ -377,9 +377,9 @@ image without pulling it:
    outside the build, so without the labels the only way to answer is to read the Dockerfile at
    the recorded commit — and hope the ref was not overridden at build time.
 ``org.robovast.compat-version``
-   the host↔container protocol version — the only marker for it. A file inside the image once
-   carried the same value; it could not be read without starting a container, and could not be
-   read remotely at all, which is the case that matters.
+   the host↔container protocol version — the only marker for it. A label, because it can be
+   read without starting a container and read remotely from the registry, which is the case
+   that matters.
 ``org.robovast.base-image``
    the base this was built ``FROM``, as a whole digest-pinned ref so it can be used as-is.
 ``org.robovast.ubuntu-snapshot`` / ``.ros-snapshot``
@@ -390,7 +390,7 @@ image without pulling it:
    way out of the build — see ``container/pins/``.
 
 All of them reach a campaign's ``_execution/execution.yaml`` as ``image_build_refs``. The
-controller pod that writes the file has no docker CLI, so the block takes the labels the protocol
+service that writes the file has no docker CLI, so the block takes the labels the protocol
 check already read from the registry.
 
 ``org.robovast.roqsim-ref`` is also how a campaign says **which simulator it ran**: the build

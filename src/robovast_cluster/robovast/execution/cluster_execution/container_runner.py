@@ -76,6 +76,7 @@ Kubernetes garbage-collects it if the service is replaced), carries an
 ``activeDeadlineSeconds`` backstop, and is deleted when the span that created it ends.
 """
 
+import copy
 import contextlib
 import logging
 import os
@@ -203,8 +204,7 @@ def cleanup_aux_pods(namespace="default", kube_context=None, campaign=None):
     With *campaign* given, deletes only that campaign's aux pods so concurrent
     campaigns are left untouched; otherwise deletes every aux pod. Selected by the
     campaign LABEL rather than by name, so it catches every pod a span created whatever
-    each is called. Backs ``vast cluster jobs-cleanup`` (the successor to the
-    controller-pod reap).
+    each is called. Backs ``vast cluster jobs-cleanup``.
     """
     from kubernetes import client
 
@@ -281,8 +281,7 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
     sidecar are resolved from the service's environment.
 
     *owner_ref* should be the **service pod** so Kubernetes garbage-collects this
-    pod when the service is replaced — the same "dies with its parent" guarantee
-    the old controller-pod sidecar had.
+    pod when the service is replaced: it dies with its parent.
 
     *pull_secret* names an image-pull secret, which a spec naming the *campaign's own*
     image needs: that one points at a private registry, while an aux image may equally be
@@ -301,6 +300,7 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
 
     from .cluster_execution import _label_safe_campaign
     from .kubernetes_backend import pull_policy_for
+    from .node_placement import TRANSIENT_POD_RESOURCES, transient_pod_affinity
 
     name = pod_name or aux_pod_name(campaign_id)
     workspace_root = str(aux_workspace_root(stage_dir, name))
@@ -334,6 +334,8 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
             "imagePullPolicy": pull_policy_for(image),
             "command": list(spec.keep_alive_command),
             "volumeMounts": list(shared_mounts),
+            # What its queries run in; see TRANSIENT_POD_RESOURCES.
+            "resources": copy.deepcopy(TRANSIENT_POD_RESOURCES),
         }
         if spec.env:
             container["env"] = [{"name": k, "value": str(v)} for k, v in spec.env.items()]
@@ -381,6 +383,7 @@ def build_aux_pod_manifest(campaign_id, specs, namespace, owner_ref=None, *,
         "activeDeadlineSeconds": int(deadline_seconds),
         "containers": containers,
         "volumes": [{"name": mount["name"], "emptyDir": {}} for mount in shared_mounts],
+        "affinity": transient_pod_affinity(),
     }
     if pull_secret:
         spec["imagePullSecrets"] = [{"name": pull_secret}]

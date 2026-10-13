@@ -55,13 +55,16 @@ used — the shape is *derived*, not a second key to keep consistent with the fi
 **Stepped** (``mode: base``)
    scenario-execution owns the loop and calls ``step()``, so the simulator runs **in the
    scenario's process** — ``simulation`` and ``scenario`` resolve to one container. Time
-   advances only when the behaviour tree ticks, which makes a run exactly reproducible.
-   This is the shape a trial with no ROS in it wants.
+   advances only when the behaviour tree ticks, which makes a run exactly reproducible, and a
+   scenario's durations run on that step clock. This is the shape a trial with no ROS in it
+   wants.
 
 **ROS** (``mode: ros2``)
    The simulator runs on its own, publishes ``/clock``, and the scenario observes it over
    ROS — so it gets its own container. No ``SimulationInterface`` is involved, which is
-   why a simulator that has none fits here unchanged.
+   why a simulator that has none fits here unchanged. A scenario's durations run on
+   ``/clock`` or on wall time as :ref:`execution.use_sim_time <scenario-clock>` says, which
+   the backend's ``publishes_clock`` answers when the campaign leaves it unset.
 
 ``mode: auto`` is refused when a backend is declared: ``auto`` is resolved *inside* the
 container by testing whether ``ros2`` is on ``PATH``, so the same ``.vast`` would get a
@@ -159,9 +162,9 @@ Hooks, all optional except as noted:
    otherwise.
 ``env(cfg, execution, recording)``
    Environment the simulator reads. A campaign's own ``execution.env`` wins over it.
-   ``recording`` is the campaign's :ref:`recording: <recording-config>` block, or ``None`` for
-   an absent one, which means "record everything"; a backend that records reads its own
-   section of it. roqsim reads ``recording.roqsim`` and asks for its recording with
+   ``recording`` is the campaign's :ref:`execution.recording <recording-config>` block as its
+   model, or ``None`` for an absent one, which means "record everything"; a backend that records
+   reads its own section of it. roqsim reads ``execution.recording.roqsim`` and asks for its recording with
    ``ROQSIM_RECORD`` (``roqsim_bag/roqsim.mcap``, relative to the run directory), the capture
    rate with ``ROQSIM_CAPTURE_FPS`` and the tracks with ``ROQSIM_RECORD_TRACKS`` /
    ``ROQSIM_RECORD_EXCLUDE`` (comma-separated patterns) -- each only when the block sets it.
@@ -174,6 +177,25 @@ Hooks, all optional except as noted:
 ``records_scene_state(cfg, execution)``
    Whether runs record the simulator state a ``scene3d`` panel replays -- the recording the
    decoder reads into ``sim_poses``, ``joint_states``, ``sim_recording`` and ``sim_entities``.
+``publishes_clock(cfg, execution)``
+   Whether the simulator publishes ``/clock`` in the ROS shape, which starts scenario-execution
+   with ``use_sim_time``. ``None`` (the default) means the backend cannot say, and a campaign
+   using it must state ``execution.use_sim_time``. roqsim answers ``True``.
+``ground_truth(cfg, execution)``
+   Where a run's :ref:`ground_truth_poses <ground-truth-table>` come from, as the decoder's
+   ``ground_truth`` entry, or ``None`` -- the default -- for a simulator that records nothing
+   of its own, whose ground truth is the ``*_gt`` frame its world publishes on ``/tf``. roqsim
+   answers ``{table: sim_poses, entity_kind: robot}``: the robots' bodies in its recording.
+``on_demand_streams(cfg, execution)`` / ``on_demand_from_reply(cfg, execution, reply)``
+   The ROS topics the simulator computes only while something subscribes, at a cost -- a
+   rendered camera image, a depth image, their compressed forms -- which a recording of every
+   topic :ref:`leaves out <recording-config>`: a list of ``{topic, type}`` with each topic
+   fully qualified, or a ``ContainerQuery`` answered at composition once per distinct ``sim``
+   block in the campaign's image, whose JSON reply ``on_demand_from_reply`` turns into that
+   list (by default it reads ``{"on_demand": [...]}``). A reply that cannot say fails
+   composition. ``None`` (the default) means the backend cannot say, and nothing is left out.
+   roqsim asks ``roqsim check --json`` with the configuration's overrides and leaves out every
+   ``lazy`` output whose ``cost`` is ``render``; its ray casts, a lidar scan among them, stay.
 ``default_panels(cfg, execution)``
    Run-view panels this backend contributes, as ``{<type>: <props>}`` entries — the panel
    that replays a recorded scene state, for a backend that records one; ``[]`` otherwise.
@@ -248,8 +270,8 @@ Quote every value: the return is a *string*, and a vector like ``lookat=1,2,0`` 
 
 .. _scene-descriptor:
 
-The scene descriptor
-````````````````````
+The scene
+`````````
 
 The :ref:`run view <run-view>`'s 3D panel replays a run from **two artifacts**, and from nothing
 else -- no ROS, no rosbag, no postprocessing:
@@ -262,9 +284,9 @@ else -- no ROS, no rosbag, no postprocessing:
      - what it carries
      - when
      - who can produce it
-   * - **scene descriptor**
-     - geometry: a body tree with rest transforms, named joints, geoms, materials, textures,
-       skins, an initial camera
+   * - **scene**
+     - geometry: a body tree with named joints, meshes, materials, textures, skins, sensor
+       cameras, an initial camera -- one glTF file
      - static, per world
      - **any tool that can read the world** -- it need not be the simulator that ran
    * - **recording**
@@ -281,21 +303,66 @@ capability**: a simulator that emits both gets a replay; one that does not simpl
 ``scene3d`` panel, exactly as a Gazebo campaign has none. The dependency fails by *absence*, which
 is visible, rather than through a fallback that renders something misleading.
 
-The descriptor is ``scene.json`` + ``scene.bin`` + one ``tex_<i>.png`` per image texture, in one
-directory: the loader fetches the binary and the textures as **relative siblings** of
-``scene.json``, which is why the file address space preserves path segments. The format is
-defined by its producer, ``roqsim/export_web.py``, and its full field list lives there. Three notes
-matter to a *second* producer:
+The scene is **one binary glTF 2.0 file** (``scene.glb``): a standard format, so the scene a
+backend writes is also one any glTF viewer opens, and the run view loads it with three.js's own
+``GLTFLoader``. What the run view needs beyond core glTF rides in ``extras``, and that is the whole
+contract a *second* producer implements:
 
-* It is a plain scene graph -- bodies with rest transforms and a parent index, named joints
-  carrying ``type``/``axis``/``pos``, geoms as primitives or indexed meshes -- and nothing in it
-  is MuJoCo-specific in substance.
-* ``joints[].qposadr`` is **optional and legacy**. It names an index into MuJoCo's state vector,
-  and the reference loader has never read it: animation is addressed entirely by joint *name*.
-  A new producer should omit it.
-* It states what it is with ``format: "roqsim.web_scene"`` and a ``version``. The panel refuses
-  another format or a version newer than it reads, naming both, so a descriptor written to a later
-  contract is an error rather than a plausible drawing; an unstamped descriptor is version 1.
+* **The frame.** glTF is Y-up; the world is Z-up, like ROS. The body node of the world (body 0)
+  carries the turn between them (-90 degrees about x), so a point in that node's frame is a world
+  point, and so is every recorded pose. The loader takes the turn off and applies it once for the
+  whole scene.
+* **Bodies.** Every body is a node, the child of its parent body's node, with its pose relative to
+  that parent. Its ``extras`` carry ``body`` (the body's exact name, which a loader may otherwise
+  rewrite) and ``body_id`` (its index, 0 for the world). A drawn shape is a child node of its
+  body's node.
+* **Joints.** A body moved by a hinge or a slide lists them in its node's ``extras.joints``, in the
+  order they compose: ``{"name", "type": "hinge" | "slide", "axis": [x, y, z], "pos": [x, y, z],
+  "ref"}``, axis and anchor in the body's frame. The node's transform is the body at the values the
+  scene's ``initialJoints`` give (a joint without a name at ``ref``); a value ``q`` turns or slides
+  the body by ``q - ref`` from its pose at ``ref``. Free and ball joints may be listed with their
+  type and are not driven by name: their body's pose track drives it.
+* **The scene's own extras** state the contract, ``format: "roqsim.scene"`` and a ``version``,
+  ``initialJoints`` (name to value), and optionally ``view``, the world's authored initial camera
+  (``lookat``, ``distance``, ``azimuth``, ``elevation``, as a MuJoCo free camera in the world
+  frame). The panel refuses another format or a version newer than it reads, naming both, so a
+  scene written to a later contract is an error rather than a plausible drawing.
+* **Skins** are glTF skinned meshes whose joints are body nodes, so a viewer that moves bodies by
+  name deforms them -- which is how a walking character, a cloth or a cable replays.
+* **Compression.** Geometry may be compressed with ``EXT_meshopt_compression`` and images may be
+  WebP (``EXT_texture_webp``); the loader decodes both, fetching the decoder only with the first
+  scene.
+
+.. _scene-descriptor-cameras:
+
+**Camera sensors.** A producer that knows the world's camera sensors places each one in the scene,
+and a :ref:`camera panel <camera-panel>` with ``kind: scene`` then renders the scene from where the
+sensor looked. That is all a backend provides for camera views: the picture is drawn in the browser
+from the scene and the recorded poses, so a run stores no images for it and the service renders
+nothing per frame. A sensor is a glTF perspective camera on a node of its own, the child of the node
+of the body it is mounted on, at its mount pose, so the camera follows the body as the recording
+moves it. The node's ``extras``:
+
+.. code-block:: json
+
+   {"sensor": "robot.oakd.oakd_camera", "kind": "rgb", "width": 320, "height": 240}
+
+* ``sensor`` -- the sensor's name, unique in the scene; it is what a camera panel's ``camera``
+  names. A camera node without it is not a sensor and is not offered.
+* The **camera frame is glTF's**: the camera looks down its local -z, with +y up and +x to the
+  right of the image. A producer whose cameras look down +z (OpenCV's optical frame) turns them
+  half a turn about x.
+* The projection is the glTF camera's: ``yfov`` in radians, ``znear``/``zfar`` in metres,
+  ``aspectRatio`` width over height. Optional as in glTF: no ``aspectRatio`` takes the image's
+  (else the panel's) shape, and no ``zfar`` is far away.
+* ``kind`` -- what the sensor's image holds: ``rgb``, or ``depth``. Absent reads as ``rgb``. Only
+  ``rgb`` cameras are offered as views; a depth image is a distance per pixel, which a render of the
+  scene's colours would misstate.
+* ``width``/``height`` -- optional, the published image's size in pixels; the view is letterboxed
+  to this shape.
+
+A malformed camera -- one not on a body, a field of view outside (0, π) -- is refused by the loader
+naming it.
 
 **Names are the whole addressing scheme.** A recording drives the scene by body name
 (``sim_poses``) and by joint name (``joint_states``), in the joint's own unit; no index crosses
@@ -304,7 +371,7 @@ is "could this be written from ``/joint_states`` and ``/tf``?" -- with the cavea
 be in the scene's frame, not a map frame: a nav stack's ``base_link`` lives in a *map* frame that
 can be meters from the world origin, and no reader can tell the two apart from the numbers.
 
-**When it is produced.** Not by the run: a descriptor is a function of the world, so the service
+**When it is produced.** Not by the run: a scene is a function of the world, so the service
 compiles it on first view -- inside the campaign's own pinned image, through ``scene_export`` --
 and caches it by **world identity**: the simulator image's digest plus the ``world`` and
 ``overrides`` the run's ``sim_recording`` row carries. The digest is what settles what
@@ -317,11 +384,10 @@ must record the overrides it actually built with -- ``{}`` when none were applie
 only when it genuinely did not record them, which the panel reports rather than reading as
 none. How the service serves it: :ref:`its delivery section <scene-descriptor-delivery>`.
 
-**Adding a producer.** For a simulator that is not roqsim, either emit the descriptor directly
-from ``scene_export``, or compile it offline from the world the simulator ran -- for an SDF
-world, ``roqsim scenes sdf-to-scene`` → ``scene-to-mjcf`` → ``roqsim export web`` already does
-this, and a campaign can run it as an ``execution.generate`` step so the descriptor is a frozen
-campaign input with a freshness manifest. The motion is the simulator's own recording, decoded
+**Adding a producer.** For a simulator that is not roqsim, ``scene_export`` either writes the
+glTF file itself -- most simulators' scene formats have a glTF exporter, and the contract above
+is what to add to its ``extras`` -- or compiles it from the world the simulator ran: for an SDF
+world, ``roqsim scenes sdf-to-scene`` → ``scene-to-mjcf`` → ``roqsim export gltf`` does this. The motion is the simulator's own recording, decoded
 into the tables above (:doc:`results_processing`).
 
 Two rules that are not negotiable
@@ -564,9 +630,9 @@ container is: it is handed the campaign's files at ``/config`` (the command name
 there, not by its path on the host), and its image reference must be one a registry can serve
 -- a ``family:`` ref is resolved for the ``docker run`` fallback ``vast configuration
 generate`` uses, and deliberately left symbolic for the cluster factory, whose aux Pod names
-its containers after the spec's image. Both were once missing here and the query could not
-run at all: it asked for an image called ``family``, and once past that it was given a world
-path relative to a directory the container did not have.
+its containers after the spec's image. Without either, the query cannot run at all: it would
+ask for an image called ``family``, or be given a world path relative to a directory the
+container does not have.
 
 **Transport is the world's, not the campaign's.** RoboVAST passes no middleware flags at
 all: which topics a world speaks, under which namespace (``ros2_bridge``, whose config
@@ -576,9 +642,20 @@ YAML. A campaign runner configuring a simulator's middleware would be reaching a
 down; ``--headless`` and ``--pacing`` are the only two the deployment owns.
 
 So a world a ``mode: ros2`` campaign runs **must** declare its own ``ros2_bridge``, plus
-``sim_interfaces`` if the scenario touches entities. Opening such a world by hand where no
+``sim_interfaces`` if the scenario uses scenario-execution's ``osc.sim`` actions (the
+``simulation_interfaces`` services). Opening such a world by hand where no
 bridge is installed is ``roqsim sim <world> --no-communication``, which strips the transport
 plugins, so declaring them costs the world nothing.
+
+roqsim's own control socket is not middleware but part of the deployment: ``roqsim sim``
+serves it, and roqsim's own ``osc.roqsim`` entity actions (``entity_call``,
+``entity_monitor``, ``entity_near``, ``entity_moved``, ...) reach the simulator through it, so
+they need neither ``sim_interfaces`` nor a ROS bridge. In ``mode: ros2`` the two run in separate
+containers, so the backend sets ``ROQSIM_CONTROL=ipc:///ipc/roqsim-control.sock`` in both, on
+the ``/ipc`` directory every container of the job mounts; roqsim's default, a socket in the run
+directory, would sit under ``/out`` in the simulator's container alone. ``mode: base`` sets
+nothing: the scenario reaches the simulator in its own process. A campaign's own
+``execution.env`` still wins, as for every backend variable.
 
 Building the image from your own roqsim
 ```````````````````````````````````````

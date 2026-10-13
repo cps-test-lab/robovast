@@ -15,6 +15,7 @@ from robovast.common.containers import plan_containers
 from robovast.common.execution import scenario_env
 from robovast.common.simulators import (SHAPE_ROS, SHAPE_STEPPED, SimulatorBackend, apply_backend,
                                         shape_for, simulator_image)
+from robovast.common.variation.container_runner import ContainerSpec
 
 
 class StageConfig(BaseModel):
@@ -57,16 +58,6 @@ class RosOnlyBackend(SimulatorBackend):
 
     def containers(self, cfg, execution):
         return {"simulation": {"image": "gz:harmonic", "command": ["gz", "sim", "-s"]}}
-
-
-class _ContainerSpec:
-    """Only what a query carries: an image, and a name derived from it."""
-
-    def __init__(self, image):
-        self.image = image
-
-    def container_name(self):
-        return "aux-" + self.image.split("/")[-1].split(":")[0]
 
 
 class PanelBackend(StubBackend):
@@ -397,7 +388,7 @@ def test_a_query_that_never_started_reports_what_the_container_said(tmp_path):
         def close(self):
             pass
 
-    query = ContainerQuery(_ContainerSpec("vendor/sim:1"), ["sim", "inputs", "/config/w.yaml"])
+    query = ContainerQuery(ContainerSpec(image="vendor/sim:1"), ["sim", "inputs", "/config/w.yaml"])
     token = cg.set_container_runner_factory(lambda spec: Exploding())
     try:
         with pytest.raises(RuntimeError) as caught:
@@ -479,16 +470,78 @@ def test_a_declared_transport_keeps_its_position_among_the_contributed_panels():
 
 def test_the_recording_block_reaches_the_backend_on_every_route():
     """apply_backend, the per-job overlay and the sidecar all hand the backend the same
-    block, so what the simulator is asked to record cannot differ by route."""
-    from robovast.common.config import RecordingConfig
+    ``execution.recording`` block, so what the simulator is asked to record cannot differ by
+    route."""
     from robovast.common.execution import sidecar_backend_env
     from robovast.common.simulators import sim_job_overlay
 
-    recording = RecordingConfig.model_validate({"roqsim": {"rate_hz": 25}})
-    ex = apply_backend(_execution("ros2", stage="s"), recording=recording)
+    ex = apply_backend({**_execution("ros2", stage="s"), "recording": {"roqsim": {"rate_hz": 25}}})
     assert ex["_backend_env"]["STUB_RATE"] == "25.0"
     assert sidecar_backend_env(ex, "simulation")["STUB_RATE"] == "25.0"
-    overlay = sim_job_overlay(ex, {"backend": "stub", "stage": "s"}, recording=recording)
+    overlay = sim_job_overlay(ex, {"backend": "stub", "stage": "s"})
     assert overlay["env"]["STUB_RATE"] == "25.0"
     # And its absence is a block, not an error: the backend is told there is none.
     assert "STUB_RATE" not in apply_backend(_execution("ros2", stage="s"))["_backend_env"]
+
+
+# -- the scenario's clock -------------------------------------------------------------------
+
+class ClockBackend(StubBackend):
+    """A simulator that publishes /clock in the ROS shape, as roqsim's bridge does."""
+
+    def publishes_clock(self, cfg, execution):
+        return True
+
+
+@pytest.fixture
+def _clock_backend(monkeypatch):
+    import robovast.common.simulators as mod
+    backends = {"stub": StubBackend, "rosonly": RosOnlyBackend, "clock": ClockBackend}
+    monkeypatch.setattr(mod, "resolve_backend", lambda name, base_dir="": backends[name]())
+
+
+def _clock_env(execution):
+    return scenario_env({"execution": apply_backend(execution)})["SCENARIO_USE_SIM_TIME"]
+
+
+@pytest.mark.usefixtures("_clock_backend")
+def test_a_simulator_that_publishes_clock_runs_the_scenario_on_it():
+    ex = {"mode": "ros2", "containers": {"simulation": {"backend": "clock", "stage": "s"}}}
+    assert _clock_env(ex) == "true"
+
+
+@pytest.mark.usefixtures("_clock_backend")
+def test_the_campaign_overrides_the_backends_answer():
+    ex = {"mode": "ros2", "use_sim_time": False,
+          "containers": {"simulation": {"backend": "clock", "stage": "s"}}}
+    assert _clock_env(ex) == "false"
+
+
+@pytest.mark.usefixtures("_clock_backend")
+def test_a_backend_that_cannot_say_is_refused_unless_the_campaign_states_it():
+    ex = {"mode": "ros2", "containers": {"simulation": {"backend": "rosonly"}}}
+    with pytest.raises(ValueError, match="backend 'rosonly' does not say"):
+        _clock_env(ex)
+    assert _clock_env({**ex, "use_sim_time": True}) == "true"
+
+
+def test_a_ros_campaign_with_no_backend_must_state_its_clock():
+    ex = {"mode": "ros2", "containers": {"scenario": {"image": "a"}}}
+    with pytest.raises(ValueError, match="execution.use_sim_time is required: no simulator backend"):
+        _clock_env(ex)
+    assert _clock_env({**ex, "use_sim_time": False}) == "false"
+    assert _clock_env({**ex, "use_sim_time": True}) == "true"
+
+
+@pytest.mark.usefixtures("_clock_backend")
+@pytest.mark.parametrize("mode", ["base", "auto"])
+def test_the_stepped_shape_runs_on_its_own_step_clock(mode):
+    """scenario-execution's SimulationClock, not ROS time: nothing to pass, and a
+    use_sim_time set there would be ignored, so it is refused."""
+    ex = {"mode": mode, "containers": {"scenario": {"image": "a"}}}
+    assert _clock_env(ex) == "false"
+    if mode == "base":
+        assert _clock_env({"mode": "base", "containers": {
+            "simulation": {"backend": "clock", "stage": "s"}}}) == "false"
+    with pytest.raises(ValueError, match="applies to the ROS shape"):
+        _clock_env({**ex, "use_sim_time": True})
