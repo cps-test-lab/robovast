@@ -36,5 +36,5 @@ except PackageNotFoundError:  # a source tree that was never installed
 #: 3: campaign.batch has recalls_recorded and complete; campaign.unit has recalled_from.
 #: 4: campaign.node has calibration_json.
 #: 5: ground_truth_poses.
-#: 6: main.run_rtf, the realtime factor per simulated second.
+#: 6: run_rtf_view, the realtime factor per simulated second.
 DATA_CONTRACT = 6

@@ -393,7 +393,7 @@
   "function TEXT",
   "line TEXT"
  ],
- "main.run_rtf": [
+ "main.run_rtf_view": [
   "campaign_id TEXT",
   "config_name TEXT",
   "run_id INTEGER",

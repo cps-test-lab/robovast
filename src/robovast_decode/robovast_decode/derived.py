@@ -28,7 +28,6 @@ on the run's clock and trial window (:mod:`robovast_decode.run_slices`):
                        (:mod:`robovast_decode.resource_usage`)
 ``system_usage``       the container-level counters (:mod:`robovast_decode.system_usage`)
 ``run_clock``          what relates the run's wall stamps to sim time, and how well
-``run_rtf``            the realtime factor per simulated second, from the same clock map
 =====================  ==========================================================================
 
 They read the run's ``rosout`` and ``clock_map`` tables, which are built first. Its
@@ -58,13 +57,9 @@ SCENARIO_TIMESTAMPS = "scenario_timestamps"
 RESOURCE_USAGE = "resource_usage"
 SYSTEM_USAGE = "system_usage"
 RUN_CLOCK = "run_clock"
-RUN_RTF = "run_rtf"
-
-#: Simulated seconds per ``run_rtf`` row.
-RTF_WINDOW_S = 1.0
 
 #: Every derived table, in the order they are built.
-DERIVED = (RUN_LOG, SCENARIO_TIMESTAMPS, RESOURCE_USAGE, SYSTEM_USAGE, RUN_CLOCK, RUN_RTF)
+DERIVED = (RUN_LOG, SCENARIO_TIMESTAMPS, RESOURCE_USAGE, SYSTEM_USAGE, RUN_CLOCK)
 
 #: The recorded tables they read, built before them from the run's recordings.
 INPUTS = ("rosout", "clock_map")
@@ -84,8 +79,6 @@ _RESOURCE_TYPES = {
     "shm_total_bytes": pa.int64()}
 _CLOCK_TYPES = {"clock_map_source": pa.string(), "clock_map_samples": pa.int64(),
                 "clock_map_wall_span_s": pa.float64(), "clock_map_sim_span_s": pa.float64()}
-_RTF_TYPES = {"sim_start": pa.float64(), "sim_end": pa.float64(), "wall_span_s": pa.float64(),
-              "sim_span_s": pa.float64(), "realtime_factor": pa.float64()}
 _ARROW = {INTEGER: pa.int64(), REAL: pa.float64(), TEXT: pa.string(), UNKNOWN: pa.null()}
 
 #: Column notes, for the catalog.
@@ -96,13 +89,6 @@ NOTES = {
                      "published /clock and after it stopped. Nothing is extrapolated."),
         "in_window": ("0 for a line outside the run's own trial window: its bring-up, "
                       "verdict and teardown"),
-    },
-    RUN_RTF: {
-        "realtime_factor": ("sim_span_s / wall_span_s within one simulated second; a run's "
-                            "factor is not constant, so a slow stretch shows here and not in "
-                            "run_clock's one number"),
-        "sim_start": "the window's start in simulated seconds; a window with under two clock "
-                     "samples has no row",
     },
     RUN_CLOCK: {
         "clock_map_source": ("'none' means this run's log lines have no sim time at all; "
@@ -243,13 +229,6 @@ def derive_job(campaign_dir: str, campaign_id: str, job_dir: Optional[str], run:
               "clock_map_sim_span_s": info.sim_span_s}],
             _CLOCK_TYPES, context)
 
-    if RUN_RTF in wanted:
-        out.tables[RUN_RTF] = _typed(
-            [{"sim_start": start, "sim_end": end, "wall_span_s": wall, "sim_span_s": sim,
-              "realtime_factor": sim / wall}
-             for start, end, wall, sim in slice_.clock.windows(RTF_WINDOW_S)],
-            _RTF_TYPES, context)
-
     if job_dir is None:
         out.notes.append(f"{run.key}: no job-link entry, so no job artifacts -- its log and "
                          "resource tables are empty")
@@ -269,5 +248,5 @@ def _scan_notes(scan: resource_usage.ScanStats) -> List[str]:
     return notes
 
 
-__all__ = ["DERIVED", "Derivation", "INPUTS", "JobRun", "NOTES", "RESOURCE_USAGE", "RUN_CLOCK", "RUN_RTF",
+__all__ = ["DERIVED", "Derivation", "INPUTS", "JobRun", "NOTES", "RESOURCE_USAGE", "RUN_CLOCK",
            "RUN_LOG", "SCENARIO_TIMESTAMPS", "SYSTEM_USAGE", "derive_job"]
