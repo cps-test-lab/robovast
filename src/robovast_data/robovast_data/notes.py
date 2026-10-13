@@ -107,6 +107,14 @@ STATIC_NOTES: dict = {
     ("behaviors_meta", "scenario_sha256"): (
         "hash of the scenario file as run, NULL for a scenario given inline: what to compare "
         "to say two runs executed the same scenario source."),
+    ("run_rtf_view", "realtime_factor"): (
+        "sim_span_s / wall_span_s between the first and last clock sample of one simulated "
+        "second: a run's factor is not constant, so a slow stretch shows here and not in "
+        "run_clock's one number."),
+    ("run_rtf_view", "sim_start"): (
+        "the window's start in simulated seconds; a window holding fewer than two clock "
+        "samples has no row. The samples are decimated, so a missing second can be one where "
+        "the rate held steady."),
     ("resource_usage", "cpu_percent"): (
         "one row is one PROCESS NAME, not a container: SUM per (container, wall_ts) before "
         "comparing, or an average reads as a per-process figure. Per-core, so >100 is "

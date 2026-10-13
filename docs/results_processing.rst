@@ -739,7 +739,13 @@ during image boot has no sim time — a different statement from "we could not c
 ``run_clock`` table says, per run, which producer answered (``clock_map_source``:
 ``ros_clock_bag`` / ``roqsim`` / ``none``), how many samples it has and the wall and sim
 spans they cover, so a reader can tell a *missing* map from a *quiet* one;
-``clock_map_sim_span_s / clock_map_wall_span_s`` is the run's realtime factor.
+``clock_map_sim_span_s / clock_map_wall_span_s`` is the run's realtime factor. That one number
+hides a stretch of the trial that ran slow, so the view ``run_rtf_view`` gives it per simulated
+second, computed from ``clock_map`` when it is queried: one row per second of sim time that holds
+two clock samples or more, with its ``wall_span_s``, ``sim_span_s`` and ``realtime_factor``,
+measured between that window's own first and last sample. A window with fewer samples has no row
+rather than a factor nobody measured; the samples are decimated, so a steady stretch can hold
+fewer than two per second and have no row.
 
 .. _results-derived-tables:
 
