@@ -17,8 +17,9 @@
 """Tables derived from a job's records, for the run the job ran.
 
 A job's container logs, its resource samples and its wall-time recording are written once
-per job, and a job runs one run. So these tables are built from the job's records and placed
-on the run's clock and trial window (:mod:`robovast_decode.run_slices`):
+per job. So these tables are built from the job's records and placed on the run's clock and
+trial window (:mod:`robovast_decode.run_slices`) -- whole and marked for a job of one run, cut
+to the window for a run whose job held several:
 
 =====================  ==========================================================================
 ``run_log``            every container's stdout joined with ``/rosout``, one row per event, on
@@ -101,11 +102,13 @@ NOTES = {
 
 @dataclass
 class JobRun:
-    """The run of a job, as the derivation needs it."""
+    """A run of a job, as the derivation needs it."""
     key: str
     config_name: str
     run_id: int
     path: str
+    #: The job held other runs too (see :class:`~robovast_decode.run_slices.RunSlice`).
+    shared: bool = False
 
 
 @dataclass
@@ -177,7 +180,7 @@ def _verdict(rows: Sequence[dict]) -> Optional[dict]:
 def derive_job(campaign_dir: str, campaign_id: str, job_dir: Optional[str], run: JobRun,
                tables: Sequence[str], manifest: dict,
                containers: Optional[Sequence[str]]) -> Derivation:
-    """Build *tables* for the run of one job.
+    """Build *tables* for one run of a job.
 
     The ``rosout`` and ``clock_map`` rows of the job's recording, or of the run's simulator's
     own, are recorded under the run's key; *containers* are the campaign's runtime container
@@ -187,7 +190,8 @@ def derive_job(campaign_dir: str, campaign_id: str, job_dir: Optional[str], run:
     wanted = set(tables)
     stats = run_slices.SliceStats()
     clock = _clock_of(campaign_dir, manifest, run.key)
-    slice_ = run_slices.run_slice(job_dir or "", run.config_name, run.path, clock, stats)
+    slice_ = run_slices.run_slice(job_dir or "", run.config_name, run.path, clock, stats,
+                                  shared=run.shared)
     context = {"campaign_id": campaign_id, "config_name": run.config_name, "run_id": run.run_id}
 
     if wanted & {RUN_LOG, SCENARIO_TIMESTAMPS}:
@@ -197,7 +201,7 @@ def derive_job(campaign_dir: str, campaign_id: str, job_dir: Optional[str], run:
             job_dir, _job_rows(campaign_dir, manifest, "rosout", run.key), merge,
             sole_container=sole) if job_dir else [])
         rows = run_log.rows_for_window(records, slice_.clock, start_epoch=slice_.start_epoch,
-                                       end_epoch=slice_.end_epoch)
+                                       end_epoch=slice_.end_epoch, keep_outside=not slice_.shared)
         if RUN_LOG in wanted:
             out.tables[RUN_LOG] = _typed(rows, _RUN_LOG_TYPES, context)
         verdict = _verdict(rows)

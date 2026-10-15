@@ -1112,14 +1112,14 @@ timeout
 
 **Required:** No
 
-Maximum wall-clock time (in seconds) allowed for a single **run**. Every run is dispatched
-as its own job, one Kubernetes Job. The number is used exactly as declared.
+Maximum wall-clock time (in seconds) allowed for a single **run**. A job is one run unless
+``runs_per_job`` packs several, and a Job's deadline is this number times the runs it holds.
 
 The declaration sets ``activeDeadlineSeconds`` on the Job spec, so Kubernetes
 force-terminates the Job (marking it ``DeadlineExceeded``) when the deadline expires.
 
 If omitted (or ``null``), a run falls back to a **backstop of 1 hour**
-(``activeDeadlineSeconds = 3600``) so a hung Job is always eventually killed rather than
+(``activeDeadlineSeconds = 3600`` per run) so a hung Job is always eventually killed rather than
 hanging the campaign indefinitely. The backstop only enforces: ``stalled`` is judged against
 a declared ``timeout`` alone, and with none it is ``null``.
 
@@ -1128,7 +1128,55 @@ A Job hard-killed on its deadline is logged with ``HARD-KILLED by activeDeadline
 .. code-block:: yaml
 
    execution:
-     timeout: 3600   # 1 hour for the job
+     timeout: 3600   # 1 hour for the run
+
+.. _config-runs-per-job:
+
+runs_per_job
+^^^^^^^^^^^^
+
+**Type:** Integer
+
+**Required:** No (default: ``1``)
+
+How many of a configuration's runs one job holds. A **run** is one configuration executed at
+one run number (one scenario execution); a **job** is one unit of dispatch -- one Kubernetes
+Job, with its own pod, its own simulator process and its own ``/config``.
+
+**Leave it at 1.** That is the right value for nearly every campaign: each run is a job of
+its own, and a job's bring-up is a small part of a run that drives a robot stack for minutes.
+The exception is narrow: a stepped in-process simulator (``mode: base``) whose runs are
+cheap beside the job's bring-up -- physics trials of a few seconds, hundreds of them -- where
+a job per run would spend most of the campaign scheduling pods. There, ``runs_per_job: N``
+runs up to ``N`` of a configuration's runs one after another in one simulator process,
+reset between them, so the simulator is built once per job rather than once per run.
+
+- A job never holds more than one configuration: it holds one world and one configuration's
+  files. ``N`` is an upper bound on a configuration's runs per job, so a campaign of ``runs: 50``
+  and ``runs_per_job: 20`` dispatches three jobs per configuration.
+- **Refused with** ``mode: ros2``, by name, when the configuration is validated: in the ROS
+  shape the simulator is another container, started once with one world and told nothing per
+  run, so it cannot be reset per run or told where each run writes.
+- ``timeout`` stays the budget of one run; the Job's deadline is the budget times the runs it
+  holds.
+
+Every per-run artifact is written per run by the process that owns it -- ``test.xml``, the
+behaviour log, the simulator's recording -- so results are keyed by configuration name and run
+number whatever the packing, and a run's recording is its own; the runs of one job are the
+successive episodes of the one seed its simulator process drew, and each recording names its
+episode. What a job writes once for the
+pod -- its container log, its resource samples, its host record -- is shared by its runs: the
+derived tables give each run the rows inside its own trial window
+(:ref:`results-derived-tables`), and the ``job`` table has one row the runs point at.
+
+A packed job that is interrupted after some of its runs landed is created again whole when the
+campaign is re-entered; the runs it had produced are produced again.
+
+.. code-block:: yaml
+
+   execution:
+     mode: base
+     runs_per_job: 50   # fifty short trials of one configuration per job, one simulator build
 
 scenario_file
 ^^^^^^^^^^^^^

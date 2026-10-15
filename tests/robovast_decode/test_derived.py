@@ -143,6 +143,30 @@ def test_a_run_keeps_its_bring_up_verdict_and_teardown_marked_outside_its_trial(
     assert [r["seq"] for r in rows] == list(range(len(rows)))
 
 
+def test_the_runs_of_a_shared_job_each_get_their_own_window_and_nothing_else(tmp_path):
+    """Two runs in one job, one after another: the job's log and ticks are cut on each run's
+    own ``test.xml`` stamps, so run 1 never sees run 0's trial, and the bring-up before both
+    and the reset between them belong to neither."""
+    root = _campaign(tmp_path)
+    lines = (f"[INFO] [99.5] [{_SCEN}]: bring-up\n"
+             f"[INFO] [101.0] [{_SCEN}]: first trial\n"
+             f"[INFO] [111.0] [{_SCEN}]: reset between\n"
+             f"[INFO] [113.0] [{_SCEN}]: second trial\n"
+             f"[INFO] [125.0] [{_SCEN}]: teardown\n")
+    _job(root, 0, {"robovast": "resource_usage_main.csv"}, ticks=(99.0, 101.0, 113.0, 125.0),
+         log_lines=lines)
+    _run(root, "cfg-a", 0, index=0, start_epoch=100.0)
+    _run(root, "cfg-a", 1, index=0, start_epoch=112.0)
+    build(str(root), tables=["run_log", "resource_usage"])
+    first = [r["message"] for r in _rows(root, "run_log", run=0)]
+    second = [r["message"] for r in _rows(root, "run_log", run=1)]
+    assert first == ["first trial"] and second == ["second trial"]
+    assert all(r["in_window"] == 1 for r in _rows(root, "run_log", run=0))
+    assert [r["seq"] for r in _rows(root, "run_log", run=1)] == [0]
+    assert {r["wall_ts"] for r in _rows(root, "resource_usage", run=0)} == {101.0}
+    assert {r["wall_ts"] for r in _rows(root, "resource_usage", run=1)} == {113.0}
+
+
 def test_a_failing_runs_verdict_past_its_window_is_still_read(tmp_path):
     root = _failing_log_campaign(tmp_path)
     assert _rows(root, "scenario_timestamps")[0]["status"] == "failed"

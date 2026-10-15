@@ -1346,10 +1346,11 @@ class ClusterService(ServiceBase):
     def _job_run(cls, job) -> dict:
         """``config_name`` and ``run_id`` of the run a Job executes, as :class:`JobSummary` fields.
 
-        Read off the Job's ``RUN_OUTPUT_DIR``, which the backend stamps on every run's pod
-        (:func:`~.kubernetes_backend.run_of_output_dir`): the Job's *name* is a Kubernetes name
-        and carries no run. Empty -- both fields absent -- for a calibration probe, which executes
-        no run, and for a Job that carries no such variable.
+        Read off the Job's ``RUN_OUTPUT_DIR``, which the backend stamps on the pod of a Job of
+        one run (:func:`~.kubernetes_backend.run_of_output_dir`): the Job's *name* is a Kubernetes
+        name and carries no run. Empty -- both fields absent -- for a calibration probe, which
+        executes no run, and for a Job of several runs, which has no one run to name; the run
+        such a Job is on at the moment is :meth:`_job_live_run`'s answer.
         """
         from .kubernetes_backend import RUN_OUTPUT_DIR_ENV, run_of_output_dir
         if cls._job_kind(job) != JobKind.RUN:

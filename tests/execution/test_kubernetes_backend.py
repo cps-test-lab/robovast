@@ -280,7 +280,7 @@ class _FakeBatchClient:
 
 def _job(index, config_name):
     """What `_build_jobs` hands the wait loop."""
-    return Job(config={"name": config_name}, run_number=0, index=index)
+    return Job(config={"name": config_name}, runs=[0], index=index)
 
 
 def _restart_runner(monkeypatch, tmp_path, jobs, forensics, *, remaining_after=()):

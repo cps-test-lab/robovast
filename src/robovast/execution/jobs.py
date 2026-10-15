@@ -14,43 +14,69 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""A campaign's jobs: one per run.
+"""A campaign's jobs: the runs of one configuration, one or more per job.
 
-A *run* is one configuration executed at one run number (one scenario execution), and every
-run is dispatched as its own job (one Kubernetes Job), with its own simulator process and its
-own ``/config``. Results are keyed by configuration name / run number; the job index names the
-job's artifact directory under ``_jobs/``.
+A *run* is one configuration executed at one run number (one scenario execution), and a *job*
+is the unit of dispatch (one Kubernetes Job): its own pod, its own simulator process and its
+own ``/config``. By default a job is one run. ``execution.runs_per_job`` lets a job hold up to
+that many runs **of one configuration**, executed one after another in the one simulator
+process, which is reset between them -- what pays for a simulator whose setup dominates a run.
+
+A job never mixes configurations: it holds one world and one configuration's files, so what it
+can hold several of is that configuration's runs. Results are keyed by configuration name /
+run number whatever the packing; the job index names the job's artifact directory under
+``_jobs/``.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
 class Job:
-    """One run, dispatched as one job.
+    """One or more runs of one configuration, dispatched as one job.
 
     Attributes:
         config: The configuration entry from ``campaign_data["configs"]``
             (carries ``name``, ``config`` params, ``_config_files``, …).
-        run_number: The 0-based run index.
+        runs: The 0-based run numbers, ascending, in execution order.
         index: 0-based index of this job within the campaign (stable, used for
             job naming and progress display).
     """
     config: dict
-    run_number: int
+    runs: list[int] = field(default_factory=list)
     index: int = 0
 
     @property
     def config_name(self) -> str:
         return self.config.get("name", "")
 
+    @property
+    def first_run(self) -> int:
+        return self.runs[0]
 
-def build_jobs(configs: list[dict], runs: int) -> list[Job]:
-    """One job per run, **by config, then by run**, so a configuration's runs are adjacent.
+    @property
+    def run_keys(self) -> tuple[str, ...]:
+        """``<config>/<run>`` of every run, in execution order."""
+        return tuple(f"{self.config_name}/{run}" for run in self.runs)
+
+
+def declared_runs_per_job(execution_params: dict) -> int:
+    """``execution.runs_per_job`` as declared, 1 when it is not."""
+    return int((execution_params or {}).get("runs_per_job") or 1)
+
+
+def build_jobs(configs: list[dict], runs: int, runs_per_job: int = 1) -> list[Job]:
+    """The jobs, **by config, then by run**: each configuration's runs in chunks of
+    *runs_per_job*, so a configuration's runs are adjacent and a job holds one configuration.
 
     Deterministic: the jobs the per-job parameter files are written for and the jobs the
     manifests are created for come from separate calls, and must be the same jobs.
     """
-    return [Job(config=config, run_number=run_number, index=index)
-            for index, (config, run_number) in enumerate(
-                (config, run_number) for config in configs for run_number in range(runs))]
+    if runs_per_job < 1:
+        raise ValueError(f"runs_per_job must be at least 1, got {runs_per_job}")
+    jobs = []
+    for config in configs:
+        for start in range(0, runs, runs_per_job):
+            jobs.append(Job(config=config, runs=list(range(start, min(start + runs_per_job, runs))),
+                            index=len(jobs)))
+    return jobs
