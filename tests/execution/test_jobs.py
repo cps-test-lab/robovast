@@ -44,5 +44,14 @@ def test_the_declared_packing_defaults_to_one():
     assert declared_runs_per_job({"runs_per_job": 4}) == 4
 
 
+def test_the_reported_count_is_the_plans():
+    """What validation and the preview report is what the backend creates."""
+    from robovast.execution.jobs import job_count
+    configs = [{"name": "a"}, {"name": "b"}]
+    for runs, packing in ((1, 1), (5, 2), (3, 50), (4, 4)):
+        assert job_count(len(configs), runs, packing) == len(build_jobs(configs, runs, packing))
+    assert job_count(2, 5, 2) == 6 and job_count(3, 4, 1) == 12
+
+
 def test_a_job_knows_its_runs_keys():
     assert Job(config={"name": "c"}, runs=[3, 4], index=1).run_keys == ("c/3", "c/4")

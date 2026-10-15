@@ -65,6 +65,13 @@ def declared_runs_per_job(execution_params: dict) -> int:
     return int((execution_params or {}).get("runs_per_job") or 1)
 
 
+def job_count(num_configs: int, runs: int, runs_per_job: int = 1) -> int:
+    """How many jobs :func:`build_jobs` makes of *num_configs* configurations at *runs* runs:
+    what a validation or a preview reports before anything is dispatched. Counted by the
+    same function, so the number a reader is shown is the number the backend creates."""
+    return len(build_jobs([{"name": ""}] * num_configs, runs, runs_per_job))
+
+
 def build_jobs(configs: list[dict], runs: int, runs_per_job: int = 1) -> list[Job]:
     """The jobs, **by config, then by run**: each configuration's runs in chunks of
     *runs_per_job*, so a configuration's runs are adjacent and a job holds one configuration.

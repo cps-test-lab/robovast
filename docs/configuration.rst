@@ -1172,6 +1172,9 @@ derived tables give each run the rows inside its own trial window
 A packed job that is interrupted after some of its runs landed is created again whole when the
 campaign is re-entered; the runs it had produced are produced again.
 
+``validate_project``, ``preview_configurations`` and ``vast config info`` report the job count
+beside the trial count (``jobs``), so what a campaign dispatches as is known before it starts.
+
 .. code-block:: yaml
 
    execution:

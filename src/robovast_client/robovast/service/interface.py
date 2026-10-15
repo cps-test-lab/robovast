@@ -1982,6 +1982,9 @@ class ValidationReport(BaseModel):
     configs: int = 0
     runs_per_config: int = 0
     total_trials: int = 0
+    #: The jobs the trials are dispatched as: one per trial, unless ``execution.runs_per_job``
+    #: packs a configuration's runs into one.
+    jobs: int = 0
 
 
 class RetriggerAxis(BaseModel):
@@ -2111,6 +2114,9 @@ class PreviewResponse(BaseModel):
     configs: int = 0
     runs_per_config: int = 0
     total_trials: int = 0
+    #: The jobs the trials are dispatched as: one per trial, unless ``execution.runs_per_job``
+    #: packs a configuration's runs into one.
+    jobs: int = 0
     configurations: list[PreviewConfiguration] = Field(default_factory=list)
     truncated: bool = False
     #: Auxiliary containers this expansion actually ran — a variation's helper image, by

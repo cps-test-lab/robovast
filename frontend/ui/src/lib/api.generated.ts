@@ -3958,6 +3958,11 @@ export interface components {
              * @default
              */
             error: string;
+            /**
+             * Jobs
+             * @default 0
+             */
+            jobs: number;
             progress: components["schemas"]["StepProgress"] | null;
             /**
              * Runs Per Config
@@ -5079,6 +5084,11 @@ export interface components {
              * @default 0
              */
             configs: number;
+            /**
+             * Jobs
+             * @default 0
+             */
+            jobs: number;
             /** Problems */
             problems: components["schemas"]["ValidationProblem"][];
             /**
