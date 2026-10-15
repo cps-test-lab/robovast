@@ -74,14 +74,16 @@ _DECLARED_STEPPED = {
 _CONTAINERS = ("sut", "scenario")
 
 
-def _project(tmp_path, fields=_DECLARED):
-    """A ``.vast`` declaring every field in *fields*, rendered from that mapping.
+def _project(tmp_path, fields=None):
+    """A ``.vast`` declaring every field in *fields* (:data:`_DECLARED` by default), rendered
+    from that mapping.
 
     Rendered rather than written out, so the file and the expectations cannot drift: a
     field added to the mapping is declared by the project automatically.
     """
     (tmp_path / "scenario.osc").write_text(_SCENARIO)
-    declared = yaml.safe_dump(fields, default_flow_style=False, sort_keys=True)
+    declared = yaml.safe_dump(_DECLARED if fields is None else fields,
+                              default_flow_style=False, sort_keys=True)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent("""\
         version: 7
