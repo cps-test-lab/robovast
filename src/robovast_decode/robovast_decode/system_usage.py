@@ -103,6 +103,8 @@ def rows_for_slice(columns: Sequence[str], samples: Sequence[Sample],
     """
     rows: List[dict] = []
     for container, wall, values in samples:
+        if not slice_.keeps(wall):
+            continue
         sim: Optional[float] = slice_.clock.to_sim(wall) if slice_.clock else None
         row = {
             "timestamp": sim,

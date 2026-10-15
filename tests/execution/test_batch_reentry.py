@@ -19,7 +19,7 @@ from robovast.execution.jobs import Job
 
 
 def _job(index, config, run):
-    return Job(config={"name": config}, run_number=run, index=index)
+    return Job(config={"name": config}, runs=[run], index=index)
 
 
 def _verdict(root, config, run):

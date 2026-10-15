@@ -404,7 +404,8 @@ def collect_job_records(job_dir: str, rosout_rows: Iterable[dict] = (),
 
 def rows_for_window(records: Sequence[LogRecord], clock, *,
                     start_epoch: Optional[float] = None,
-                    end_epoch: Optional[float] = None) -> List[dict]:
+                    end_epoch: Optional[float] = None,
+                    keep_outside: bool = True) -> List[dict]:
     """Pass 4: the rows for one run -- sim time attached, window marked, ``seq`` numbered.
 
     *clock* is a :class:`~robovast_decode.clock_map.ClockMap`; where it cannot answer,
@@ -415,15 +416,19 @@ def rows_for_window(records: Sequence[LogRecord], clock, *,
     ``in_window`` is 0 for a line outside this run's own wall window: bring-up, verdict and
     teardown — real output of the run, kept and flagged so a query can tell "during this
     trial" from "while getting ready for it". With no window given (a run without a readable
-    ``test.xml``) everything is in-window.
+    ``test.xml``) everything is in-window. With *keep_outside* false the lines outside the
+    window are left out instead: they are another run's, when the job held several.
 
     ``seq`` is numbered here, at the one place the merged order exists: *records* arrive in
     it. Numbered per run, from 0, so it means "the nth line of this run".
     """
     rows: List[dict] = []
-    for seq, rec in enumerate(records):
+    seq = 0
+    for rec in records:
         wall = rec.wall_ts
         in_window = run_slices.in_window(wall, start_epoch, end_epoch)
+        if not in_window and not keep_outside:
+            continue
         sim = clock.to_sim(wall) if clock else None
         rows.append({
             "seq": seq,
@@ -441,4 +446,5 @@ def rows_for_window(records: Sequence[LogRecord], clock, *,
             "function": rec.function,
             "line": rec.line,
         })
+        seq += 1
     return rows

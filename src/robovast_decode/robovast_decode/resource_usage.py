@@ -299,6 +299,8 @@ def rows_for_slice(ticks: Sequence[Tick], slice_: run_slices.RunSlice) -> List[d
     """
     rows: List[dict] = []
     for tick in ticks:
+        if not slice_.keeps(tick.wall_ts):
+            continue
         sim = slice_.clock.to_sim(tick.wall_ts) if slice_.clock else None
         marker = slice_.in_window(tick.wall_ts)
         for name, (cpu, mem, pids) in sorted(tick.processes.items()):

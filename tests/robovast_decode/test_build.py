@@ -11,8 +11,8 @@ import yaml
 
 from robovast_decode import build as build_module
 from robovast_decode import DATA_CONTRACT
-from robovast_decode.build import (SharedJobError, available_tables, bag_information, build,
-                                   find_runs, scenario_recording)
+from robovast_decode.build import (available_tables, bag_information, build, find_runs,
+                                   scenario_recording)
 from robovast_decode.cli import main
 
 from .conftest import make_campaign
@@ -101,15 +101,19 @@ def test_rows_carry_their_run(tmp_path):
             (campaign.name, config, run_id)}
 
 
-def test_a_campaign_whose_runs_share_a_job_is_refused_by_name(tmp_path):
-    """A job's records are its one run's; shared, they cannot be divided between runs."""
+def test_runs_that_share_a_job_are_each_built_and_marked_as_sharing(tmp_path):
+    """A job that held several runs one after another: each run is built, and each knows its
+    job's records are to be cut to its own trial window rather than read whole."""
     campaign = make_campaign(tmp_path / "c-2026-01-01-00000000", runs=(("a", 0), ("a", 1)),
                              shared_job=True)
-    for call in (lambda: build(str(campaign), tables=["rosout"]),
-                 lambda: available_tables(str(campaign))):
-        with pytest.raises(SharedJobError, match=r"runs a/0 and a/1 share the job _jobs/job-0"):
-            call()
-    assert not (campaign / ".cache").exists()
+    runs = find_runs(str(campaign))
+    assert [(r.key, r.shared_job) for r in runs] == [("a/0", True), ("a/1", True)]
+    assert all(r.job_dir and r.job_dir.endswith("_jobs/job-0") for r in runs)
+    build(str(campaign), tables=["rosbag2_collision"])
+    assert available_tables(str(campaign))
+    for run_id in (0, 1):
+        assert (campaign / ".cache" / "tables" / "rosbag2_collision" / "a" /
+                f"{run_id}.parquet").is_file()
 
 
 def test_a_run_without_its_verdict_is_built_but_not_complete(tmp_path):

@@ -56,6 +56,7 @@ from typing import Callable, List, Optional, Tuple
 from robovast.client import file_address
 from robovast.client.safe_path import UnsafePathError, check_segment, safe_join
 from robovast.common import file_view
+from robovast.execution.jobs import declared_runs_per_job, job_count
 from robovast.common.config import (EXPLORER_SCOPES, SCENARIO_CONTAINER,
                                     SIMULATION_CONTAINER)
 from robovast.common.campaign_data import (LaunchImages, campaign_has_runs,
@@ -4981,6 +4982,8 @@ class ServiceBase(RobovastInterface):
         truncated = bool(max_configs) and len(configs) > max_configs
         return PreviewResponse(configs=len(configs), runs_per_config=runs,
                                total_trials=len(configs) * runs,
+                               jobs=job_count(len(configs), runs, declared_runs_per_job(
+                                   campaign_data.get("execution") or {})),
                                configurations=items, truncated=truncated,
                                aux_containers=aux_containers,
                                # The config view is declared in the same file this expanded, and

@@ -18,12 +18,19 @@
 
 Some of what a run produced is not written by the run. Container logs, ``/rosout``, the
 clock map and the resource monitor's samples are written per **job**, under
-``_jobs/[<batch>/]job-N/``. A job runs exactly one run, so all of it is that run's; what this
-module adds is **when the run was executing its scenario**:
+``_jobs/[<batch>/]job-N/``. What this module adds is **when the run was executing its
+scenario**:
 
 * ``start_epoch``/``end_epoch`` — the run's TRIAL window, from its ``test.xml``. Inside it the
   run was executing its scenario; outside it, the job was bringing the containers up, writing
-  the verdict or shutting down. Rows are kept either way and marked ``in_window``.
+  the verdict or shutting down.
+
+A job of one run: all of its records are that run's, kept whole and marked ``in_window``, so a
+query can tell the trial from the bring-up around it. A job that held several runs one after
+another (``execution.runs_per_job``): each run takes the rows inside its own window and none
+outside it -- the rows between two windows are the simulator being reset, and the job's own
+bring-up and teardown belong to the job, not to its first or last run. The cut is on the
+run's own ``test.xml`` stamps, written by the process that wrote the rows, on one clock.
 
 And which clock maps the run's wall stamps to sim time.
 """
@@ -112,6 +119,9 @@ class RunSlice:
     #: The trial window from ``test.xml``; ``None`` when it could not be read.
     start_epoch: Optional[float]
     end_epoch: Optional[float]
+    #: The job held other runs too: rows outside the window are theirs or the job's, not
+    #: this run's, and are left out rather than marked.
+    shared: bool = False
 
     @property
     def run_id(self) -> int:
@@ -123,6 +133,11 @@ class RunSlice:
 
     def in_window(self, wall: Optional[float]) -> int:
         return in_window(wall, self.start_epoch, self.end_epoch)
+
+    def keeps(self, wall: Optional[float]) -> bool:
+        """Whether a row stamped *wall* is this run's: every row of a job of one run, the
+        rows inside the window of a run that shared its job."""
+        return not self.shared or bool(self.in_window(wall))
 
 
 def _read_window(run_dir: Path) -> Tuple[Optional[float], Optional[float]]:
@@ -139,11 +154,12 @@ def _read_window(run_dir: Path) -> Tuple[Optional[float], Optional[float]]:
 
 
 def run_slice(job_dir: str, config_name: str, run_dir, clock: clock_map.ClockMap,
-              stats: SliceStats) -> RunSlice:
-    """The run of one job, with its clock and its trial window.
+              stats: SliceStats, shared: bool = False) -> RunSlice:
+    """One run of a job, with its clock and its trial window.
 
     *clock* is the run's map, from its ``clock_map`` rows: the job's wall-time recording's
-    ``/clock``, or its simulator's own recording's where that is what gave them.
+    ``/clock``, or its simulator's own recording's where that is what gave them. *shared*
+    says the job held other runs as well.
     """
     run_dir = Path(run_dir)
     start_epoch, end_epoch = _read_window(run_dir)
@@ -151,4 +167,4 @@ def run_slice(job_dir: str, config_name: str, run_dir, clock: clock_map.ClockMap
         stats.without_clock.append(f"{config_name}/{run_dir.name}")
         clock = clock_map.NO_CLOCK_MAP
     return RunSlice(config_name=config_name, run_dir=run_dir, job_dir=job_dir,
-                    clock=clock, start_epoch=start_epoch, end_epoch=end_epoch)
+                    clock=clock, start_epoch=start_epoch, end_epoch=end_epoch, shared=shared)

@@ -47,6 +47,11 @@ from robovast.execution.wait_exit import ImageWaitExit, documents_exit_codes
 logger = get_logger(__name__)
 
 
+def _in_jobs(trials: int, jobs: int) -> str:
+    """`` in N job(s)`` when the trials dispatch as fewer jobs than trials, else nothing."""
+    return f" in {jobs} job(s)" if jobs and jobs != trials else ""
+
+
 def configure_logging(ctx, param, value):
     """Callback to configure logging based on --log-level option."""
     if value is not None:
@@ -601,7 +606,8 @@ def workspace_validate(workspace, vast_path, no_world_check,  # pylint: disable=
                     "--no-world-check / --no-scenario-check.")
             click.echo(
                 f"✓ valid: {report.configs} configuration(s) × "
-                f"{report.runs_per_config} run(s) = {report.total_trials} trial(s)")
+                f"{report.runs_per_config} run(s) = {report.total_trials} trial(s)"
+                + _in_jobs(report.total_trials, report.jobs))
     # pylint: disable-next=try-except-raise
     except (click.UsageError, click.ClickException):
         raise
@@ -635,7 +641,8 @@ def workspace_preview(workspace, vast_path, max_configs):  # pylint: disable=red
                 click.echo(f"  … (--max-configs {max_configs} reached)")
             click.echo(f"{preview.configs} configuration(s) × "
                        f"{preview.runs_per_config} run(s) = "
-                       f"{preview.total_trials} trial(s)")
+                       f"{preview.total_trials} trial(s)"
+                       + _in_jobs(preview.total_trials, preview.jobs))
     # pylint: disable-next=try-except-raise
     except (click.UsageError, click.ClickException):
         raise

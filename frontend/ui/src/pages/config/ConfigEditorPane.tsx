@@ -173,6 +173,7 @@ function ValidationPanel({ report, readOnly }: { report: ValidationReport | null
         <Alert severity="success" variant="outlined" sx={{ py: 0 }}>
           Valid · {report.configs} configs · {report.runs_per_config} runs/config ·{' '}
           {report.total_trials} trials
+          {report.jobs !== report.total_trials ? ` · ${report.jobs} jobs` : ''}
         </Alert>
         {report.problems.length > 0 && <ProblemList problems={report.problems} />}
       </Stack>
