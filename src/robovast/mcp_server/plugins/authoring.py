@@ -213,8 +213,8 @@ def validate_project(address: str, check_world: bool = True,
     not run makes it ``false`` and arrives as a problem with ``severity: "unchecked"``, so
     "not verified" never reads as "fine" — ``world_checked`` and ``scenario_checked``
     (true / false / null when not requested) say which happened to the two container
-    checks. ``advice`` problems leave ``valid`` true. It does **not** mean a derived image
-    will build; if a container adds packages, read
+    checks. ``advice`` and ``warning`` (its image is not built yet) leave ``valid`` true. It
+    does **not** mean a derived image will build; if a container adds packages, read
     ``search_docs("build fails schema cannot catch")`` first.
 
     **Two checks run a container**, each catching a failure otherwise met per trial, after
@@ -229,8 +229,7 @@ def validate_project(address: str, check_world: bool = True,
 
     **Each problem names what it could not settle and what would**: an uninstalled
     ``plugins:`` spec names ``preview_configurations(limit=1)`` (which composes, and so
-    *installs* them), as does a variation needing an aux container; a world only an unbuilt
-    image could describe names ``build_experiment_image``.
+    *installs* them), as does a variation needing an aux container.
 
     Args:
         address: ``/sources/<workspace_id>/<path>``, or a path on the MCP-server host.
@@ -238,7 +237,7 @@ def validate_project(address: str, check_world: bool = True,
     Returns:
         ``{valid, world_checked, scenario_checked, configs, runs_per_config,
         total_trials, problems, source}``, each problem ``{stage, config, field, message,
-        severity}`` with ``severity`` one of ``error`` / ``advice`` / ``unchecked``. A
+        severity}`` with ``severity`` one of ``error`` / ``advice`` / ``warning`` / ``unchecked``. A
         clean campaign returns no world or scenario entry.
     """
     from robovast.common.config_validation import validate_project_file

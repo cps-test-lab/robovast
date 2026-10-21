@@ -276,9 +276,10 @@ def _problem(stage, message, config=None, field=None, severity="error"):
     """Build one structured problem entry.
 
     ``severity`` defaults to ``error`` because that is what a check reports when it
-    reports anything; an advisory has to say so (``advice``), and so does a check that
-    could not run (``unchecked``). See ``ValidationProblem``: the three are acted on
-    differently, and only ``advice`` leaves ``valid`` true.
+    reports anything; an advisory has to say so (``advice``), so does a check that could not
+    run (``unchecked``), and so does one that runs only once the campaign starts, because the
+    image it is asked of is not built yet (``warning``). See ``ValidationProblem``: they are
+    acted on differently, and only ``advice`` and ``warning`` leave ``valid`` true.
     """
     return {"stage": stage, "config": config, "field": field, "message": message,
             "severity": severity}
@@ -1635,6 +1636,21 @@ def _message_with_next_step(exc):
     return f"{message} Next: {step}" if step else message
 
 
+def _image_not_built_problem(exc):
+    """The ``warning`` for a composition whose simulator queries wait for the campaign's image.
+
+    The image the simulator is asked in is the one the campaign builds, and it is not built yet
+    (``config_generation._resolve_built_spec``): the queries are not asked of another image, and
+    the campaign's start asks them again in the one it built, refusing to start on a failure.
+    """
+    return _problem(
+        "generation",
+        f"{_message_with_next_step(exc)} The configurations below are the file's own "
+        "expansion; which streams the simulator renders only on demand, and which files a "
+        "world is made of, are asked when the campaign starts.",
+        severity="warning")
+
+
 def _skipped_generator_problems(records):
     """One ``unchecked`` problem per ``execution.generate`` entry that did not run.
 
@@ -1667,14 +1683,27 @@ def _batch_composition_report(config_path):
     """
     from robovast.common.config_generation import \
         generate_scenario_variations  # pylint: disable=import-outside-toplevel
-    from robovast.common.errors import \
-        ExecPathUnavailable  # pylint: disable=import-outside-toplevel
+    from robovast.common.errors import (  # pylint: disable=import-outside-toplevel
+        ExecPathUnavailable, ImageNotBuilt)
     from robovast.common.variation.base_variation import \
         VariationInfeasibleError  # pylint: disable=import-outside-toplevel
     unchecked = []
+    warnings = []
     try:
         campaign_data = generate_scenario_variations(
             variation_file=config_path, output_dir=None)
+    except ImageNotBuilt as e:
+        # Composed again without the simulator's queries, as for an unreachable exec path
+        # below, but a warning rather than unchecked: the campaign's start asks them in the
+        # image it builds, and nothing here could have answered them in that image.
+        try:
+            campaign_data = generate_scenario_variations(
+                variation_file=config_path, output_dir=None, container_queries=False)
+        except Exception as retry:  # noqa: BLE001 - the report is what must still arrive
+            return {"valid": False,
+                    "problems": [_problem("generation", _message_with_next_step(retry))],
+                    "configs": 0, "runs_per_config": 0, "total_trials": 0}
+        warnings.append(_image_not_built_problem(e))
     except ExecPathUnavailable as e:
         # Composed again without the queries that need one, exactly as the world query is
         # asked again without its overrides: the cartesian expansion this report exists to
@@ -1716,7 +1745,7 @@ def _batch_composition_report(config_path):
     configs = campaign_data["configs"]
     runs_per_config = campaign_data.get("execution", {}).get("runs", 1)
     return {"valid": not unchecked,
-            "problems": (unchecked
+            "problems": (unchecked + warnings
                          + _build_context_advisories(config_path)
                          + _resource_advisories(config_path)
                          + _calibration_role_advisories(config_path)
@@ -1736,13 +1765,24 @@ def _search_composition_report(config_path):
     space, and the campaign tolerates it (skipping that param set) rather than
     dying.
     """
-    from robovast.common.errors import \
-        ExecPathUnavailable  # pylint: disable=import-outside-toplevel
+    from robovast.common.errors import (  # pylint: disable=import-outside-toplevel
+        ExecPathUnavailable, ImageNotBuilt)
     from robovast.search.compose import \
         preview_search_sample  # pylint: disable=import-outside-toplevel
     unchecked = []
+    warnings = []
     try:
         sample = preview_search_sample(config_path)
+    except ImageNotBuilt as e:
+        # As the batch report: the sample composes without the simulator's queries, which the
+        # campaign's start asks in the image it builds.
+        try:
+            sample = preview_search_sample(config_path, container_queries=False)
+        except Exception as retry:  # noqa: BLE001 - the report is what must still arrive
+            return {"valid": False,
+                    "problems": [_problem("generation", _message_with_next_step(retry))],
+                    "configs": 0, "runs_per_config": 0, "total_trials": 0}
+        warnings.append(_image_not_built_problem(e))
     except ExecPathUnavailable as e:
         # As the batch report: the draws this preview exists to compose need no container,
         # and a deployment that cannot exec should lose the run-file query rather than the
@@ -1766,7 +1806,7 @@ def _search_composition_report(config_path):
                 "problems": [_problem("generation", _message_with_next_step(e))],
                 "configs": 0, "runs_per_config": 0, "total_trials": 0}
 
-    problems = list(unchecked)
+    problems = list(unchecked) + warnings
     if sample["infeasible"]:
         listed = "; ".join(f"{item['name']} {item['params']}"
                            for item in sample["infeasible"])
