@@ -885,7 +885,14 @@ def unknown_override_paths(paths: set, addresses) -> list:
     )
 
 def simulator_image(execution: dict, declared: Optional[dict] = None) -> str:
-    """The image this execution's simulator runs in: the campaign's, else the backend's own.
+    """The image this execution's simulator runs in: the one it builds, the campaign's, else the
+    backend's own.
+
+    A simulator whose container adds packages (``python_packages``, ``system_packages``,
+    ``ros_packages``) runs the image the campaign builds, so the answer is the symbolic
+    ``build:<container>`` ref, which composition resolves to that image
+    (``config_generation.set_built_images``). It outranks an authored ``image:``, which is then
+    only the base the build starts from.
 
     One place, and it has to be, because :func:`apply_backend` applies the same precedence to the
     *run* -- the author's ``image:`` on the block outranks a backend default -- and a second copy
@@ -910,6 +917,14 @@ def simulator_image(execution: dict, declared: Optional[dict] = None) -> str:
     # ``simulation`` block onto ``scenario`` before any default lands, so an image written on
     # either block is the one the simulator runs in -- and the move decides which wins.
     authored = [target, SIMULATION_CONTAINER] if stepped else [target]
+    # Merged from every block that describes the container, as ``plan_containers`` merges
+    # them, so packages written on ``simulation`` build the scenario container when stepped.
+    if any(((containers.get(name) or {}).get(key))
+           for name in authored
+           for key in ("python_packages", "system_packages", "ros_packages")):
+        from robovast.common.execution import \
+            BUILD_IMAGE_PREFIX  # pylint: disable=import-outside-toplevel
+        return f"{BUILD_IMAGE_PREFIX}{target}"
     for name in authored:
         image = ((containers.get(name) or {}).get("image") or "").strip()
         if image:
