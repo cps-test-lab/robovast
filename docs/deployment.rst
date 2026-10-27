@@ -100,6 +100,13 @@ The published row is hardened once for the whole surface: one shared secret, pre
 a cookie by browsers and a bearer header by everything else, in front of an Ingress
 that refuses to exist without TLS unless ``--insecure-http`` was passed.
 
+The web UI can be **installed as an app** from a browser (:ref:`web-ui-install`) wherever it is
+a secure context: the published row over HTTPS, and the other two on ``127.0.0.1``. A deployment
+needs nothing more for it: the manifest, the icons and the service worker ship in the UI's build,
+behind the same sign-in as everything else, and the service serves them with the cache headers it
+gives every file. A deployment published with ``--insecure-http`` and opened under its own name
+works as before, but no browser offers the install there.
+
 Walkthrough — the in-cluster service
 ------------------------------------
 

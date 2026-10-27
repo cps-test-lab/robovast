@@ -10,7 +10,7 @@ import {
 import { useLiveStream } from '@/lib/liveStream'
 import { useActiveView } from '@/lib/activeView'
 import { describeCampaignEvent, seedPhases, trackCampaignPhases, type CampaignSpell } from '@/lib/campaignEvents'
-import { openCampaignCard, openResultsView } from '@/lib/nav'
+import { campaignLink, openCampaignCard, openResultsView } from '@/lib/nav'
 import * as browserNotify from '@/lib/browserNotify'
 import { useToasts } from './ToastProvider'
 
@@ -119,7 +119,12 @@ function useCampaignLifecycleNotices(data: ListCampaignsResponse | null) {
             : undefined,
       })
       if (evt.kind !== 'started') {
-        browserNotify.post({ title: message, body: note, tag: evt.campaignId })
+        browserNotify.post({
+          title: message,
+          body: note,
+          tag: evt.campaignId,
+          url: campaignLink(evt.campaignId),
+        })
       }
     }
   }, [data, notify])

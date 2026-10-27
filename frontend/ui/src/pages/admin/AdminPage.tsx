@@ -18,6 +18,7 @@ import { ServiceEventsPanel } from './ServiceEventsPanel'
 import { useDialogs } from '@/components/DialogProvider'
 import { useToasts } from '@/components/ToastProvider'
 import * as browserNotify from '@/lib/browserNotify'
+import { runningInstalled, useWorkerState } from '@/lib/appInstall'
 import { LogPanel } from '@/components/LogPanel'
 import { useActiveView } from '@/lib/activeView'
 import { acceptRevision, revisionChanged } from '@/lib/servedRevision'
@@ -673,6 +674,44 @@ function BrowserPreferences() {
           inside the page.
         </Typography>
       )}
+      <AppInstallLine />
     </Stack>
+  )
+}
+
+/** Whether this browser runs, or could install, RoboVAST as an app -- and if not, why not. Said in
+ *  print, because the evidence of a failed install is an install prompt that never appears. */
+function AppInstallLine() {
+  const worker = useWorkerState()
+  const installed = runningInstalled()
+  const text = (() => {
+    switch (worker.kind) {
+      case 'active':
+        return installed
+          ? 'Running as the installed app.'
+          : 'Can be installed as an app: in Chrome, the menu’s “Install app”; in Safari on iOS, '
+            + 'Share, then “Add to Home Screen”.'
+      case 'registering':
+        return 'Starting the app’s service worker…'
+      case 'insecure':
+        return 'Cannot be installed as an app from here: this page is not a secure context. An '
+          + 'install needs HTTPS, or localhost. Everything else works as it does.'
+      case 'unsupported':
+        return 'This browser has no service workers, so RoboVAST cannot be installed as an app '
+          + 'from it.'
+      case 'development':
+        return 'A development server: no service worker, so no install. A production build has one.'
+      case 'failed':
+        return `The app’s service worker did not start (${worker.error}), so RoboVAST cannot be `
+          + 'installed as an app until it does. Everything else works as it does.'
+    }
+  })()
+  return (
+    <Typography
+      variant="caption"
+      color={worker.kind === 'failed' ? 'error.main' : 'text.secondary'}
+    >
+      {text}
+    </Typography>
   )
 }

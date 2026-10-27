@@ -348,6 +348,36 @@ result table scrolls inside its own box.
 
 A desktop browser with a mouse is laid out as before, however narrow its window.
 
+.. _web-ui-install:
+
+Installing it as an app
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The web UI can be installed as an app: in Chrome on Android, the menu's **Install app** (or the
+banner Chrome offers); in Safari on iOS, **Share**, then **Add to Home Screen**; in a desktop
+Chrome or Edge, the install icon in the address bar. The app opens on the campaign list, in a
+window of its own with RoboVAST's mark and colours, and keeps the session the way the browser does:
+it shares the browser's cookies, so it is signed in when the browser is, and a session that has
+lapsed meets the sign-in page as a tab would.
+
+What makes it installable is a web app manifest, its icons (drawn from the RoboVAST mark at the
+sizes Android and iOS ask for, a maskable one included) and a small **service worker** that caches
+the app shell — the scripts the start page loads, the manifest and the icons — so the app starts
+without fetching them again. It caches nothing else: no API answer, no run data, no log, no token,
+and never the sign-in page. Every page load still goes to the service, so a new version of the UI
+is what opens on the app's next start, with nothing to clear; offline, the app says that it cannot
+reach the service instead of showing a page that looks current and is not.
+
+**The install needs a secure context**: the service reached over HTTPS — a published deployment,
+whose Ingress insists on TLS — or on ``localhost`` / ``127.0.0.1``, such as a port-forward or an
+SSH tunnel on the machine the browser runs on. Over plain HTTP under any other name, the browser
+offers no install and starts no service worker; the UI works exactly as it does otherwise. The
+Admin page's **This browser** says which of these applies, and why an install is not offered.
+
+When a campaign ends while the app or the tab is in the background, and **Notify me when a
+campaign finishes** is on, the note comes through the service worker where one is running —
+which is what makes it work in Chrome on Android — and tapping it opens the campaign's card.
+
 .. _web-ui-admin:
 
 The Admin page

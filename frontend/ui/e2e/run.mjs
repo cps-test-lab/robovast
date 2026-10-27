@@ -12,10 +12,14 @@
 //                                        hit in a 44 px square
 //   touch.json, scene-touch.webm         --touch: gestures on the run view's 3D scene (Pixel 7)
 //   mouse.json                           --mouse: the same scene by mouse (desktop)
-//   pwa.json                             --pwa: manifest, installability, service worker, caches
+//   pwa.json                             --pwa: the installable app, against the service's sign-in
+//                                        gate (emulated): manifest, installability, what the worker
+//                                        caches and what it never touches, the offline page, a
+//                                        lapsed session, a notification; with --pwa-next <dist>, a
+//                                        second build taking over from the first
 //
 //   npm run e2e -- [--out <dir>] [--dist <dir>] [--pages campaigns,run] [--touch] [--mouse] [--pwa]
-//                  [--strict]
+//                  [--pwa-next <dir>] [--strict]
 //
 // `--strict` exits non-zero when a page is wider than a phone's viewport, or when `campaigns`,
 // `run` or `login` has a target under 44 px on a phone. Not part of `npm test`: it needs a browser
@@ -23,9 +27,10 @@
 
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createServer as createHttpServer } from 'node:http'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium, devices } from 'playwright'
 import { centroidOf, changedFraction, decodePng, SCENE_BODIES } from './images.mjs'
@@ -38,7 +43,7 @@ const UI = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 function parseArgs(argv) {
   const opts = {
     out: join(UI, 'e2e', 'out'), dist: join(UI, 'dist'), pages: null,
-    touch: false, mouse: false, pwa: false, strict: false,
+    touch: false, mouse: false, pwa: false, pwaNext: null, strict: false,
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -53,6 +58,7 @@ function parseArgs(argv) {
     else if (a === '--touch') opts.touch = true
     else if (a === '--mouse') opts.mouse = true
     else if (a === '--pwa') opts.pwa = true
+    else if (a === '--pwa-next') opts.pwaNext = resolve(value())
     else if (a === '--strict') opts.strict = true
     else throw new Error(`unknown argument ${a}`)
   }
@@ -166,6 +172,8 @@ const EVENT_SOURCE_STANDIN = `(() => {
       this.onmessage = null
       this.onerror = null
       this._timer = null
+      // Reachable from a test, which can then deliver an event the fixtures did not script.
+      ;(window.__fixtureStreams = window.__fixtureStreams || []).push(this)
       this._start()
     }
     _emit(type, data, id) {
@@ -676,7 +684,100 @@ async function mouseDriver(browser, base, dist, service, unanswered, out) {
 
 // -- the PWA probe -----------------------------------------------------------------------------
 
-async function pwaProbe(base, dist, service, unanswered, out) {
+const TYPES = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml',
+  '.png': 'image/png', '.json': 'application/json', '.webmanifest': 'application/manifest+json',
+  '.wasm': 'application/wasm', '.ttf': 'font/ttf',
+}
+
+/** A stand-in for the service, sign-in gate included, for the installable-app checks: they need
+ *  every request -- the worker's own, and the browser's update check of it -- to meet the same
+ *  server, which Playwright's routes do not see. Serves the UI from `serving.dist` with the service's
+ *  cache headers, the API from the fixtures, and refuses everything but the sign-in page without the
+ *  session cookie: a page with a redirect to sign in, anything else with a 401. `serving.offline`
+ *  drops every connection; every refusal is recorded in `serving.refused`, every page load counted
+ *  in `serving.pageLoads`. */
+function startGatedServer(serving, service, unanswered) {
+  return new Promise((res) => {
+    const server = createHttpServer((req, out) => {
+      if (serving.offline) {
+        req.socket.destroy()
+        return
+      }
+      const url = new URL(req.url, 'http://127.0.0.1')
+      const path = decodeURIComponent(url.pathname)
+      const signedIn = (req.headers.cookie || '').split(/;\s*/).includes(`${SESSION_COOKIE}=fixture`)
+      if (!signedIn && path !== '/login' && path !== '/healthz') {
+        serving.refused.push(path)
+        if ((req.headers.accept || '').includes('text/html')) {
+          out.writeHead(303, { location: `/login?next=${encodeURIComponent(path)}` }).end()
+        } else {
+          out.writeHead(401, { 'content-type': 'application/json' }).end('{"detail":"not authenticated"}')
+        }
+        return
+      }
+      const file = path === '/' ? join(serving.dist, 'index.html') : join(serving.dist, path)
+      if (file.startsWith(serving.dist) && existsSync(file) && statSync(file).isFile()) {
+        if (path === '/') serving.pageLoads++
+        out.writeHead(200, {
+          'content-type': TYPES[extname(file)] ?? 'application/octet-stream',
+          // What the service answers: a hashed asset is kept for good, everything else revalidated.
+          'cache-control': path.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache',
+        }).end(readFileSync(file))
+        return
+      }
+      const chunks = []
+      req.on('data', (c) => chunks.push(c))
+      req.on('end', () => {
+        let answer
+        try {
+          answer = service.handle(req.method, `http://127.0.0.1${req.url}`, Buffer.concat(chunks).toString() || null)
+        } catch (e) {
+          answer = { status: 500, contentType: 'application/json', body: JSON.stringify({ detail: `fixture error: ${e.message}` }) }
+        }
+        if (!answer) {
+          unanswered.add(`${req.method} ${url.pathname}${url.search}`)
+          answer = { status: 404, contentType: 'application/json', body: JSON.stringify({ detail: 'not in the e2e fixtures' }) }
+        }
+        out.writeHead(answer.status, { 'content-type': answer.contentType, ...(answer.headers ?? {}) }).end(answer.body)
+      })
+    })
+    server.listen(0, '127.0.0.1', () => res({ server, base: `http://127.0.0.1:${server.address().port}` }))
+  })
+}
+
+const SESSION_COOKIE = 'robovast_session'
+
+/** The worker's state in the page: registrations, the controller, and every cache with its URLs. */
+function workerState() {
+  return (async () => {
+    const regs = navigator.serviceWorker ? await navigator.serviceWorker.getRegistrations() : []
+    const cacheMap = {}
+    if (self.caches) {
+      for (const key of await caches.keys()) cacheMap[key] = (await (await caches.open(key)).keys()).map((r) => new URL(r.url).pathname)
+    }
+    return {
+      supported: !!navigator.serviceWorker,
+      controller: navigator.serviceWorker?.controller?.scriptURL ?? null,
+      registrations: regs.map((r) => ({
+        scope: r.scope,
+        active: r.active ? { scriptURL: r.active.scriptURL, state: r.active.state } : null,
+        waiting: r.waiting ? r.waiting.state : null,
+        installing: r.installing ? r.installing.state : null,
+      })),
+      caches: cacheMap,
+    }
+  })()
+}
+
+/** The shell a build's worker precaches, read from its sw.js. */
+function precacheOf(dist) {
+  const code = readFileSync(join(dist, 'sw.js'), 'utf8')
+  const list = code.match(/\[("\/[^"]*"(?:,"\/[^"]*")*)\]/)
+  return list ? JSON.parse(`[${list[1]}]`) : null
+}
+
+async function pwaProbe(dist, nextDist, service, unanswered, out) {
   const { defaultBrowserType, ...device } = devices['Pixel 7']
   void defaultBrowserType
   // The full Chromium (new headless) with a profile on disk: the headless shell the pages are shot
@@ -688,41 +789,117 @@ async function pwaProbe(base, dist, service, unanswered, out) {
     channel: 'chromium', ...device, serviceWorkers: 'allow',
   })
   await context.addInitScript(EVENT_SOURCE_STANDIN)
-  await routeContext(context, base, dist, service, unanswered)
-  const { page } = await openPage(context, base, PAGES.find((p) => p.name === 'campaigns'))
-  await page.waitForTimeout(3000)
+  const serving = { dist, offline: false, refused: [], pageLoads: 0 }
+  const { server, base } = await startGatedServer(serving, service, unanswered)
+  const refused = serving.refused
+  const signIn = () => context.addCookies([{
+    name: SESSION_COOKIE, value: 'fixture', url: base, httpOnly: true, sameSite: 'Strict',
+  }])
+  await signIn()
+  const checks = {}
+  const check = (name, pass, detail) => { checks[name] = { pass: !!pass, ...(detail === undefined ? {} : { detail }) } }
+
+  const page = await context.newPage()
+  await page.goto(`${base}/#/execution`)
+  await page.evaluate(() => navigator.serviceWorker.ready.then(() => true))
+  await page.waitForTimeout(2000)
   const cdp = await context.newCDPSession(page)
   const manifest = await cdp.send('Page.getAppManifest').catch((e) => ({ error: e.message }))
   const installability = await cdp.send('Page.getInstallabilityErrors').catch((e) => ({ error: e.message }))
-  const worker = await page.evaluate(async () => {
-    const regs = navigator.serviceWorker ? await navigator.serviceWorker.getRegistrations() : []
-    const caches_ = {}
-    if (self.caches) {
-      for (const key of await caches.keys()) {
-        caches_[key] = (await (await caches.open(key)).keys()).map((r) => r.url)
-      }
+  const installErrors = installability.installabilityErrors ?? [installability.error]
+  check('installable while signed in', !manifest.error && !manifest.errors?.length && installErrors.length === 0,
+    { manifestErrors: manifest.errors ?? manifest.error, installabilityErrors: installErrors })
+  check('nothing refused while signed in', refused.length === 0, refused.slice())
+
+  // Controlled from here on: the worker claimed the page, and a reload goes through it.
+  const shellResponses = []
+  const onResponse = (r) => {
+    const path = new URL(r.url()).pathname
+    if (path.startsWith('/assets/')) shellResponses.push({ path, fromWorker: r.fromServiceWorker() })
+  }
+  page.on('response', onResponse)
+  const loadsBefore = serving.pageLoads
+  await page.reload()
+  await page.waitForTimeout(2000)
+  page.off('response', onResponse)
+  const precache = precacheOf(dist)
+  const state = await page.evaluate(workerState)
+  const cacheKeys = Object.keys(state.caches)
+  const cached = cacheKeys.length === 1 ? state.caches[cacheKeys[0]].slice().sort() : null
+  check('one cache, holding exactly the shell', cached && JSON.stringify(cached) === JSON.stringify([...precache].sort()),
+    { caches: state.caches, precache })
+  check('a page load reaches the service', serving.pageLoads > loadsBefore,
+    { before: loadsBefore, after: serving.pageLoads })
+  check('shell files come from the worker', shellResponses.some((r) => r.fromWorker), shellResponses)
+  const [api] = await Promise.all([
+    page.waitForResponse((r) => new URL(r.url()).pathname === '/usage'),
+    page.evaluate(() => fetch('/usage').then((r) => r.status)),
+  ])
+  check('an API answer never passes through the worker', !api.fromServiceWorker(), { status: api.status() })
+
+  // A campaign ending while the page is in the background is announced through the worker.
+  await context.grantPermissions(['notifications'], { origin: base })
+  await page.evaluate(() => window.localStorage.setItem('robovast.browserNotifications', '1'))
+  await page.reload()
+  await page.waitForTimeout(2500)
+  const listing = JSON.parse(service.handle('GET', `${base}/campaigns?limit=200&offset=0`).body)
+  for (const c of listing.campaigns) {
+    if (c.campaign_id === RUNNING) Object.assign(c, { phase: 'finished', finished_at: new Date().toISOString() })
+  }
+  await page.evaluate((frame) => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+    for (const stream of window.__fixtureStreams || []) {
+      if (new URL(stream.url).pathname === '/campaigns/events') stream._emit('message', JSON.stringify(frame))
     }
-    return {
-      supported: !!navigator.serviceWorker,
-      controller: navigator.serviceWorker?.controller?.scriptURL ?? null,
-      registrations: regs.map((r) => ({
-        scope: r.scope,
-        active: r.active ? { scriptURL: r.active.scriptURL, state: r.active.state } : null,
-        waiting: r.waiting ? r.waiting.state : null,
-        installing: r.installing ? r.installing.state : null,
-      })),
-      caches: caches_,
-    }
-  })
+  }, listing)
+  await page.waitForTimeout(1500)
+  const notes = await page.evaluate(async () =>
+    (await (await navigator.serviceWorker.ready).getNotifications()).map((n) => ({ title: n.title, body: n.body, url: n.data?.url ?? null })))
+  check('a campaign ending is a notification that opens its card',
+    notes.some((n) => n.url && n.url.includes(`campaign=${RUNNING}`)), notes)
+
+  // Offline: a page load is answered with the page that says so, not with the app.
+  serving.offline = true
+  await page.goto(`${base}/`).catch(() => undefined)
+  const offline = await page.evaluate(() => ({ text: document.body.innerText.slice(0, 200), app: !!document.getElementById('root') }))
+  serving.offline = false
+  check('offline, a page load says the service cannot be reached', offline.text.includes('cannot reach the service') && !offline.app, offline)
+
+  // A lapsed session meets the sign-in page, through the worker as without one.
+  await context.clearCookies()
+  await page.goto(`${base}/`)
+  check('a lapsed session is sent to sign in', new URL(page.url()).pathname === '/login', page.url())
+  await signIn()
+
+  // A new build: on its next start the new worker takes over and the old shell is gone.
+  if (nextDist) {
+    serving.dist = nextDist
+    await page.goto(`${base}/#/execution`)
+    await page.waitForTimeout(4000)
+    await page.goto(`${base}/#/execution`)
+    await page.waitForTimeout(1500)
+    const after = await page.evaluate(workerState)
+    const keys = Object.keys(after.caches)
+    const nextPrecache = precacheOf(nextDist)
+    const scripts = await page.evaluate(() => [...document.querySelectorAll('script[src]')].map((s) => new URL(s.src).pathname))
+    check('a new build replaces the old shell on its next start',
+      keys.length === 1 && keys[0] !== cacheKeys[0]
+        && JSON.stringify(after.caches[keys[0]].slice().sort()) === JSON.stringify([...nextPrecache].sort())
+        && scripts.every((src) => nextPrecache.includes(src)),
+      { before: cacheKeys, after: keys, scripts })
+  }
+
   await context.close()
+  server.close()
+  rmSync(profileDir, { recursive: true, force: true })
   const result = {
     manifest: manifest.error ? manifest : {
       url: manifest.url, errors: manifest.errors, parsed: manifest.data ? JSON.parse(manifest.data) : null,
     },
-    installabilityErrors: installability.installabilityErrors ?? installability,
-    serviceWorker: worker,
+    installabilityErrors: installErrors,
+    serviceWorker: state,
+    checks,
   }
-  rmSync(profileDir, { recursive: true, force: true })
   writeFileSync(join(out, 'pwa.json'), JSON.stringify(result, null, 2))
   return result
 }
@@ -761,7 +938,7 @@ async function main() {
     }
     if (opts.touch) report.touch = await touchDriver(browser, base, opts.dist, service, unanswered, opts.out)
     if (opts.mouse) report.mouse = await mouseDriver(browser, base, opts.dist, service, unanswered, opts.out)
-    if (opts.pwa) report.pwa = await pwaProbe(base, opts.dist, service, unanswered, opts.out)
+    if (opts.pwa) report.pwa = await pwaProbe(opts.dist, opts.pwaNext, service, unanswered, opts.out)
   } finally {
     await browser.close()
     stopPreview(child)
@@ -796,6 +973,10 @@ async function main() {
     const m = report.pwa.manifest
     console.log(`\npwa: manifest ${m.url ? m.url : 'none'}; installability errors: ` +
       `${JSON.stringify(report.pwa.installabilityErrors)}; service workers: ${report.pwa.serviceWorker.registrations.length}`)
+    for (const [name, c] of Object.entries(report.pwa.checks)) {
+      console.log(`  ${c.pass ? 'pass' : 'FAIL'}  ${name}`)
+      if (!c.pass) failures.push(`pwa: ${name}`)
+    }
   }
   console.log(`\nunanswered (${report.unanswered.length}):`)
   for (const u of report.unanswered) console.log(`  ${u}`)
