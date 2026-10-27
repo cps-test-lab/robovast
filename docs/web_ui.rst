@@ -346,6 +346,10 @@ on that node. The **Run view** keeps its scene and puts its other panels in tabs
 :ref:`run-view-compact`). The **Data browser**'s campaign picker takes a line of its own, and its
 result table scrolls inside its own box.
 
+**Config** stays usable on a phone without being comfortable there: its columns stack, each a
+screen tall, the page scrolls, and the editor wraps long lines. **Admin**'s cards stack, and the
+sign-in page's fields are a finger's height.
+
 A desktop browser with a mouse is laid out as before, however narrow its window.
 
 .. _web-ui-install:

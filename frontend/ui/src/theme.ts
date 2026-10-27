@@ -74,6 +74,8 @@ export function buildTheme(style: Style): Theme {
       MuiToggleButton: { styleOverrides: { root: touchSize } },
       MuiTab: { styleOverrides: { root: touchHeight } },
       MuiListItemButton: { styleOverrides: { root: touchHeight } },
+      // A text field is hit anywhere on its box, which focuses the input inside.
+      MuiInputBase: { styleOverrides: { root: touchHeight } },
       MuiChip: { styleOverrides: { clickable: touchHitArea, deletable: touchHitArea } },
       MuiCheckbox: { styleOverrides: { root: touchHitArea } },
       MuiSwitch: { styleOverrides: { switchBase: touchHitArea } },

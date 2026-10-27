@@ -377,10 +377,12 @@ function probe(targetsSelector) {
     if (cx - HALF < 0 || cy - HALF < 0 || cx + HALF > window.innerWidth || cy + HALF > window.innerHeight) {
       return r.width >= 44 && r.height >= 44
     }
+    // A text field is hit on its whole box, which focuses the input inside it.
+    const box = el.matches('input, textarea, select') ? (el.closest('.MuiInputBase-root') ?? el) : el
     for (const dx of [-HALF, 0, HALF]) {
       for (const dy of [-HALF, 0, HALF]) {
         const hit = document.elementFromPoint(cx + dx, cy + dy)
-        if (!hit || !(hit === el || el.contains(hit))) return false
+        if (!hit || !(hit === box || box.contains(hit))) return false
       }
     }
     return true

@@ -52,7 +52,9 @@ function Field({ label, value }: { label: string; value: string }) {
       <Typography variant="caption" color="text.secondary" sx={{ width: 96, flexShrink: 0 }}>
         {label}
       </Typography>
-      <Typography variant="caption" sx={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
+      {/* Broken between words first, and inside one only when it alone overruns the line: a digest
+          has no spaces and must still wrap, a `backend · namespace` pair must not split mid-word. */}
+      <Typography variant="caption" sx={{ fontFamily: 'monospace', overflowWrap: 'anywhere', minWidth: 0 }}>
         {value}
       </Typography>
     </Stack>
