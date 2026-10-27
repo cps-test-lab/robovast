@@ -30,6 +30,12 @@ export const ON_COARSE = `@media ${COARSE_QUERY}`
 /** The smallest a target may be under a finger, in CSS px (WCAG 2.5.5, and the platforms' own). */
 export const TOUCH_TARGET_PX = 44
 
+/** A dense height for a mouse that still gives a finger TOUCH_TARGET_PX: for a component that sets
+ *  its own `minHeight` in `sx`, which would otherwise override the theme's touch sizes. */
+export function denseHeight(px: number) {
+  return { minHeight: px, [ON_COARSE]: { minHeight: TOUCH_TARGET_PX } }
+}
+
 export interface Compactness {
   /** A small screen: the overlay navigation and the phone layouts. */
   compact: boolean

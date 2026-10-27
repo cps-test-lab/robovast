@@ -328,6 +328,12 @@ or zooming. Two things decide how a page is laid out, and they are separate:
   campaign, a meter's figures, a button's meaning — opens with a tap and stays for a few seconds.
   Nothing needs a right click.
 
+On the **Campaigns** page the launch form starts folded to one **Launch a campaign…** button: a
+phone mostly follows campaigns, and launching from one is a tap away. A campaign's row wraps instead
+of running off the screen — its phase, time, run meter and controls on the first line, the id and
+the description each on a line of their own below — and an opened card stacks its sections, with
+each job's chips and meters on a line under its name.
+
 A desktop browser with a mouse is laid out as before, however narrow its window.
 
 .. _web-ui-admin:
