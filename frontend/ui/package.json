@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "lint": "tsc --noEmit",
     "test": "vitest run",
+    "e2e": "node e2e/run.mjs",
     "generate:api": "python ../../tools/dump_openapi.py openapi.json && openapi-typescript openapi.json -o src/lib/api.generated.ts"
   },
   "dependencies": {
@@ -44,6 +45,7 @@
     "@types/react-plotly.js": "^2.6.3",
     "@vitejs/plugin-react": "^4.3.2",
     "openapi-typescript": "^7.13.0",
+    "playwright": "1.64.1",
     "typescript": "^5.6.2",
     "vite": "^5.4.8",
     "vitest": "^2.1.9"
