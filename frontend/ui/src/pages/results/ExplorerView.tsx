@@ -120,10 +120,10 @@ export function ExplorerView({
       // `gap`, not Stack's margin spacing, for the same reason as the Run view: the margin rule's
       // specificity beats a child's own sx.
       useFlexGap
-      // 48px is App's `p: 3` on the main Box, top + bottom, so the view fills the window exactly —
+      // `--page-height` is what App's shell leaves of the screen, so the view fills it exactly —
       // same measure as the Run view. The heading keeps its natural height and the grid below takes
       // the rest, rather than the whole block guessing at a fixed offset.
-      sx={{ height: 'calc(100vh - 48px)' }}
+      sx={{ height: 'var(--page-height)' }}
     >
       <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
         <Typography variant="h6">Explorer</Typography>

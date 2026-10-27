@@ -310,6 +310,26 @@ here by what they do:
   version is running, and what the service has been doing. Pinned to the foot of the
   sidebar beside the usage meters, which report the same service. See `The Admin page`_.
 
+.. _web-ui-phone:
+
+On a phone
+----------
+
+The same pages work in a phone's browser, held upright or on its side, without scrolling sideways
+or zooming. Two things decide how a page is laid out, and they are separate:
+
+* **A small screen** — narrower than 600 CSS px, or shorter than 500 (a phone on its side). There
+  the sidebar is not beside the page: a slim bar across the top names the page and carries a menu
+  button, and the sidebar, meters included, slides in over the page from it and goes again when
+  you choose a page or tap beside it. Every page gets the whole width.
+* **A finger as the pointer** — whatever the size. Every button, tab and list entry is at least
+  44 CSS px in each direction, and a small mark that cannot grow (a status chip, a checkbox) takes
+  a tap anywhere in a 44 px square around it. What a mouse finds by hovering — the exact times on a
+  campaign, a meter's figures, a button's meaning — opens with a tap and stays for a few seconds.
+  Nothing needs a right click.
+
+A desktop browser with a mouse is laid out as before, however narrow its window.
+
 .. _web-ui-admin:
 
 The Admin page

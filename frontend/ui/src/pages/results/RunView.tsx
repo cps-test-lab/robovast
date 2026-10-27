@@ -458,8 +458,8 @@ export function RunView({
       // `& > :not(style):not(style) { margin: 0 }`, whose specificity beats a child's own sx class
       // and silently zeroed the negative margins the panel container below needs.
       useFlexGap
-      // 48px is App's `p: 3` on the main Box, top + bottom, so the view fills the window exactly.
-      sx={{ height: 'calc(100vh - 48px)' }}
+      // `--page-height` is what App's shell leaves of the screen, so the view fills it exactly.
+      sx={{ height: 'var(--page-height)' }}
     >
       <Stack direction="row" spacing={2} alignItems="center">
         <Typography variant="h6">Run view</Typography>

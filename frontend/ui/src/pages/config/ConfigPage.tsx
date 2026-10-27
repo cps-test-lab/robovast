@@ -175,7 +175,7 @@ export function ConfigPage({
   }
 
   return (
-    <Stack spacing={2} sx={{ height: 'calc(100vh - 48px)' }}>
+    <Stack spacing={2} sx={{ height: 'var(--page-height)' }}>
       {createWs.isError && campaignMode ? (
         <Alert severity="error" variant="outlined">
           {(createWs.error as Error).message}
