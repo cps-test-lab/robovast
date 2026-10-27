@@ -19,7 +19,7 @@
 //                                        second build taking over from the first
 //
 //   npm run e2e -- [--out <dir>] [--dist <dir>] [--pages campaigns,run] [--touch] [--mouse] [--pwa]
-//                  [--pwa-next <dir>] [--strict]
+//                  [--pwa-next <dir>] [--desktop 1280x720] [--desktop-only] [--strict]
 //
 // `--strict` exits non-zero when a page is wider than a phone's viewport, or when `campaigns`,
 // `run` or `login` has a target under 44 px on a phone. Not part of `npm test`: it needs a browser
@@ -44,6 +44,7 @@ function parseArgs(argv) {
   const opts = {
     out: join(UI, 'e2e', 'out'), dist: join(UI, 'dist'), pages: null,
     touch: false, mouse: false, pwa: false, pwaNext: null, strict: false,
+    desktop: { width: 1440, height: 900 }, phones: true,
   }
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
@@ -59,6 +60,11 @@ function parseArgs(argv) {
     else if (a === '--mouse') opts.mouse = true
     else if (a === '--pwa') opts.pwa = true
     else if (a === '--pwa-next') opts.pwaNext = resolve(value())
+    else if (a === '--desktop') {
+      const m = value().match(/^(\d+)x(\d+)$/)
+      if (!m) throw new Error('--desktop takes WIDTHxHEIGHT, e.g. 1280x720')
+      opts.desktop = { width: Number(m[1]), height: Number(m[2]) }
+    } else if (a === '--desktop-only') opts.phones = false
     else if (a === '--strict') opts.strict = true
     else throw new Error(`unknown argument ${a}`)
   }
@@ -257,22 +263,21 @@ const PHONES = [
   { name: 'pixel7', portrait: devices['Pixel 7'], landscape: devices['Pixel 7 landscape'] },
   { name: 'iphone13', portrait: devices['iPhone 13'], landscape: devices['iPhone 13 landscape'] },
 ]
-const DESKTOP = {
-  viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, isMobile: false, hasTouch: false,
-}
+/** A desktop or laptop with a mouse, at `--desktop`'s size. */
+const desktop = (size) => ({ viewport: size, deviceScaleFactor: 1, isMobile: false, hasTouch: false })
 
 /** Every profile a page is shot in. Chromium for all of them: the iPhone profile is its viewport,
  *  scale and user agent, not WebKit. */
-function profiles() {
+function profiles(opts) {
   const out = []
-  for (const p of PHONES) {
+  for (const p of opts.phones ? PHONES : []) {
     for (const orientation of ['portrait', 'landscape']) {
       const { defaultBrowserType, ...device } = p[orientation]
       void defaultBrowserType
       out.push({ profile: p.name, orientation, phone: true, device })
     }
   }
-  out.push({ profile: 'desktop', orientation: 'landscape', phone: false, device: DESKTOP })
+  out.push({ profile: 'desktop', orientation: 'landscape', phone: false, device: desktop(opts.desktop) })
   return out
 }
 
@@ -637,8 +642,8 @@ async function touchDriver(browser, base, dist, service, unanswered, out) {
   return result
 }
 
-async function mouseDriver(browser, base, dist, service, unanswered, out) {
-  const context = await browser.newContext({ ...DESKTOP, serviceWorkers: 'block' })
+async function mouseDriver(browser, base, dist, service, unanswered, out, size) {
+  const context = await browser.newContext({ ...desktop(size), serviceWorkers: 'block' })
   await context.addInitScript(EVENT_SOURCE_STANDIN)
   await routeContext(context, base, dist, service, unanswered)
   const { page, ready } = await openPage(context, base, PAGES.find((p) => p.name === 'run'))
@@ -921,7 +926,7 @@ async function main() {
   const browser = await chromium.launch()
   const report = { base, dist: opts.dist, pages: [] }
   try {
-    for (const prof of profiles()) {
+    for (const prof of profiles(opts)) {
       const context = await browser.newContext({ ...prof.device, serviceWorkers: 'block' })
       await context.addInitScript(EVENT_SOURCE_STANDIN)
       await routeContext(context, base, opts.dist, service, unanswered)
@@ -939,7 +944,7 @@ async function main() {
       await context.close()
     }
     if (opts.touch) report.touch = await touchDriver(browser, base, opts.dist, service, unanswered, opts.out)
-    if (opts.mouse) report.mouse = await mouseDriver(browser, base, opts.dist, service, unanswered, opts.out)
+    if (opts.mouse) report.mouse = await mouseDriver(browser, base, opts.dist, service, unanswered, opts.out, opts.desktop)
     if (opts.pwa) report.pwa = await pwaProbe(opts.dist, opts.pwaNext, service, unanswered, opts.out)
   } finally {
     await browser.close()
