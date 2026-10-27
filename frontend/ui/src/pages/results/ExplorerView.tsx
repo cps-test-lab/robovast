@@ -20,7 +20,7 @@ import {
 } from '@/lib/robovastClient'
 import {
   isLiveRow,
-  resolveSelection,
+  resolveLoadedSelection,
   selectionNodeId,
   selectionOf,
   type ResultsTreeItem,
@@ -75,8 +75,10 @@ export function ExplorerView({
   // one it must not query either.
   const campaign = explorable.find((c) => c.campaign_id === campaignId)
   const rows = useQuery({ ...runsQuery(campaign), enabled: !!campaign })
+  // Until the rows are in, the address is taken as given: the notebooks and the log render from it
+  // without waiting, and the checks below only run once there is something to check against.
   const resolved = useMemo(
-    () => resolveSelection(rows.data?.rows ?? [], campaign?.mode === 'search', sel),
+    () => resolveLoadedSelection(rows.data?.rows, campaign?.mode === 'search', sel),
     [rows.data, campaign?.mode, sel],
   )
   // Whether the selected run is still recording (`run_view.live`): its log is then streamed from
@@ -303,11 +305,16 @@ function NotebookPanel({
   // tab is always valid at run level, so it is also the fallback when a node declares no notebook --
   // a node with nothing to show is a worse answer than its log. A finished campaign's workloads do
   // not change, so this settles once per selection rather than watching anything.
+  //
+  // Only once the workload list has answered: before that every declared tab looks invalid, and
+  // healing then would replace the tab a link asked for with the fallback.
+  const settled = vis.isSuccess || vis.isError
   useEffect(() => {
+    if (!settled) return
     if (tab === LOG_TAB_SLUG && showLog) return
     if (!workloads.some((w) => w.name === tab))
       onTab(workloads[0]?.name ?? (showLog ? LOG_TAB_SLUG : ''))
-  }, [names, tab, showLog]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [names, tab, showLog, settled]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const logScope: LogTabScope = { campaignId, level, configName, runId, live }
 
