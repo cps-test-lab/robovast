@@ -2262,6 +2262,41 @@ service pod"), which passes an already-encoded response through.
 prefixes to a running ``vast serve`` (``ROBOVAST_SERVICE_URL`` to retarget), keeping the
 browser same-origin for hot-reload development.
 
+**Phones: two questions, one hook.** ``lib/compact.ts``'s ``useCompact()`` answers whether the
+screen is *compact* (below 600 px wide, or 500 high) and whether the pointer is *coarse*, and the
+two are kept apart on purpose: compactness decides layout (the overlay sidebar behind the app
+bar in ``App.tsx``, wrapping rows, stacked columns), coarseness decides touch (sizes and taps).
+Touch sizes are the theme's (``theme.ts``): under ``@media (pointer: coarse)`` buttons, tabs, list
+entries and text fields are at least 44 px, and chips, checkboxes, switches and radios grow an
+invisible 44 px hit area instead of their drawing; tooltips open on a tap. A component whose own
+``sx`` sets a smaller ``minHeight`` would override that, so it uses ``denseHeight(px)``. A page
+that fills the screen reads its height from ``--page-height``, which ``App`` sets for the shell it
+draws. The run view on a compact screen is ``PanelHost``'s ``StackedPanels``: the pure
+``lib/panels/stackedLayout.ts`` reads the declared specs as a stage, edge bars and tabs, and the
+``.vast`` keeps one layout.
+
+**The installable app.** ``frontend/ui/pwa.ts`` is a build-only Vite plugin that emits the web app
+manifest (colours from ``colors.ts``), the icons rendered from ``public/favicon.svg`` with
+``@resvg/resvg-wasm``, and ``sw.js``, built from ``src/sw/worker.ts`` with esbuild and the
+precache list and build id written in; it adds the page's manifest link (with credentials, so the
+sign-in gate needs no exception) and the iOS tags. The list is the entry chunk, its static
+imports and their CSS, from the bundle itself (``shellFiles``). The worker's policy is
+``src/sw/shell.ts``, pure and tested: only a listed GET is served from the cache, page loads go to
+the network with an offline page as the fallback, nothing else reaches ``respondWith``, and a new
+build's worker deletes every cache that is not its own. ``worker.ts`` needs a worker's globals, so
+``tsconfig.json`` leaves it out and ``tsconfig.sw.json`` checks it (``npm run lint`` and
+``build`` run both). ``lib/appInstall.ts`` registers it in a secure context in a production build
+and keeps the state Admin reports; ``lib/browserNotify.ts`` posts through its registration when
+there is one. The file names both sides use are ``lib/pwaFiles.ts``.
+
+**The phone rig.** ``npm run e2e`` (``frontend/ui/e2e/``) is not a test suite and is not part of
+``npm test``: it serves a built ``dist/``, answers the API from fixtures, and drives Playwright's
+Chromium through every page with phone profiles and a desktop, reporting pages wider than their
+viewport and targets a finger cannot hit in a 44 px square. ``--touch``/``--mouse`` script the 3D
+scene, ``--pwa`` checks the app against a stand-in service with the sign-in gate (and
+``--pwa-next`` a second build taking over), and ``--strict`` fails on any of it. Run it before and
+after a layout change with ``--dist`` pointing at each build.
+
 .. _web-ui-hash-grammar:
 
 **Navigation is the URL hash, and nothing else holds it.** ``frontend/ui/src/lib/hashNav.ts``
@@ -2311,7 +2346,10 @@ Turning a selection into the tree's node id, and back, is ``resultsTree.ts``'s
 ``selectionNodeId`` / ``selectionOf``, beside the id builders themselves — the URL is a *third*
 builder of node ids, so it must not spell one itself. ``resolveSelection`` answers "does this
 campaign have this node, and which round is it in" from the rows the tree already loaded; because
-a finished campaign's runs are fixed, it is a ``useMemo`` and not a watcher.
+a finished campaign's runs are fixed, it is a ``useMemo`` and not a watcher. The Explorer resolves
+through ``resolveLoadedSelection``, which takes the address as given until the rows have arrived:
+resolved against no rows, every config and run of a link would be the campaign node, and the view
+writes its selection back.
 
 .. _frontend-tests:
 
@@ -2704,11 +2742,16 @@ never be passed through — flying the eye *and* the pivot along the cursor ray 
 with it the step size, constant. The same change makes a fixed far plane visible, so ``viewport.ts``
 sizes the frustum each frame to enclose the world's bounding sphere — measured from the *scene*, not
 from the pivot, which the wheel carries along and which is therefore constant by design.
+Fingers are ``touch.ts`` (a recogniser: tap, double tap, drag, and a pinch, pan and twist past dead
+zones) and ``touchNavigation.ts`` (what each moves: a pinch is the wheel's flight toward the
+fingers' midpoint, two fingers pan by ``panOffset`` and twist turn in place, one finger stays the
+orbit controls' rotate), both tested over synthetic pointer events.
 **Extractability rule: files in this directory import only
-``three`` — never ``@/…``** (see its README) — it is shared-candidate code, so all
-robovast-specific wiring lives in the two consumers, ``frontend/ui/src/panels/run_view/Scene3DPanel.tsx``
-and ``frontend/ui/src/panels/config/Scene3DPanel.tsx``. Both resolve the scene through
-``useSceneGeometry.ts``: the service compiles it on demand in the campaign's image and caches it
+``three`` — never ``@/…``** (see its README; ``imports.test.ts`` holds it) — it is shared-candidate
+code, so all robovast-specific wiring, the palette included, lives in the two consumers,
+``frontend/ui/src/panels/run_view/Scene3DPanel.tsx`` and
+``frontend/ui/src/panels/config/Scene3DPanel.tsx``. Both resolve the scene through
+``frontend/ui/src/lib/useSceneGeometry.ts``: the service compiles it on demand in the campaign's image and caches it
 per world (``GET /campaigns/{id}/scene`` asks, one ``POST .../scene/run`` builds; the config view
 uses the workspace's ``/workspaces/{id}/scene``). The run view's panel drives ``jointMap`` and
 ``basePose`` from the run's ``sim_poses`` and ``joint_states`` rows on the clock; the config

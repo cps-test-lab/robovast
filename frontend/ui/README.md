@@ -5,7 +5,7 @@ A plain Vite + React + TypeScript app (MUI + TanStack Query) that is a thin clie
 
 ```bash
 npm install
-npm run build     # -> frontend/ui/dist, served by the service (vast serve)
+npm run build     # -> frontend/ui/dist (with the app's manifest, icons and sw.js), served by the service
 npm run dev       # Vite dev server on :5173, proxies the API to a running `vast serve`
 npm run lint      # tsc --noEmit
 npm run test      # vitest over the pure modules in src/lib/ -- keep these minimal

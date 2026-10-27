@@ -36,7 +36,6 @@ import {
   WebGLRenderer,
 } from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
-import { CANVAS, GRID, GRID_CENTER } from '@/colors'
 import { dollyToCursor } from './cursorDolly'
 import { MIN_PIVOT_M, frameObject, measureDepth, pickObject, retargetPivot } from './pivot'
 import { letterbox, type SceneCamera } from './sceneCameras'
@@ -50,10 +49,11 @@ export interface SceneViewSpec {
   elevation?: number // degrees; negative looks down
 }
 
+/** The viewport's colours, which are the host's palette: this directory knows none. */
 export interface ViewportOptions {
-  background?: string
-  gridColor?: string
-  gridCenterColor?: string
+  background: string
+  gridColor: string
+  gridCenterColor: string
 }
 
 // The Z-up -> Y-up wrapper rotation; also used to bring the (Z-up) camera spec into three coords.
@@ -195,7 +195,7 @@ export class SceneViewport {
   // The sensor camera the scene is shown through, or null for the free orbit view.
   private viewpoint: SceneCamera | null = null
 
-  constructor(container: HTMLElement, opts: ViewportOptions = {}) {
+  constructor(container: HTMLElement, opts: ViewportOptions) {
     this.container = container
     this.renderer = new WebGLRenderer({ antialias: true })
     this.renderer.setPixelRatio(window.devicePixelRatio || 1)
@@ -206,7 +206,7 @@ export class SceneViewport {
     this.renderer.domElement.style.touchAction = 'none'
     container.appendChild(this.renderer.domElement)
 
-    this.scene.background = new Color(opts.background ?? CANVAS)
+    this.scene.background = new Color(opts.background)
 
     // Aspect is set by resize(); near/far are placeholders that updateFrustum() replaces on the first
     // frame -- only the 0.01 near floor it clamps to survives.
@@ -227,8 +227,8 @@ export class SceneViewport {
     this.grid = new GridHelper(
       40,
       40,
-      new Color(opts.gridCenterColor ?? GRID_CENTER),
-      new Color(opts.gridColor ?? GRID),
+      new Color(opts.gridCenterColor),
+      new Color(opts.gridColor),
     )
     this.scene.add(this.grid)
 

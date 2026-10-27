@@ -49,5 +49,7 @@ or a version newer than `SCENE_VERSION`, naming both.
 **Extractability rule: files in this directory import only `three` (and `three/addons`) — never
 `@/…` or anything robovast-specific.** The directory is shared-candidate code for other projects
 rendering the same scene, so keeping this boundary makes extraction into a common package
-mechanical. Host-specific wiring (data providers, clocks, panel/config plumbing) belongs in the
-consumer — here, `frontend/ui/src/panels/Scene3DPanel.tsx`.
+mechanical. Host-specific wiring (data providers, clocks, panel/config plumbing, the palette the
+viewport and the markers are drawn in, and `useSceneGeometry`, the hook asking the service for a
+scene) belongs in the consumer — here, the two `Scene3DPanel.tsx` under `frontend/ui/src/panels/`
+and `frontend/ui/src/lib/useSceneGeometry.ts`. `imports.test.ts` holds the directory to the rule.

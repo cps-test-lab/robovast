@@ -27,10 +27,10 @@ import Typography from '@mui/material/Typography'
 import { declaredMarkers, type ConfigPanelProps, type SceneMarker } from '@robovast/panel-kit'
 import { registerConfigPanel } from '@/lib/panels/registry'
 import { robovast } from '@/lib/robovastClient'
-import { CANVAS } from '@/colors'
+import { CANVAS, MARKER_DEFAULT, SCENE_VIEWPORT } from '@/colors'
 import { buildMarkers, type MarkerLayer } from '@/lib/scene3d/markers'
 import { loadScene, type SceneModel } from '@/lib/scene3d/sceneLoader'
-import { useSceneGeometry } from '@/lib/scene3d/useSceneGeometry'
+import { useSceneGeometry } from '@/lib/useSceneGeometry'
 import { SceneViewport } from '@/lib/scene3d/viewport'
 
 function Scene3DPanel({ spec, config, source }: ConfigPanelProps) {
@@ -60,7 +60,7 @@ function Scene3DPanel({ spec, config, source }: ConfigPanelProps) {
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
-    const viewport = new SceneViewport(el)
+    const viewport = new SceneViewport(el, SCENE_VIEWPORT)
     viewportRef.current = viewport
     return () => {
       viewportRef.current = null
@@ -100,7 +100,7 @@ function Scene3DPanel({ spec, config, source }: ConfigPanelProps) {
   useEffect(() => {
     layerRef.current?.root.removeFromParent()
     layerRef.current?.dispose()
-    const layer = buildMarkers(markers)
+    const layer = buildMarkers(markers, MARKER_DEFAULT)
     layerRef.current = layer
     modelRef.current?.root.add(layer.root)
     setHidden(new Set())

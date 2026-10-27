@@ -343,7 +343,7 @@ iOS does not zoom the page when it takes focus.
 In **Results**, the **Explorer** shows the campaign tree or the selected node, not both: choosing a
 node opens it at full width, and **All campaigns** goes back to the tree. A link to a node opens
 on that node. The **Run view** keeps its scene and puts its other panels in tabs (see
-:ref:`run-view-compact`). The **Data browser**'s campaign picker takes a line of its own, and its
+:ref:`how a compact screen reads the panels <run-view-compact>`). The **Data browser**'s campaign picker takes a line of its own, and its
 result table scrolls inside its own box.
 
 **Config** stays usable on a phone without being comfortable there: its columns stack, each a

@@ -40,7 +40,7 @@ import { isLiveProvider } from '@/lib/panels/dataProvider'
 import type { PanelProps } from '@robovast/panel-kit'
 import { robovast } from '@/lib/robovastClient'
 import type { MotionMeta, MotionSink, MotionSource } from '@/lib/scene3d/motionSource'
-import { CANVAS } from '@/colors'
+import { CANVAS, SCENE_VIEWPORT } from '@/colors'
 import {
   DEFAULT_JOINT_TABLE, DEFAULT_POSE_TABLE, openRowMotion, type RowReader,
 } from '@/lib/scene3d/rowMotion'
@@ -48,7 +48,7 @@ import { buildFreeCamera, viewpoints, type SceneCamera } from '@/lib/scene3d/sce
 import type { SceneLook } from '@/lib/camera/cameraSource'
 import type { SceneModel } from '@/lib/scene3d/sceneLoader'
 import { sceneModels, type SceneLease } from '@/lib/scene3d/sceneModelCache'
-import { useSceneGeometry } from '@/lib/scene3d/useSceneGeometry'
+import { useSceneGeometry } from '@/lib/useSceneGeometry'
 import { SceneViewport } from '@/lib/scene3d/viewport'
 import { registerSceneReset } from './sceneReset'
 
@@ -178,7 +178,7 @@ export function Scene3DView({
     if (!el) return
     let viewport: SceneViewport
     try {
-      viewport = new SceneViewport(el)
+      viewport = new SceneViewport(el, SCENE_VIEWPORT)
     } catch (err) {
       setViewportError(
         `this browser could not start WebGL for the 3D view (${err instanceof Error ? err.message : String(err)})`,
