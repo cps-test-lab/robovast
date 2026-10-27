@@ -123,6 +123,21 @@ WATCH_MASK = IN_MODIFY | IN_CLOSE_WRITE | IN_CREATE | IN_MOVED_TO
 
 _EVENT = struct.Struct("iIII")
 
+#: The kernel's per-user inotify limits, by the errno that reports one used up. Every process
+#: of one user on a host shares them, the containers that run as that user included.
+_LIMITS = {errno.EMFILE: "fs.inotify.max_user_instances (or this process's open-file limit)",
+           errno.ENOSPC: "fs.inotify.max_user_watches"}
+
+
+def _inotify_error(call: str, err: int) -> OSError:
+    """The ``OSError`` of a failed inotify *call*, naming the host limit an *err* means."""
+    message = f"{call}: {os.strerror(err)}"
+    limit = _LIMITS.get(err)
+    if limit is not None:
+        message += (f" -- the host's {limit} is used up; every process of this user on the "
+                    "host shares it, so raise it on the host")
+    return OSError(err, message)
+
 
 class Inotify:
     """A recursive inotify watch over one or more directory trees, via ``ctypes`` on libc.
@@ -142,8 +157,7 @@ class Inotify:
         self._libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
         fd = self._libc.inotify_init1(IN_CLOEXEC)
         if fd < 0:
-            err = ctypes.get_errno()
-            raise OSError(err, f"inotify_init1: {os.strerror(err)}")
+            raise _inotify_error("inotify_init1", ctypes.get_errno())
         self.fd = fd
         self._wake_r, self._wake_w = os.pipe()
         os.set_blocking(self._wake_w, False)
@@ -170,7 +184,7 @@ class Inotify:
             err = ctypes.get_errno()
             if err in (errno.ENOENT, errno.ENOTDIR):
                 return False  # gone before it could be watched
-            raise OSError(err, f"inotify_add_watch {path}: {os.strerror(err)}")
+            raise _inotify_error(f"inotify_add_watch {path}", err)
         self._dirs[wd] = path
         return True
 
