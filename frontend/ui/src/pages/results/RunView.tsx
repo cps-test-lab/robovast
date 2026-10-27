@@ -37,6 +37,7 @@ import Typography from '@mui/material/Typography'
 import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded'
 import CenterFocusStrongRoundedIcon from '@mui/icons-material/CenterFocusStrongRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
+import HelpOutlineRoundedIcon from '@mui/icons-material/HelpOutlineRounded'
 import PodcastsRoundedIcon from '@mui/icons-material/PodcastsRounded'
 import SensorsRoundedIcon from '@mui/icons-material/SensorsRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
@@ -62,6 +63,7 @@ import { panelTopics, useTap } from './tap'
 import { jobOfRun } from '@/lib/jobRun'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 import { resetSceneViews, useSceneResetAvailable } from '@/panels/run_view/sceneReset'
+import { SceneControlsDialog } from '@/panels/run_view/SceneControlsDialog'
 import '@/panels/run_view' // registers the built-in panels
 
 /** The run view's settings menu: does the run end at its scenario's verdict or run on through the
@@ -89,6 +91,7 @@ function RunSettingsMenu({ clock }: { clock: PlaybackClock }) {
   const { verdict, hideShutdown } = useClock(clock)
   const [anchor, setAnchor] = useState<HTMLElement | null>(null)
   const canResetView = useSceneResetAvailable()
+  const [controlsOpen, setControlsOpen] = useState(false)
   const noVerdict = verdict == null
   const reason = noVerdict
     ? 'This run recorded no scenario verdict, so there is no shutdown to separate.'
@@ -165,7 +168,21 @@ function RunSettingsMenu({ clock }: { clock: PlaybackClock }) {
             </MenuItem>
           </span>
         </Tooltip>
+        {/* Beside the reset, which is the way back if the bindings it lists lose the scene. Shown
+            with or without a 3D view: the bindings are worth reading before one is opened. */}
+        <MenuItem
+          onClick={() => {
+            setControlsOpen(true)
+            setAnchor(null)
+          }}
+        >
+          <ListItemIcon>
+            <HelpOutlineRoundedIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>3D view controls</ListItemText>
+        </MenuItem>
       </Menu>
+      <SceneControlsDialog open={controlsOpen} onClose={() => setControlsOpen(false)} />
     </>
   )
 }

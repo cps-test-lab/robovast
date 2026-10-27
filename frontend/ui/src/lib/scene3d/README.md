@@ -28,6 +28,14 @@ or a version newer than `SCENE_VERSION`, naming both.
   future live view.
 - `viewport.ts` — a plain-three viewport (renderer, camera, lights, grid, orbit controls, its own
   wheel/pointer handlers, a frustum that tracks the camera, Z-up wrapper group, resize, dispose).
+  `panOffset` there is how far a two-finger pan moves the camera.
+- `touch.ts` — fingers to gestures: tap, double tap, one-finger drag, and for two fingers a pinch, a
+  pan and a twist. A pinch and a twist act only past a dead zone, the pan follows the midpoint
+  through a low-pass filter, and the finger left when one of two lifts starts nothing.
+- `touchNavigation.ts` — what each gesture moves, against the few operations a viewport offers
+  (`TouchView`): a pinch is the wheel's flight toward the fingers' midpoint, two fingers pan and
+  twist, a double tap frames what was tapped, and one finger is the orbit controls' rotate, which it
+  switches off while a second finger is down.
 - `pivot.ts` — where the orbit pivot goes, and the reason the other two files are shaped as they are.
   Rotate, pan and the wheel are all scaled by the pivot distance, so it is measured against the scene
   under the cursor at the start of every gesture. A pivot left at the world's authored framing

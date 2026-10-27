@@ -2013,6 +2013,22 @@ The mouse bindings:
 - **right-drag** — pan sideways and vertically, at roughly the speed of the surface being dragged.
 - **double-click** — travel to frame whatever you clicked, without turning the camera.
 
+On a touch screen the same view is moved with fingers, and the page never scrolls or zooms under it:
+
+- **one finger** — turn about the surface under the finger, as the left-drag does.
+- **pinch** — fly toward or away from what lies between the two fingers: the wheel's flight, aimed at
+  their midpoint. Spreading them to twice their distance goes about as far as two wheel notches.
+- **two fingers moving together** — pan; what was under them stays under them.
+- **two fingers turning** — turn the view in place, about the vertical.
+- **double tap** — travel to frame what you tapped, as the double-click does.
+
+Two fingers are never perfectly still relative to each other, so a pinch and a twist only start once
+they have gone past a small dead zone (about 6 % in distance, 12° in angle), and then act with all of
+it. A two-finger pan therefore does not also fly or turn. When one of two fingers lifts, the finger
+left behind starts nothing, so a pinch does not end in a turn. **3D view controls** in the header gear
+lists these bindings. A browser that cannot start WebGL, or delivers no pointer events, gets a
+message in the panel saying so rather than a view that does not move.
+
 All three drags are scaled by one number, the distance to the **pivot**, and the panel re-measures it
 against the actual geometry whenever a gesture starts. That is what lets a single set of bindings fit
 a 3 m tabletop and a 65 m building without a mode or a speed setting: a pivot fixed at the distance

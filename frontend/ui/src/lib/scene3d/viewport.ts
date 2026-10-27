@@ -8,7 +8,9 @@
 // the loader's imperative API (jointMap/basePose); the viewport just renders continuously.
 //
 // Drag bindings are OrbitControls' own; the wheel is not (see cursorDolly.ts for why), and the
-// frustum tracks the camera so flying out does not clip the world away.
+// frustum tracks the camera so flying out does not clip the world away. Fingers are the viewport's
+// own beyond one: touchNavigation.ts maps a pinch onto the wheel's flight, and adds a two-finger pan,
+// a twist and a double tap.
 //
 // What makes all three gestures scale to the world is that the orbit pivot is re-chosen onto the
 // surface under the cursor whenever a gesture starts (`anchor`, and pivot.ts for the reasoning).
@@ -26,6 +28,7 @@ import {
   Matrix4,
   PerspectiveCamera,
   Scene,
+  TOUCH,
   Sphere,
   Vector2,
   Vector3,
@@ -37,6 +40,7 @@ import { CANVAS, GRID, GRID_CENTER } from '@/colors'
 import { dollyToCursor } from './cursorDolly'
 import { MIN_PIVOT_M, frameObject, measureDepth, pickObject, retargetPivot } from './pivot'
 import { letterbox, type SceneCamera } from './sceneCameras'
+import { TouchNavigation, type ClientPoint } from './touchNavigation'
 
 /** The scene's optional baked initial camera (a MuJoCo free camera, Z-up world frame). */
 export interface SceneViewSpec {
@@ -71,6 +75,10 @@ const WHEEL_GESTURE_GAP_MS = 150
 // What surrounds a sensor's picture where the canvas is not its shape: the bars of a letterbox, so the
 // picture's edge is the sensor's and not the world's background running on past it.
 const LETTERBOX = new Color(0x000000)
+
+// How far a twist or a look may tilt the view toward straight up or down: just short of it, where the
+// view direction and the world's vertical would coincide and the turn axis would vanish.
+const MAX_PITCH = Math.PI / 2 - 0.05
 
 // How long a double-click's flight to its target takes. Long enough to read as travel rather than a
 // cut, short enough not to be something to sit through.
@@ -114,6 +122,30 @@ function cameraFromView(view: SceneViewSpec): { position: Vector3; target: Vecto
   return { position: position.applyMatrix4(UP_MATRIX), target: target.applyMatrix4(UP_MATRIX) }
 }
 
+/**
+ * How far to move the camera, and its pivot with it, so that a screen offset of (`dx`, `dy`) CSS
+ * pixels carries the point `distance` ahead of the camera along with the fingers.
+ *
+ * Scaled by the pivot distance for the reason rotate and the wheel are (pivot.ts): measured against
+ * the surface under the fingers, the same two-finger pan is a few centimetres across a tabletop and
+ * metres across a building.
+ */
+export function panOffset(
+  camera: PerspectiveCamera,
+  distance: number,
+  height: number,
+  dx: number,
+  dy: number,
+): Vector3 {
+  const perPx = (2 * distance * Math.tan(MathUtils.degToRad(camera.fov) / 2)) / Math.max(1, height)
+  camera.updateMatrixWorld()
+  const right = new Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize()
+  const up = new Vector3().setFromMatrixColumn(camera.matrixWorld, 1).normalize()
+  // The world follows the fingers, so the camera goes the other way: left for a drag to the right,
+  // and up for a drag down the screen (client y grows downward).
+  return right.multiplyScalar(-dx * perPx).add(up.multiplyScalar(dy * perPx))
+}
+
 /** Take *root* out of *group*, leaving it loadable into another viewport.
  *
  *  The viewport shows a scene root and never owns one: a model outlives the viewport that
@@ -144,6 +176,13 @@ export class SceneViewport {
   private onWheel: (event: WheelEvent) => void
   private onPointerDown: (event: PointerEvent) => void
   private onDoubleClick: (event: MouseEvent) => void
+  private onPointerMove: (event: PointerEvent) => void
+  private onPointerUp: (event: PointerEvent) => void
+  private onPointerCancel: (event: PointerEvent) => void
+  private touch: TouchNavigation
+  // The kind of pointer that pressed last. A browser that turns a double tap into a `dblclick` as
+  // well would otherwise fly twice; the double tap is touchNavigation's.
+  private lastPointerType = ''
   // How far ahead the orbit pivot sits. Held as a number rather than read back off `controls.target`
   // because the wheel travels along the cursor ray while the pivot stays on the view axis: a distance
   // re-derived from the two vectors would shrink by an extra cos(angle to the cursor) per event.
@@ -162,6 +201,9 @@ export class SceneViewport {
     this.renderer.setPixelRatio(window.devicePixelRatio || 1)
     this.renderer.shadowMap.enabled = true
     this.renderer.domElement.style.display = 'block'
+    // Fingers move the scene, never the page: no scroll, no browser pinch-zoom over the canvas. Set
+    // here rather than left to OrbitControls, which sets it too but is not what this depends on.
+    this.renderer.domElement.style.touchAction = 'none'
     container.appendChild(this.renderer.domElement)
 
     this.scene.background = new Color(opts.background ?? CANVAS)
@@ -201,6 +243,9 @@ export class SceneViewport {
     // Drag bindings stay OrbitControls'; its dolly does not, because shrinking the orbit radius
     // stalls the wheel a short way from the pivot -- cursorDolly.ts flies instead.
     this.controls.enableZoom = false
+    // One finger is OrbitControls' rotate. Two are the viewport's alone (touchNavigation.ts): the
+    // controls' own two-finger dolly-pan would fight the pinch and the pan on every event.
+    this.controls.touches = { ONE: TOUCH.ROTATE, TWO: null as unknown as TOUCH }
     this.setView({}) // sane default until the scene's baked view arrives
 
     // Native listener, non-passive: a passive one cannot preventDefault, and without that the wheel
@@ -211,31 +256,44 @@ export class SceneViewport {
       const now = event.timeStamp
       if (now - this.lastWheelAt > WHEEL_GESTURE_GAP_MS) this.anchor(event)
       this.lastWheelAt = now
-      this.focus = null // a wheel during a focus flight means the human wants to steer, not to watch
-      this.pivotDistance = dollyToCursor(
-        this.camera,
-        this.pivotDistance,
-        event,
-        this.renderer.domElement,
-      )
-      // Back onto the view axis at its new distance. Keeping the pivot dead ahead is what stops
-      // OrbitControls' `lookAt(target)` from re-centring it every frame -- off-centre scrolling would
-      // otherwise swing the view a couple of degrees a notch, and steering by aiming would drift.
-      retargetPivot(this.camera, this.controls.target, this.pivotDistance)
+      this.dollyBy(event)
     }
     this.renderer.domElement.addEventListener('wheel', this.onWheel, { passive: false })
 
     // Capture phase, so the pivot is already on the right surface by the time OrbitControls' own
     // pointerdown runs. Both rotate and pan read the pivot distance, so this one hook is what scales
     // them: it costs one raycast per gesture, and never one per frame.
+    //
+    // Fingers also go to the touch navigation, which knows a pinch from a turn. It is fed whatever
+    // the viewpoint, so it always knows how many fingers are down; it acts only on the free camera.
+    this.touch = new TouchNavigation({
+      free: () => this.viewpoint === null,
+      anchor: (at) => this.anchor(at),
+      dolly: (at, deltaY) => this.dolly(at, deltaY),
+      panBy: (dx, dy) => this.panBy(dx, dy),
+      lookBy: (yaw, pitch) => this.lookBy(yaw, pitch),
+      focusAt: (at) => this.focusUnderCursor(at),
+      setRotate: (enabled) => {
+        this.controls.enableRotate = enabled
+      },
+    })
     this.onPointerDown = (event: PointerEvent) => {
+      this.lastPointerType = event.pointerType
+      this.touch.down(event)
       if (this.viewpoint) return
       this.focus = null
       this.anchor(event)
     }
     this.renderer.domElement.addEventListener('pointerdown', this.onPointerDown, { capture: true })
+    this.onPointerMove = (event: PointerEvent) => this.touch.move(event)
+    this.renderer.domElement.addEventListener('pointermove', this.onPointerMove)
+    this.onPointerUp = (event: PointerEvent) => this.touch.up(event)
+    this.renderer.domElement.addEventListener('pointerup', this.onPointerUp)
+    this.onPointerCancel = (event: PointerEvent) => this.touch.cancel(event)
+    this.renderer.domElement.addEventListener('pointercancel', this.onPointerCancel)
 
     this.onDoubleClick = (event: MouseEvent) => {
+      if (this.lastPointerType === 'touch') return
       if (!this.viewpoint) this.focusUnderCursor(event)
     }
     this.renderer.domElement.addEventListener('dblclick', this.onDoubleClick)
@@ -330,8 +388,53 @@ export class SceneViewport {
     this.controls.update()
   }
 
-  /** Double-click: travel to frame whatever is under the cursor, keeping the view direction. */
-  private focusUnderCursor(event: MouseEvent): void {
+  /** Fly along the ray under the pointer, as one wheel event does (cursorDolly.ts). */
+  private dollyBy(event: WheelEvent): void {
+    this.focus = null // a wheel during a focus flight means the human wants to steer, not to watch
+    this.pivotDistance = dollyToCursor(
+      this.camera,
+      this.pivotDistance,
+      event,
+      this.renderer.domElement,
+    )
+    // Back onto the view axis at its new distance. Keeping the pivot dead ahead is what stops
+    // OrbitControls' `lookAt(target)` from re-centring it every frame -- off-centre scrolling would
+    // otherwise swing the view a couple of degrees a notch, and steering by aiming would drift.
+    retargetPivot(this.camera, this.controls.target, this.pivotDistance)
+  }
+
+  /** A pinch's step: the wheel's flight for a wheel delta of `deltaY` pixels at `at`. */
+  private dolly(at: ClientPoint, deltaY: number): void {
+    this.dollyBy({ deltaY, deltaMode: 0, clientX: at.clientX, clientY: at.clientY } as WheelEvent)
+  }
+
+  /** Two fingers moved the view: what was under their midpoint stays under it. */
+  private panBy(dx: number, dy: number): void {
+    const height = this.renderer.domElement.clientHeight
+    const move = panOffset(this.camera, this.pivotDistance, height, dx, dy)
+    this.focus = null
+    this.camera.position.add(move)
+    this.controls.target.add(move)
+  }
+
+  /** Turn the view in place: `yaw` about the world's vertical, `pitch` up, both in radians. The pivot
+   *  stays at its distance, now ahead in the new direction, so the next turn is about it. */
+  private lookBy(yaw: number, pitch: number): void {
+    const up = new Vector3(0, 1, 0) // three's vertical; the scene's Z-up sits under the wrapper
+    const dir = this.camera.getWorldDirection(new Vector3())
+    dir.applyAxisAngle(up, yaw)
+    const current = Math.asin(Math.max(-1, Math.min(1, dir.y)))
+    const next = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, current + pitch))
+    const right = dir.clone().cross(up)
+    if (right.lengthSq() > 1e-9) dir.applyAxisAngle(right.normalize(), next - current)
+    this.focus = null
+    this.controls.target.copy(this.camera.position).addScaledVector(dir.normalize(), this.pivotDistance)
+    this.controls.update()
+  }
+
+  /** Double-click or double tap: travel to frame whatever is under the pointer, keeping the view
+   *  direction. */
+  private focusUnderCursor(event: ClientPoint): void {
     const hit = pickObject(this.camera, this.root, this.ndc(event))
     if (!hit) return // empty space names nothing to go to; do not invent a destination
     const dest = frameObject(this.camera, hit)
@@ -443,6 +546,9 @@ export class SceneViewport {
     this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown, {
       capture: true,
     })
+    this.renderer.domElement.removeEventListener('pointermove', this.onPointerMove)
+    this.renderer.domElement.removeEventListener('pointerup', this.onPointerUp)
+    this.renderer.domElement.removeEventListener('pointercancel', this.onPointerCancel)
     this.renderer.domElement.removeEventListener('dblclick', this.onDoubleClick)
     this.controls.dispose()
     detachSceneRoot(this.zUpGroup, this.root)
