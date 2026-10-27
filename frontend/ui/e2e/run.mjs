@@ -274,12 +274,7 @@ const PAGES = [
   { name: 'campaigns', hash: `#/execution?campaign=${RUNNING}`, ready: `text=${RUNNING}` },
   {
     name: 'explorer',
-    hash: runHash,
-    // A workaround for a UI bug: a cold load of an Explorer deep link drops the run. The run view
-    // is loaded first and the Explorer's hash set afterwards.
-    then: `#/results/explorer/${RUN.campaign}/${RUN.config}/${RUN.run}?tab=${NOTEBOOK}`,
-    // The hash's tab does not survive that path either, so the notebook's tab is chosen by hand.
-    clickTab: NOTEBOOK,
+    hash: `#/results/explorer/${RUN.campaign}/${RUN.config}/${RUN.run}?tab=${NOTEBOOK}`,
     ready: 'iframe',
   },
   { name: 'run', hash: runHash, ready: 'canvas' },
@@ -316,22 +311,6 @@ async function openPage(context, base, def) {
   const quiet = trackRequests(page)
   await page.goto(`${base}${def.path ?? `/${def.hash}`}`)
   await quiet()
-  if (def.then) {
-    await page.waitForTimeout(800)
-    await page.evaluate((h) => { window.location.hash = h }, def.then)
-    await quiet()
-  }
-  if (def.clickTab) {
-    // Clicked in the page rather than by Playwright, which would scroll a tab that is off to the
-    // side into view and leave the screenshot scrolled with it.
-    await page.waitForFunction((name) => {
-      const tab = [...document.querySelectorAll('[role=tab]')]
-        .find((t) => t.textContent.trim().toLowerCase() === name.toLowerCase())
-      tab?.click()
-      return !!tab
-    }, def.clickTab, { timeout: 10_000 }).catch(() => undefined)
-    await quiet()
-  }
   let ready = true
   try {
     await page.locator(def.ready).first().waitFor({ state: 'visible', timeout: 15_000 })
