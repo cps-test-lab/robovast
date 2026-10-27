@@ -142,7 +142,8 @@ export function DataBrowser({
 
   return (
     <Stack spacing={2}>
-      <Stack direction="row" spacing={2} alignItems="center">
+      {/* Wraps on a narrow screen, where the picker takes a line of its own at full width. */}
+      <Stack direction="row" spacing={2} useFlexGap alignItems="center" sx={{ flexWrap: 'wrap', rowGap: 1 }}>
         <Typography variant="h6">Data browser</Typography>
         <TextField
           select
@@ -160,7 +161,7 @@ export function DataBrowser({
             setSqlBuffer(DEFAULT_SQL)
             setActiveSql(DEFAULT_SQL)
           }}
-          sx={{ minWidth: 340 }}
+          sx={{ minWidth: { xs: 0, sm: 340 }, width: { xs: '100%', sm: 'auto' } }}
         >
           {/* Gives the empty selection an option to match, so MUI does not warn about an
               out-of-range value, and names the empty case instead of showing a blank box. */}

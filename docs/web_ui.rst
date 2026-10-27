@@ -340,6 +340,12 @@ toggle in the log's bar turns it back to one line per entry, which scrolls sidew
 log. The log's controls wrap under its search field, and the field's text is large enough that
 iOS does not zoom the page when it takes focus.
 
+In **Results**, the **Explorer** shows the campaign tree or the selected node, not both: choosing a
+node opens it at full width, and **All campaigns** goes back to the tree. A link to a node opens
+on that node. The **Run view** keeps its scene and puts its other panels in tabs (see
+:ref:`run-view-compact`). The **Data browser**'s campaign picker takes a line of its own, and its
+result table scrolls inside its own box.
+
 A desktop browser with a mouse is laid out as before, however narrow its window.
 
 .. _web-ui-admin:
@@ -1791,7 +1797,8 @@ somewhere other than the base layer.
 
 The declared layout is where the panels **start**, not where they are stuck:
 
-* **Move** — press the mouse on a panel's **title bar**, drag, and release to drop it there.
+* **Move** — press a panel's **title bar** (with the mouse, or a finger on a tablet), drag,
+  and release to drop it there.
   A moved panel is raised above the others, and always keeps an edge inside the view so it
   can be grabbed back.
 * **Resize** — drag **any edge or corner** of a panel. The edge you grab is the one that moves
@@ -1812,6 +1819,17 @@ These are **view-local** adjustments: they last as long as the view is open, and
 the one the ``.vast`` declares too, so resizing or minimizing a docked bar or column in the
 view does not re-flow the panels around it. To change the layout for good, edit it under
 **Edit visualization**.
+
+.. _run-view-compact:
+
+**On a compact screen** (a phone; see :ref:`web-ui-phone`) the declared layout would pile every
+panel onto the scene, so the same declarations are read differently, and the ``.vast`` is unchanged:
+the ``fill: true`` panel (the 3D scene) is the **stage**, at the top — or the left, on a phone held
+sideways; a panel docked ``top`` or ``bottom`` that shows no title bar (the ``playback`` bar) stays
+on its edge at full width; and **every other panel is a tab** below the stage, one shown at a time,
+in declaration order and named by its ``title`` (or its type's name). A tab keeps its state while
+another is shown. Nothing is moved or resized by hand there. The header keeps one row: the run
+picker takes the width, and **Edit visualization** is a pencil icon.
 
 The built-in panels:
 

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
+import Button from '@mui/material/Button'
 import CircularProgress from '@mui/material/CircularProgress'
 import IconButton from '@mui/material/IconButton'
 import InputAdornment from '@mui/material/InputAdornment'
@@ -12,6 +13,7 @@ import Tabs from '@mui/material/Tabs'
 import TextField from '@mui/material/TextField'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
+import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded'
 import ClearRoundedIcon from '@mui/icons-material/ClearRounded'
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded'
 import { useTheme } from '@mui/material/styles'
@@ -32,6 +34,7 @@ import { ConfigIcon, RunViewIcon } from '@/components/viewIcons'
 import { RunLogTab, type LogTabScope } from '@/components/runLog/RunLogTab'
 import { ResultsTree, runsQuery } from './ResultsTree'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
+import { denseHeight, useCompact } from '@/lib/compact'
 
 // Results → Explorer: a campaign → config → run tree with green/red status, all from the DB. The
 // tree is the campaign selector; clicking a node renders its evaluation.visualization notebooks.
@@ -100,7 +103,13 @@ export function ExplorerView({
     setFilter((f) => (campaignId.toLowerCase().includes(f.trim().toLowerCase()) ? f : ''))
   }, [campaignId])
 
+  // On a compact screen there is room for the tree or the node, not both: picking a node shows it
+  // full width, and the back button returns to the tree. A link that names a node opens on it.
+  const { compact } = useCompact()
+  const [browsing, setBrowsing] = useState(!campaignId)
+
   const select = (item: ResultsTreeItem) => {
+    setBrowsing(false)
     // A click in another campaign's subtree moves both at once: the campaign and the node under it
     // are one selection, and setting them in two steps would blank the node in between.
     onResultsChange(item.campaignId, selectionOf(item), item.campaignId === campaignId ? tab : '')
@@ -128,7 +137,17 @@ export function ExplorerView({
       sx={{ height: 'var(--page-height)' }}
     >
       <Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
-        <Typography variant="h6">Explorer</Typography>
+        {compact && !browsing ? (
+          <Button
+            startIcon={<ArrowBackRoundedIcon />}
+            onClick={() => setBrowsing(true)}
+            sx={{ textTransform: 'none' }}
+          >
+            All campaigns
+          </Button>
+        ) : (
+          <Typography variant="h6">Explorer</Typography>
+        )}
         <RefreshResultsButton state={refresh} />
       </Stack>
 
@@ -140,7 +159,7 @@ export function ExplorerView({
         <Box
           sx={{
             display: 'grid',
-            gridTemplateColumns: '380px 1fr',
+            gridTemplateColumns: compact ? 'minmax(0, 1fr)' : '380px 1fr',
             gap: 2,
             // Take whatever the heading leaves so both columns run to the bottom of the window;
             // each column scrolls internally rather than growing the page.
@@ -150,7 +169,15 @@ export function ExplorerView({
         >
           {/* Filter above, tree below: the Paper owns the column height and only the tree scrolls,
               so the field stays put while the list is paged through. */}
-          <Paper sx={{ p: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
+          <Paper
+            sx={{
+              p: 1,
+              minHeight: 0,
+              display: compact && !browsing ? 'none' : 'flex',
+              flexDirection: 'column',
+              gap: 1,
+            }}
+          >
             <TextField
               size="small"
               placeholder="Filter campaigns"
@@ -193,7 +220,7 @@ export function ExplorerView({
             </Box>
           </Paper>
 
-          <SelectionDetail
+          {compact && browsing ? null : <SelectionDetail
             campaignId={campaignId}
             sel={resolved.sel}
             tab={tab}
@@ -201,7 +228,7 @@ export function ExplorerView({
             canReplay={!!campaign && hasResults(campaign)}
             canConfig={!!campaign && mayHaveStagedConfig(campaign.phase)}
             live={liveRun}
-          />
+          />}
         </Box>
       )}
     </Stack>
@@ -337,12 +364,12 @@ function NotebookPanel({
           onChange={(_e, v) => onTab(v)}
           variant="scrollable"
           scrollButtons="auto"
-          sx={{ minHeight: 36, flex: 1, minWidth: 0 }}
+          sx={{ ...denseHeight(36), flex: 1, minWidth: 0 }}
         >
           {workloads.map((w) => (
-            <Tab key={w.name} value={w.name} label={w.name} sx={{ minHeight: 36, py: 0 }} />
+            <Tab key={w.name} value={w.name} label={w.name} sx={{ ...denseHeight(36), py: 0 }} />
           ))}
-          {showLog ? <Tab value={LOG_TAB_SLUG} label="Log" sx={{ minHeight: 36, py: 0 }} /> : null}
+          {showLog ? <Tab value={LOG_TAB_SLUG} label="Log" sx={{ ...denseHeight(36), py: 0 }} /> : null}
         </Tabs>
         {/* The campaign this selection belongs to, whatever node is picked: the frozen `_config/`
             is the campaign's, so unlike the jump beside it this one is not a run-level shortcut. */}
