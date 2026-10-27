@@ -34,18 +34,26 @@ import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButto
 import { ResultNote } from './ResultNote'
 import { TableFailures } from './TableFailures'
 import '@/lib/monaco' // configures the Monaco loader + workers (SQL editor below)
+import { useCompact } from '@/lib/compact'
 
 const DEFAULT_SQL = 'SELECT * FROM runs LIMIT 500'
 const NONE = '(none)'
 
 // DataGrid toolbar without the density selector (Columns / Filters / Export / quick filter only).
+// On a compact screen the search takes a line of its own: beside the three buttons it was left a
+// field too narrow to type in.
 function DataGridToolbar() {
+  const { compact } = useCompact()
   return (
     <GridToolbarContainer>
       <GridToolbarColumnsButton />
       <GridToolbarFilterButton />
       <GridToolbarExport />
-      <GridToolbarQuickFilter />
+      <GridToolbarQuickFilter
+        sx={compact
+          ? { flexBasis: '100%', '& .MuiInputBase-input': { height: 'auto', minHeight: 44, boxSizing: 'border-box' } }
+          : undefined}
+      />
     </GridToolbarContainer>
   )
 }
@@ -64,6 +72,7 @@ export function DataBrowser({
   onCampaignChange: (campaignId: string) => void
   refresh: ResultsRefresh
 }) {
+  const { compact } = useCompact()
   const [sqlBuffer, setSqlBuffer] = useState(DEFAULT_SQL)
   const [activeSql, setActiveSql] = useState(DEFAULT_SQL)
   const [x, setX] = useState('')
@@ -191,7 +200,9 @@ export function DataBrowser({
           <FailureBox error={failure} />
         </Stack>
       ) : (
-        <Box sx={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 2 }}>
+        // The schema beside the query on a wide screen; above it on a compact one, where a column
+        // of its own left the query, the chart and the table a third of a phone's width.
+        <Box sx={{ display: 'grid', gridTemplateColumns: compact ? 'minmax(0, 1fr)' : '260px 1fr', gap: 2 }}>
           {/* Schema panel */}
           <Paper sx={{ p: 1.5, overflow: 'auto', maxHeight: 560 }}>
             <Typography variant="subtitle2" mb={1}>
