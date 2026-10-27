@@ -334,6 +334,12 @@ of running off the screen — its phase, time, run meter and controls on the fir
 the description each on a line of their own below — and an opened card stacks its sections, with
 each job's chips and meters on a line under its name.
 
+A **run log** on a compact screen starts with word wrap on, and each line's message on a line of
+its own under its time, run, container and node, so the message is what fills the width. The wrap
+toggle in the log's bar turns it back to one line per entry, which scrolls sideways inside the
+log. The log's controls wrap under its search field, and the field's text is large enough that
+iOS does not zoom the page when it takes focus.
+
 A desktop browser with a mouse is laid out as before, however narrow its window.
 
 .. _web-ui-admin:
