@@ -23,7 +23,7 @@
 //
 // `--strict` exits non-zero when a page is wider than a phone's viewport, or when `campaigns`,
 // `run` or `login` has a target under 44 px on a phone. Not part of `npm test`: it needs a browser
-// (Playwright's Chromium) and a built UI.
+// (Playwright and its Chromium, installed for the run) and a built UI.
 
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -32,9 +32,16 @@ import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { chromium, devices } from 'playwright'
 import { centroidOf, changedFraction, decodePng, SCENE_BODIES } from './images.mjs'
 import { fixtureService, NOTEBOOK, RUN, RUNNING } from './fixtures.mjs'
+
+// Playwright is not a dependency of the UI: the build and `npm test` do not need a browser, so it is
+// installed for the run instead, and its absence is said rather than met as a module error.
+const { chromium, devices } = await import('playwright').catch(() => {
+  console.error('e2e: Playwright is not installed. Install it for this run, without adding it to the '
+    + 'project: `npm install --no-save playwright && npx playwright install chromium`.')
+  process.exit(2)
+})
 
 const UI = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 

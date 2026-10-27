@@ -2276,10 +2276,14 @@ draws. The run view on a compact screen is ``PanelHost``'s ``StackedPanels``: th
 ``.vast`` keeps one layout.
 
 **The installable app.** ``frontend/ui/pwa.ts`` is a build-only Vite plugin that emits the web app
-manifest (colours from ``colors.ts``), the icons rendered from ``public/favicon.svg`` with
-``@resvg/resvg-wasm``, and ``sw.js``, built from ``src/sw/worker.ts`` with esbuild and the
-precache list and build id written in; it adds the page's manifest link (with credentials, so the
-sign-in gate needs no exception) and the iOS tags. The list is the entry chunk, its static
+manifest (colours from ``colors.ts``), the icons, and ``sw.js``, built from ``src/sw/worker.ts``
+with esbuild and the precache list and build id written in. The icons are the one part the build
+cannot draw itself, having no SVG renderer: ``npm run icons`` (``icons/render.ts``) rasterises them
+from ``public/favicon.svg`` with Playwright's Chromium into ``frontend/ui/icons/``, beside a
+fingerprint of the mark, ground and sizes they were drawn from, and they are committed. The build
+recomputes the fingerprint and refuses to run when it differs (``readIcons``), so a changed mark
+cannot ship stale icons. The plugin also adds the page's manifest link (with credentials, so the
+sign-in gate needs no exception) and the iOS tags. The precache list is the entry chunk, its static
 imports and their CSS, from the bundle itself (``shellFiles``). The worker's policy is
 ``src/sw/shell.ts``, pure and tested: only a listed GET is served from the cache, page loads go to
 the network with an offline page as the fallback, nothing else reaches ``respondWith``, and a new

@@ -1,17 +1,22 @@
 // What makes the web UI installable as an app: a web app manifest, its icons, and a service worker
-// that caches the app shell (src/sw/). All of it is generated here, at build time, from what the
-// build itself knows -- the colours from src/colors.ts, the icons from the mark in public/favicon.svg,
-// the shell from the bundle's own entry chunk -- so none of it is a second copy that can drift.
+// that caches the app shell (src/sw/). The manifest and the worker are generated here, at build time,
+// from what the build itself knows -- the colours from src/colors.ts, the shell from the bundle's own
+// entry chunk -- so neither is a second copy that can drift.
+//
+// The icons are the one exception, because rasterising an SVG needs a renderer the build does not
+// carry: `npm run icons` (icons/render.ts) draws them from the mark in public/favicon.svg, and they
+// are committed in icons/ beside the fingerprint of what they were drawn from. The build recomputes
+// that fingerprint and refuses to run when it differs, so a changed mark, palette or icon size cannot
+// ship stale icons.
 //
 // Build only: under `npm run dev` there is no manifest and no worker, and nothing caches a module
 // that is about to be replaced.
 
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
+import { existsSync, readFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
 import { fileURLToPath, URL } from 'node:url'
 import { build as esbuild } from 'esbuild'
-import { initWasm, Resvg } from '@resvg/resvg-wasm'
 import type { Plugin } from 'vite'
 import { ACTIVE } from './src/colors'
 import { PWA_FILES } from './src/lib/pwaFiles'
@@ -49,6 +54,8 @@ export interface PwaOptions {
   theme: string
   /** The mark's SVG source, drawn on a 40 x 40 view box. */
   markSvg: string
+  /** Where the rendered icons and their fingerprint are kept (`npm run icons` writes them). */
+  iconDir: string
   /** The service worker's entry module. */
   workerEntry: string
 }
@@ -93,18 +100,38 @@ export function iconSvg(mark: string, icon: IconSpec, ground: string): string {
     + `<g transform="translate(20 20) scale(${s}) translate(-20 -20)">${markBody(mark)}</g></svg>`
 }
 
-// The renderer's WebAssembly, loaded once per build however many icons are drawn.
-let wasmReady: Promise<void> | null = null
-function resvgWasm(): Promise<void> {
-  const require = createRequire(import.meta.url)
-  wasmReady ??= initWasm(readFileSync(require.resolve('@resvg/resvg-wasm/index_bg.wasm')))
-  return wasmReady
+/** Every icon the app ships: the manifest's and the apple-touch-icon. */
+export const ALL_ICONS: IconSpec[] = [...ICONS, APPLE_TOUCH_ICON]
+
+/** What the icons are drawn from -- each one's file, size, purpose and SVG, so the mark, the ground
+ *  colour and the scale all count -- as one hash. */
+export function iconsFingerprint(markSvg: string, ground: string): string {
+  const drawn = ALL_ICONS.map((i) => [i.file, i.size, i.purpose, iconSvg(markSvg, i, ground)])
+  return createHash('sha256').update(JSON.stringify(drawn)).digest('hex')
 }
 
-/** Rasterise an icon's SVG to PNG bytes. */
-export async function renderIcon(svg: string, size: number): Promise<Uint8Array> {
-  await resvgWasm()
-  return new Resvg(svg, { fitTo: { mode: 'width', value: size } }).render().asPng()
+/** The fingerprint file beside the rendered icons. */
+export const FINGERPRINT_FILE = 'fingerprint'
+
+/** The rendered icons, by the file name each is emitted under -- refused, naming the fix, when they
+ *  were drawn from something other than the current mark and palette, or one is missing. */
+export function readIcons(opts: Pick<PwaOptions, 'markSvg' | 'background' | 'iconDir'>): Map<string, Uint8Array> {
+  const fingerprintPath = join(opts.iconDir, FINGERPRINT_FILE)
+  const recorded = existsSync(fingerprintPath) ? readFileSync(fingerprintPath, 'utf8').trim() : '(none)'
+  const current = iconsFingerprint(opts.markSvg, opts.background)
+  if (recorded !== current) {
+    throw new Error(
+      `pwa: the icons in ${opts.iconDir} were not drawn from the current mark, palette and sizes `
+      + `(fingerprint ${recorded}, expected ${current}). Run \`npm run icons\` and commit the result.`,
+    )
+  }
+  const out = new Map<string, Uint8Array>()
+  for (const icon of ALL_ICONS) {
+    const path = join(opts.iconDir, basename(icon.file))
+    if (!existsSync(path)) throw new Error(`pwa: ${path} is missing. Run \`npm run icons\`.`)
+    out.set(icon.file, readFileSync(path))
+  }
+  return out
 }
 
 /** A bundle as far as the shell is concerned: Rollup's output entries, reduced to what is read. */
@@ -180,12 +207,8 @@ export function pwa(opts: PwaOptions): Plugin {
       ]
     },
     async generateBundle(_options, bundle) {
-      for (const icon of [...ICONS, APPLE_TOUCH_ICON]) {
-        this.emitFile({
-          type: 'asset',
-          fileName: icon.file,
-          source: await renderIcon(iconSvg(opts.markSvg, icon, opts.background), icon.size),
-        })
+      for (const [fileName, source] of readIcons(opts)) {
+        this.emitFile({ type: 'asset', fileName, source })
       }
       this.emitFile({
         type: 'asset',
@@ -195,7 +218,7 @@ export function pwa(opts: PwaOptions): Plugin {
       const precache = [
         ...shellFiles(bundle as unknown as BundleLike),
         PWA_FILES.manifest,
-        ...[...ICONS, APPLE_TOUCH_ICON].map((i) => i.file),
+        ...ALL_ICONS.map((i) => i.file),
       ].map((f) => `${base}${f}`)
       const { code } = await buildWorker(opts.workerEntry, precache)
       this.emitFile({ type: 'asset', fileName: PWA_FILES.worker, source: code })
@@ -204,15 +227,20 @@ export function pwa(opts: PwaOptions): Plugin {
 }
 
 /** This app's own options, from the files they are kept in. */
-export function robovastPwa(): Plugin {
+export function robovastPwaOptions(): PwaOptions {
   const here = (path: string) => fileURLToPath(new URL(path, import.meta.url))
-  return pwa({
+  return {
     name: 'RoboVAST',
     shortName: 'RoboVAST',
     description: 'Follow, read and replay RoboVAST campaigns.',
     background: ACTIVE.surface.bg,
     theme: ACTIVE.surface.bg,
     markSvg: readFileSync(here('./public/favicon.svg'), 'utf8'),
+    iconDir: here('./icons'),
     workerEntry: here('./src/sw/worker.ts'),
-  })
+  }
+}
+
+export function robovastPwa(): Plugin {
+  return pwa(robovastPwaOptions())
 }

@@ -22,8 +22,15 @@ and when a spec is worth adding at all, is in *Web UI internals* (`docs/develope
 profile (portrait and landscape, touch on) and a desktop, writing screenshots and a `report.json`
 of pages wider than their viewport and touch targets under 44 px to `e2e/out/`. `--touch` and
 `--mouse` drive the run view's 3D scene, `--pwa` checks the installable app, `--strict` fails on
-what the probes find, and `--dist` serves another build (to compare before and after). It needs
-Playwright's Chromium (`npx playwright install chromium`).
+what the probes find, and `--dist` serves another build (to compare before and after).
+
+Playwright is not a dependency of the UI, since the build and `npm test` need no browser. Install
+it for a run of `npm run e2e` or `npm run icons` without adding it to the project:
+`npm install --no-save playwright && npx playwright install chromium`.
+
+**`npm run icons`** redraws the installable app's icons from `public/favicon.svg` into `icons/`,
+with the fingerprint the build checks them against; commit what it writes. The build refuses to
+run when the mark, the colours or an icon's size changed and the icons were not redrawn.
 
 The service serves `frontend/ui/dist` itself, so the UI starts together with `vast serve` (or the
 in-cluster service) at the same URL as the REST API — open that URL in a browser.

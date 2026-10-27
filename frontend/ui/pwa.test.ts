@@ -3,17 +3,17 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath, URL } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
-  APPLE_TOUCH_ICON,
+  ALL_ICONS,
   ICONS,
   buildWorker,
-  iconSvg,
   markBody,
-  renderIcon,
+  readIcons,
   shellFiles,
   webManifest,
   type BundleLike,
   type PwaOptions,
 } from './pwa'
+import { ACTIVE } from './src/colors'
 
 const here = (path: string) => fileURLToPath(new URL(path, import.meta.url))
 const MARK = readFileSync(here('./public/favicon.svg'), 'utf8')
@@ -22,9 +22,10 @@ const OPTS: PwaOptions = {
   name: 'RoboVAST',
   shortName: 'RoboVAST',
   description: 'test',
-  background: '#101316',
-  theme: '#101316',
+  background: ACTIVE.surface.bg,
+  theme: ACTIVE.surface.bg,
   markSvg: MARK,
+  iconDir: here('./icons'),
   workerEntry: here('./src/sw/worker.ts'),
 }
 
@@ -46,8 +47,8 @@ describe('webManifest', () => {
       scope: '/',
       id: '/',
       display: 'standalone',
-      background_color: '#101316',
-      theme_color: '#101316',
+      background_color: ACTIVE.surface.bg,
+      theme_color: ACTIVE.surface.bg,
     })
     const icons = m.icons as { src: string; sizes: string; purpose: string }[]
     expect(icons.map((i) => i.sizes)).toEqual(expect.arrayContaining(['192x192', '512x512']))
@@ -71,11 +72,18 @@ describe('icons', () => {
     expect(body).not.toContain('<svg')
   })
 
-  it('render at the size each declares', async () => {
-    for (const icon of [...ICONS, APPLE_TOUCH_ICON]) {
-      const png = await renderIcon(iconSvg(MARK, icon, OPTS.background), icon.size)
-      expect(pngSize(png)).toEqual({ width: icon.size, height: icon.size })
+  it('are committed drawn from the current mark and palette, at the size each declares', () => {
+    // `npm run icons` redraws them; this fails when the mark, the ground or a size changed since.
+    const icons = readIcons(OPTS)
+    for (const icon of ALL_ICONS) {
+      expect(pngSize(icons.get(icon.file)!)).toEqual({ width: icon.size, height: icon.size })
     }
+  })
+
+  it('are refused, naming the fix, when drawn from another mark or ground', () => {
+    const otherMark = MARK.replace('#a8ffcf', '#ff0000')
+    expect(() => readIcons({ ...OPTS, markSvg: otherMark })).toThrow(/npm run icons/)
+    expect(() => readIcons({ ...OPTS, background: '#ffffff' })).toThrow(/npm run icons/)
   })
 
   it('keep a maskable icon\'s mark inside the safe zone', () => {
