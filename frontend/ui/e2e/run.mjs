@@ -8,7 +8,8 @@
 //   <page>-<profile>-<orientation>.png   one screenshot per page and profile
 //   report.json                          per page and profile: does the page fit its viewport
 //                                        (`scrollWidth` against `clientWidth`, and what reaches past
-//                                        the right edge), and which touch targets are under 44 px
+//                                        the right edge), and which touch targets a finger cannot
+//                                        hit in a 44 px square
 //   touch.json, scene-touch.webm         --touch: gestures on the run view's 3D scene (Pixel 7)
 //   mouse.json                           --mouse: the same scene by mouse (desktop)
 //   pwa.json                             --pwa: manifest, installability, service worker, caches
@@ -379,16 +380,38 @@ function probe(targetsSelector) {
     const r = el.getBoundingClientRect()
     overflow.push({ element: describe(el), right: Math.round(r.right + window.scrollX), width: Math.round(r.width) })
   }
+  // What a finger can hit, not what is drawn: a target is big enough when every point of a 44 px
+  // square on its centre lands on it -- which is how a hit area grown past a small drawing (a
+  // chip's or a checkbox's) is honoured. Off screen, where nothing can be hit-tested, its box decides.
+  const HALF = 21
+  const hitArea = (el, r) => {
+    const cx = r.left + r.width / 2
+    const cy = r.top + r.height / 2
+    if (cx - HALF < 0 || cy - HALF < 0 || cx + HALF > window.innerWidth || cy + HALF > window.innerHeight) {
+      return r.width >= 44 && r.height >= 44
+    }
+    for (const dx of [-HALF, 0, HALF]) {
+      for (const dy of [-HALF, 0, HALF]) {
+        const hit = document.elementFromPoint(cx + dx, cy + dy)
+        if (!hit || !(hit === el || el.contains(hit))) return false
+      }
+    }
+    return true
+  }
   const small = []
   let total = 0
   for (const el of document.querySelectorAll(targetsSelector)) {
     if (el.closest('.monaco-editor')) continue
     if (el instanceof HTMLInputElement && el.type === 'hidden') continue
+    // Not a target anyone taps: an element hidden from assistive technology and drawn invisible
+    // (the native input behind a styled select).
+    if (el.closest('[aria-hidden="true"]') || getComputedStyle(el).opacity === '0') continue
     if (!el.checkVisibility({ visibilityProperty: true })) continue
     const r = el.getBoundingClientRect()
     if (r.width === 0 || r.height === 0) continue
     total++
-    if (r.width < 44 || r.height < 44) small.push({ element: describe(el), width: Math.round(r.width), height: Math.round(r.height) })
+    if (r.width >= 44 && r.height >= 44) continue
+    if (!hitArea(el, r)) small.push({ element: describe(el), width: Math.round(r.width), height: Math.round(r.height) })
   }
   return {
     clientWidth, scrollWidth: de.scrollWidth, innerWidth: window.innerWidth,
