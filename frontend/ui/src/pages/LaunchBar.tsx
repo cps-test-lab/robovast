@@ -15,6 +15,7 @@ import TuneRoundedIcon from '@mui/icons-material/TuneRounded'
 import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
 import { useActiveView } from '@/lib/activeView'
+import { useCompact } from '@/lib/compact'
 import { isGlob, matchConfigs, matchesPattern } from '@/lib/configFilter'
 import { DESCRIPTION_MAX_LEN, robovast } from '@/lib/robovastClient'
 import { ErrorText } from '@/components/StatusView'
@@ -50,8 +51,16 @@ export function runsFromVast(content: string): number | null {
 // create_campaign, sitting at the top of the Campaigns page. On success it only invalidates the
 // ['campaigns'] list — the launched campaign then shows up as a card below like any other, so there
 // is no second, page-local copy of campaign state to drift out of sync with a delete.
+// A field's width beside its neighbours on a wide screen, and the whole row on a narrow one: the
+// minimum widths that keep a wide form readable would push a phone's page sideways.
+const fieldWidth = (min: number) => ({ minWidth: { xs: 0, sm: min }, width: { xs: '100%', sm: 'auto' } })
+
 export function LaunchBar() {
   const qc = useQueryClient()
+  // On a compact screen the form starts folded to one button: a phone mostly follows campaigns, and
+  // the list is what it opens on. Launching from one still works, a tap away.
+  const { compact } = useCompact()
+  const [unfolded, setUnfolded] = useState(false)
   const [workspaceId, setWorkspaceId] = useState('')
   // The config filter as chips (picked names, or globs entered with Enter) plus whatever is still
   // being typed; together they are the comma-separated filter the service reads.
@@ -182,8 +191,21 @@ export function LaunchBar() {
 
   const canLaunch = !!workspaceId && !create.isPending && !noMatch
 
+  if (compact && !unfolded) {
+    return (
+      <Button
+        fullWidth
+        variant="outlined"
+        startIcon={<PlayArrowRoundedIcon />}
+        onClick={() => setUnfolded(true)}
+      >
+        Launch a campaign…
+      </Button>
+    )
+  }
+
   return (
-    <Paper sx={{ p: 2 }}>
+    <Paper sx={{ p: compact ? 1.5 : 2 }}>
       <Stack spacing={1.5}>
         <Stack
           direction="row"
@@ -208,7 +230,7 @@ export function LaunchBar() {
             }
             error={workspaces.isError}
             size="small"
-            sx={{ minWidth: 200 }}
+            sx={fieldWidth(200)}
           >
             {(workspaces.data?.workspaces ?? []).map((w) => (
               <MenuItem key={w.workspace_id} value={w.workspace_id}>
@@ -224,7 +246,7 @@ export function LaunchBar() {
               value={configPath}
               onChange={(e) => setConfigPath(e.target.value)}
               size="small"
-              sx={{ minWidth: 200 }}
+              sx={fieldWidth(200)}
             >
               {vastFiles.map((p) => (
                 <MenuItem key={p} value={p}>
@@ -268,7 +290,7 @@ export function LaunchBar() {
               onChange={(e) => setCampaignName(e.target.value)}
               placeholder="overrides the .vast name"
               size="small"
-              sx={{ minWidth: 260 }}
+              sx={fieldWidth(260)}
               slotProps={{ inputLabel: { shrink: true } }}
             />
             <TextField
@@ -277,7 +299,7 @@ export function LaunchBar() {
               onChange={(e) => setDescription(e.target.value.slice(0, DESCRIPTION_MAX_LEN))}
               placeholder="what this run is for"
               size="small"
-              sx={{ minWidth: 320 }}
+              sx={fieldWidth(320)}
               slotProps={{
                 inputLabel: { shrink: true },
                 htmlInput: { maxLength: DESCRIPTION_MAX_LEN },
@@ -300,7 +322,7 @@ export function LaunchBar() {
               multiple
               freeSolo
               size="small"
-              sx={{ minWidth: 320 }}
+              sx={fieldWidth(320)}
               options={names}
               value={filterTokens}
               onChange={(_, v) => setFilterTokens(v)}

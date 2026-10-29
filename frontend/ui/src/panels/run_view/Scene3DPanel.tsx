@@ -40,7 +40,7 @@ import { isLiveProvider } from '@/lib/panels/dataProvider'
 import type { PanelProps } from '@robovast/panel-kit'
 import { robovast } from '@/lib/robovastClient'
 import type { MotionMeta, MotionSink, MotionSource } from '@/lib/scene3d/motionSource'
-import { CANVAS } from '@/colors'
+import { CANVAS, SCENE_VIEWPORT } from '@/colors'
 import {
   DEFAULT_JOINT_TABLE, DEFAULT_POSE_TABLE, openRowMotion, type RowReader,
 } from '@/lib/scene3d/rowMotion'
@@ -48,7 +48,7 @@ import { buildFreeCamera, viewpoints, type SceneCamera } from '@/lib/scene3d/sce
 import type { SceneLook } from '@/lib/camera/cameraSource'
 import type { SceneModel } from '@/lib/scene3d/sceneLoader'
 import { sceneModels, type SceneLease } from '@/lib/scene3d/sceneModelCache'
-import { useSceneGeometry } from '@/lib/scene3d/useSceneGeometry'
+import { useSceneGeometry } from '@/lib/useSceneGeometry'
 import { SceneViewport } from '@/lib/scene3d/viewport'
 import { registerSceneReset } from './sceneReset'
 
@@ -168,10 +168,26 @@ export function Scene3DView({
   // The viewport's lifetime is also what the header's "Reset 3D view" entry follows: registering here
   // rather than once per panel *type* means the entry is offered while a camera exists to re-frame,
   // and withdrawn the moment this mount goes away.
+  //
+  // A viewport that cannot be built, or cannot be moved, says so in the panel rather than leaving a
+  // dead rectangle: WebGL refused (a blocked or lost GPU context throws from the renderer), or a
+  // browser that delivers no pointer events, where neither mouse nor fingers would reach the camera.
+  const [viewportError, setViewportError] = useState<string | null>(null)
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
-    const viewport = new SceneViewport(el)
+    let viewport: SceneViewport
+    try {
+      viewport = new SceneViewport(el, SCENE_VIEWPORT)
+    } catch (err) {
+      setViewportError(
+        `this browser could not start WebGL for the 3D view (${err instanceof Error ? err.message : String(err)})`,
+      )
+      return
+    }
+    if (typeof window.PointerEvent === 'undefined') {
+      setViewportError('this browser delivers no pointer events, so the 3D view cannot be moved by hand')
+    }
     viewportRef.current = viewport
     // A camera panel's view has no free camera for the header's reset to re-frame.
     const unregister = look ? () => undefined : registerReset(() => viewport.resetView())
@@ -419,6 +435,20 @@ export function Scene3DView({
           sat *behind* one and a run with no geometry looked like a run with an empty world. The
           centre is the one edge of the viewport nothing else claims. Translated by half its own
           width rather than given a width, so a short message stays as narrow as it reads. */}
+      {viewportError ? (
+        <Alert
+          severity="error"
+          sx={{
+            position: 'absolute',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            maxWidth: 'min(520px, calc(100% - 16px))',
+          }}
+        >
+          3D view unavailable: {viewportError}.
+        </Alert>
+      ) : null}
       {resolveError || loadError || scene?.error ? (
         <Alert
           severity="warning"
