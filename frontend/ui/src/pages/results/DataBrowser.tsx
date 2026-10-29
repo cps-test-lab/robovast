@@ -40,7 +40,7 @@ const DEFAULT_SQL = 'SELECT * FROM runs LIMIT 500'
 const NONE = '(none)'
 
 // DataGrid toolbar without the density selector (Columns / Filters / Export / quick filter only).
-// On a compact screen the search takes a line of its own: beside the three buttons it was left a
+// On a compact screen the search takes a line of its own: beside the three buttons it would be a
 // field too narrow to type in.
 function DataGridToolbar() {
   const { compact } = useCompact()

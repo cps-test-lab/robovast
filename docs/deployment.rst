@@ -105,7 +105,7 @@ a secure context: the published row over HTTPS, and the other two on ``127.0.0.1
 needs nothing more for it: the manifest, the icons and the service worker ship in the UI's build,
 behind the same sign-in as everything else, and the service serves them with the cache headers it
 gives every file. A deployment published with ``--insecure-http`` and opened under its own name
-works as before, but no browser offers the install there.
+works the same, but no browser offers the install there.
 
 Walkthrough — the in-cluster service
 ------------------------------------

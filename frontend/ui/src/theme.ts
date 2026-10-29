@@ -81,7 +81,7 @@ export function buildTheme(style: Style): Theme {
       MuiSwitch: { styleOverrides: { switchBase: touchHitArea } },
       MuiRadio: { styleOverrides: { root: touchHitArea } },
       MuiTooltip: {
-        // Both props apply to touch only, so a mouse keeps hovering as before. A tap shows the tip
+        // Both props apply to touch only, so a mouse opens a tip by hovering. A tap shows the tip
         // at once and it stays long enough to read: what a hover reveals is one tap away, not
         // behind a long press nobody knows to try.
         defaultProps: { enterTouchDelay: 0, leaveTouchDelay: 4000 },

@@ -350,7 +350,7 @@ result table scrolls inside its own box.
 screen tall, the page scrolls, and the editor wraps long lines. **Admin**'s cards stack, and the
 sign-in page's fields are a finger's height.
 
-A desktop browser with a mouse is laid out as before, however narrow its window.
+A desktop browser with a mouse keeps the desktop layout, however narrow its window.
 
 .. _web-ui-install:
 
