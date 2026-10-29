@@ -2278,7 +2278,7 @@ draws. The run view on a compact screen is ``PanelHost``'s ``StackedPanels``: th
 **The installable app.** ``frontend/ui/pwa.ts`` is a build-only Vite plugin that emits the web app
 manifest (colours from ``colors.ts``), the icons, and ``sw.js``, built from ``src/sw/worker.ts``
 with esbuild and the precache list and build id written in. The icons are the one part the build
-cannot draw itself, having no SVG renderer: ``npm run icons`` (``icons/render.ts``) rasterises them
+cannot draw itself, having no SVG renderer: ``npm run icons`` (``icons/render.ts``) renders them
 from ``public/favicon.svg`` with Playwright's Chromium into ``frontend/ui/icons/``, beside a
 fingerprint of the mark, ground and sizes they were drawn from, and they are committed. The build
 recomputes the fingerprint and refuses to run when it differs (``readIcons``), so a changed mark
