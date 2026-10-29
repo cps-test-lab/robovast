@@ -16,7 +16,9 @@
 //   with two fingers would otherwise also be a small flight and a small turn, fighting it. So the pan
 //   follows the midpoint through a low-pass filter, and a pinch or a twist acts only once it has gone
 //   past a dead zone (PINCH_START, TWIST_START) measured from where the fingers landed -- then with
-//   all of the change at once, so nothing the person did is lost, and step by step from there.
+//   all of the change at once, so no pinch or twist the person made is lost, and step by step from
+//   there. The pan is what the filter costs: it trails the midpoint by about the size of its last
+//   move, and that tail is dropped when the fingers lift.
 
 export type Gesture =
   | { type: 'tap'; x: number; y: number }
