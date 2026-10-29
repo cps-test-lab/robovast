@@ -13,6 +13,7 @@ import {
   campaignStatus,
   firstRunSelection,
   objectiveDirection,
+  resolveLoadedSelection,
   resolveSelection,
   runNodeId,
   selectionNodeId,
@@ -308,6 +309,15 @@ describe('resolveSelection', () => {
     expect(resolveSelection(ROWS, true, { level: 'batch', batch: 7 }).sel).toEqual(CAMPAIGN_SEL)
     expect(resolveSelection([], true, { level: 'config', configName: 'nav_slow' }).sel)
       .toEqual(CAMPAIGN_SEL)
+  })
+
+  it('takes the address as given while the rows are still on their way', () => {
+    const run = { level: 'run', configName: 'nav_fast', runId: 0 } as const
+    expect(resolveLoadedSelection(undefined, true, run)).toEqual({ sel: run, batch: null })
+    expect(resolveLoadedSelection(undefined, true, { level: 'batch', batch: 2 }).batch).toBe(2)
+    // Once they are in, it is resolveSelection: here, and in which round; or not here at all.
+    expect(resolveLoadedSelection(ROWS, true, run)).toEqual(resolveSelection(ROWS, true, run))
+    expect(resolveLoadedSelection([], true, run).sel).toEqual(CAMPAIGN_SEL)
   })
 
   it('does not resolve a run that was never composed', () => {

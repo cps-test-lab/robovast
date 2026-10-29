@@ -27,5 +27,8 @@
       "react": ["./node_modules/@types/react"]
     }
   },
-  "include": ["src", "vite.config.ts", "precompress.ts", "precompress.test.ts"]
+  "include": ["src", "vite.config.ts", "precompress.ts", "precompress.test.ts", "pwa.ts", "pwa.test.ts"],
+  // The service worker runs in a worker's global scope, whose types clash with the page's DOM ones:
+  // it is checked on its own by tsconfig.sw.json.
+  "exclude": ["src/sw/worker.ts"]
 }

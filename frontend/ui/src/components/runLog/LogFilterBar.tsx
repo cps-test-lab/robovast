@@ -31,6 +31,7 @@ import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded'
 import WrapTextRoundedIcon from '@mui/icons-material/WrapTextRounded'
 import { WARNING, withAlpha } from '@/colors'
 import type { Facets, HighlightMode, LogFilter } from './logFilter'
+import { useCompact } from '@/lib/compact'
 
 /** off -> on -> only -> off. One control for two questions ("colour these" / "show only these")
  *  because they are the same question asked with different force. */
@@ -96,6 +97,9 @@ export function LogFilterBar({
    *  nothing to say, which is the common case. */
   notes?: string[]
 }) {
+  // 16 px text in the field on a compact screen: iOS Safari zooms the page into any input set
+  // smaller when it takes focus, and does not zoom back out.
+  const { compact } = useCompact()
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
 
   const toggle = (kind: FacetKind, value: string) => {
@@ -126,6 +130,9 @@ export function LogFilterBar({
         display: 'flex',
         alignItems: 'center',
         gap: 0.5,
+        // A narrow log wraps its controls onto a second line rather than squeezing the search
+        // field to nothing; on a compact screen the field takes the first line by itself.
+        flexWrap: 'wrap',
         px: 0.5,
         py: 0.25,
         flexShrink: 0,
@@ -141,7 +148,12 @@ export function LogFilterBar({
         error={!!invalidRegex}
         helperText={invalidRegex ? 'invalid regex' : undefined}
         variant="standard"
-        sx={{ flexGrow: 1, minWidth: 90, '& .MuiInputBase-input': { fontSize: 12, py: 0.25 } }}
+        sx={{
+          flexGrow: 1,
+          minWidth: 90,
+          flexBasis: compact ? '100%' : undefined,
+          '& .MuiInputBase-input': { fontSize: compact ? 16 : 12, py: 0.25 },
+        }}
         InputProps={{
           endAdornment: (
             <InputAdornment position="end">
