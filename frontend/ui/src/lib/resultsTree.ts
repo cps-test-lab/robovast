@@ -273,6 +273,21 @@ export function resolveSelection(
   }
 }
 
+/** `resolveSelection` for a view that shows a node before the campaign's rows have arrived.
+ *
+ *  `undefined` rows are rows still on their way, not a campaign with none: until they are in, the
+ *  selection is taken as the address gave it. Resolving against an empty list instead would turn
+ *  every config and run of a deep link into the campaign node, and a view that writes its
+ *  selection back would then overwrite the link before it could be checked. */
+export function resolveLoadedSelection(
+  rows: Record<string, unknown>[] | undefined,
+  grouped: boolean,
+  sel: ResultsSel,
+): { sel: ResultsSel; batch: number | null } {
+  if (rows === undefined) return { sel, batch: sel.level === 'batch' ? sel.batch : null }
+  return resolveSelection(rows, grouped, sel)
+}
+
 /** The optimisation direction the campaign's objective is scored in. Defaults to `maximize`,
  *  matching the `.vast` schema's own default for an objective that does not name one. */
 export function objectiveDirection(rows: Record<string, unknown>[]): ObjectiveDirection {

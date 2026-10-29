@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { precompress } from './precompress'
+import { robovastPwa } from './pwa'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath, URL } from 'node:url'
 
@@ -91,8 +92,9 @@ export default defineConfig({
   define: {
     'import.meta.env.VITE_MF_RUNTIME_VERSION': JSON.stringify(mfRuntimeVersion()),
   },
-  // `precompress` writes a .br and .gz beside each emitted file for the service to serve.
-  plugins: [react(), precompress()],
+  // `robovastPwa` emits the manifest, the icons and the service worker that make the UI installable
+  // (pwa.ts); `precompress` writes a .br and .gz beside each emitted file for the service to serve.
+  plugins: [react(), robovastPwa(), precompress()],
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
@@ -106,7 +108,7 @@ export default defineConfig({
     // The second entry is ../panel-kit: shared, framework-free TypeScript with no build tooling of
     // its own, so its tests run here rather than through a second vitest install. Without it a kit
     // module's test is simply never run — vitest's default include is rooted at this package.
-    include: ['src/**/*.test.{ts,tsx}', '../panel-kit/src/**/*.test.ts', 'precompress.test.ts'],
+    include: ['src/**/*.test.{ts,tsx}', '../panel-kit/src/**/*.test.ts', 'precompress.test.ts', 'pwa.test.ts'],
   },
   build: {
     // The editor and charting vendors are legitimately large; warning about them on every

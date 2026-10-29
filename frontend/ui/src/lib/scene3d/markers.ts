@@ -5,9 +5,8 @@
 // variation the UI has never heard of.
 //
 // Like its neighbours in this directory this imports only `three`, so the whole scene3d/ directory
-// stays extractable — the one exception is useSceneGeometry, which is the service seam.
+// stays extractable; the colour a marker that names none is drawn in is the host's to give.
 
-import { MARKER_DEFAULT } from '@/colors'
 import {
   BoxGeometry,
   BufferGeometry,
@@ -40,9 +39,6 @@ export interface Marker {
   group?: string
 }
 
-/** Used when a marker names no colour, so a variation need not know the view's palette. */
-const DEFAULT_COLOR = MARKER_DEFAULT
-
 /** Solids are translucent: a marker sits *in* the world, and an opaque box at a goal pose hides the
  *  geometry the reader is trying to judge it against. */
 const SOLID_OPACITY = 0.45
@@ -72,8 +68,8 @@ function solid(geometry: BufferGeometry, color: string): Mesh {
 
 /** A marker's mesh/line, positioned. Z-up throughout: the scene's root is the world's Z-up frame, and the
  *  viewport wraps the whole scene rather than each object, so nothing here converts. */
-function build(marker: Marker): Group | null {
-  const color = marker.color || DEFAULT_COLOR
+function build(marker: Marker, defaultColor: string): Group | null {
+  const color = marker.color || defaultColor
   const group = new Group()
 
   switch (marker.kind) {
@@ -166,13 +162,14 @@ export interface MarkerLayer {
   dispose: () => void
 }
 
-/** Build every marker into one group, indexed by the `group` each declares. */
-export function buildMarkers(markers: Marker[]): MarkerLayer {
+/** Build every marker into one group, indexed by the `group` each declares. A marker that names no
+ *  colour is drawn in `defaultColor`, so a variation need not know the view's palette. */
+export function buildMarkers(markers: Marker[], defaultColor: string): MarkerLayer {
   const root = new Group()
   const byGroup = new Map<string, Group>()
 
   for (const marker of markers) {
-    const built = build(marker)
+    const built = build(marker, defaultColor)
     if (!built) continue
     const name = marker.group || 'markers'
     let container = byGroup.get(name)

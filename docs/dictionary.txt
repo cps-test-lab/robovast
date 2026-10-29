@@ -509,3 +509,10 @@ glTF
 meshopt
 WebP
 letterboxed
+WebGL
+esbuild
+iOS
+maskable
+precache
+tooltips
+recogniser

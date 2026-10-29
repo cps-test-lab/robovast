@@ -310,6 +310,78 @@ here by what they do:
   version is running, and what the service has been doing. Pinned to the foot of the
   sidebar beside the usage meters, which report the same service. See `The Admin page`_.
 
+.. _web-ui-phone:
+
+On a phone
+----------
+
+The same pages work in a phone's browser, held upright or on its side, without scrolling sideways
+or zooming. Two things decide how a page is laid out, and they are separate:
+
+* **A small screen** — narrower than 600 CSS px, or shorter than 500 (a phone on its side). There
+  the sidebar is not beside the page: a slim bar across the top names the page and carries a menu
+  button, and the sidebar, meters included, slides in over the page from it and goes again when
+  you choose a page or tap beside it. Every page gets the whole width.
+* **A finger as the pointer** — whatever the size. Every button, tab and list entry is at least
+  44 CSS px in each direction, and a small mark that cannot grow (a status chip, a checkbox) takes
+  a tap anywhere in a 44 px square around it. What a mouse finds by hovering — the exact times on a
+  campaign, a meter's figures, a button's meaning — opens with a tap and stays for a few seconds.
+  Nothing needs a right click.
+
+On the **Campaigns** page the launch form starts folded to one **Launch a campaign…** button: a
+phone mostly follows campaigns, and launching from one is a tap away. A campaign's row wraps instead
+of running off the screen — its phase, time, run meter and controls on the first line, the id and
+the description each on a line of their own below — and an opened card stacks its sections, with
+each job's chips and meters on a line under its name.
+
+A **run log** on a compact screen starts with word wrap on, and each line's message on a line of
+its own under its time, run, container and node, so the message is what fills the width. The wrap
+toggle in the log's bar turns it back to one line per entry, which scrolls sideways inside the
+log. The log's controls wrap under its search field, and the field's text is large enough that
+iOS does not zoom the page when it takes focus.
+
+In **Results**, the **Explorer** shows the campaign tree or the selected node, not both: choosing a
+node opens it at full width, and **All campaigns** goes back to the tree. A link to a node opens
+on that node. The **Run view** keeps its scene and puts its other panels in tabs (see
+:ref:`how a compact screen reads the panels <run-view-compact>`). The **Data browser**'s campaign picker takes a line of its own, and its
+result table scrolls inside its own box.
+
+**Config** stays usable on a phone without being comfortable there: its columns stack, each a
+screen tall, the page scrolls, and the editor wraps long lines. **Admin**'s cards stack, and the
+sign-in page's fields are a finger's height.
+
+A desktop browser with a mouse keeps the desktop layout, however narrow its window.
+
+.. _web-ui-install:
+
+Installing it as an app
+~~~~~~~~~~~~~~~~~~~~~~~
+
+The web UI can be installed as an app: in Chrome on Android, the menu's **Install app** (or the
+banner Chrome offers); in Safari on iOS, **Share**, then **Add to Home Screen**; in a desktop
+Chrome or Edge, the install icon in the address bar. The app opens on the campaign list, in a
+window of its own with RoboVAST's mark and colours, and keeps the session the way the browser does:
+it shares the browser's cookies, so it is signed in when the browser is, and a session that has
+lapsed meets the sign-in page as a tab would.
+
+What makes it installable is a web app manifest, its icons (drawn from the RoboVAST mark at the
+sizes Android and iOS ask for, a maskable one included) and a small **service worker** that caches
+the app shell — the scripts the start page loads, the manifest and the icons — so the app starts
+without fetching them again. It caches nothing else: no API answer, no run data, no log, no token,
+and never the sign-in page. Every page load still goes to the service, so a new version of the UI
+is what opens on the app's next start, with nothing to clear; offline, the app says that it cannot
+reach the service instead of showing a page that looks current and is not.
+
+**The install needs a secure context**: the service reached over HTTPS — a published deployment,
+whose Ingress insists on TLS — or on ``localhost`` / ``127.0.0.1``, such as a port-forward or an
+SSH tunnel on the machine the browser runs on. Over plain HTTP under any other name, the browser
+offers no install and starts no service worker; the UI works exactly as it does otherwise. The
+Admin page's **This browser** says which of these applies, and why an install is not offered.
+
+When a campaign ends while the app or the tab is in the background, and **Notify me when a
+campaign finishes** is on, the note comes through the service worker where one is running —
+which is what makes it work in Chrome on Android — and tapping it opens the campaign's card.
+
 .. _web-ui-admin:
 
 The Admin page
@@ -1759,7 +1831,8 @@ somewhere other than the base layer.
 
 The declared layout is where the panels **start**, not where they are stuck:
 
-* **Move** — press the mouse on a panel's **title bar**, drag, and release to drop it there.
+* **Move** — press a panel's **title bar** (with the mouse, or a finger on a tablet), drag,
+  and release to drop it there.
   A moved panel is raised above the others, and always keeps an edge inside the view so it
   can be grabbed back.
 * **Resize** — drag **any edge or corner** of a panel. The edge you grab is the one that moves
@@ -1780,6 +1853,17 @@ These are **view-local** adjustments: they last as long as the view is open, and
 the one the ``.vast`` declares too, so resizing or minimizing a docked bar or column in the
 view does not re-flow the panels around it. To change the layout for good, edit it under
 **Edit visualization**.
+
+.. _run-view-compact:
+
+**On a compact screen** (a phone; see :ref:`web-ui-phone`) the declared layout would pile every
+panel onto the scene, so the same declarations are read differently, and the ``.vast`` is unchanged:
+the ``fill: true`` panel (the 3D scene) is the **stage**, at the top — or the left, on a phone held
+sideways; a panel docked ``top`` or ``bottom`` that shows no title bar (the ``playback`` bar) stays
+on its edge at full width; and **every other panel is a tab** below the stage, one shown at a time,
+in declaration order and named by its ``title`` (or its type's name). A tab keeps its state while
+another is shown. Nothing is moved or resized by hand there. The header keeps one row: the run
+picker takes the width, and **Edit visualization** is a pencil icon.
 
 The built-in panels:
 
@@ -2012,6 +2096,22 @@ The mouse bindings:
   reads as looking around; aimed at a building across the world it orbits the building.
 - **right-drag** — pan sideways and vertically, at roughly the speed of the surface being dragged.
 - **double-click** — travel to frame whatever you clicked, without turning the camera.
+
+On a touch screen the same view is moved with fingers, and the page never scrolls or zooms under it:
+
+- **one finger** — turn about the surface under the finger, as the left-drag does.
+- **pinch** — fly toward or away from what lies between the two fingers: the wheel's flight, aimed at
+  their midpoint. Spreading them to twice their distance goes about as far as two wheel notches.
+- **two fingers moving together** — pan; what was under them stays under them.
+- **two fingers turning** — turn the view in place, about the vertical.
+- **double tap** — travel to frame what you tapped, as the double-click does.
+
+Two fingers are never perfectly still relative to each other, so a pinch and a twist only start once
+they have gone past a small dead zone (about 6 % in distance, 12° in angle), and then act with all of
+it. A two-finger pan therefore does not also fly or turn. When one of two fingers lifts, the finger
+left behind starts nothing, so a pinch does not end in a turn. **3D view controls** in the header gear
+lists these bindings. A browser that cannot start WebGL, or delivers no pointer events, gets a
+message in the panel saying so rather than a view that does not move.
 
 All three drags are scaled by one number, the distance to the **pivot**, and the panel re-measures it
 against the actual geometry whenever a gesture starts. That is what lets a single set of bindings fit
