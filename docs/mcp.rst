@@ -247,8 +247,10 @@ happened (it ran, it could not, it was not asked for); and the problem carries
 — is therefore never told a campaign is good to run because the most expensive thing about it
 was skipped, and it can still tell "could not check" from "is wrong" without matching on
 English. ``severity: "advice"`` is the other side of that line: a checked fact worth saying,
-and ``valid`` stays true. An *advisory* check — one the caller did not ask for, such as the
-world-key check — reports as advice whether it ran or not: it was never part of the verdict, so
+and ``valid`` stays true. ``severity: "warning"`` is a world described by the image the campaign
+builds, before it is built: ``valid`` stays true, ``world_checked`` is false, and
+``start_campaign`` builds the image, checks the world in it and refuses to start on a failure.
+An *advisory* check — one the caller did not ask for, such as the world-key check — reports as advice whether it ran or not: it was never part of the verdict, so
 the only wrong answer it could give is silence.
 
 The consequence is that each tier has something it structurally cannot settle, and the honest

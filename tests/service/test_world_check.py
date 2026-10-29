@@ -17,6 +17,7 @@ Two rules the tests below pin down, because both are easy to lose:
 """
 
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -465,9 +466,10 @@ def test_the_reason_a_query_could_not_run_names_what_would_settle_it(tmp_path, m
     assert "Next: check the service" in problems[0]["message"]
 
 
-def test_an_unbuilt_image_is_told_to_be_built_not_to_check_the_service(tmp_path):
-    """An unbuilt image is reported with the call that builds it, not as a service that
-    cannot run anything."""
+def test_an_unbuilt_image_is_a_warning_naming_the_build_not_the_service(tmp_path):
+    """An unbuilt image is a warning, for the world and for its recording, with the call that
+    builds it -- not a service that cannot run anything, and not a verdict on the file: the
+    campaign's start checks both in the image it builds."""
     from robovast.common.errors import ImageNotBuilt
     from robovast.service.world_query import world_problems
 
@@ -479,7 +481,9 @@ def test_an_unbuilt_image_is_told_to_be_built_not_to_check_the_service(tmp_path)
 
     problems = world_problems(_refuse, resolve_call=_resolve, workspace_id="ws-1", config_path="a.vast",
                               vast_dir=str(tmp_path), parameters=_parameters())
-    assert [p["severity"] for p in problems] == ["unchecked"]
+    assert [p["severity"] for p in problems] == ["warning", "warning"]
+    assert [p["field"] for p in problems] == ["execution.containers.simulation.config",
+                                              "execution.recording.ros2"]
     message = problems[0]["message"]
     assert "Next: build_experiment_image(container='simulation')" in message
     assert "can start a container" not in message, "the image is what is missing"
@@ -630,6 +634,9 @@ class _Transport:
 
     def resolve_image(self, _request):
         raise AssertionError("the world query is patched out in these tests")
+
+    def _built_images_context(self, _vast_file, **_kwargs):
+        return contextlib.nullcontext({})
 
 
 def _checked(monkeypatch, tmp_path, problems=None, crash=None):
