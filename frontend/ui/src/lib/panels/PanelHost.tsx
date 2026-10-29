@@ -5,8 +5,12 @@
 // for a panel whose `type` isn't registered -- never a silent drop.
 //
 // The declared anchor is the panel's starting place, not a cage: dragging a panel's header moves it
-// from there (and drops it where the mouse is released), the same way dragging its resize handle
-// overrides the declared size. Both overrides live in this component and last for the mounted view --
+// from there (and drops it where the pointer is released), the same way dragging its resize handle
+// overrides the declared size.
+//
+// On a compact screen none of that applies: the declared anchors would pile every panel onto the
+// scene, so the host reads the same specs as a stage, edge bars and tabs instead (stackedLayout.ts),
+// and nothing is moved or resized by hand there. Both overrides live in this component and last for the mounted view --
 // the .vast stays the authored layout.
 //
 // The resize handles straddle the panel's border and hang mostly outside it, so they take a border's
@@ -17,13 +21,18 @@ import { useRef, useState, type CSSProperties, type RefObject } from 'react'
 import Box from '@mui/material/Box'
 import IconButton from '@mui/material/IconButton'
 import Paper from '@mui/material/Paper'
+import Tab from '@mui/material/Tab'
+import Tabs from '@mui/material/Tabs'
 import Typography from '@mui/material/Typography'
+import useMediaQuery from '@mui/material/useMediaQuery'
 import RemoveRoundedIcon from '@mui/icons-material/RemoveRounded'
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import { getPanel } from './registry'
+import { showsHeader, stackPanels } from './stackedLayout'
 import type { Anchor, HostPanelProps, PanelSpec, PanelPosition } from './types'
 import type { DataProvider, PanelProps, PlaybackClock } from '@robovast/panel-kit'
 import { useRemoteComponent } from '@/lib/remote'
+import { useCompact } from '@/lib/compact'
 
 const len = (v: number | string | undefined, fallback: string): string =>
   v == null ? fallback : typeof v === 'number' ? `${v}px` : v
@@ -347,6 +356,27 @@ function RemotePanel({ spec, clock, data }: HostPanelProps) {
   return <Comp spec={spec} clock={clock} data={data} builtins={builtins} />
 }
 
+/** A panel's own content, whichever layout places it.
+ *
+ *  A remote panel (package-provided or user-authored `custom`) is loaded at runtime via Module
+ *  Federation; a built-in panel comes from the static registry; anything else is an explicit error
+ *  (never a silent drop). */
+function PanelBody({ spec, clock, data }: HostPanelProps) {
+  const plugin = getPanel(spec.type)
+  return spec.remote ? (
+    <RemotePanel spec={spec} clock={clock} data={data} />
+  ) : plugin ? (
+    <plugin.component spec={spec} clock={clock} data={data} />
+  ) : (
+    <UnknownPanel type={spec.type} where="visualization.results.run_view.panels" />
+  )
+}
+
+/** The name a panel goes by where it has no header of its own: its title, else its type's label. */
+function panelName(spec: PanelSpec): string {
+  return spec.title ?? getPanel(spec.type)?.manifest.label ?? spec.type
+}
+
 function PanelFrame({
   spec,
   z,
@@ -377,11 +407,10 @@ function PanelFrame({
   // rather than rewritten left/top so it composes with every anchor -- including the edge anchors,
   // whose offsets are relative to the opposite side, and `center`, which is placed by a transform.
   const [offset, setOffset] = useState({ dx: 0, dy: 0 })
-  const plugin = getPanel(spec.type)
   // A frameless panel has no Paper chrome and never a header (e.g. the scene3d base layer, which
   // declares it in its manifest).
   const frameless = spec.frameless
-  const showHeader = !frameless && (spec.minimizable || !!spec.title)
+  const showHeader = showsHeader(spec)
   const rz = RESIZE[spec.position.anchor ?? 'center']
   // `fixed: true` locks the whole layout of a panel whose declared geometry is part of the campaign's
   // dashboard; `resizable: false` is the narrower opt-out, for one that may be moved but not resized.
@@ -394,7 +423,7 @@ function PanelFrame({
   // `use` names the box edge being dragged -- x:+1 right, x:-1 left, y:+1 bottom, y:-1 top; a corner
   // handle carries both. The size delta is `edge * mouse delta` either way, so the same arithmetic
   // drives all four edges.
-  const startResize = (e: React.MouseEvent, use: Edge) => {
+  const startResize = (e: React.PointerEvent, use: Edge) => {
     e.preventDefault()
     e.stopPropagation()
     const rect = paperRef.current?.getBoundingClientRect()
@@ -414,7 +443,7 @@ function PanelFrame({
     const pinX = !centred.x && !!use.x && use.x === -(rz?.x ?? 0)
     const pinY = !centred.y && !!use.y && use.y === -(rz?.y ?? 0)
     const from = offset
-    const onMove = (ev: MouseEvent) => {
+    const onMove = (ev: PointerEvent) => {
       const w = use.x ? Math.max(MIN_W, w0 + gainX * use.x * (ev.clientX - x0)) : w0
       const h = use.y ? Math.max(MIN_H, h0 + gainY * use.y * (ev.clientY - y0)) : h0
       setSize((s) => ({ ...s, ...(use.x ? { w } : null), ...(use.y ? { h } : null) }))
@@ -428,14 +457,19 @@ function PanelFrame({
       }
     }
     const onUp = () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
   }
 
-  const startMove = (e: React.MouseEvent) => {
+  // Pointer events rather than mouse events, so a finger on a tablet moves and resizes a panel as a
+  // mouse does; the header and the handles are `touch-action: none` for the same reason, or the
+  // browser would take the drag as a scroll.
+  const startMove = (e: React.PointerEvent) => {
     // The header also carries the minimize toggle: a press there is a click on the button, not a grab.
     if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return
     e.preventDefault() // suppresses the text selection a drag across the view would otherwise paint
@@ -445,7 +479,7 @@ function PanelFrame({
     if (!rect || !bounds) return
     const { clientX: x0, clientY: y0 } = e
     const from = offset
-    const onMouseMove = (ev: MouseEvent) => {
+    const onMouseMove = (ev: PointerEvent) => {
       // Clamp in viewport coordinates (where both rects live), then convert back to an offset.
       const left = clamp(
         rect.left + ev.clientX - x0,
@@ -456,11 +490,13 @@ function PanelFrame({
       setOffset({ dx: from.dx + left - rect.left, dy: from.dy + top - rect.top })
     }
     const onUp = () => {
-      window.removeEventListener('mousemove', onMouseMove)
-      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('pointermove', onMouseMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
     }
-    window.addEventListener('mousemove', onMouseMove)
-    window.addEventListener('mouseup', onUp)
+    window.addEventListener('pointermove', onMouseMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
   }
 
   // A strip along every edge of each axis the panel can be resized along, plus the corners where two
@@ -486,16 +522,7 @@ function PanelFrame({
     layout.transform = layout.transform ? `${layout.transform} ${move}` : move
   }
 
-  // A remote panel (package-provided or user-authored `custom`) is loaded at runtime via
-  // Module Federation; a built-in panel comes from the static registry; anything else is an
-  // explicit error (never a silent drop).
-  const body = spec.remote ? (
-    <RemotePanel spec={spec} clock={clock} data={data} />
-  ) : plugin ? (
-    <plugin.component spec={spec} clock={clock} data={data} />
-  ) : (
-    <UnknownPanel type={spec.type} where="visualization.results.run_view.panels" />
-  )
+  const body = <PanelBody spec={spec} clock={clock} data={data} />
 
   // Two boxes, not one: the outer box carries the layout and does NOT clip, so the handles can hang
   // past the panel's border; the Paper inside it is what clips the content. The Paper fills the
@@ -508,8 +535,8 @@ function PanelFrame({
         header={
           showHeader
             ? {
-                title: spec.title ?? plugin?.manifest.label ?? spec.type,
-                onMouseDown: canMove ? startMove : undefined,
+                title: panelName(spec),
+                onPointerDown: canMove ? startMove : undefined,
                 movable: canMove,
                 minimized,
                 onToggleMinimize: spec.minimizable ? () => setMinimized((m) => !m) : undefined,
@@ -522,8 +549,12 @@ function PanelFrame({
       {handles.map((use, i) => (
         <Box
           key={i}
-          onMouseDown={(e) => startResize(e, use)}
-          sx={{ ...handleSx(use), '&:hover': { bgcolor: 'primary.main', opacity: 0.35 } }}
+          onPointerDown={(e) => startResize(e, use)}
+          sx={{
+            ...handleSx(use),
+            touchAction: 'none',
+            '&:hover': { bgcolor: 'primary.main', opacity: 0.35 },
+          }}
         />
       ))}
     </Box>
@@ -542,7 +573,7 @@ export function UnknownPanel({ type, where }: { type: string; where: string }) {
 
 interface ChromeHeader {
   title: string
-  onMouseDown?: (e: React.MouseEvent) => void
+  onPointerDown?: (e: React.PointerEvent) => void
   movable?: boolean
   minimized?: boolean
   onToggleMinimize?: () => void
@@ -579,7 +610,7 @@ export function PanelChrome({
     >
       {header ? (
         <Box
-          onMouseDown={header.onMouseDown}
+          onPointerDown={header.onPointerDown}
           sx={{
             display: 'flex',
             alignItems: 'center',
@@ -589,7 +620,7 @@ export function PanelChrome({
             borderBottom: header.minimized ? 0 : 1,
             borderColor: 'divider',
             bgcolor: 'action.hover',
-            ...(header.movable ? { cursor: 'move', userSelect: 'none' } : null),
+            ...(header.movable ? { cursor: 'move', userSelect: 'none', touchAction: 'none' } : null),
           }}
         >
           <Typography variant="caption" sx={{ fontWeight: 600, flexGrow: 1 }}>
@@ -613,7 +644,108 @@ export function PanelChrome({
   )
 }
 
+/** A compact screen's reading of the panels: the stage, then one tab at a time below it (beside it
+ *  in landscape), with the header-less edge bars kept on their edges at full width. */
+function StackedPanels({
+  panels,
+  clock,
+  data,
+}: {
+  panels: PanelSpec[]
+  clock: PlaybackClock
+  data: DataProvider
+}) {
+  const { stage, top, bottom, tabs } = stackPanels(panels)
+  const [tab, setTab] = useState(0)
+  const landscape = useMediaQuery('(orientation: landscape)', { noSsr: true })
+  const active = Math.min(tab, tabs.length - 1)
+  const key = (spec: PanelSpec) => JSON.stringify(spec)
+  const bar = (spec: PanelSpec) => (
+    <Box key={key(spec)} sx={{ display: 'flex', flexShrink: 0, height: len(spec.position.height, '40px') }}>
+      <PanelChrome frameless={spec.frameless}>
+        <PanelBody spec={spec} clock={clock} data={data} />
+      </PanelChrome>
+    </Box>
+  )
+  return (
+    <Box sx={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', gap: `${PANEL_GAP}px` }}>
+      {top.map(bar)}
+      <Box
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: landscape ? 'row' : 'column',
+          gap: `${PANEL_GAP}px`,
+        }}
+      >
+        {stage ? (
+          <Box
+            sx={{
+              display: 'flex',
+              minWidth: 0,
+              minHeight: 0,
+              // The scene keeps most of the screen, and the tabs what is left: in portrait the
+              // upper part, on its side the left.
+              flex: tabs.length ? (landscape ? '0 0 60%' : '0 0 55%') : 1,
+            }}
+          >
+            <PanelChrome frameless={stage.frameless}>
+              <PanelBody spec={stage} clock={clock} data={data} />
+            </PanelChrome>
+          </Box>
+        ) : null}
+        {tabs.length ? (
+          <Box sx={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <Tabs
+              value={active}
+              onChange={(_, v: number) => setTab(v)}
+              variant="scrollable"
+              scrollButtons={false}
+              sx={{ minHeight: 0, flexShrink: 0, borderBottom: 1, borderColor: 'divider' }}
+            >
+              {tabs.map((spec) => (
+                <Tab key={key(spec)} label={panelName(spec)} sx={{ textTransform: 'none', py: 0 }} />
+              ))}
+            </Tabs>
+            {/* Every tab stays mounted and the others are hidden, so going back to a panel finds
+                it as it was left -- its scroll, its zoom, its loaded data. */}
+            <Box sx={{ position: 'relative', flex: 1, minHeight: 0 }}>
+              {tabs.map((spec, i) => (
+                <Box
+                  key={key(spec)}
+                  sx={{ position: 'absolute', inset: 0, display: i === active ? 'flex' : 'none' }}
+                >
+                  <PanelChrome frameless={spec.frameless}>
+                    <PanelBody spec={spec} clock={clock} data={data} />
+                  </PanelChrome>
+                </Box>
+              ))}
+            </Box>
+          </Box>
+        ) : null}
+      </Box>
+      {bottom.map(bar)}
+    </Box>
+  )
+}
+
 export function PanelHost({
+  panels,
+  clock,
+  data,
+}: {
+  panels: PanelSpec[]
+  clock: PlaybackClock
+  data: DataProvider
+}) {
+  const { compact } = useCompact()
+  if (compact) return <StackedPanels panels={panels} clock={clock} data={data} />
+  return <AnchoredPanels panels={panels} clock={clock} data={data} />
+}
+
+/** The declared layout: every panel at its anchor, over and around the filling one. */
+function AnchoredPanels({
   panels,
   clock,
   data,

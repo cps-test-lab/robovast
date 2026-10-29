@@ -37,6 +37,7 @@ import Typography from '@mui/material/Typography'
 import ArrowDropDownRoundedIcon from '@mui/icons-material/ArrowDropDownRounded'
 import CenterFocusStrongRoundedIcon from '@mui/icons-material/CenterFocusStrongRounded'
 import EditRoundedIcon from '@mui/icons-material/EditRounded'
+import HelpOutlineRoundedIcon from '@mui/icons-material/HelpOutlineRounded'
 import PodcastsRoundedIcon from '@mui/icons-material/PodcastsRounded'
 import SensorsRoundedIcon from '@mui/icons-material/SensorsRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
@@ -60,8 +61,10 @@ import { useRunTimeline } from '@/lib/panels/runTimeline'
 import { ResultsTree, runsQuery } from './ResultsTree'
 import { panelTopics, useTap } from './tap'
 import { jobOfRun } from '@/lib/jobRun'
+import { useCompact } from '@/lib/compact'
 import { RefreshResultsButton, type ResultsRefresh } from './RefreshResultsButton'
 import { resetSceneViews, useSceneResetAvailable } from '@/panels/run_view/sceneReset'
+import { SceneControlsDialog } from '@/panels/run_view/SceneControlsDialog'
 import '@/panels/run_view' // registers the built-in panels
 
 /** The run view's settings menu: does the run end at its scenario's verdict or run on through the
@@ -89,6 +92,7 @@ function RunSettingsMenu({ clock }: { clock: PlaybackClock }) {
   const { verdict, hideShutdown } = useClock(clock)
   const [anchor, setAnchor] = useState<HTMLElement | null>(null)
   const canResetView = useSceneResetAvailable()
+  const [controlsOpen, setControlsOpen] = useState(false)
   const noVerdict = verdict == null
   const reason = noVerdict
     ? 'This run recorded no scenario verdict, so there is no shutdown to separate.'
@@ -165,7 +169,21 @@ function RunSettingsMenu({ clock }: { clock: PlaybackClock }) {
             </MenuItem>
           </span>
         </Tooltip>
+        {/* Beside the reset, which is the way back if the bindings it lists lose the scene. Shown
+            with or without a 3D view: the bindings are worth reading before one is opened. */}
+        <MenuItem
+          onClick={() => {
+            setControlsOpen(true)
+            setAnchor(null)
+          }}
+        >
+          <ListItemIcon>
+            <HelpOutlineRoundedIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>3D view controls</ListItemText>
+        </MenuItem>
       </Menu>
+      <SceneControlsDialog open={controlsOpen} onClose={() => setControlsOpen(false)} />
     </>
   )
 }
@@ -433,6 +451,9 @@ export function RunView({
   const selectedTreeId = run
     ? selectionNodeId(campaignId, run, resolved.batch)
     : ''
+  // A compact screen keeps the header to one row: the app bar already names the view, the picker
+  // takes what width there is, and the visualization editor is an icon.
+  const { compact } = useCompact()
 
   return (
     <Stack
@@ -441,11 +462,11 @@ export function RunView({
       // `& > :not(style):not(style) { margin: 0 }`, whose specificity beats a child's own sx class
       // and silently zeroed the negative margins the panel container below needs.
       useFlexGap
-      // 48px is App's `p: 3` on the main Box, top + bottom, so the view fills the window exactly.
-      sx={{ height: 'calc(100vh - 48px)' }}
+      // `--page-height` is what App's shell leaves of the screen, so the view fills it exactly.
+      sx={{ height: 'var(--page-height)' }}
     >
-      <Stack direction="row" spacing={2} alignItems="center">
-        <Typography variant="h6">Run view</Typography>
+      <Stack direction="row" spacing={compact ? 0.5 : 2} alignItems="center">
+        {compact ? null : <Typography variant="h6">Run view</Typography>}
         {/* The label names every level the picker selected — campaign · [batch ·] config · run — so
             the view says which campaign is on screen without opening the tree. The batch appears
             only for a search campaign, where the config name is a hash and the round is what places
@@ -458,8 +479,9 @@ export function RunView({
           onClick={(e) => setRunAnchor(e.currentTarget)}
           sx={{
             textTransform: 'none',
-            minWidth: 440,
-            maxWidth: 'min(720px, 60vw)',
+            minWidth: compact ? 0 : 440,
+            maxWidth: compact ? 'none' : 'min(720px, 60vw)',
+            flex: compact ? '1 1 0' : undefined,
             justifyContent: 'space-between',
           }}
         >
@@ -491,17 +513,28 @@ export function RunView({
             : ''}
         >
           <span>
-            <Button
-              variant="text"
-              size="small"
-              startIcon={<EditRoundedIcon />}
-              endIcon={<ArrowDropDownRoundedIcon />}
-              onClick={(e) => setEditAnchor(e.currentTarget)}
-              disabled={!available || running}
-              sx={{ textTransform: 'none' }}
-            >
-              Edit visualization
-            </Button>
+            {compact ? (
+              <IconButton
+                size="small"
+                aria-label="edit visualization"
+                onClick={(e) => setEditAnchor(e.currentTarget)}
+                disabled={!available || running}
+              >
+                <EditRoundedIcon fontSize="small" />
+              </IconButton>
+            ) : (
+              <Button
+                variant="text"
+                size="small"
+                startIcon={<EditRoundedIcon />}
+                endIcon={<ArrowDropDownRoundedIcon />}
+                onClick={(e) => setEditAnchor(e.currentTarget)}
+                disabled={!available || running}
+                sx={{ textTransform: 'none' }}
+              >
+                Edit visualization
+              </Button>
+            )}
           </span>
         </Tooltip>
         {/* Beside the transport's owner rather than in the playback bar: following is a state of
@@ -512,7 +545,7 @@ export function RunView({
         ) : null}
         {/* Pushed to the far right: these govern the whole view rather than the run picker they
             would otherwise look attached to. */}
-        <Box sx={{ flexGrow: 1 }} />
+        {compact ? null : <Box sx={{ flexGrow: 1 }} />}
         {/* The two jumps out of this view, left of the gear -- the gear governs the view, these
             leave it. Same icons as the campaign card's shortcuts, because they are the same
             destinations. The configuration is the campaign's, so it needs no run on screen. */}
@@ -554,7 +587,7 @@ export function RunView({
         <Box
           sx={{
             width: 'max-content',
-            minWidth: 400,
+            minWidth: compact ? 0 : 400,
             maxWidth: 'min(900px, 90vw)',
             maxHeight: 460,
             overflow: 'auto',
@@ -635,7 +668,15 @@ export function RunView({
             // sitting inside the page gutter: the negative margins cancel App's `p: 3` on the main
             // Box on the three sides that touch the window (the header row above keeps its
             // padding), so keep them in step with that padding.
-            sx={{ flexGrow: 1, minHeight: 0, mx: -3, mb: -3, position: 'relative' }}
+            // Out to the page's edges, cancelling App's padding: the shell's on a desktop, the
+            // compact shell's (`p: 1`) on a phone.
+            sx={{
+              flexGrow: 1,
+              minHeight: 0,
+              mx: compact ? -1 : -3,
+              mb: compact ? -1 : -3,
+              position: 'relative',
+            }}
           >
             <PanelHost key={runKey} panels={specs} clock={clock} data={provider} />
           </Box>

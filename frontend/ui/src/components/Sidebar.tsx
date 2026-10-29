@@ -59,33 +59,52 @@ const selectedSx = {
   px: 1,
 }
 
-// The whole app navigation: one permanent left rail with a tree menu. A topic with a single view is
-// a leaf; a topic with several views renders them always nested beneath it (the active view is
-// highlighted). Branding sits at the top, the live connection/usage chip at the footer.
+// The whole app navigation: a left rail with a tree menu. A topic with a single view is a leaf; a
+// topic with several views renders them always nested beneath it (the active view is highlighted).
+// Branding sits at the top, the live connection/usage chip at the footer.
+//
+// Two ways to show it, one content: `rail`, the permanent column beside the page, and `overlay`, for
+// a compact screen with no width to spare (`useCompact`), where the same rail slides in over the
+// page from the app bar's menu button and goes again on a choice or a tap beside it.
 export function Sidebar({
   topics,
   activeTopic,
   activeView,
   onSelect,
+  overlay,
 }: {
   topics: NavTopic[]
   activeTopic: string
   activeView: string
   onSelect: (topicId: string, viewId?: string) => void
+  /** Show it over the page rather than beside it, open while `open`. */
+  overlay?: { open: boolean; onClose: () => void }
 }) {
   return (
     <Drawer
-      variant="permanent"
-      sx={{ width: SIDEBAR_WIDTH, flexShrink: 0 }}
+      variant={overlay ? 'temporary' : 'permanent'}
+      open={overlay ? overlay.open : true}
+      onClose={overlay?.onClose}
+      // Mounted while closed, so its meters keep polling and the first open shows a reading rather
+      // than "disconnected".
+      ModalProps={overlay ? { keepMounted: true } : undefined}
+      sx={overlay ? undefined : { width: SIDEBAR_WIDTH, flexShrink: 0 }}
       slotProps={{
         paper: {
           sx: {
-            width: SIDEBAR_WIDTH,
-            height: '100vh',
+            width: overlay ? 'min(280px, 85vw)' : SIDEBAR_WIDTH,
+            // `dvh` in the overlay: a phone's browser bars come and go, and `100vh` is the height
+            // without them, which would put the meters under the bottom bar.
+            height: overlay ? '100dvh' : '100vh',
             display: 'flex',
             flexDirection: 'column',
             px: 0.75,
             py: 2,
+            // After `py`, which they refine: clear of a notch and a home indicator.
+            ...(overlay ? {
+              pt: 'max(16px, env(safe-area-inset-top))',
+              pb: 'max(16px, env(safe-area-inset-bottom))',
+            } : {}),
             gap: 2,
           },
         },
