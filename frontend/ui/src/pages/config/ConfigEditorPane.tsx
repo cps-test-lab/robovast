@@ -14,6 +14,7 @@ import Typography from '@mui/material/Typography'
 import AddRoundedIcon from '@mui/icons-material/AddRounded'
 import { type ValidationReport } from '@/lib/robovastClient'
 import { type ConfigEditor } from './useConfigEditor'
+import { useCompact } from '@/lib/compact'
 
 // The .vast editor: pick (or create) a .vast, edit it in Monaco with live server-side validation.
 // No file tree — the .vast is auto-selected when there is one, otherwise chosen from a dropdown;
@@ -21,6 +22,7 @@ import { type ConfigEditor } from './useConfigEditor'
 export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
   const { selected, setSelected, vastFiles, content, saving, onChange, validation, createVast,
     readOnly, writable, loadError, saveError } = editor
+  const { compact } = useCompact()
 
   const instance = useRef<monacoEditor.IStandaloneCodeEditor | null>(null)
   // Read inside the listener rather than captured: the editor is mounted once and kept alive
@@ -66,7 +68,7 @@ export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
               label=".vast file"
               value={selected}
               onChange={(e) => setSelected(e.target.value)}
-              sx={{ minWidth: 200 }}
+              sx={{ minWidth: { xs: 0, sm: 200 }, flexGrow: { xs: 1, sm: 0 } }}
             >
               {vastFiles.map((p) => (
                 <MenuItem key={p} value={p}>
@@ -140,6 +142,9 @@ export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
           options={{
             minimap: { enabled: false },
             fontSize: 13,
+            // A phone's width holds a fraction of a long line, and scrolling an editor sideways by
+            // touch is the hard part of reading one there.
+            wordWrap: compact ? 'on' : 'off',
             scrollBeyondLastLine: false,
             // Not writable until the selected file's own text is in the buffer.
             readOnly: readOnly || !selected || !writable,

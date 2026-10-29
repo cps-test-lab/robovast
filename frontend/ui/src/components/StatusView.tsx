@@ -47,6 +47,7 @@ import { FactRows, HoverFacts } from './HoverFacts'
 import { LiveCampaignLog } from './runLog/LiveCampaignLog'
 import { JobLogWithScene } from './runLog/JobLogWithScene'
 import { MeterBar } from './MeterBar'
+import { denseHeight } from '@/lib/compact'
 
 // The upload-to-share bar, shown only while the campaign is in the `sharing` phase.
 //
@@ -655,7 +656,8 @@ export function StatusView({
         </Box>
       ) : null}
       <Box>
-        <Stack direction="row" justifyContent="space-between">
+        {/* Wraps rather than running the counts into the label when the card is narrow. */}
+        <Stack direction="row" justifyContent="space-between" columnGap={1} flexWrap="wrap">
           {/* Just "runs", and no batch counter -- `batch 2 (3 done)` -- riding along: it
               says what the batches bar directly below already shows, and this label sits
               above a bar measuring RUNS, so a batch number on it invites reading the bar as
@@ -782,7 +784,7 @@ export function StatusView({
           <Tabs
             value={tab}
             onChange={(_e, v) => setTab(v as CardTab)}
-            sx={{ minHeight: 36, '& .MuiTab-root': { minHeight: 36, py: 0 } }}
+            sx={{ ...denseHeight(36), '& .MuiTab-root': { ...denseHeight(36), py: 0 } }}
           >
             {terminal ? (
               <Tab value="details" label="Details" />
@@ -1052,7 +1054,7 @@ function JobVitals({
   const { cpu, memory } = jobMeters(job)
   if (age == null && !cpu && !memory && !job.node) return null
   return (
-    <Stack direction="row" spacing={0.75} alignItems="center" sx={{ flexShrink: 0 }}>
+    <Stack direction="row" spacing={0.75} useFlexGap alignItems="center" sx={{ flexShrink: 0, flexWrap: 'wrap' }}>
       {/* Before the age and the meters: it answers "where", which is what a reader scanning a
           skewed batch is looking for, and a column of chips is what makes the skew visible at
           all. A job with no node yet simply has none — that is what "not placed" looks like,

@@ -138,6 +138,23 @@ describe('post', () => {
     expect(stub.notifications).toEqual([])
   })
 
+  it('posts through the app\'s service worker where one is active, with the link a tap opens', () => {
+    install({ permission: 'granted' })
+    setOptedIn(true)
+    const shown: Array<[string, NotificationOptions | undefined]> = []
+    const registration = {
+      showNotification: (title: string, options?: NotificationOptions) => {
+        shown.push([title, options])
+        return Promise.resolve()
+      },
+    }
+    post({ ...note, url: 'https://robovast.example.com/#/execution?campaign=abc' }, registration)
+    expect(shown).toEqual([['Campaign finished', {
+      body: 'abc', tag: 'abc', data: { url: 'https://robovast.example.com/#/execution?campaign=abc' },
+    }]])
+    expect(stub.notifications).toEqual([]) // not the constructor as well
+  })
+
   it('swallows a constructor that throws, as platforms wanting a service worker do', () => {
     install({ permission: 'granted' })
     setOptedIn(true)
