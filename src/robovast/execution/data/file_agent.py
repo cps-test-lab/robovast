@@ -125,8 +125,11 @@ _EVENT = struct.Struct("iIII")
 
 #: The kernel's per-user inotify limits, by the errno that reports one used up. Every process
 #: of one user on a host shares them, the containers that run as that user included.
-_LIMITS = {errno.EMFILE: "fs.inotify.max_user_instances (or this process's open-file limit)",
-           errno.ENOSPC: "fs.inotify.max_user_watches"}
+_LIMITS = {errno.EMFILE: ("the host's fs.inotify.max_user_instances is used up, which every process "
+                          "of this user on the host shares, so raise it on the host; or this "
+                          "process's open-file limit is, so raise that (ulimit -n)"),
+           errno.ENOSPC: ("the host's fs.inotify.max_user_watches is used up; every process of "
+                          "this user on the host shares it, so raise it on the host")}
 
 
 def _inotify_error(call: str, err: int) -> OSError:
@@ -134,8 +137,7 @@ def _inotify_error(call: str, err: int) -> OSError:
     message = f"{call}: {os.strerror(err)}"
     limit = _LIMITS.get(err)
     if limit is not None:
-        message += (f" -- the host's {limit} is used up; every process of this user on the "
-                    "host shares it, so raise it on the host")
+        message += f" -- {limit}"
     return OSError(err, message)
 
 
