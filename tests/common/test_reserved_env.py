@@ -45,6 +45,8 @@ _EMITTERS = (
      r"'name': '([A-Z][A-Z0-9_]{2,})'"),                # container env entries
     ("robovast_cluster/robovast/execution/cluster_execution/kubernetes_backend.py",
      r"\('([A-Z][A-Z0-9_]{2,})', "),                    # the run's env, as (name, value) pairs
+    ("robovast_cluster/robovast/execution/cluster_execution/kubernetes_backend.py",
+     r'^[A-Z_]*_ENV = "([A-Z][A-Z0-9_]{2,})"'),          # a name it sets through a constant
     ("robovast_cluster/robovast/execution/cluster_execution/manifests.py",
      r"- name: ([A-Z][A-Z0-9_]{2,})"),                  # the pod template's env entries
     ("robovast_cluster/robovast/execution/cluster_execution/pod_access.py",

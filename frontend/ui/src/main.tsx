@@ -9,6 +9,7 @@ import { DialogProvider } from './components/DialogProvider'
 import { ToastProvider } from './components/ToastProvider'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { appTheme } from './theme'
+import { registerShellWorker } from './lib/appInstall'
 
 // Refetch-on-focus is off by default because most of what this app fetches does not change:
 // a finished campaign's results, a workspace's files, the config schema. Re-reading them
@@ -37,6 +38,10 @@ const queryClient = new QueryClient({
 window.addEventListener('vite:preloadError', (event) => {
   console.warn('chunk preload failed; lazyView will retry and then offer a reload', event)
 })
+
+// The installable app's service worker (lib/appInstall.ts): registered where it can work, and said
+// on the Admin page where it cannot. Before the render, so the page's own requests already find it.
+registerShellWorker()
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

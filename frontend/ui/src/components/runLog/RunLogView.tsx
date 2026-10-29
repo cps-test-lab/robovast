@@ -58,6 +58,7 @@ const OVERSCAN = 12
  *  depends on, so it renders every filtered row at once; past this the tab would stall, so the
  *  toggle is disabled with the reason on it instead. */
 import { ERROR, WARNING } from '@/colors'
+import { useCompact } from '@/lib/compact'
 const WRAP_MAX_ROWS = 5000
 
 const SEVERITY_COLOR = { warn: WARNING, error: ERROR } as const
@@ -217,8 +218,11 @@ export function RunLogView({
   const [scrollTop, setScrollTop] = useState(0)
   const [following, setFollowing] = useState(true)
   // Off by default: one line per row is what makes a log scannable, and it is what lets the list
-  // be windowed. Wrapping is for the occasional line somebody needs to read whole.
-  const [wrap, setWrap] = useState(false)
+  // be windowed. Wrapping is for the occasional line somebody needs to read whole -- except on a
+  // compact screen, where one line per row shows the time and the source and none of the message,
+  // so there it starts on, with each message on a line of its own under its columns.
+  const { compact } = useCompact()
+  const [wrap, setWrap] = useState(compact)
   // Set while the component scrolls itself, so its own scroll event is not mistaken for the
   // user scrolling away -- which would make the view stop following the moment it followed.
   const selfScroll = useRef(false)
@@ -587,6 +591,8 @@ export function RunLogView({
                         // belong beside its FIRST line, not floating in the middle of it.
                         alignItems: 'flex-start',
                         gap: 1,
+                        flexWrap: wrap && compact ? 'wrap' : undefined,
+                        rowGap: 0,
                         px: 1,
                         // `max-content` is what makes the row wider than the panel instead of
                         // squeezing its message, so the container has something to scroll.
@@ -673,7 +679,7 @@ export function RunLogView({
                           // Unwrapped the opposite is wanted: the cell extends and the container
                           // scrolls sideways.
                           minWidth: wrap ? 0 : 'auto',
-                          flexBasis: wrap ? 0 : 'auto',
+                          flexBasis: wrap ? (compact ? '100%' : 0) : 'auto',
                           wordBreak: wrap ? 'break-word' : 'normal',
                         }}
                       >

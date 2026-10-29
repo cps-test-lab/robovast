@@ -164,6 +164,8 @@ IMMUTABLE_CACHE_CONTROL = "private, max-age=31536000, immutable"
 #: before the SPA loads, and the SPA's bundle is behind the very session this page
 #: issues. The name field is optional — an unattributed campaign records nothing rather
 #: than an invented placeholder.
+#: Its fields and button are a finger's height, at least 44 px: on a phone it is the first
+#: thing the installed app shows once a session has lapsed.
 _LOGIN_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -175,8 +177,8 @@ _LOGIN_HTML = """<!doctype html>
   form { display: grid; gap: .75rem; min-width: min(22rem, 90vw); }
   h1 { font-size: 1.25rem; margin: 0 0 .5rem; }
   label { display: grid; gap: .25rem; font-size: .875rem; }
-  input { font: inherit; padding: .5rem; }
-  button { font: inherit; padding: .5rem; cursor: pointer; }
+  input { font: inherit; padding: .5rem; min-height: 44px; box-sizing: border-box; }
+  button { font: inherit; padding: .5rem; min-height: 44px; cursor: pointer; }
   .hint { font-size: .8125rem; opacity: .7; margin: 0; }
   .err { color: #b3261e; font-size: .875rem; margin: 0; }
 </style></head>
