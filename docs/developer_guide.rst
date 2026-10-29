@@ -2287,7 +2287,9 @@ sign-in gate needs no exception) and the iOS tags. The precache list is the entr
 imports and their CSS, from the bundle itself (``shellFiles``). The worker's policy is
 ``src/sw/shell.ts``, pure and tested: only a listed GET is served from the cache, page loads go to
 the network with an offline page as the fallback, nothing else reaches ``respondWith``, and a new
-build's worker deletes every cache that is not its own. ``worker.ts`` needs a worker's globals, so
+build's worker deletes every cache that is not its own. The build id the plugin writes in is a
+hash of the worker's code and of every cached URL with its bytes (``buildWorker``): the manifest and
+the icons keep their names from build to build, so a build that changes only them is a new worker too. ``worker.ts`` needs a worker's globals, so
 ``tsconfig.json`` leaves it out and ``tsconfig.sw.json`` checks it (``npm run lint`` and
 ``build`` run both). ``lib/appInstall.ts`` registers it in a secure context in a production build
 and keeps the state Admin reports; ``lib/browserNotify.ts`` posts through its registration when

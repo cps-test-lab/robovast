@@ -141,6 +141,10 @@ export type BundleLike = Record<string, {
   isEntry?: boolean
   imports?: string[]
   viteMetadata?: { importedCss?: Set<string> }
+  /** A chunk's code. */
+  code?: string
+  /** An asset's bytes. */
+  source?: string | Uint8Array
 }>
 
 /** The app shell: the entry chunk, every chunk it imports statically (transitively), and their CSS.
@@ -161,11 +165,17 @@ export function shellFiles(bundle: BundleLike): string[] {
   return [...out].sort()
 }
 
-/** The service worker for a precache list: built from its entry module with the list and the build
- *  id written in. The id is a hash of the worker's own code and of the list, so a build that changes
- *  either is a new worker and anything else is the same one. */
-export async function buildWorker(entry: string, precache: string[]): Promise<{ code: string; buildId: string }> {
+/** The service worker for the shell: built from its entry module with the precache list and the
+ *  build id written in. `shell` maps each URL the worker caches to the bytes served there. The id is
+ *  a hash of the worker's own code and of every URL with its bytes -- the manifest and the icons have
+ *  no hash in their names, so a URL alone does not say what is cached -- and a build that changes
+ *  any of them is a new worker, which replaces the old shell on its next start. */
+export async function buildWorker(
+  entry: string,
+  shell: ReadonlyMap<string, string | Uint8Array>,
+): Promise<{ code: string; buildId: string }> {
   const PLACEHOLDER = '__SHELL_BUILD_ID__'
+  const precache = [...shell.keys()]
   const result = await esbuild({
     entryPoints: [entry],
     bundle: true,
@@ -180,8 +190,22 @@ export async function buildWorker(entry: string, precache: string[]): Promise<{ 
   })
   const code = result.outputFiles[0].text
   if (!code.includes(PLACEHOLDER)) throw new Error('pwa: the worker does not read SHELL_BUILD_ID')
-  const buildId = createHash('sha256').update(code).update(precache.join('\n')).digest('hex').slice(0, 16)
+  const hash = createHash('sha256').update(code)
+  for (const [url, bytes] of shell) {
+    hash.update(`\n${url}\n`)
+    hash.update(createHash('sha256').update(bytes).digest('hex'))
+  }
+  const buildId = hash.digest('hex').slice(0, 16)
   return { code: code.split(PLACEHOLDER).join(buildId), buildId }
+}
+
+/** The bytes of a file the bundle emits, refused when the bundle does not have it: a precached URL
+ *  with nothing behind it would fail the worker's install. */
+export function bundleBytes(bundle: BundleLike, fileName: string): string | Uint8Array {
+  const out = bundle[fileName]
+  const bytes = out?.type === 'chunk' ? out.code : out?.source
+  if (bytes === undefined) throw new Error(`pwa: the shell file ${fileName} is not in the bundle`)
+  return bytes
 }
 
 export function pwa(opts: PwaOptions): Plugin {
@@ -206,21 +230,19 @@ export function pwa(opts: PwaOptions): Plugin {
         { tag: 'meta', attrs: { name: 'apple-mobile-web-app-title', content: opts.shortName }, injectTo: 'head' },
       ]
     },
-    async generateBundle(_options, bundle) {
-      for (const [fileName, source] of readIcons(opts)) {
+    async generateBundle(_options, output) {
+      const bundle = output as unknown as BundleLike
+      const icons = readIcons(opts)
+      for (const [fileName, source] of icons) {
         this.emitFile({ type: 'asset', fileName, source })
       }
-      this.emitFile({
-        type: 'asset',
-        fileName: PWA_FILES.manifest,
-        source: `${JSON.stringify(webManifest(opts, base), null, 2)}\n`,
-      })
-      const precache = [
-        ...shellFiles(bundle as unknown as BundleLike),
-        PWA_FILES.manifest,
-        ...ALL_ICONS.map((i) => i.file),
-      ].map((f) => `${base}${f}`)
-      const { code } = await buildWorker(opts.workerEntry, precache)
+      const manifest = `${JSON.stringify(webManifest(opts, base), null, 2)}\n`
+      this.emitFile({ type: 'asset', fileName: PWA_FILES.manifest, source: manifest })
+      const shell = new Map<string, string | Uint8Array>()
+      for (const f of shellFiles(bundle)) shell.set(`${base}${f}`, bundleBytes(bundle, f))
+      shell.set(`${base}${PWA_FILES.manifest}`, manifest)
+      for (const icon of ALL_ICONS) shell.set(`${base}${icon.file}`, icons.get(icon.file)!)
+      const { code } = await buildWorker(opts.workerEntry, shell)
       this.emitFile({ type: 'asset', fileName: PWA_FILES.worker, source: code })
     },
   }

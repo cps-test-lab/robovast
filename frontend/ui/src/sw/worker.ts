@@ -47,8 +47,8 @@ self.addEventListener('fetch', (event) => {
     )
     return
   }
-  // A shell file: its URL names its bytes, so the cached copy is the file. Missing from the cache (a
-  // cache the browser evicted), it is fetched as it would be with no worker.
+  // A shell file: the build id covers its bytes, so the copy in this build's cache is the file. Missing
+  // from the cache (a cache the browser evicted), it is fetched as it would be with no worker.
   event.respondWith(
     caches.open(CACHE)
       .then((cache) => cache.match(event.request))

@@ -6,6 +6,7 @@ import {
   ALL_ICONS,
   ICONS,
   buildWorker,
+  bundleBytes,
   markBody,
   readIcons,
   shellFiles,
@@ -126,14 +127,43 @@ describe('shellFiles', () => {
 })
 
 describe('buildWorker', () => {
+  const shell = (entries: Record<string, string>) => new Map(Object.entries(entries))
+
   it('writes the list and a build id in, and a different list is a different worker', async () => {
-    const a = await buildWorker(OPTS.workerEntry, ['/assets/index-a.js'])
-    const b = await buildWorker(OPTS.workerEntry, ['/assets/index-b.js'])
+    const a = await buildWorker(OPTS.workerEntry, shell({ '/assets/index-a.js': 'a' }))
+    const b = await buildWorker(OPTS.workerEntry, shell({ '/assets/index-b.js': 'a' }))
     expect(a.code).toContain('/assets/index-a.js')
     expect(a.code).toContain(a.buildId)
     expect(a.code).not.toContain('__SHELL_BUILD_ID__')
     expect(a.buildId).not.toBe(b.buildId)
-    const again = await buildWorker(OPTS.workerEntry, ['/assets/index-a.js'])
+    const again = await buildWorker(OPTS.workerEntry, shell({ '/assets/index-a.js': 'a' }))
     expect(again.buildId).toBe(a.buildId)
   }, 30_000)
+
+  it('is a new worker when only the bytes behind an unhashed URL change', async () => {
+    // The manifest and the icons keep their URLs from build to build: a new palette or name must
+    // still replace the cached copies.
+    const files = { '/assets/index-a.js': 'a', '/manifest.webmanifest': '{"name":"RoboVAST"}' }
+    const a = await buildWorker(OPTS.workerEntry, shell(files))
+    const b = await buildWorker(OPTS.workerEntry,
+      shell({ ...files, '/manifest.webmanifest': '{"name":"RoboVAST 2"}' }))
+    expect(b.buildId).not.toBe(a.buildId)
+    const icon = new Map<string, string | Uint8Array>([['/icons/icon-192.png', new Uint8Array([1, 2])]])
+    const otherIcon = new Map<string, string | Uint8Array>([['/icons/icon-192.png', new Uint8Array([1, 3])]])
+    expect((await buildWorker(OPTS.workerEntry, icon)).buildId)
+      .not.toBe((await buildWorker(OPTS.workerEntry, otherIcon)).buildId)
+  }, 30_000)
+})
+
+describe('bundleBytes', () => {
+  const bundle: BundleLike = {
+    'assets/index-a.js': { type: 'chunk', fileName: 'assets/index-a.js', code: 'js' },
+    'assets/index-a.css': { type: 'asset', fileName: 'assets/index-a.css', source: 'css' },
+  }
+
+  it('reads a chunk\'s code and an asset\'s source, and refuses a file the bundle lacks', () => {
+    expect(bundleBytes(bundle, 'assets/index-a.js')).toBe('js')
+    expect(bundleBytes(bundle, 'assets/index-a.css')).toBe('css')
+    expect(() => bundleBytes(bundle, 'assets/gone.js')).toThrow(/not in the bundle/)
+  })
 })
