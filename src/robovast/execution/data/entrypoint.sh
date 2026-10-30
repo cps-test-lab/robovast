@@ -315,6 +315,25 @@ else
     if [ -n "${SIMULATION}" ]; then
         SIMULATION_PARAM="--simulation ${SIMULATION}"
     fi
+    # A job of several runs (execution.runs_per_job; a campaign job naming no run directory)
+    # needs each run's results in that run's directory, the simulator's recording among
+    # them: scenario-execution hands reset() each scenario's directory as `output_dir`, and the
+    # simulation's reset() takes it. An image lacking either would put every run's recording
+    # into the job's directory, so the job fails here instead.
+    if [ -z "${RUN_OUTPUT_DIR:-}" ] && [ "${OUTPUT_RESULT_PER_SCENARIO:-}" = "true" ]; then
+        if ! python3 -c '
+import importlib, inspect, sys
+from scenario_execution.scenario_execution_base import RUNNER_RESET_ARGS
+assert "output_dir" in RUNNER_RESET_ARGS
+module, _, name = sys.argv[1].partition(":")
+if module:
+    reset = getattr(importlib.import_module(module), name).reset
+    assert "output_dir" in inspect.signature(reset).parameters
+' "${SIMULATION}"; then
+            log "ERROR: This job holds several runs (execution.runs_per_job), and this image cannot give each run its own directory: its scenario-execution does not hand reset() an output_dir, or the simulation's reset() takes none. Use an image that has both, or runs_per_job: 1."
+            exit 1
+        fi
+    fi
     # Behaviour tree status log: scenario_execution writes <output-dir>/behaviors.jsonl
     # itself, with or without ROS. Always on, and defaulted here as well, so a container
     # started by hand records its tree too -- that is the run nobody can go back and

@@ -280,3 +280,47 @@ def test_a_campaign_stages_the_preset_into_its_transient_dir(tmp_path, cluster):
     staged = out / "_transient" / MCAP_STORAGE_CONFIG
     assert staged.read_bytes() == \
         files("robovast.execution.data").joinpath(MCAP_STORAGE_CONFIG).read_bytes()
+
+
+# -- a job of several runs needs an image that gives each run its directory ----------------------
+
+def _packing_check(tmp_path, env, *, marker, reset_args):
+    """The shipped check, against a fake scenario-execution and simulation on PYTHONPATH."""
+    pkg = tmp_path / "scenario_execution"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "scenario_execution_base.py").write_text(
+        "RUNNER_RESET_ARGS = ('output_dir',)\n" if marker else "")
+    (tmp_path / "fakesim.py").write_text(
+        f"class Sim:\n    def reset(self, {reset_args}):\n        pass\n")
+    rendered = render_entrypoint(cluster=True)
+    start = rendered.index('    SIMULATION="${SIMULATION:-}"')
+    end = rendered.index("    # Behaviour tree status log", start)
+    script = "\n".join(['log() { echo "$*"; }', textwrap.dedent(rendered[start:end]),
+                        "echo PASSED"])
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                          env={"PATH": os.environ["PATH"], "PYTHONPATH": str(tmp_path),
+                               "SIMULATION": "fakesim:Sim", **env})
+
+
+_PACKED = {"OUTPUT_RESULT_PER_SCENARIO": "true"}
+
+
+def test_a_job_of_several_runs_starts_on_an_image_that_gives_each_run_its_directory(tmp_path):
+    out = _packing_check(tmp_path, _PACKED, marker=True, reset_args="output_dir=None")
+    assert out.returncode == 0 and "PASSED" in out.stdout, out.stdout + out.stderr
+
+
+@pytest.mark.parametrize("marker, reset_args", [(False, "output_dir=None"), (True, "world=None")])
+def test_a_job_of_several_runs_fails_on_an_image_that_cannot(tmp_path, marker, reset_args):
+    """Without scenario-execution handing reset() an output_dir, or a simulation taking it,
+    every run's recording would land in the job's directory: the job fails, and says why."""
+    out = _packing_check(tmp_path, _PACKED, marker=marker, reset_args=reset_args)
+    assert out.returncode == 1 and "PASSED" not in out.stdout
+    assert "cannot give each run its own directory" in out.stdout
+
+
+def test_a_job_of_one_run_is_not_checked(tmp_path):
+    out = _packing_check(tmp_path, {**_PACKED, "RUN_OUTPUT_DIR": "/out/cell/0"},
+                         marker=False, reset_args="world=None")
+    assert out.returncode == 0 and "PASSED" in out.stdout

@@ -1164,6 +1164,10 @@ reset between them, so the simulator is built once per job rather than once per 
   with its ROS bridge on -- leaves ``runs_per_job`` at 1.
 - ``timeout`` stays the budget of one run; the Job's deadline is the budget times the runs it
   holds.
+- **It needs an image that gives each run its own directory:** a scenario-execution that
+  hands the simulation's ``reset()`` each scenario's ``output_dir``, and a simulation whose
+  ``reset()`` takes it. A job of several runs on any other image fails at its start, saying
+  so, rather than putting every run's recording into the job's directory.
 
 Every other per-run artifact is written per run by the process that owns it -- ``test.xml``,
 the behaviour log, the simulator's recording -- so results are keyed by configuration name and
