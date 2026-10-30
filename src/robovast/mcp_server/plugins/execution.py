@@ -405,7 +405,8 @@ def list_campaign_jobs(campaign_id: str) -> dict:
         ``{jobs, counts}`` where each job is ``{job_name, kind, config_name, run_id, status,
         display_name, detail, node, started_at, usage}`` and counts tallies
         ``running/pending/waiting/completed/failed/killed/blocked/total`` over the campaign's
-        own runs, plus ``calibration`` beside them. Or ``{error}``.
+        own jobs -- one per run unless ``execution.runs_per_job`` packs several -- plus
+        ``calibration`` beside them. Or ``{error}``.
 
         ``kind`` is ``run`` for one of the campaign's trials, or ``calibration`` for a
         node-sizing probe (a cluster job that measures a machine before work is placed on
@@ -414,7 +415,8 @@ def list_campaign_jobs(campaign_id: str) -> dict:
 
         ``config_name`` and ``run_id`` are the run a job executes, keyed as the campaign's
         tables key it -- the job's ``job_name`` is a Kubernetes name and says nothing about
-        its run. Absent on a probe and on a job still ``waiting`` for capacity.
+        its run. Absent on a probe, on a job still ``waiting`` for capacity, and on a job
+        holding several runs, which names no one run.
 
         ``node`` is the machine the job's pod was placed on -- absent on a job the scheduler
         has not placed yet. Reading it across a listing says whether a

@@ -266,7 +266,7 @@ def test_the_path_the_trial_launches_is_the_cells_own_copy(tmp_path):
     assert len(set(staged.values())) == len(configs), staged
     # ... and what the trial is told is that path, carried rather than rewritten.
     for config in configs:
-        job = Job(config=config, run_number=0, index=0)
+        job = Job(config=config, runs=[0], index=0)
         document = build_job_parameter_documents(job, "nav")[0]["nav"]
         assert document["params_file"] == "files/nav2_params.yaml"
 

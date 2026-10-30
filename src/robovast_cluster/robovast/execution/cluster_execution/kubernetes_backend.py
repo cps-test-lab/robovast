@@ -80,7 +80,7 @@ from robovast.execution.backends import (CampaignConfigError, ExecutionBackend, 
                                          refuse_unimportable,
                                          ShareStopped)
 from robovast.execution.campaign_archive import job_documents
-from robovast.execution.jobs import build_jobs
+from robovast.execution.jobs import build_jobs, declared_runs_per_job
 from robovast_decode.quantity import to_bytes
 
 from . import pod_access, pod_upload
@@ -166,15 +166,21 @@ _POD_CAMPAIGN_ROOT = "/out"
 
 
 def _run_output_dir_env(job) -> tuple:
-    """``RUN_OUTPUT_DIR``: where this job's run writes its results.
+    """``RUN_OUTPUT_DIR``: where this job's run writes its results, for a job of one run.
 
     ``/out`` is the pod's campaign root and ``OUTPUT_DIR`` is a per-*job* subdir, so neither names the
     place this run's results land -- ``/out/<config>/<run>``, which scenario_execution derives from
     the run's parameter document. A process the scenario merely *launched* (a simulator brought up
     by a ROS launch file, say) therefore needs it named to drop a per-run artifact: writing to
     ``/out`` collides across runs, since every pod mirrors its ``/out`` into the same campaign prefix.
+
+    A job of several runs has no one directory to name, so the variable is left out rather than
+    made wrong. Such a job runs the stepped shape, where nothing is launched: the simulator is in
+    scenario-execution's process and is told each run's directory on ``reset()``.
     """
-    return ((RUN_OUTPUT_DIR_ENV, f"{_POD_CAMPAIGN_ROOT}/{job.config_name}/{job.run_number}"),)
+    if len(job.runs) != 1:
+        return ()
+    return ((RUN_OUTPUT_DIR_ENV, f"{_POD_CAMPAIGN_ROOT}/{job.config_name}/{job.first_run}"),)
 
 
 def run_of_output_dir(value) -> "tuple[str, int] | None":
@@ -302,6 +308,14 @@ def probe_manifest(base: dict, *, job_name: str, params_file: str, output_dir: s
         if not any(e.get("name") == SCENARIO_PARAMS_ENV for e in env):
             env.append({"name": SCENARIO_PARAMS_ENV, "value": TICK_LOG_FLAG})
         break
+    # A probe is one run, also when the job it derives from held several and so named no
+    # run directory: every container that got the job's OUTPUT_DIR gets the probe's
+    # RUN_OUTPUT_DIR too, or a sidecar's per-run records fall into the job's directory.
+    for container in spec.get("containers") or []:
+        env = container.get("env") or []
+        names = {e.get("name") for e in env}
+        if "OUTPUT_DIR" in names and "RUN_OUTPUT_DIR" not in names:
+            env.append({"name": "RUN_OUTPUT_DIR", "value": output_dir})
     return manifest
 
 
@@ -1181,10 +1195,10 @@ class BatchJobRunner:
 
     def create_job_manifest(self, job, total_jobs: int, node_figures=None,
                             also_reads=()) -> dict:
-        """Create a manifest for one job, which is one run.
+        """Create a manifest for one job: the runs of one configuration, one by default.
 
         ``/out`` is this pod's emptyDir shaped as the campaign root, delivered to the
-        campaign once the pod is done, so the run's results land at
+        campaign once the pod is done, so each run's results land at
         ``<campaign>/<config>/<run>/`` via its parameter document's ``_output_dir``.
         Job-level artifacts go to a per-job subdir, and the configuration's files are
         staged at ``/config/<deploy path>`` -- where the campaign's own copy would otherwise
@@ -1236,7 +1250,7 @@ class BatchJobRunner:
         ) + _run_output_dir_env(job) + tuple(recording_env(
             self.campaign_data.get("execution") or {}, job.config,
             os.path.dirname(self.campaign_data.get("vast") or "")).items())
-        return self._build_job_manifest(
+        manifest = self._build_job_manifest(
             job_short_name=_short_job_name(self.campaign, job_tag, job.index),
             job_full_name=f"{self.campaign}-{job_tag}",
             item_tag=job_tag,
@@ -1246,6 +1260,10 @@ class BatchJobRunner:
             sim_overlay=sim_overlay,
             node_figures=node_figures,
         )
+        # The budget is one run's, and this Job holds as many runs as the plan gave it.
+        manifest["spec"]["activeDeadlineSeconds"] = job_deadline_seconds(
+            self.campaign_data.get("execution") or {}, len(job.runs))
+        return manifest
 
     def _sim_overlay(self, job) -> dict:
         """This job's resolved simulator command, environment and overrides document.
@@ -1258,16 +1276,17 @@ class BatchJobRunner:
                                os.path.dirname(self.campaign_data.get("vast") or ""))
 
     def _build_jobs(self):
-        """One job per (config, run).
+        """The jobs: each configuration's runs, ``execution.runs_per_job`` to a job.
 
         Deterministic, so the jobs used to write per-job param files match the
         jobs used to create job manifests.
         """
-        return build_jobs(self.configs, self.num_runs)
+        return build_jobs(self.configs, self.num_runs,
+                          declared_runs_per_job(self.campaign_data.get("execution") or {}))
 
     @staticmethod
     def _jobs_already_done(jobs, campaign_root: str) -> set:
-        """Indices of *jobs* whose run already has a verdict under *campaign_root*.
+        """Indices of *jobs* whose every run already has a verdict under *campaign_root*.
 
         Empty for a campaign starting now -- the root is bare, so this is one ``isfile``
         miss per job and the batch behaves exactly as it always did. It is not empty for a
@@ -1280,10 +1299,15 @@ class BatchJobRunner:
         evidence ``_run_batch_mode`` builds the store from and
         ``reconstruct_status_from_disk`` decides finished-vs-crashed on, so using anything
         else here would let two readers disagree about the same run.
+
+        A job of several runs that landed *partly* is not done and is created again whole:
+        its runs share one simulator process, which cannot be re-entered halfway, and the
+        runs it produced before are produced again.
         """
         return {job.index for job in jobs
-                if os.path.isfile(os.path.join(campaign_root, job.config_name,
-                                               str(job.run_number), "test.xml"))}
+                if all(os.path.isfile(os.path.join(campaign_root, job.config_name,
+                                                   str(run), "test.xml"))
+                       for run in job.runs)}
 
     def _write_job_param_files(self, out_dir, campaign_root=None):
         """Write one scenario-parameter file per job into ``out_dir/_transient/`` so they
@@ -1424,6 +1448,9 @@ class BatchJobRunner:
                 f"campaign instead. ({exc})") from exc
         base = self.create_job_manifest(
             jobs[0], total_jobs, also_reads=[probe_tag(node_id) for node_id in node_ids])
+        # A probe runs one run, whatever the first job holds, so it gets one run's budget.
+        base.setdefault("spec", {})["activeDeadlineSeconds"] = job_deadline_seconds(
+            (getattr(self, "campaign_data", None) or {}).get("execution") or {})
         started = campaign_start_key(self.campaign)
         for index, node_id in enumerate(node_ids):
             # **A node its probe can never fit is left out now, and says so.** The check above
@@ -2176,7 +2203,8 @@ class BatchJobRunner:
         node_ids = self._probe_node_ids(len(jobs))
         if not node_ids or not jobs:
             return []
-        base_docs = build_job_parameter_documents(jobs[0], scenario_name)
+        # The first job's first run: a probe measures one run, whatever the job holds.
+        base_docs = build_job_parameter_documents(jobs[0], scenario_name)[:1]
         for node_id in node_ids:
             docs = probe_parameter_documents(base_docs, node_id)
             with open(os.path.join(transient_dir, job_documents(probe_tag(node_id))[0]),
@@ -2391,7 +2419,7 @@ class BatchJobRunner:
                 self._deadline_killed.add(job_name)
                 logger.warning(
                     "Campaign %s batch %s: job %s HARD-KILLED by activeDeadlineSeconds "
-                    "(%ss) — likely hung, no self-shutdown.",
+                    "(%ss per run it held) — likely hung, no self-shutdown.",
                     self.campaign, self._batch_tag, job_name, self._deadline_seconds)
                 return
 
@@ -3115,12 +3143,12 @@ class BatchJobRunner:
             return
         self._invalidated.add(job_name)
         job = jobs_by_name.get(job_name)
-        runs = (f"{job.config_name}/{job.run_number}",) if job else ()
+        runs = job.run_keys if job else ()
         job_dir = f"_jobs/{self._job_artifact_path(job.index)}" if job else ""
         logger.warning(
-            "Batch %s: invalidating job %s -- %s. Its run is discarded; the "
+            "Batch %s: invalidating job %s -- %s. Its %d run(s) are discarded; the "
             "rest of the batch continues.",
-            self._batch_tag, job_name, detail)
+            self._batch_tag, job_name, detail, len(runs) or 1)
         # Evidence first, and never at the cost of the response: a diagnostic that
         # raises would turn the failure it documents into a different, worse one.
         if forensics is not None:
@@ -3215,7 +3243,7 @@ class BatchJobRunner:
                                           token)
 
 
-        # 2. Build and submit one Job per run, then wait.
+        # 2. Build and submit one Job per job of the plan, then wait.
         # The up-front "can these jobs ever be admitted?" check is admission.preflight()
         # below: it asks whether the request fits any node's allocatable, which is the
         # question, asked of the cluster directly.
@@ -3314,10 +3342,9 @@ class BatchJobRunner:
             # exists, rather than re-derived from position later -- creation order varies
             # under admission and an index recovered by counting would be wrong.
             self._job_index_by_name = {n: j.index for j, n in zip(jobs, job_names)}
-            # Name -> the run it served, whose verdict holds the trial window its counters
+            # Name -> the runs it served, whose verdicts hold the trial windows its counters
             # are judged over.
-            self._job_runs_by_name = {
-                n: [f"{j.config_name}/{j.run_number}"] for j, n in zip(jobs, job_names)}
+            self._job_runs_by_name = {n: list(j.run_keys) for j, n in zip(jobs, job_names)}
             calibration = self._start_probes(jobs, total_jobs)
             # A confined campaign is pinned to its node and does NOT reserve it: it always
             # has another job queued, so a claim would renew for its whole life and shut
@@ -3524,7 +3551,7 @@ class BatchJobRunner:
         self._capture_image_digest(job_label)
         if self._deadline_killed:
             logger.warning(
-                "Batch %s: %d job(s) hard-killed on the %ss deadline: %s",
+                "Batch %s: %d job(s) hard-killed on the deadline of %ss per run they held: %s",
                 self._batch_tag, len(self._deadline_killed), self._deadline_seconds,
                 ", ".join(sorted(self._deadline_killed)))
 

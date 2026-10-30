@@ -1117,7 +1117,7 @@ def test_the_trial_window_is_the_one_postprocessing_marks():
     raw = _test_xml(1004.0, 89.0)
     with tempfile.TemporaryDirectory() as tmp:
         Path(tmp, "test.xml").write_bytes(raw)
-        assert run_slices._read_window(Path(tmp)) == (1004.0, 1093.0)
+        assert run_slices.read_window(Path(tmp)) == (1004.0, 1093.0)
     assert nc.read_trial_window({"p/test.xml": raw}.get, "p/") == (1004.0, 1093.0)
     assert nc.read_trial_window({}.get, "p/") is None
 

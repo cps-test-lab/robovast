@@ -280,7 +280,12 @@ else
         done
         log "Scenario recording -> ${RUN_OUTPUT_DIR}/rosbag2 (PID=$(cat /tmp/scenario_bag.pid 2>/dev/null))"
     }
-    if [ -z "${RUN_OUTPUT_DIR:-}" ]; then
+    if [ -z "${RUN_OUTPUT_DIR:-}" ] && [ "${OUTPUT_RESULT_PER_SCENARIO:-}" = "true" ]; then
+        # A campaign job that names no run directory holds several runs
+        # (execution.runs_per_job), one after another in this process: one recorder started
+        # here would put them all into one bag, so none is started.
+        log "No scenario recording: this job holds several runs (execution.runs_per_job), and the scenario bag is recorded only by a job of one run."
+    elif [ -z "${RUN_OUTPUT_DIR:-}" ]; then
         log "No scenario recording: no run directory (RUN_OUTPUT_DIR) outside a campaign job."
     elif ! command -v ros2 > /dev/null 2>&1; then
         log "No scenario recording: no ros2 in this image."
@@ -309,6 +314,25 @@ else
     SIMULATION_PARAM=""
     if [ -n "${SIMULATION}" ]; then
         SIMULATION_PARAM="--simulation ${SIMULATION}"
+    fi
+    # A job of several runs (execution.runs_per_job; a campaign job naming no run directory)
+    # needs each run's results in that run's directory, the simulator's recording among
+    # them: scenario-execution hands reset() each scenario's directory as `output_dir`, and the
+    # simulation's reset() takes it. An image lacking either would put every run's recording
+    # into the job's directory, so the job fails here instead.
+    if [ -z "${RUN_OUTPUT_DIR:-}" ] && [ "${OUTPUT_RESULT_PER_SCENARIO:-}" = "true" ]; then
+        if ! python3 -c '
+import importlib, inspect, sys
+from scenario_execution.scenario_execution_base import RUNNER_RESET_ARGS
+assert "output_dir" in RUNNER_RESET_ARGS
+module, _, name = sys.argv[1].partition(":")
+if module:
+    reset = getattr(importlib.import_module(module), name).reset
+    assert "output_dir" in inspect.signature(reset).parameters
+' "${SIMULATION}"; then
+            log "ERROR: This job holds several runs (execution.runs_per_job), and this image cannot give each run its own directory: its scenario-execution does not hand reset() an output_dir, or the simulation's reset() takes none. Use an image that has both, or runs_per_job: 1."
+            exit 1
+        fi
     fi
     # Behaviour tree status log: scenario_execution writes <output-dir>/behaviors.jsonl
     # itself, with or without ROS. Always on, and defaulted here as well, so a container
