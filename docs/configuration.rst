@@ -1157,7 +1157,7 @@ reset between them, so the simulator is built once per job rather than once per 
 - **Refused with any mode but** ``base`` when the configuration is validated: under ``ros2``
   the simulator is another container, started once with one world and told nothing per run, so
   it cannot be reset per run or told where each run writes; ``auto``, the default, is resolved
-  inside the container, to ``ros2`` wherever ros2 is installed.
+  inside the container, to ``ros2`` wherever ROS 2 is installed.
 - **No scenario bag.** The ROS bag the entrypoint records of a run (``<run>/rosbag2``,
   :ref:`recording-config`) is recorded only by a job of one run; a job of several records none,
   and says so in its log. A world whose runs publish ROS topics worth keeping -- a simulator

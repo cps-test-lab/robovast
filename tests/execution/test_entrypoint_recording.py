@@ -298,7 +298,7 @@ def _packing_check(tmp_path, env, *, marker, reset_args):
     end = rendered.index("    # Behaviour tree status log", start)
     script = "\n".join(['log() { echo "$*"; }', textwrap.dedent(rendered[start:end]),
                         "echo PASSED"])
-    return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False,
                           env={"PATH": os.environ["PATH"], "PYTHONPATH": str(tmp_path),
                                "SIMULATION": "fakesim:Sim", **env})
 
