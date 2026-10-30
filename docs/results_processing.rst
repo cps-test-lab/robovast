@@ -751,10 +751,13 @@ Derived tables
 A job's container logs, its resource samples and its infrastructure recording are written once
 per job. The derived tables are built from them for each of the job's runs, on its clock and
 against its trial window: a job of one run keeps every row and marks it ``in_window``, so the
-bring-up around the trial stays readable; a run whose job held several runs one after another
-(:ref:`config-runs-per-job`) takes the rows inside its own window and none outside it, since
-those are its neighbours' or the job's own. They are built for every run of every campaign; no
-configuration asks for them.
+bring-up around the trial stays readable. A run whose job held several runs one after another
+(:ref:`config-runs-per-job`) takes the rows from its window's start up to the next run's start:
+its verdict, logged just after its window, and the reset after it are its own, marked
+``in_window`` 0; the job's last run keeps the job's teardown; the bring-up before the first run
+is no run's, and a run the job's process never reached takes nothing. The job's infrastructure
+recording is no one run's either, so a shared run's ``run_log`` has no ``/rosout`` lines. They
+are built for every run of every campaign; no configuration asks for them.
 
 .. _merged-run-log:
 

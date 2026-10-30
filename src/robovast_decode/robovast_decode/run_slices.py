@@ -27,10 +27,12 @@ scenario**:
 
 A job of one run: all of its records are that run's, kept whole and marked ``in_window``, so a
 query can tell the trial from the bring-up around it. A job that held several runs one after
-another (``execution.runs_per_job``): each run takes the rows inside its own window and none
-outside it -- the rows between two windows are the simulator being reset, and the job's own
-bring-up and teardown belong to the job, not to its first or last run. The cut is on the
-run's own ``test.xml`` stamps, written by the process that wrote the rows, on one clock.
+another (``execution.runs_per_job``): each run takes the rows from its window's start up to the
+next run's start (:func:`claims`), so its verdict, logged just after its window, and the reset
+after it are its own, marked outside the window; the job's last run keeps the job's teardown,
+and the bring-up before the first run is no run's. A run with no readable window, one the
+job's process never reached, takes nothing. The cut is on the runs' own ``test.xml`` stamps,
+written by the process that wrote the rows, on one clock.
 
 And which clock maps the run's wall stamps to sim time.
 """
@@ -148,10 +150,11 @@ class RunSlice:
 def claims(wall: Optional[float], start_epoch: Optional[float],
            claim_end_epoch: Optional[float]) -> bool:
     """Whether a run that shared its job owns a row stamped *wall*: from the start of its
-    window up to the start of the run after it. Unknown counts as its own, as in
-    :func:`in_window`."""
+    window up to the start of the run after it. Unlike :func:`in_window`, unknown is not its
+    own: a row with no stamp, or any row of a run with no readable window (one the job's
+    process never reached), cannot be told from a neighbour's, so the run claims none."""
     if wall is None or start_epoch is None:
-        return True
+        return False
     return wall >= start_epoch and (claim_end_epoch is None or wall < claim_end_epoch)
 
 

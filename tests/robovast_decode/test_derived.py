@@ -185,6 +185,22 @@ def test_a_failing_runs_verdict_past_its_window_is_read_when_it_shared_its_job(t
     assert _rows(root, "run_log", run=1) == []
 
 
+
+def test_a_run_its_shared_job_never_reached_takes_nothing_of_the_job(tmp_path):
+    """A crash ends a packed job's later runs; they keep their run directories but have no
+    ``test.xml``. Such a run cannot be told from its neighbours, so it gets none of the job's
+    rows -- not the whole log, and not the verdict of the run before it."""
+    root = _campaign(tmp_path)
+    _job(root, 0, {"robovast": "resource_usage_main.csv"}, log_lines=_FAILING_LOG)
+    _run(root, "cfg-a", 0, index=0, start_epoch=100.0, duration=5.0, failures=1)
+    _run(root, "cfg-a", 1, index=0)
+    report = build(str(root), tables=["run_log", "scenario_timestamps"],
+                   config={"containers": ["robovast"]})
+    assert _rows(root, "run_log", run=1) == []
+    assert not (root / ".cache" / "tables" / "scenario_timestamps" / "cfg-a" / "1.parquet").exists()
+    assert any("cfg-a/1" in note and "no readable trial window" in note for note in report.notes)
+    assert _rows(root, "scenario_timestamps", run=0)[0]["status"] == "failed"
+
 def test_a_failing_runs_verdict_past_its_window_is_still_read(tmp_path):
     root = _failing_log_campaign(tmp_path)
     assert _rows(root, "scenario_timestamps")[0]["status"] == "failed"

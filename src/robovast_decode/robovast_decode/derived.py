@@ -239,6 +239,10 @@ def derive_job(campaign_dir: str, campaign_id: str, job_dir: Optional[str], run:
     if job_dir is None:
         out.notes.append(f"{run.key}: no job-link entry, so no job artifacts -- its log and "
                          "resource tables are empty")
+    elif run.shared and slice_.start_epoch is None:
+        out.notes.append(f"{run.key}: shared its job with other runs and has no readable "
+                         "trial window (no test.xml), so none of the job's rows can be told "
+                         "from its neighbours' -- its log and resource tables are empty")
     if stats.without_clock:
         out.notes.append(f"{run.key}: no clock map -- its derived tables have wall time only")
     return out

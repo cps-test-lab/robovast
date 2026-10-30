@@ -420,10 +420,12 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
 def _sources(run: Run) -> List[Tuple[str, str]]:
     """``[(role, bag_dir)]`` of the recordings *run*'s tables are built from, in the order
     they are planned: the scenario recording, the infrastructure recording of the job that
-    ran it, then the simulator's own recording, which fills only the tables the earlier ones
-    do not."""
+    ran it (when the job ran it alone), then the simulator's own recording, which fills only
+    the tables the earlier ones do not."""
     sources = [(SCENARIO_BAG, scenario_recording(run))]
-    if run.job_dir:
+    # A job of several runs records its infrastructure bag once for all of them, so it is
+    # no one run's: decoded under one run's key, its rosout would be every run's.
+    if run.job_dir and not run.shared_job:
         infra = os.path.join(run.job_dir, INFRA_BAG)
         sources.append((INFRA_BAG, infra if os.path.isdir(infra) else None))
     sources.append((ROQSIM_BAG, roqsim_recording(run)))

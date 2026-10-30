@@ -103,7 +103,7 @@ def test_rows_carry_their_run(tmp_path):
 
 def test_runs_that_share_a_job_are_each_built_and_marked_as_sharing(tmp_path):
     """A job that held several runs one after another: each run is built, and each knows its
-    job's records are to be cut to its own trial window rather than read whole."""
+    job's records are to be cut to its own share rather than read whole."""
     campaign = make_campaign(tmp_path / "c-2026-01-01-00000000", runs=(("a", 0), ("a", 1)),
                              shared_job=True)
     runs = find_runs(str(campaign))

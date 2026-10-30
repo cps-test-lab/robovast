@@ -432,8 +432,9 @@ _TABLE_DESCRIPTIONS = {
         "boundary either -- a failing run's verdict is stamped ~1ms after the window closes, "
         "so 'WHERE in_window=1' drops it. For where the trial ended join "
         "scenario_timestamps. A run whose job held several runs (execution.runs_per_job) has "
-        "only the rows of its own trial window, never a neighbour's. A run with no rows had "
-        "no locatable job artifacts."),
+        "its own share: from its window's start up to the next run's start, its verdict "
+        "included, never a neighbour's, and no /rosout lines. A run with no rows had no "
+        "locatable job artifacts, or shared its job and never started."),
     ("main", "postprocessing_steps"): (
         "How each of this campaign's tables was produced. One row per step: plugin, output, "
         "table_name (the table it became; NULL when the output is not a table), sources_json, "
@@ -574,7 +575,8 @@ _TABLE_DESCRIPTIONS = {
         "rows). timestamp is sim seconds and is empty outside the clock map's range (boot, "
         "bring-up, after /clock stops), so ORDER BY wall_ts — epoch seconds, what the "
         "monitor stamped. in_window=0 is bring-up and teardown, not the trial; a run that "
-        "shared its job with other runs has only its own window's ticks. "
+        "shared its job with other runs has the ticks from its window's start up to the "
+        "next run's start. "
         "Load per container over time: SELECT container, wall_ts, SUM(cpu_percent) FROM "
         "resource_usage WHERE config_name=? AND run_id=? AND in_window=1 GROUP BY 1,2. "
         "shm_used_bytes/shm_total_bytes are the exception to the row grain: /dev/shm is ONE "
