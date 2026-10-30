@@ -185,11 +185,10 @@ def test_a_failing_runs_verdict_past_its_window_is_read_when_it_shared_its_job(t
     assert _rows(root, "run_log", run=1) == []
 
 
-
-def test_a_run_its_shared_job_never_reached_takes_nothing_of_the_job(tmp_path):
-    """A crash ends a packed job's later runs; they keep their run directories but have no
-    ``test.xml``. Such a run cannot be told from its neighbours, so it gets none of the job's
-    rows -- not the whole log, and not the verdict of the run before it."""
+def test_a_shared_run_without_a_test_xml_takes_nothing_of_the_job(tmp_path):
+    """A crash ends a packed job: the run it hit and the runs after it keep their run
+    directories but have no ``test.xml``. Such a run cannot be placed, so it gets none of the
+    job's rows -- not the whole log, and not the verdict of the run before it."""
     root = _campaign(tmp_path)
     _job(root, 0, {"robovast": "resource_usage_main.csv"}, log_lines=_FAILING_LOG)
     _run(root, "cfg-a", 0, index=0, start_epoch=100.0, duration=5.0, failures=1)

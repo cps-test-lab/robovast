@@ -433,8 +433,9 @@ _TABLE_DESCRIPTIONS = {
         "so 'WHERE in_window=1' drops it. For where the trial ended join "
         "scenario_timestamps. A run whose job held several runs (execution.runs_per_job) has "
         "its own share: from its window's start up to the next run's start, its verdict "
-        "included, never a neighbour's, and no /rosout lines. A run with no rows had no "
-        "locatable job artifacts, or shared its job and never started."),
+        "included, and no /rosout lines; after a crash the job's last finished run also "
+        "holds what the crashed run logged, with in_window=0. A run with no rows had no "
+        "locatable job artifacts, or shared its job and has no test.xml."),
     ("main", "postprocessing_steps"): (
         "How each of this campaign's tables was produced. One row per step: plugin, output, "
         "table_name (the table it became; NULL when the output is not a table), sources_json, "

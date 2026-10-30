@@ -30,9 +30,10 @@ query can tell the trial from the bring-up around it. A job that held several ru
 another (``execution.runs_per_job``): each run takes the rows from its window's start up to the
 next run's start (:func:`claims`), so its verdict, logged just after its window, and the reset
 after it are its own, marked outside the window; the job's last run keeps the job's teardown,
-and the bring-up before the first run is no run's. A run with no readable window, one the
-job's process never reached, takes nothing. The cut is on the runs' own ``test.xml`` stamps,
-written by the process that wrote the rows, on one clock.
+and the bring-up before the first run is no run's. A run with no readable window (no
+``test.xml``: a crash ended the job during it or before it) takes nothing, and what it logged
+goes to the run before it, outside that run's window. The cut is on the runs' own
+``test.xml`` stamps, written by the process that wrote the rows, on one clock.
 
 And which clock maps the run's wall stamps to sim time.
 """
@@ -151,8 +152,8 @@ def claims(wall: Optional[float], start_epoch: Optional[float],
            claim_end_epoch: Optional[float]) -> bool:
     """Whether a run that shared its job owns a row stamped *wall*: from the start of its
     window up to the start of the run after it. Unlike :func:`in_window`, unknown is not its
-    own: a row with no stamp, or any row of a run with no readable window (one the job's
-    process never reached), cannot be told from a neighbour's, so the run claims none."""
+    own: a row with no stamp, or any row of a run with no readable window (no ``test.xml``,
+    as after a crash), cannot be placed, so the run claims none."""
     if wall is None or start_epoch is None:
         return False
     return wall >= start_epoch and (claim_end_epoch is None or wall < claim_end_epoch)

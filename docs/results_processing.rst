@@ -755,7 +755,9 @@ bring-up around the trial stays readable. A run whose job held several runs one 
 (:ref:`config-runs-per-job`) takes the rows from its window's start up to the next run's start:
 its verdict, logged just after its window, and the reset after it are its own, marked
 ``in_window`` 0; the job's last run keeps the job's teardown; the bring-up before the first run
-is no run's, and a run the job's process never reached takes nothing. The job's infrastructure
+is no run's. A run with no ``test.xml`` (a crash ended the job during it or before it) takes
+nothing, and what it logged goes to the run before it, outside that run's window. The job's
+infrastructure
 recording is no one run's either, so a shared run's ``run_log`` has no ``/rosout`` lines. They
 are built for every run of every campaign; no configuration asks for them.
 
