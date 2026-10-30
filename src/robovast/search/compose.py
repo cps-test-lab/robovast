@@ -49,12 +49,12 @@ from typing import Any
 
 import yaml
 
-from robovast.execution.jobs import declared_runs_per_job
 from robovast.common.common import load_config
 from robovast.common.config import match_var_marker
 from robovast.common.config_generation import (_collect_analysis_input_files,
                                               _plugin_run_files,
                                               generate_scenario_variations)
+from robovast.execution.jobs import declared_runs_per_job
 
 from .types import ParamSet
 

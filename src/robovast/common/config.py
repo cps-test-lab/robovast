@@ -2307,9 +2307,9 @@ class RepetitionsConfig(BaseModel):
             #   - a simulator override document is written per CONFIG, so every repetition of a
             #     cell would read one seed and stop varying -- worse than an unseeded run,
             #     which draws its own;
-            #   - the simulator's own episode counter cannot stand in for it: every run is its
-            #     own job and its own simulator process, so each one counts from the first
-            #     episode and "episode i" is not "repetition i".
+            #   - the simulator's own episode counter cannot stand in for it: a job's runs
+            #     share one simulator process and the next job starts a new one, so the
+            #     episode counts within a job and "episode i" is not "repetition i".
             #
             # What it needs is a per-run seed on the execution backend. Without one, saying
             # 'paired' would claim a comparison the data cannot support.

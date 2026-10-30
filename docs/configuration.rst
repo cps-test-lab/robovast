@@ -1166,16 +1166,27 @@ reset between them, so the simulator is built once per job rather than once per 
   holds.
 
 Every other per-run artifact is written per run by the process that owns it -- ``test.xml``,
-the behaviour log, the simulator's recording -- so results are keyed by configuration name and run
-number whatever the packing, and a run's recording is its own; the runs of one job are the
-successive episodes of the one seed its simulator process drew, and each recording names its
-episode. What a job writes once for the
-pod -- its container log, its resource samples, its host record -- is shared by its runs: the
-derived tables give each run the rows inside its own trial window
-(:ref:`results-derived-tables`), and the ``job`` table has one row the runs point at.
+the behaviour log, the simulator's recording -- so results are keyed by configuration name and
+run number whatever the packing, and a run's recording is its own. What a job writes once for
+the pod -- its container log, its resource samples, its host record -- is shared by its runs:
+the derived tables give each run its own share, from the start of its trial window up to the
+start of the run after it (:ref:`results-derived-tables`), and the ``job`` table has one row
+the runs point at.
 
-A packed job that is interrupted after some of its runs landed is created again whole when the
-campaign is re-entered; the runs it had produced are produced again.
+**Packing changes what the runs are.** The runs of one job are successive episodes of one
+simulator process, not independent starts:
+
+- A simulator that draws its seed per process draws it once per job. The job's runs report the
+  same seed, a run's noise depends on its position in the job, and the same campaign with
+  another ``runs_per_job`` draws other samples.
+- A simulator given a fixed seed gives identical runs at ``runs_per_job: 1``, and runs that
+  differ by episode when packed.
+- A run cannot be replayed from its seed alone; the simulator's own recording says which
+  episode it was.
+
+A run that crashes the job's simulator process ends the job: the runs after it in that job do
+not run. A packed job that is interrupted after some of its runs landed is created again whole
+when the campaign is re-entered; the runs it had produced are produced again.
 
 ``validate_project``, ``preview_configurations``, ``vast workspace validate`` and
 ``vast workspace preview`` report the job count beside the trial count (``jobs``), so what a

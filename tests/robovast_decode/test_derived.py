@@ -145,8 +145,9 @@ def test_a_run_keeps_its_bring_up_verdict_and_teardown_marked_outside_its_trial(
 
 def test_the_runs_of_a_shared_job_each_get_their_own_window_and_nothing_else(tmp_path):
     """Two runs in one job, one after another: the job's log and ticks are cut on each run's
-    own ``test.xml`` stamps, so run 1 never sees run 0's trial, and the bring-up before both
-    and the reset between them belong to neither."""
+    own ``test.xml`` start, so run 1 never sees run 0's trial. A run keeps what follows its
+    window up to the next run's start -- the reset after it, and for the last run the
+    job's teardown -- flagged outside its window; the bring-up before both is neither's."""
     root = _campaign(tmp_path)
     lines = (f"[INFO] [99.5] [{_SCEN}]: bring-up\n"
              f"[INFO] [101.0] [{_SCEN}]: first trial\n"
@@ -160,11 +161,28 @@ def test_the_runs_of_a_shared_job_each_get_their_own_window_and_nothing_else(tmp
     build(str(root), tables=["run_log", "resource_usage"])
     first = [r["message"] for r in _rows(root, "run_log", run=0)]
     second = [r["message"] for r in _rows(root, "run_log", run=1)]
-    assert first == ["first trial"] and second == ["second trial"]
-    assert all(r["in_window"] == 1 for r in _rows(root, "run_log", run=0))
-    assert [r["seq"] for r in _rows(root, "run_log", run=1)] == [0]
+    assert first == ["first trial", "reset between"]
+    assert second == ["second trial", "teardown"]
+    assert [r["in_window"] for r in _rows(root, "run_log", run=0)] == [1, 0]
+    assert [r["seq"] for r in _rows(root, "run_log", run=1)] == [0, 1]
     assert {r["wall_ts"] for r in _rows(root, "resource_usage", run=0)} == {101.0}
-    assert {r["wall_ts"] for r in _rows(root, "resource_usage", run=1)} == {113.0}
+    assert {r["wall_ts"] for r in _rows(root, "resource_usage", run=1)} == {113.0, 125.0}
+
+
+def test_a_failing_runs_verdict_past_its_window_is_read_when_it_shared_its_job(tmp_path):
+    """The verdict of a failing run is logged just after its window closes; in a job of
+    several runs it is still that run's, not dropped as its neighbour's."""
+    root = _campaign(tmp_path)
+    _job(root, 0, {"robovast": "resource_usage_main.csv"}, log_lines=_FAILING_LOG)
+    _run(root, "cfg-a", 0, index=0, start_epoch=100.0, duration=5.0, failures=1)
+    _run(root, "cfg-a", 1, index=0, start_epoch=200.0, duration=5.0)
+    build(str(root), tables=["run_log", "scenario_timestamps"],
+          config={"containers": ["robovast"]})
+    (verdict,) = _rows(root, "scenario_timestamps", run=0)
+    assert verdict["status"] == "failed"
+    assert "test_scenario-0: execution failed. -^- [x]" in [
+        r["message"] for r in _rows(root, "run_log", run=0)]
+    assert _rows(root, "run_log", run=1) == []
 
 
 def test_a_failing_runs_verdict_past_its_window_is_still_read(tmp_path):

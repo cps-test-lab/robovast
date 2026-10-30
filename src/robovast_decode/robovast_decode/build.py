@@ -94,8 +94,10 @@ class Run:
     path: str
     job_dir: Optional[str]
     #: ``True`` when other runs link the same job: they ran one after another in its one
-    #: process, and its records are cut to this run's trial window rather than given whole.
+    #: process, and its records are cut to this run's share rather than given whole -- from
+    #: its window's start up to :attr:`claim_end_epoch`, the start of the run after it.
     shared_job: bool = False
+    claim_end_epoch: Optional[float] = None
 
     @property
     def key(self) -> str:
@@ -119,8 +121,8 @@ def find_runs(campaign_dir: str) -> List[Run]:
     """Every run directory of *campaign_dir*: ``<config>/<numeric run>``, with its job.
 
     A job linked by several runs held them one after another (``execution.runs_per_job``);
-    each is marked :attr:`Run.shared_job`, so its derivation takes its own trial window of
-    the job's records and nothing of its neighbours'.
+    each is marked :attr:`Run.shared_job`, so its derivation takes its own share of the
+    job's records and nothing of its neighbours'.
     """
     links = job_links(campaign_dir)
     runs = []
@@ -133,8 +135,17 @@ def find_runs(campaign_dir: str) -> List[Run]:
     for run in runs:
         if run.job_dir:
             linked[run.job_dir] = linked.get(run.job_dir, 0) + 1
+    starts: Dict[str, List[tuple]] = {}
     for run in runs:
         run.shared_job = bool(run.job_dir) and linked[run.job_dir] > 1
+        if run.shared_job:
+            start, _ = run_slices.read_window(run.path)
+            if start is not None:
+                starts.setdefault(run.job_dir, []).append((start, run))
+    for in_order in starts.values():
+        in_order.sort(key=lambda pair: pair[0])
+        for (_, run), (next_start, _) in zip(in_order, in_order[1:]):
+            run.claim_end_epoch = next_start
     return runs
 
 
@@ -461,7 +472,8 @@ def _derive_run(campaign_dir: str, campaign_id: str, run: Run, tables: List[str]
         return
     derivation = derive_job(campaign_dir, campaign_id, run.job_dir,
                             JobRun(run.key, run.config_name, run.run_id, run.path,
-                                   shared=run.shared_job),
+                                   shared=run.shared_job,
+                                   claim_end_epoch=run.claim_end_epoch),
                             tables, manifest, containers)
     report.notes.extend(derivation.notes)
     # Final once nothing it reads is still being written: the job's logs and its wall-time

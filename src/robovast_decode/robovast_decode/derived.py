@@ -107,8 +107,10 @@ class JobRun:
     config_name: str
     run_id: int
     path: str
-    #: The job held other runs too (see :class:`~robovast_decode.run_slices.RunSlice`).
+    #: The job held other runs too (see :class:`~robovast_decode.run_slices.RunSlice`), and
+    #: where the one after this run started.
     shared: bool = False
+    claim_end_epoch: Optional[float] = None
 
 
 @dataclass
@@ -191,7 +193,7 @@ def derive_job(campaign_dir: str, campaign_id: str, job_dir: Optional[str], run:
     stats = run_slices.SliceStats()
     clock = _clock_of(campaign_dir, manifest, run.key)
     slice_ = run_slices.run_slice(job_dir or "", run.config_name, run.path, clock, stats,
-                                  shared=run.shared)
+                                  shared=run.shared, claim_end_epoch=run.claim_end_epoch)
     context = {"campaign_id": campaign_id, "config_name": run.config_name, "run_id": run.run_id}
 
     if wanted & {RUN_LOG, SCENARIO_TIMESTAMPS}:
@@ -201,7 +203,8 @@ def derive_job(campaign_dir: str, campaign_id: str, job_dir: Optional[str], run:
             job_dir, _job_rows(campaign_dir, manifest, "rosout", run.key), merge,
             sole_container=sole) if job_dir else [])
         rows = run_log.rows_for_window(records, slice_.clock, start_epoch=slice_.start_epoch,
-                                       end_epoch=slice_.end_epoch, keep_outside=not slice_.shared)
+                                       end_epoch=slice_.end_epoch, shared=slice_.shared,
+                                       claim_end_epoch=slice_.claim_end_epoch)
         if RUN_LOG in wanted:
             out.tables[RUN_LOG] = _typed(rows, _RUN_LOG_TYPES, context)
         verdict = _verdict(rows)

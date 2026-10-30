@@ -308,6 +308,14 @@ def probe_manifest(base: dict, *, job_name: str, params_file: str, output_dir: s
         if not any(e.get("name") == SCENARIO_PARAMS_ENV for e in env):
             env.append({"name": SCENARIO_PARAMS_ENV, "value": TICK_LOG_FLAG})
         break
+    # A probe is one run, also when the job it derives from held several and so named no
+    # run directory: every container that got the job's OUTPUT_DIR gets the probe's
+    # RUN_OUTPUT_DIR too, or a sidecar's per-run records fall into the job's directory.
+    for container in spec.get("containers") or []:
+        env = container.get("env") or []
+        names = {e.get("name") for e in env}
+        if "OUTPUT_DIR" in names and "RUN_OUTPUT_DIR" not in names:
+            env.append({"name": "RUN_OUTPUT_DIR", "value": output_dir})
     return manifest
 
 
@@ -1440,6 +1448,9 @@ class BatchJobRunner:
                 f"campaign instead. ({exc})") from exc
         base = self.create_job_manifest(
             jobs[0], total_jobs, also_reads=[probe_tag(node_id) for node_id in node_ids])
+        # A probe runs one run, whatever the first job holds, so it gets one run's budget.
+        base.setdefault("spec", {})["activeDeadlineSeconds"] = job_deadline_seconds(
+            (getattr(self, "campaign_data", None) or {}).get("execution") or {})
         started = campaign_start_key(self.campaign)
         for index, node_id in enumerate(node_ids):
             # **A node its probe can never fit is left out now, and says so.** The check above
@@ -2408,7 +2419,7 @@ class BatchJobRunner:
                 self._deadline_killed.add(job_name)
                 logger.warning(
                     "Campaign %s batch %s: job %s HARD-KILLED by activeDeadlineSeconds "
-                    "(%ss) — likely hung, no self-shutdown.",
+                    "(%ss per run it held) — likely hung, no self-shutdown.",
                     self.campaign, self._batch_tag, job_name, self._deadline_seconds)
                 return
 
@@ -3540,7 +3551,7 @@ class BatchJobRunner:
         self._capture_image_digest(job_label)
         if self._deadline_killed:
             logger.warning(
-                "Batch %s: %d job(s) hard-killed on the %ss deadline: %s",
+                "Batch %s: %d job(s) hard-killed on the deadline of %ss per run they held: %s",
                 self._batch_tag, len(self._deadline_killed), self._deadline_seconds,
                 ", ".join(sorted(self._deadline_killed)))
 

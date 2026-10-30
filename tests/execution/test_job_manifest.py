@@ -699,6 +699,26 @@ def test_a_probe_keeps_every_container_out_of_the_run_tree(monkeypatch):
     assert seen == {"OUTPUT_DIR", "RUN_OUTPUT_DIR"}, "the base job must carry both to prove it"
 
 
+def test_a_probe_derived_from_a_job_of_several_runs_still_names_its_run_directory(monkeypatch):
+    """A job of several runs names no ``RUN_OUTPUT_DIR``; the probe derived from it is one run,
+    so every container that has the job's ``OUTPUT_DIR`` gets the probe's directory as its run
+    directory too, rather than writing the probe's records into the job's."""
+    from robovast.execution.cluster_execution.kubernetes_backend import probe_manifest
+
+    r = _runner(monkeypatch)
+    base = r.create_job_manifest(r._build_jobs()[0], total_jobs=1)
+    for container in base["spec"]["template"]["spec"]["containers"]:
+        container["env"] = [e for e in container.get("env") or []
+                            if e.get("name") != "RUN_OUTPUT_DIR"]
+    probe = probe_manifest(base, job_name="probe-n1", params_file="/config/p.yaml",
+                           output_dir="/out/_calibration/n1",
+                           display_name="calibration probe · n1")
+    for container in probe["spec"]["template"]["spec"]["containers"]:
+        env = _env_dict(container)
+        if "OUTPUT_DIR" in env:
+            assert env["RUN_OUTPUT_DIR"] == "/out/_calibration/n1", container["name"]
+
+
 def test_a_campaign_run_is_not_asked_to(monkeypatch):
     """Per-tick instrumentation on the trial's hot path, so every run paying for it is a cost
     with no reader: only the probe's file is ever read."""
