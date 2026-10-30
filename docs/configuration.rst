@@ -1154,14 +1154,19 @@ reset between them, so the simulator is built once per job rather than once per 
 - A job never holds more than one configuration: it holds one world and one configuration's
   files. ``N`` is an upper bound on a configuration's runs per job, so a campaign of ``runs: 50``
   and ``runs_per_job: 20`` dispatches three jobs per configuration.
-- **Refused with** ``mode: ros2``, by name, when the configuration is validated: in the ROS
-  shape the simulator is another container, started once with one world and told nothing per
-  run, so it cannot be reset per run or told where each run writes.
+- **Refused with any mode but** ``base`` when the configuration is validated: under ``ros2``
+  the simulator is another container, started once with one world and told nothing per run, so
+  it cannot be reset per run or told where each run writes; ``auto``, the default, is resolved
+  inside the container, to ``ros2`` wherever ros2 is installed.
+- **No scenario bag.** The ROS bag the entrypoint records of a run (``<run>/rosbag2``,
+  :ref:`recording-config`) is recorded only by a job of one run; a job of several records none,
+  and says so in its log. A world whose runs publish ROS topics worth keeping -- a simulator
+  with its ROS bridge on -- leaves ``runs_per_job`` at 1.
 - ``timeout`` stays the budget of one run; the Job's deadline is the budget times the runs it
   holds.
 
-Every per-run artifact is written per run by the process that owns it -- ``test.xml``, the
-behaviour log, the simulator's recording -- so results are keyed by configuration name and run
+Every other per-run artifact is written per run by the process that owns it -- ``test.xml``,
+the behaviour log, the simulator's recording -- so results are keyed by configuration name and run
 number whatever the packing, and a run's recording is its own; the runs of one job are the
 successive episodes of the one seed its simulator process drew, and each recording names its
 episode. What a job writes once for the
@@ -1172,8 +1177,9 @@ derived tables give each run the rows inside its own trial window
 A packed job that is interrupted after some of its runs landed is created again whole when the
 campaign is re-entered; the runs it had produced are produced again.
 
-``validate_project``, ``preview_configurations`` and ``vast config info`` report the job count
-beside the trial count (``jobs``), so what a campaign dispatches as is known before it starts.
+``validate_project``, ``preview_configurations``, ``vast workspace validate`` and
+``vast workspace preview`` report the job count beside the trial count (``jobs``), so what a
+campaign dispatches as is known before it starts.
 
 .. code-block:: yaml
 

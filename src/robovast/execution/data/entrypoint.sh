@@ -280,7 +280,12 @@ else
         done
         log "Scenario recording -> ${RUN_OUTPUT_DIR}/rosbag2 (PID=$(cat /tmp/scenario_bag.pid 2>/dev/null))"
     }
-    if [ -z "${RUN_OUTPUT_DIR:-}" ]; then
+    if [ -z "${RUN_OUTPUT_DIR:-}" ] && [ "${OUTPUT_RESULT_PER_SCENARIO:-}" = "true" ]; then
+        # A campaign job that names no run directory holds several runs
+        # (execution.runs_per_job), one after another in this process: one recorder started
+        # here would put them all into one bag, so none is started.
+        log "No scenario recording: this job holds several runs (execution.runs_per_job), and the scenario bag is recorded only by a job of one run."
+    elif [ -z "${RUN_OUTPUT_DIR:-}" ]; then
         log "No scenario recording: no run directory (RUN_OUTPUT_DIR) outside a campaign job."
     elif ! command -v ros2 > /dev/null 2>&1; then
         log "No scenario recording: no ros2 in this image."

@@ -1136,9 +1136,10 @@ class ExecutionConfig(BaseModel):
     # simulator process that is reset between them. 1, the default, is the right value for
     # nearly every campaign: a job is one run, with its own pod, process and bring-up.
     # Raise it only for a stepped in-process simulator (`mode: base`) whose run is cheap
-    # beside a job's bring-up -- MuJoCo trials of a few seconds. Refused with `mode: ros2`:
-    # the simulator is then another container, which cannot be reset per run or told where
-    # each run writes. A job never holds more than one configuration.
+    # beside a job's bring-up -- MuJoCo trials of a few seconds. Refused with any other mode:
+    # under `ros2` the simulator is another container, which cannot be reset per run or told
+    # where each run writes, and `auto` becomes `ros2` inside any image that has ros2. A job
+    # never holds more than one configuration.
     runs_per_job: int = 1
     # Simulation backend passed to scenario_execution as ``--simulation <module:Class>``.
     # Required by scenarios using wait_for_simulation_end() (e.g. MagBotSim).
@@ -1373,15 +1374,19 @@ class ExecutionConfig(BaseModel):
 
         In the ROS shape the simulator is another container, started once with one world and
         told nothing per run, so a second run in the same pod would run against the first's
-        state and write into the first's directory. Refused here, where the campaign is
-        composed, rather than after the pod is scheduled.
+        state and write into the first's directory. ``auto`` is refused too: it is resolved
+        inside the container, to the ROS runner wherever ros2 is installed, so only ``base``
+        is known to be stepped when the campaign is composed. Refused here rather than after
+        the pod is scheduled.
         """
-        from robovast.common.simulators import SHAPE_STEPPED, shape_for  # noqa: PLC0415
-        if self.runs_per_job > 1 and shape_for(self.mode) != SHAPE_STEPPED:
+        if self.runs_per_job > 1 and self.mode != "base":
             raise ValueError(
-                f"execution.runs_per_job is {self.runs_per_job}, which needs the stepped shape "
-                f"(execution.mode: base); mode {self.mode!r} runs the simulator in its own "
-                "container, which cannot be reset per run")
+                f"execution.runs_per_job is {self.runs_per_job}, which needs the stepped shape, "
+                f"execution.mode: base; mode {self.mode!r} "
+                + ("runs the simulator in its own container, which cannot be reset per run"
+                   if self.mode == "ros2" else
+                   "is resolved inside the container, to the ROS shape wherever ros2 is "
+                   "installed"))
         return self
 
     @model_validator(mode='after')

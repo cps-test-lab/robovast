@@ -205,6 +205,26 @@ def test_a_container_with_no_run_directory_starts_no_scenario_recorder_and_says_
         "the recorder is started before the runner"
 
 
+@pytest.mark.parametrize("env, said", [
+    ({"OUTPUT_RESULT_PER_SCENARIO": "true"}, "this job holds several runs (execution.runs_per_job)"),
+    ({}, "no run directory (RUN_OUTPUT_DIR) outside a campaign job"),
+    ({"OUTPUT_RESULT_PER_SCENARIO": "true", "RUN_OUTPUT_DIR": "/out/cell/0"}, "STARTED"),
+])
+def test_a_job_of_several_runs_records_no_scenario_bag_and_says_why(env, said):
+    """A campaign job that names no run directory holds several runs; it is not told it ran
+    outside a campaign, and no recorder is started for it."""
+    rendered = render_entrypoint(cluster=True)
+    block = rendered[rendered.index('    if [ -z "${RUN_OUTPUT_DIR:-}" ]'):]
+    block = block[:block.index("    fi\n") + len("    fi\n")]
+    script = "\n".join(['log() { echo "$*"; }', "start_scenario_recorder() { echo STARTED; }",
+                        "ros2() { :; }", textwrap.dedent(block)])
+    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=True,
+                         env={"PATH": os.environ["PATH"], **env})
+    assert said in out.stdout
+    if said != "STARTED":
+        assert "STARTED" not in out.stdout
+
+
 # -- stopping it: the cleanup scripts, in a pod and outside one ------------------------------------
 
 @pytest.mark.parametrize("cluster", [False, True])

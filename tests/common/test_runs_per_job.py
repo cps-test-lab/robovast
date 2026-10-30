@@ -21,6 +21,14 @@ def test_several_runs_per_job_are_refused_in_the_ros_shape():
         _execution(mode="ros2", runs_per_job=4)
 
 
+def test_several_runs_per_job_are_refused_in_auto_mode():
+    """``auto`` becomes the ROS shape inside any image that has ros2, so only ``base`` packs."""
+    with pytest.raises(ValidationError, match="runs_per_job is 2.*mode 'auto'.*ros2 is installed"):
+        _execution(runs_per_job=2)
+    with pytest.raises(ValidationError, match="mode 'auto'"):
+        _execution(mode="auto", runs_per_job=2)
+
+
 def test_less_than_one_run_per_job_is_refused():
     with pytest.raises(ValidationError, match="at least 1"):
         _execution(mode="base", runs_per_job=0)
