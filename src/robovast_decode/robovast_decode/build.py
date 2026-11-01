@@ -29,9 +29,9 @@ Where recordings live, relative to the campaign directory:
   beside the scenario recording or -- for a stepped run with no ROS at all -- instead of it;
 * a job's wall-time infrastructure recording: ``_jobs/.../job-N/logs/rosout_bag/``, the job
   found through ``_transient/job_links.yaml``, which is written before a job starts (the
-  ``job`` symlink beside a run appears only once it ends). A job runs one run and gives its
-  rows to it. A campaign whose job-link manifest points several runs at one job is refused
-  (:class:`SharedJobError`): its job's records cannot be divided between them.
+  ``job`` symlink beside a run appears only once it ends). A job of one run gives its rows
+  to it; a job that held several runs one after another gives each the rows of its own
+  trial window (:mod:`robovast_decode.run_slices`).
 
 A run's own ``*.csv`` and ``*.jsonl`` files are tables too, named after the file
 (:mod:`robovast_decode.authored`).
@@ -87,21 +87,17 @@ _ATTEMPT = re.compile(r"^rosbag2(?:_\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2})?$")
 BAG_METADATA = "metadata.yaml"
 
 
-class SharedJobError(ValueError):
-    """The campaign's job-link manifest points several runs at one job.
-
-    A job's logs, resource samples and wall-time recording are that of its one run. Where
-    several runs share a job, which of them a row belongs to cannot be read off the records,
-    so no table is built from them rather than every run being given all of it.
-    """
-
-
 @dataclass
 class Run:
     config_name: str
     run_id: int
     path: str
     job_dir: Optional[str]
+    #: ``True`` when other runs link the same job: they ran one after another in its one
+    #: process, and its records are cut to this run's share rather than given whole -- from
+    #: its window's start up to :attr:`claim_end_epoch`, the start of the run after it.
+    shared_job: bool = False
+    claim_end_epoch: Optional[float] = None
 
     @property
     def key(self) -> str:
@@ -122,23 +118,34 @@ class BuildReport:
 
 
 def find_runs(campaign_dir: str) -> List[Run]:
-    """Every run directory of *campaign_dir*: ``<config>/<numeric run>``, with its job."""
+    """Every run directory of *campaign_dir*: ``<config>/<numeric run>``, with its job.
+
+    A job linked by several runs held them one after another (``execution.runs_per_job``);
+    each is marked :attr:`Run.shared_job`, so its derivation takes its own share of the
+    job's records and nothing of its neighbours'.
+    """
     links = job_links(campaign_dir)
     runs = []
-    owner: Dict[str, str] = {}
     for config, run_id in run_dirs(campaign_dir):
         path = os.path.join(campaign_dir, config, str(run_id))
         target = links.get(f"{config}/{run_id}/job")
         job = os.path.normpath(os.path.join(path, target)) if target else None
-        run = Run(config, run_id, path, job if job and os.path.isdir(job) else None)
+        runs.append(Run(config, run_id, path, job if job and os.path.isdir(job) else None))
+    linked: Dict[str, int] = {}
+    for run in runs:
         if run.job_dir:
-            first = owner.setdefault(run.job_dir, run.key)
-            if first != run.key:
-                raise SharedJobError(
-                    f"{os.path.basename(campaign_dir)}: runs {first} and {run.key} share the "
-                    f"job {os.path.relpath(run.job_dir, campaign_dir)}, and a job's records "
-                    "are read as its one run's -- its tables cannot be built")
-        runs.append(run)
+            linked[run.job_dir] = linked.get(run.job_dir, 0) + 1
+    starts: Dict[str, List[tuple]] = {}
+    for run in runs:
+        run.shared_job = bool(run.job_dir) and linked[run.job_dir] > 1
+        if run.shared_job:
+            start, _ = run_slices.read_window(run.path)
+            if start is not None:
+                starts.setdefault(run.job_dir, []).append((start, run))
+    for in_order in starts.values():
+        in_order.sort(key=lambda pair: pair[0])
+        for (_, run), (next_start, _) in zip(in_order, in_order[1:]):
+            run.claim_end_epoch = next_start
     return runs
 
 
@@ -413,10 +420,12 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
 def _sources(run: Run) -> List[Tuple[str, str]]:
     """``[(role, bag_dir)]`` of the recordings *run*'s tables are built from, in the order
     they are planned: the scenario recording, the infrastructure recording of the job that
-    ran it, then the simulator's own recording, which fills only the tables the earlier ones
-    do not."""
+    ran it (when the job ran it alone), then the simulator's own recording, which fills only
+    the tables the earlier ones do not."""
     sources = [(SCENARIO_BAG, scenario_recording(run))]
-    if run.job_dir:
+    # A job of several runs records its infrastructure bag once for all of them, so it is
+    # no one run's: decoded under one run's key, its rosout would be every run's.
+    if run.job_dir and not run.shared_job:
         infra = os.path.join(run.job_dir, INFRA_BAG)
         sources.append((INFRA_BAG, infra if os.path.isdir(infra) else None))
     sources.append((ROQSIM_BAG, roqsim_recording(run)))
@@ -464,7 +473,9 @@ def _derive_run(campaign_dir: str, campaign_id: str, run: Run, tables: List[str]
             report.skipped.setdefault(table, []).append(run.key)
         return
     derivation = derive_job(campaign_dir, campaign_id, run.job_dir,
-                            JobRun(run.key, run.config_name, run.run_id, run.path),
+                            JobRun(run.key, run.config_name, run.run_id, run.path,
+                                   shared=run.shared_job,
+                                   claim_end_epoch=run.claim_end_epoch),
                             tables, manifest, containers)
     report.notes.extend(derivation.notes)
     # Final once nothing it reads is still being written: the job's logs and its wall-time
@@ -720,7 +731,7 @@ def available_tables(campaign_dir: str, config: Optional[dict] = None,
 
 
 __all__ = ["BAG_METADATA", "BuildReport", "CAMPAIGN_TABLES", "DERIVED_TABLES", "RECORDING_TABLE",
-           "Run", "SharedJobError", "available_tables", "bag_information", "build",
+           "Run", "available_tables", "bag_information", "build",
            "derived_sources", "find_runs", "recorded_topics", "recording_closed",
            "recordings_closed",
            "roqsim_recording", "scenario_recording", "settled", "source_size"]

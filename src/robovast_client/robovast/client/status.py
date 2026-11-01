@@ -293,8 +293,9 @@ class Status(BaseModel):
     # last actual advance is what separates them. See
     # ``ControllerState._stamp_progress`` for what counts as an advance.
     progress_since: float = Field(default_factory=time.time)
-    # How long ``progress_since`` may legitimately stand still: the declared budget of one
-    # run (``execution.timeout`` — see ``common.config.declared_job_seconds``).
+    # How long ``progress_since`` may legitimately stand still: the declared budget of the
+    # campaign's largest job, one run's ``execution.timeout`` times the runs a job holds
+    # (see ``CampaignController._progress_deadline``).
     # Carried on the status so a reader calls a run stalled against a *declared* limit
     # instead of a threshold it invented, and left on the conservative side: a missed
     # stall is recoverable, a false accusation against a healthy long run is not.
@@ -302,7 +303,7 @@ class Status(BaseModel):
     progress_deadline_s: Optional[int] = None
     # Whether every job of the current batch is queued for capacity it does not control.
     # A bounded flag, which is what this payload allows: no series, no per-read computation.
-    # While it is set no stall verdict is possible -- the deadline is a per-RUN budget and no
+    # While it is set no stall verdict is possible -- the deadline is a per-JOB budget and no
     # run can be running -- which is the same rule ``stall_report`` already applies to a
     # phase that executes no runs. Written by a backend with an admission queue;
     # without one it stays False.
@@ -613,7 +614,7 @@ def stall_report(status: "Status") -> dict:
               "stalled": age > deadline}
     if report["stalled"]:
         report["stall_reason"] = (
-            f"no progress for {age:.0f}s, past the {deadline}s expected per run — "
+            f"no progress for {age:.0f}s, past the {deadline}s expected per job — "
             f"the run is not merely slow. Next: {STALL_NEXT_STEP}")
     return report
 

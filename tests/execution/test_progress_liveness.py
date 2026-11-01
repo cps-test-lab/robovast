@@ -163,6 +163,27 @@ def test_the_controller_publishes_the_declared_progress_deadline(tmp_path):
     assert _controller({})._progress_deadline() is None
 
 
+def test_a_packed_campaigns_progress_deadline_is_its_largest_jobs_budget(tmp_path):
+    """A job's results arrive when it ends, so a job of several runs shows no progress for
+    all of them: its budget, not one run's, is how long progress may stand still."""
+    from robovast.common.store import STORE_FILENAME, CampaignStore
+    from robovast.execution.backends import RunOptions
+    from robovast.execution.controller import CampaignController
+
+    def _deadline(execution):
+        return CampaignController(
+            campaign_id="camp", results_dir=str(tmp_path), runs=1,
+            backend=_Inert(), options=RunOptions(),
+            store=CampaignStore(tmp_path / "camp" / STORE_FILENAME),
+            campaign_config_dump={"execution": execution},
+            vast_dir=str(tmp_path))._progress_deadline()
+
+    assert _deadline({"timeout": 60, "runs": 50, "runs_per_job": 50}) == 3000
+    # A job never holds more than the configuration's runs.
+    assert _deadline({"timeout": 60, "runs": 3, "runs_per_job": 50}) == 180
+    assert _deadline({"runs": 50, "runs_per_job": 50}) is None
+
+
 def test_the_job_budget_has_exactly_one_definition():
     """Enforcement and reporting read the same declared value; only the fallback
     differs. A second copy of the value would eventually drift, and then a Job could be

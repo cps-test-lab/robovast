@@ -60,7 +60,8 @@ them. Internally:
    workspace-independent.
 2. **Config staging + job creation** — The driver composes each batch, writes the
    scenario configurations into the campaign on the results volume, and creates one
-   Kubernetes ``Job`` per run. Each job runs a ``fetch-inputs`` init container
+   Kubernetes ``Job`` per job of the plan -- one per run, unless ``execution.runs_per_job``
+   packs a configuration's runs (:ref:`config-runs-per-job`). Each job runs a ``fetch-inputs`` init container
    that pulls the campaign's inputs as one tar stream into ``/config`` and a main
    ``robovast`` container that executes the
    scenario. (A composition that reaches for an auxiliary container — a variation, an
