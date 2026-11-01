@@ -22,7 +22,7 @@ ARG ROS_BASE_DIGEST=sha256:2589a8fba5257307857890173c069852c2abf913a0be7970f1724
 # from a clean clone then fails with "fatal: reference is not a tree". A pin whose commit can
 # disappear is not a pin.
 ARG SCENARIO_EXECUTION_REPO=https://github.com/cps-test-lab/scenario-execution.git
-ARG SCENARIO_EXECUTION_REF=49b38444510319159c216ee8441a0735877bbbc5
+ARG SCENARIO_EXECUTION_REF=f0abacb111e13389a18f204c92d2d6daeb6e0cb4
 
 # The scenario-execution *server*, the second source this image bakes. Same idiom deliberately: a
 # pin is only overridable if it is an ARG, and `make release-images-update-versions` finds a pin by
