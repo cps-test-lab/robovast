@@ -454,10 +454,59 @@ simulator, and ``roqsim state`` reads a moment or a range of that recording rath
 following anything.
 
 Its own keys are ``config`` (a world YAML beside the ``.vast``, or a package ref such as
-``roqsim_scenes:depot``), ``overrides`` (what the ``sim:`` channel below writes into) and
-``adapter`` (the stepped shape's ``SimulationInterface``). It is ``config`` rather than
+``roqsim_scenes:depot``), ``overrides`` (what the ``sim:`` channel below writes into),
+``renderer`` (below) and ``adapter`` (the stepped shape's ``SimulationInterface``). It is ``config`` rather than
 ``world`` because the file is roqsim's whole configuration — physics, plugins, robot, sensors
 and its ``extends`` chain — and "world" understates what a campaign selects.
+
+.. _roqsim-renderer:
+
+The renderer its cameras draw through
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+roqsim draws every camera through one renderer, MuJoCo's own unless the world chooses another
+(roqsim's ``docs/rendering.rst``). A renderer that is not MuJoCo's needs something of the job, and
+``renderer`` states it, in one of two forms:
+
+.. code-block:: yaml
+
+   simulation:
+     backend: roqsim
+     config: green_room.yaml
+     renderer:                  # draws in roqsim's process, on a GPU (a Gaussian-splat renderer)
+       name: splat
+       gpu: 1
+
+.. code-block:: yaml
+
+   simulation:
+     backend: roqsim
+     config: warehouse.yaml
+     renderer:                  # draws in a container of its own, reached over a socket
+       name: raytracer
+       service:
+         image: registry.example.org/raytracer:1.0
+         command: [raytracer-server, --listen, "{address}"]
+         provenance: {source: https://example.org/raytracer, revision: "1.0"}
+         resources: {gpu: 1, memory: 32Gi}
+
+- ``name`` becomes the world's ``sim.renderer``, written into the overrides the job mounts. The
+  renderer's own settings stay where the world keeps them, ``sim.renderers.<name>``, and a
+  configuration varies them through the ``sim:`` channel like any other world key.
+- ``gpu`` is for a renderer in roqsim's process: the container running the simulator (the
+  ``simulation`` container in the ROS shape, the ``scenario`` container in the stepped one) asks
+  for that many GPUs. A ``resources`` the author wrote keeps its keys and gains ``gpu``.
+- ``service`` is for a renderer in a process of its own: RoboVAST starts its ``image`` as the
+  job's ``renderer`` container, with ``command`` (``{address}`` in it is replaced), and points
+  the world's renderer at that address, a Unix socket on the ``/ipc`` directory every container of
+  the job shares (``sim.renderers.<name>.address``; its ``command`` is cleared, since the job, not
+  roqsim, starts the server). The renderer is a subclass of roqsim's socket renderer, and its
+  ``open_timeout_s`` is how long roqsim waits for the server to come up. The container is a
+  sidecar, held to the sidecar contract, and the simulator needs no GPU.
+
+The image must carry the renderer: an in-process renderer's package in the simulator's image
+(``python_packages``), a service's in its own. A renderer the image does not have is refused when
+the world loads, naming the ones it has.
 
 .. _sim-channel:
 
