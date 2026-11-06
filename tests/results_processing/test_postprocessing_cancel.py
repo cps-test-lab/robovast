@@ -70,14 +70,9 @@ def test_a_stop_arriving_mid_run_is_taken_at_the_next_step_boundary(tmp_path, mo
     """A stop during the table build ends the run before the record, not at the end."""
     root = _campaign_tree(tmp_path)
     builds = _count_builds(monkeypatch)
-    calls = {"n": 0}
-
-    def should_stop():
-        calls["n"] += 1
-        return calls["n"] > 1          # lets the build start, then stops
-
     ok, message = postprocessing.run_postprocessing(
-        str(tmp_path), campaign=root.name, should_stop=should_stop)
+        str(tmp_path), campaign=root.name,
+        should_stop=lambda: bool(builds))   # lets the build start, then stops
 
     assert (ok, message) == (False, POSTPROCESSING_CANCELLED)
     assert len(builds) == 1            # it did not give up before doing anything
