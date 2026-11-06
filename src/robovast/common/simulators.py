@@ -1196,7 +1196,11 @@ def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
 
 
 def _set_if_unset(block: dict, key: str, value) -> None:
-    """Fill ``key`` when the block does not really carry a value for it.
+    """Fill ``key`` when the block does not really carry a value for it, and a mapping key for key.
+
+    A mapping the author wrote keeps every key they set and gains the backend's others: a
+    ``resources: {cpu: 4}`` and a backend's ``resources: {gpu: 1}`` are a job asking for both, not
+    a choice between them, so a renderer's GPU is not dropped because the author sized the CPU.
 
     Not ``setdefault``: an unset optional field survives ``model_dump()`` as an explicit
     ``None``, so the key is *present* and ``setdefault`` declines -- and every backend
@@ -1205,7 +1209,13 @@ def _set_if_unset(block: dict, key: str, value) -> None:
     build could be planned against ``image: None`` while the run used the backend's
     image. Treating ``None`` as "unset" makes both callers agree.
     """
-    if block.get(key) is None:
+    current = block.get(key)
+    if isinstance(current, dict) and isinstance(value, dict):
+        merged = dict(current)
+        for inner, inner_value in value.items():
+            _set_if_unset(merged, inner, inner_value)
+        block[key] = merged
+    elif current is None:
         block[key] = value
 
 

@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import shlex
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from robovast.client.safe_path import UnsafePathError, check_relative
 from robovast.common.execution import IPC_DIR, MEMBER_ROQSIM, family_image_ref
@@ -37,6 +38,56 @@ ROQSIM_CONTROL_URI = f"ipc://{IPC_DIR}/roqsim-control.sock"
 #: :meth:`RoqsimBackend.env` asks for it, :meth:`run_state_file` tells the service where to
 #: find it -- so the request and the lookup cannot drift apart.
 _RECORD_FILE = "roqsim_bag/roqsim.mcap"
+
+
+#: Where a renderer in a container of its own listens, and where roqsim's socket renderer reaches
+#: it: on the /ipc directory every container of the job shares.
+RENDERER_ADDRESS = f"unix:{IPC_DIR}/roqsim-render.sock"
+
+#: The container a renderer service runs in.
+RENDERER_CONTAINER = "renderer"
+
+
+class RendererService(BaseModel):
+    """A renderer that runs in a container of its own beside the simulator.
+
+    roqsim reaches it through its socket renderer (``roqsim.render_socket``): the backend points
+    the renderer's ``address`` at :data:`RENDERER_ADDRESS`, and the service's ``command`` starts
+    its server there (``{address}`` in it is replaced by that address). The image is a sidecar's,
+    held to the sidecar contract, and states its ``provenance`` when it is not one RoboVAST builds.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    image: str
+    command: list[str] = Field(min_length=1)
+    provenance: Optional[dict] = None
+    resources: Optional[dict] = None
+
+
+class RoqsimRenderer(BaseModel):
+    """The renderer roqsim draws every camera through, and what the job needs for it.
+
+    ``name`` is the world's ``sim.renderer`` (a renderer installed in the image, as ``roqsim
+    renderers list`` names it); the renderer's own settings stay in the world's
+    ``sim.renderers.<name>`` block. A renderer drawing in roqsim's process states the GPUs the
+    container running the simulator needs (``gpu``); one in another process states its
+    container (``service``), which holds its own resources.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    gpu: int = Field(default=0, ge=0)
+    service: Optional[RendererService] = None
+
+    @model_validator(mode="after")
+    def _gpu_is_where_it_draws(self):
+        if self.service is not None and self.gpu:
+            raise ValueError(
+                "renderer.gpu is for a renderer drawing in roqsim's process; a renderer service "
+                "draws in its own container, so give it renderer.service.resources.gpu instead")
+        return self
 
 
 def _is_package_ref(config: str) -> bool:
@@ -107,6 +158,44 @@ class RoqsimConfig(BaseModel):
     #: factors, so the subclass belongs to the experiment, next to the plugins it drives.
     #: Stepped shape only: with the ROS shape there is no in-process interface at all.
     adapter: Optional[str] = None
+    #: The renderer every camera draws through, when it is not MuJoCo's own: it becomes the
+    #: world's ``sim.renderer``, and the job gets the GPU it draws on, or the container it runs in
+    #: (:class:`RoqsimRenderer`).
+    renderer: Optional[RoqsimRenderer] = None
+
+    @model_validator(mode="after")
+    def _one_renderer(self):
+        """Refuse overrides that choose another renderer, or point it elsewhere, than ``renderer``."""
+        if self.renderer is None:
+            return self
+        sim = (self.overrides or {}).get("sim") or {}
+        chosen = sim.get("renderer")
+        if chosen is not None and chosen != self.renderer.name:
+            raise ValueError(
+                f"overrides set sim.renderer to {chosen!r} and renderer.name is "
+                f"{self.renderer.name!r}; name the renderer once, in renderer.name")
+        if self.renderer.service is not None:
+            block = (sim.get("renderers") or {}).get(self.renderer.name) or {}
+            for key in ("address", "command"):
+                if block.get(key) is not None:
+                    raise ValueError(
+                        f"overrides set sim.renderers.{self.renderer.name}.{key}; with "
+                        "renderer.service the job starts the server and states where it listens")
+        return self
+
+    def world_overrides(self) -> Optional[dict]:
+        """``overrides`` with what ``renderer`` sets in the world: the renderer, and for a service
+        where its server listens (started by the job, so not by roqsim)."""
+        if self.renderer is None:
+            return self.overrides
+        merged = copy.deepcopy(self.overrides or {})
+        sim = merged.setdefault("sim", {})
+        sim["renderer"] = self.renderer.name
+        if self.renderer.service is not None:
+            block = sim.setdefault("renderers", {}).setdefault(self.renderer.name, {})
+            block["address"] = RENDERER_ADDRESS
+            block["command"] = None
+        return merged
 
     @field_validator("overrides")
     @classmethod
@@ -176,16 +265,42 @@ class RoqsimBackend(SimulatorBackend):
             # containers share a filesystem: :meth:`env` sets it.
             command = ["roqsim", "sim", _config_in_container(cfg.config),
                        "--headless", "--pacing", "realtime"]
-            if cfg.overrides:
+            if cfg.world_overrides():
                 # The file spelling of --set. Not the flags themselves: a campaign's
                 # overrides are a nested tree, and flattening one onto argv loses it to
                 # quoting, keeps it out of the results, and leaves nobody able to replay
                 # the cell. RoboVAST mounts the document; this only names where.
                 command += ["--override", SIM_OVERRIDES_MOUNT]
-            return {SIMULATION_CONTAINER: {"image": image, "command": command}}
+            return self._with_renderer(
+                cfg, {SIMULATION_CONTAINER: {"image": image, "command": command}},
+                SIMULATION_CONTAINER)
         # Stepped: scenario-execution calls step(), so the simulator is in its process
         # and the two roles are one container.
-        return {SCENARIO_CONTAINER: {"image": image}}
+        return self._with_renderer(cfg, {SCENARIO_CONTAINER: {"image": image}}, SCENARIO_CONTAINER)
+
+    @staticmethod
+    def _with_renderer(cfg, containers: dict, simulator: str) -> dict:
+        """*containers* with what the renderer adds to the job: a GPU on the container running
+        the simulator, or the renderer's own container.
+
+        Merged under the author's blocks like every backend default: a ``resources`` the author
+        wrote keeps its keys, and gains ``gpu`` only where it states none.
+        """
+        renderer = cfg.renderer
+        if renderer is None:
+            return containers
+        if renderer.service is None:
+            if renderer.gpu:
+                containers[simulator]["resources"] = {"gpu": renderer.gpu}
+            return containers
+        service = renderer.service
+        block = {"image": service.image,
+                 "command": [arg.replace("{address}", RENDERER_ADDRESS) for arg in service.command]}
+        if service.provenance is not None:
+            block["provenance"] = service.provenance
+        if service.resources is not None:
+            block["resources"] = service.resources
+        return {**containers, RENDERER_CONTAINER: block}
 
     def simulation_ref(self, cfg, execution: dict) -> Optional[str]:
         return cfg.adapter or ADAPTER
@@ -258,7 +373,7 @@ class RoqsimBackend(SimulatorBackend):
             # working directory instead of at the mount -- the exact failure that function
             # exists to prevent, and it must not be avoided on one path only.
             env["ROQSIM_WORLD"] = _config_in_container(cfg.config)
-            if cfg.overrides:
+            if cfg.world_overrides():
                 # The same document the ROS shape passes with --override, reached the way
                 # everything else is in this shape: there is no command line here.
                 env["ROQSIM_WORLD_OVERRIDES"] = SIM_OVERRIDES_MOUNT
@@ -281,7 +396,7 @@ class RoqsimBackend(SimulatorBackend):
         :data:`~robovast.common.simulators.SIM_OVERRIDES_MOUNT`, and read by ``--override``.
         """
         del execution
-        return cfg.overrides or None
+        return cfg.world_overrides() or None
 
     def records_scene_state(self, cfg, execution: dict) -> bool:
         return True

@@ -131,6 +131,27 @@ def test_an_authored_image_beats_the_backend_default():
     assert plan_containers(ex).by_name("simulation").image == "mine:1"
 
 
+class SizingBackend(StubBackend):
+    """A backend whose simulator needs a device the author does not size: a GPU."""
+
+    def containers(self, cfg, execution):
+        return {"scenario": {"image": "combined/sim:1", "resources": {"gpu": 1, "cpu": 2}}}
+
+
+def test_a_backend_default_fills_the_keys_an_authored_mapping_leaves_out(monkeypatch):
+    import robovast.common.simulators as mod
+    monkeypatch.setattr(mod, "resolve_backend", lambda name, base_dir="": SizingBackend())
+    ex = apply_backend({"mode": "base", "containers": {
+        "simulation": {"backend": "stub", "stage": "s"},
+        "scenario": {"resources": {"cpu": 4, "memory": "8Gi"}}}})
+    # The author's cpu and memory stand; the backend's gpu joins them.
+    assert ex["containers"]["scenario"]["resources"] == {"cpu": 4, "memory": "8Gi", "gpu": 1}
+    ex = apply_backend({"mode": "base", "containers": {
+        "simulation": {"backend": "stub", "stage": "s"},
+        "scenario": {"resources": {"gpu": 0}}}})
+    assert ex["containers"]["scenario"]["resources"] == {"gpu": 0, "cpu": 2}
+
+
 def test_a_query_is_asked_in_the_image_the_run_will_use():
     """``simulator_image`` and ``apply_backend`` answer one question, so they answer it alike.
 
