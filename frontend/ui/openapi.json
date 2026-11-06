@@ -2888,6 +2888,11 @@
             "title": "Error",
             "type": "string"
           },
+          "jobs": {
+            "default": 0,
+            "title": "Jobs",
+            "type": "integer"
+          },
           "progress": {
             "anyOf": [
               {
@@ -2930,6 +2935,7 @@
           "configs",
           "configurations",
           "error",
+          "jobs",
           "progress",
           "runs_per_config",
           "state",
@@ -4777,6 +4783,11 @@
             "title": "Configs",
             "type": "integer"
           },
+          "jobs": {
+            "default": 0,
+            "title": "Jobs",
+            "type": "integer"
+          },
           "problems": {
             "items": {
               "$ref": "#/components/schemas/ValidationProblem"
@@ -4824,6 +4835,7 @@
         },
         "required": [
           "configs",
+          "jobs",
           "problems",
           "runs_per_config",
           "scenario_checked",

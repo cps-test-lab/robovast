@@ -60,7 +60,8 @@ them. Internally:
    workspace-independent.
 2. **Config staging + job creation** — The driver composes each batch, writes the
    scenario configurations into the campaign on the results volume, and creates one
-   Kubernetes ``Job`` per run. Each job runs a ``fetch-inputs`` init container
+   Kubernetes ``Job`` per job of the plan -- one per run, unless ``execution.runs_per_job``
+   packs a configuration's runs (:ref:`config-runs-per-job`). Each job runs a ``fetch-inputs`` init container
    that pulls the campaign's inputs as one tar stream into ``/config`` and a main
    ``robovast`` container that executes the
    scenario. (A composition that reaches for an auxiliary container — a variation, an
@@ -135,6 +136,16 @@ node administrator's, and the toolkit is what lets a container be handed the dev
 RKE2 and k3s register a ``nvidia`` RuntimeClass when the toolkit is present, and that is the
 signal RoboVAST detects — ``kubectl get runtimeclass`` tells you whether a cluster has it.
 Everything above the host is provisioned by setup; see :ref:`cluster-gpu` below.
+
+Every node also needs room for inotify instances. Each run pod's file agent holds one, and the
+service holds one for every campaign it follows live and every log it streams. The kernel counts
+them per user across the whole host, so every container of one user id on a node draws on the same
+``fs.inotify.max_user_instances``, which defaults to 128. Once it is used up, a file agent
+cannot start and the service cannot follow a run; the error names the setting. Raise it on
+each node, persistently, for example::
+
+   echo 'fs.inotify.max_user_instances = 8192' | sudo tee /etc/sysctl.d/90-robovast-inotify.conf
+   sudo sysctl --system
 
 
 Cluster Setup

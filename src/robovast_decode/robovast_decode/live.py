@@ -353,7 +353,8 @@ class PartWriter:
     """Batches of one run's tables into parquet parts the manifest names, then one file.
 
     The rows are filed under the run's key, whichever of its recordings gave them -- its
-    job's infrastructure recording included, since a job runs one run. While parts are
+    job's infrastructure recording included, which is decoded for a run only when its job
+    ran it alone. While parts are
     written the entry is ``live``-stamped and owned by this writer: a write finds the entry's
     files are its own parts and appends, or replaces them when something else wrote the entry
     in between.
