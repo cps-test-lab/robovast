@@ -765,9 +765,11 @@ two episodes has no sim time, and the sim span is the sum of the episodes' own. 
 hides a stretch of the trial that ran slow, so the view ``run_rtf_view`` gives it per simulated
 second, computed from ``clock_map`` when it is queried: one row per second of sim time that holds
 two clock samples or more, with its ``wall_span_s``, ``sim_span_s`` and ``realtime_factor``,
-measured between that window's own first and last sample. A window with fewer samples has no row
-rather than a factor nobody measured; the samples are decimated, so a steady stretch can hold
-fewer than two per second and have no row.
+measured between that window's own first and last sample. Where the map carries ``episode``, the
+windows are per episode, so none spans a reset, and each row names its ``episode``; a map from
+``/clock`` has none, and its run is one series with a NULL ``episode``. A window with fewer
+samples has no row rather than a factor nobody measured; the samples are decimated, so a steady
+stretch can hold fewer than two per second and have no row.
 
 .. _results-derived-tables:
 

@@ -531,8 +531,8 @@ Three more views carry a derivation that is easy to get wrong by hand. ``run_val
 says whether a run was a clean observation or was capped at its CPU limit.
 ``pose_track_view`` summarizes every recorded track (length, duration, speeds, start and end
 pose) over every pose, on the measurement clock (:ref:`pose-contract`). ``run_rtf_view`` gives
-a run's realtime factor per simulated second from its clock map. All three are listed with
-their columns by ``describe_campaign_data``.
+a run's realtime factor per simulated second of each episode from its clock map. All three are
+listed with their columns by ``describe_campaign_data``.
 
 What survives as a tool is the one aggregate asked constantly —
 ``get_campaign_summary`` (pass/fail counts plus the campaign's provenance), itself

@@ -40,5 +40,5 @@ except PackageNotFoundError:  # a source tree that was never installed
 #: recording, and ground_truth_poses, have episode; sim_recording and sim_entities hold each
 #: episode's rows.
 #: 7: pose_track_view has episode, and is one row per track of each episode.
-#: 8: run_rtf_view, the realtime factor per simulated second.
+#: 8: run_rtf_view, the realtime factor per simulated second of each episode.
 DATA_CONTRACT = 8

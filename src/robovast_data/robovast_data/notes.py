@@ -127,9 +127,13 @@ STATIC_NOTES: dict = {
         "second: a run's factor is not constant, so a slow stretch shows here and not in "
         "run_clock's one number."),
     ("run_rtf_view", "sim_start"): (
-        "the window's start in simulated seconds; a window holding fewer than two clock "
-        "samples has no row. The samples are decimated, so a missing second can be one where "
-        "the rate held steady."),
+        "the window's start in simulated seconds of its episode; a window holding fewer than "
+        "two clock samples has no row. The samples are decimated, so a missing second can be "
+        "one where the rate held steady."),
+    ("run_rtf_view", "episode"): (
+        "the simulator's episode the window belongs to, from a clock_map that has one; NULL "
+        "for a map from /clock, whose run is one series. Sim time starts over at each reset, "
+        "so no window spans one, and order by (episode, sim_start)."),
     ("resource_usage", "cpu_percent"): (
         "one row is one PROCESS NAME, not a container: SUM per (container, wall_ts) before "
         "comparing, or an average reads as a per-process figure. Per-core, so >100 is "

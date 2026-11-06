@@ -33,9 +33,9 @@ Each exists because the raw form is a trap every consumer would otherwise walk i
   transport, and a length summed across two campaigns joins their tracks with a jump across the
   map, as one summed across two episodes interleaves them, their sim time starting over at each;
   the window partitions by the whole key so none of these can happen.
-* ``run_rtf_view`` is the realtime factor per simulated second, from the run's ``clock_map``:
-  ``run_clock`` states one factor for the whole run, which hides the stretch of a trial that
-  ran slow.
+* ``run_rtf_view`` is the realtime factor per simulated second of each episode, from the run's
+  ``clock_map``: ``run_clock`` states one factor for the whole run, which hides the stretch of a
+  trial that ran slow.
 
 Every view here is SQL over the relations a query connection defines
 (:mod:`robovast_data.engine`); which tables each reads is declared beside it, so a query naming
@@ -201,29 +201,33 @@ RTF_WINDOW_S = 1.0
 RTF_COLUMNS = frozenset({"wall_ts", "sim_ts"})
 
 
-def run_rtf_sql() -> str:
-    """``run_rtf_view`` over ``clock_map``: one row per window of :data:`RTF_WINDOW_S`
-    simulated seconds that holds two samples or more.
+def run_rtf_sql(columns: set) -> str:
+    """``run_rtf_view`` over ``clock_map`` holding *columns*: one row per window of
+    :data:`RTF_WINDOW_S` simulated seconds of one episode that holds two samples or more.
 
     The factor is ``sim_span_s / wall_span_s`` between the window's own first and last sample
     in wall order. A window with fewer than two samples, or no wall time between them, has no
-    row rather than a factor nobody measured.
+    row rather than a factor nobody measured. Sim time starts over at each reset, so the
+    windows are per ``episode`` where the map has it and none spans a reset; a map without
+    it (one from ``/clock``) gives NULL there and is one series per run.
     """
+    episode = ("CAST(episode AS BIGINT)" if "episode" in columns
+               else "CAST(NULL AS BIGINT)")
     return f"""
         WITH sample AS (
-            SELECT campaign_id, config_name, run_id,
+            SELECT campaign_id, config_name, run_id, {episode} AS episode,
                    CAST(wall_ts AS DOUBLE) AS wall, CAST(sim_ts AS DOUBLE) AS sim
             FROM clock_map
             WHERE wall_ts IS NOT NULL AND sim_ts IS NOT NULL),
         per_window AS (
-            SELECT campaign_id, config_name, run_id,
+            SELECT campaign_id, config_name, run_id, episode,
                    CAST(FLOOR(sim / {RTF_WINDOW_S}) AS BIGINT) AS idx,
                    COUNT(*) AS samples,
                    MAX(wall) - MIN(wall) AS wall_span_s,
                    ARG_MAX(sim, wall) - ARG_MIN(sim, wall) AS sim_span_s
             FROM sample
-            GROUP BY campaign_id, config_name, run_id, idx)
-        SELECT campaign_id, config_name, run_id,
+            GROUP BY campaign_id, config_name, run_id, episode, idx)
+        SELECT campaign_id, config_name, run_id, episode,
                CAST(idx * {RTF_WINDOW_S} AS DOUBLE) AS sim_start,
                CAST((idx + 1) * {RTF_WINDOW_S} AS DOUBLE) AS sim_end,
                wall_span_s, sim_span_s, sim_span_s / wall_span_s AS realtime_factor

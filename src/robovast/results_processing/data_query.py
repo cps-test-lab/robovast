@@ -500,11 +500,13 @@ _TABLE_DESCRIPTIONS = {
         "the source is 'none'. Join on (config_name, run_id)."),
     ("main", "run_rtf_view"): (
         "The realtime factor per simulated second, from each run's clock_map: config_name, "
-        "run_id, sim_start, sim_end, wall_span_s, sim_span_s, realtime_factor. One row per "
-        "second of sim time holding two clock samples or more, measured between that "
-        "window's own first and last sample. run_clock gives one factor for the whole run; "
-        "this finds the stretch that ran slow: SELECT config_name, run_id, MIN(realtime_factor) "
-        "FROM run_rtf_view GROUP BY 1, 2. Join on (config_name, run_id)."),
+        "run_id, episode, sim_start, sim_end, wall_span_s, sim_span_s, realtime_factor. One "
+        "row per second of sim time of one episode holding two clock samples or more, "
+        "measured between that window's own first and last sample; sim time starts over at "
+        "each reset, so a run of several episodes has a row per episode for the same "
+        "sim_start, and episode is NULL for a map from /clock. run_clock gives one factor for "
+        "the whole run; this finds the stretch that ran slow: SELECT config_name, run_id, "
+        "MIN(realtime_factor) FROM run_rtf_view GROUP BY 1, 2. Join on (config_name, run_id)."),
     ("main", "_recording"): (
         "What each run's recordings hold, one row per recorded topic: recording, topic, "
         "type, messages, bytes, and the table it became -- or, when it became none, the "
