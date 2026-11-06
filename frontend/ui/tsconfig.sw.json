@@ -1,0 +1,10 @@
+{
+  // The service worker (src/sw/worker.ts) against a worker's globals rather than a page's.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2020", "WebWorker"],
+    "types": []
+  },
+  "include": ["src/sw/worker.ts"],
+  "exclude": []
+}

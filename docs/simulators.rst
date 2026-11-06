@@ -361,7 +361,7 @@ moves it. The node's ``extras``:
 * ``width``/``height`` -- optional, the published image's size in pixels; the view is letterboxed
   to this shape.
 
-A malformed camera -- one not on a body, a field of view outside (0, π) -- is refused by the loader
+A malformed camera -- one not on a body, a field of view outside ``(0, π)`` -- is refused by the loader
 naming it.
 
 **Names are the whole addressing scheme.** A recording drives the scene by body name

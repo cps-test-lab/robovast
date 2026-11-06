@@ -55,7 +55,7 @@ scenario demo:
 
 
 def _job(name, run):
-    return Job(config={"name": name}, run_number=run, index=0)
+    return Job(config={"name": name}, runs=[run], index=0)
 
 
 def _run_scenario_execution(scenario_path, out_root, param_file):

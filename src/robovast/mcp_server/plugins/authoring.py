@@ -237,7 +237,9 @@ def validate_project(address: str, check_world: bool = True,
 
     Returns:
         ``{valid, world_checked, scenario_checked, configs, runs_per_config,
-        total_trials, problems, source}``, each problem ``{stage, config, field, message,
+        total_trials, jobs, problems, source}`` -- ``jobs`` is what the trials dispatch as,
+        one per trial unless ``execution.runs_per_job`` packs a configuration's runs -- each
+        problem ``{stage, config, field, message,
         severity}`` with ``severity`` one of ``error`` / ``advice`` / ``unchecked``. A
         clean campaign returns no world or scenario entry.
     """
@@ -276,7 +278,7 @@ def validate_project(address: str, check_world: bool = True,
     except Exception as e:  # noqa: BLE001 - surface any resolution error to the client
         return {"valid": False, "world_checked": None, "scenario_checked": None,
                 "configs": 0,
-                "runs_per_config": 0, "total_trials": 0,
+                "runs_per_config": 0, "total_trials": 0, "jobs": 0,
                 "problems": [{"stage": "project", "config": None, "field": None,
                               "severity": "error", "message": str(e)}]}
 
@@ -300,11 +302,12 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
             gives. ``truncated`` marks a shortened list.
 
     Returns:
-        ``{configs, runs_per_config, total_trials, configurations, truncated,
+        ``{configs, runs_per_config, total_trials, jobs, configurations, truncated,
         aux_containers, source}``, each configuration ``{name, parameters}``; or ``{error}``.
     """
     from robovast.common.common import load_config
     from robovast.common.config_generation import generate_scenario_variations
+    from robovast.execution.jobs import declared_runs_per_job, job_count
     from robovast.service.project_push import _resolve_workspace_id
     target = _address_route(address)
     if target is None:
@@ -316,11 +319,13 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
             sample = preview_search_sample(address)
             configs = sample["configs"]
             runs = sample["runs_per_config"]
+            packing = sample["runs_per_job"]
         else:
             campaign_data = generate_scenario_variations(
                 variation_file=address, output_dir=None)
             configs = campaign_data["configs"]
             runs = campaign_data.get("execution", {}).get("runs", 1)
+            packing = declared_runs_per_job(campaign_data.get("execution", {}))
             aux = list(campaign_data.get("aux_containers") or [])
         items = [{"name": c["name"], "parameters": c.get("config", {})}
                  for c in configs]
@@ -329,6 +334,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
             "configs": len(configs),
             "runs_per_config": runs,
             "total_trials": len(configs) * runs,
+            "jobs": job_count(len(configs), runs, packing),
             "configurations": items[:limit] if truncated else items,
             "truncated": truncated,
             "aux_containers": aux,
@@ -344,6 +350,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
         "configs": resp.configs,
         "runs_per_config": resp.runs_per_config,
         "total_trials": resp.total_trials,
+        "jobs": resp.jobs,
         "configurations": [{"name": c.name, "parameters": c.parameters}
                            for c in resp.configurations],
         "truncated": resp.truncated,

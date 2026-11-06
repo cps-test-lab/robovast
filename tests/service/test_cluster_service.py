@@ -417,7 +417,7 @@ def test_a_listed_job_names_the_run_it_executes(cs, monkeypatch):
     from robovast.execution.jobs import Job
 
     run_env = [("OUTPUT_DIR", "/out/_jobs/batch-0/job-3"),
-               *_run_output_dir_env(Job(config={"name": "goal-1"}, run_number=3, index=3))]
+               *_run_output_dir_env(Job(config={"name": "goal-1"}, runs=[3], index=3))]
     probe_dir = f"/out/{probe_output_dir('node-a')}"
     jobs = [
         _k8s_run_job("campai-12000000-batch0dd05f94958dd31b7-3", run_env),

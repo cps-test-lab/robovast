@@ -125,11 +125,14 @@ def check_campaign_dir_structure(campaign_dir):  # pylint: disable=too-many-retu
     print("  ✓ _config directory exists")
     
     # Check structure of first scenario directory (exclude _config; it has its own
-    # layout, and exclude the job-level artifact tree _jobs/).
-    scenario_dirs = [
-        d for d in config_dirs
-        if d.name not in ('_config', '_transient', '_execution', '_jobs')
-    ]
+    # layout, the job-level artifact tree _jobs/, and the hidden trees such as .cache that
+    # postprocessing keeps beside the configurations). Sorted, so the one checked does not
+    # depend on the order the filesystem lists them in.
+    scenario_dirs = sorted(
+        (d for d in config_dirs
+         if d.name not in ('_config', '_transient', '_execution', '_jobs')
+         and not d.name.startswith('.')),
+        key=lambda d: d.name)
     if not scenario_dirs:
         print("  ✗ No scenario directory found in run")
         return False

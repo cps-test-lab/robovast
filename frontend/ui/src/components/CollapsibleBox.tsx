@@ -6,6 +6,7 @@ import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownR
 import KeyboardArrowUpRoundedIcon from '@mui/icons-material/KeyboardArrowUpRounded'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
+import { useCompact } from '@/lib/compact'
 
 // The one collapsible-block shape the campaign view uses: a header that stays visible and a
 // body that folds away under it. Everything foldable inside a campaign card goes through
@@ -92,6 +93,9 @@ export function CollapsibleBox(props: CollapsibleProps | StaticProps) {
   const open = collapsible ? props.open : false
   const card = variant === 'card'
   const error = tone === 'error'
+  // On a compact screen the header wraps rather than squeezing the title: the title keeps at least
+  // half the row, and `meta` (a row of chips and meters) goes onto a line of its own below.
+  const { compact } = useCompact()
   // See the header note: a click that ends a drag-selection is a copy, not a toggle. A plain
   // click cannot trip it, because its own mousedown collapses any earlier selection first.
   const toggleUnlessSelecting = () => {
@@ -131,16 +135,28 @@ export function CollapsibleBox(props: CollapsibleProps | StaticProps) {
             : {}),
         }}
       >
-        <Stack direction="row" alignItems="center" spacing={1}>
+        <Stack
+          direction="row"
+          alignItems="center"
+          spacing={1}
+          useFlexGap={compact}
+          sx={compact ? { flexWrap: 'wrap', rowGap: 0.25 } : undefined}
+        >
           {leading}
           <Typography
             variant="caption"
             component="span"
-            sx={{ fontWeight: 600, minWidth: 0, overflowWrap: 'anywhere', userSelect: 'text' }}
+            sx={{
+              fontWeight: 600,
+              minWidth: 0,
+              overflowWrap: 'anywhere',
+              userSelect: 'text',
+              ...(compact ? { flex: '1 1 0', minWidth: '50%' } : {}),
+            }}
           >
             {title}
           </Typography>
-          <Box flexGrow={1} />
+          {compact ? null : <Box flexGrow={1} />}
           {meta ? (
             <Typography
               variant="caption"
@@ -149,6 +165,7 @@ export function CollapsibleBox(props: CollapsibleProps | StaticProps) {
                 color: error ? 'inherit' : 'text.secondary',
                 whiteSpace: 'nowrap',
                 userSelect: 'text',
+                ...(compact ? { order: 1, flexBasis: '100%', whiteSpace: 'normal' } : {}),
               }}
             >
               {meta}

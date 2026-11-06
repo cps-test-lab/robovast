@@ -84,6 +84,7 @@ import { useActiveView } from '@/lib/activeView'
 import { ErrorText, MiniRunMeter, StatusView } from '@/components/StatusView'
 import { CampaignOrigin } from '@/components/CampaignOrigin'
 import { HoverFacts } from '@/components/HoverFacts'
+import { useCompact } from '@/lib/compact'
 import { LaunchedBy } from '@/components/LaunchedBy'
 import { PhaseChip, PhaseDot } from '@/components/PhaseChip'
 import { useDialogs } from '@/components/DialogProvider'
@@ -248,6 +249,10 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   const qc = useQueryClient()
   const id = summary.campaign_id
   const active = useActiveView()
+  // On a compact screen the row's fixed columns cannot sit side by side: it wraps instead, the
+  // phase, age, meter and controls on its first line and the id and description each on a line of
+  // their own below (CSS `order`, so the reading order of the desktop row is kept in the DOM).
+  const { compact } = useCompact()
 
   const status = useQuery({
     queryKey: ['status', id],
@@ -1012,8 +1017,9 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
         <Stack
           direction="row"
           spacing={1}
+          useFlexGap={compact}
           alignItems="center"
-          sx={{ minWidth: 0, flexGrow: 1 }}
+          sx={{ minWidth: 0, flexGrow: 1, flexWrap: compact ? 'wrap' : undefined, rowGap: 0.25 }}
         >
           {select ? (
             // Claims its click like every control in this row, or picking a campaign folds it.
@@ -1108,6 +1114,14 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
                 width: collapsed ? ID_COLUMN : 'auto',
                 flexShrink: 0,
                 userSelect: 'text',
+                ...(compact ? {
+                  order: 1,
+                  flexBasis: '100%',
+                  width: 'auto',
+                  minWidth: 0,
+                  // Open, the whole id, broken wherever it must: it is what gets copied.
+                  overflowWrap: 'anywhere',
+                } : {}),
               }}
             >
               {id}
@@ -1169,7 +1183,12 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
               color="text.secondary"
               noWrap
               title={summary.description}
-              sx={{ minWidth: 0, flexGrow: 1, userSelect: 'text' }}
+              sx={{
+                minWidth: 0,
+                flexGrow: 1,
+                userSelect: 'text',
+                ...(compact ? { order: 2, flexBasis: '100%' } : {}),
+              }}
             >
               {summary.description}
             </Typography>
@@ -1195,7 +1214,8 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
               rather than dashed when none is recorded (a campaign still running, or one never
               measured), for the reason the age column gives, and kept at its width even then so
               the sizes read down the page as one column. */}
-          {collapsed ? (
+          {/* Not on a compact screen, whose row has no column for it: the open card says it. */}
+          {collapsed && !compact ? (
             <Typography
               variant="caption"
               color="text.secondary"
@@ -1229,7 +1249,13 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
                 variant="caption"
                 color="text.secondary"
                 noWrap
-                sx={{ flexShrink: 0, width: AGE_COLUMN, textAlign: 'right', cursor: 'help' }}
+                // A column only where there are columns: wrapped, the age sizes to its text.
+                sx={{
+                  flexShrink: 0,
+                  width: compact ? 'auto' : AGE_COLUMN,
+                  textAlign: 'right',
+                  cursor: 'help',
+                }}
               >
                 {running ? runningTimeCell(status.data, eta)
                   : formatAge(summary.finished_at ?? summary.started_at)}
@@ -1248,7 +1274,13 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
               color="text.secondary"
               noWrap
               title={stage}
-              sx={{ minWidth: 0, maxWidth: '40%', flexShrink: 1, fontFamily: 'monospace' }}
+              sx={{
+                minWidth: 0,
+                maxWidth: '40%',
+                flexShrink: 1,
+                fontFamily: 'monospace',
+                ...(compact ? { order: 3, flexBasis: '100%', maxWidth: '100%' } : {}),
+              }}
             >
               {stage}
             </Typography>
@@ -1275,7 +1307,7 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
           // No handler of its own: the column is mostly empty space on a folded row, and space
           // that looks like the row must fold like the row. Each control claims its own click
           // instead (`claim`), which is the smallest thing that is not the fold.
-          sx={{ minWidth: CONTROLS_COLUMN, flexShrink: 0, justifyContent: 'flex-end' }}
+          sx={{ minWidth: compact ? 0 : CONTROLS_COLUMN, flexShrink: 0, justifyContent: 'flex-end' }}
         >
         {/* Leftmost, so the controls every card shares keep their place whether or not it is
             there. The one open-something entry that is also a button: replaying a run is what a
@@ -1574,7 +1606,8 @@ export function Monitor({
           the list this heading names, and a control next to what it governs needs no label. The
           import menu is the one thing here pushed right — it adds to the list rather than
           reloading it, and belongs at the end of the row for the same reason. */}
-      <Stack direction="row" alignItems="center" spacing={1}>
+      {/* Wraps on a narrow screen: the controls go to a second line rather than past its edge. */}
+      <Stack direction="row" alignItems="center" spacing={1} useFlexGap sx={{ flexWrap: 'wrap' }}>
         <Typography variant="h6">Campaigns</Typography>
         <Tooltip title="Reload the campaign list">
           <IconButton
