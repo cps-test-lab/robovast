@@ -139,22 +139,37 @@ def test_a_sim_destination_that_addresses_no_part_of_a_world_is_refused():
     assert merged["overrides"]["components"]["workpiece"]["pose"]["position"]["y"] == 0.03
 
 
-def test_the_backend_asks_for_one_mcap_recording_and_nothing_it_no_longer_reads():
-    """The recording is one MCAP under the run's ``roqsim_bag/``, asked for by the same name
-    ``run_state_file`` later looks for; no pose CSV and no capture export directory beside it,
-    since the MCAP is both."""
+def test_the_backend_asks_for_one_mcap_recording_and_nothing_it_no_longer_reads(tmp_path):
+    """The recording is an MCAP under the run's ``roqsim_bag/``, asked for by the same name
+    ``run_state_file`` looks for before the run has written one; no pose CSV and no capture
+    export directory beside it, since the MCAP is both."""
     from robovast.common.simulators import apply_backend, run_state_filename
 
     execution = {"mode": "ros2",
                  "containers": {"simulation": {"backend": "roqsim", "config": "pkg:world"}}}
     env = apply_backend(dict(execution))["_backend_env"]
     assert env["ROQSIM_RECORD"] == "roqsim_bag/roqsim.mcap"
-    assert run_state_filename(apply_backend(dict(execution))) == env["ROQSIM_RECORD"]
+    assert run_state_filename(apply_backend(dict(execution)), str(tmp_path)) == env["ROQSIM_RECORD"]
     for gone in ("ROQSIM_SIM_POSES", "ROQSIM_CAPTURE_EXPORT_DIR"):
         assert gone not in env
     # No block: the simulator's own defaults, and no knob stated.
     for knob in ("ROQSIM_CAPTURE_FPS", "ROQSIM_RECORD_TRACKS", "ROQSIM_RECORD_EXCLUDE"):
         assert knob not in env
+
+
+def test_the_state_a_screenshot_renders_is_the_runs_last_episode(tmp_path):
+    """One MCAP per episode, numbered like takes: the last is the one the run ended in."""
+    from robovast.common.simulators import apply_backend, run_state_filename
+
+    execution = apply_backend({"mode": "ros2", "containers": {
+        "simulation": {"backend": "roqsim", "config": "pkg:world"}}})
+    bag = tmp_path / "roqsim_bag"
+    bag.mkdir()
+    for name in ("roqsim.mcap", "roqsim-2.mcap", "roqsim-10.mcap", "message_definitions.json"):
+        (bag / name).write_bytes(b"")
+    assert run_state_filename(execution, str(tmp_path)) == "roqsim_bag/roqsim-10.mcap"
+    (bag / "roqsim-10.mcap").unlink()
+    assert run_state_filename(execution, str(tmp_path)) == "roqsim_bag/roqsim-2.mcap"
 
 
 def test_the_recording_block_becomes_the_simulators_knobs():

@@ -2841,11 +2841,11 @@ not skipped quietly: it is a row in the run's ``_recording`` table naming the to
 and the reason, beside every recorded topic's message count and bytes.
 
 **Derived tables** (:mod:`robovast_decode.derived`) come from a job's records rather than a
-single recording. A job runs one run, so :func:`~robovast_decode.derived.derive_job` builds them
-for that run, on its clock and marked against its trial window
-(:mod:`robovast_decode.run_slices`). A campaign whose job-link manifest points several runs at
-one job is refused (:class:`~robovast_decode.build.SharedJobError`): its job's records cannot be
-divided between them:
+single recording. :func:`~robovast_decode.derived.derive_job` builds them per run, on its clock
+and marked against its trial window (:mod:`robovast_decode.run_slices`). A job of one run gives
+that run all of its records; a job whose job-link manifest points several runs at it
+(``execution.runs_per_job``) gives each run its share, from its window's start up to the next
+run's start, and its infrastructure recording to none of them:
 
 * ``run_log`` — every container's stdout joined with ``/rosout``, one row per event, on the run's
   clock, with ``sim_time`` and ``in_window`` (:mod:`robovast_decode.run_log`);

@@ -122,8 +122,10 @@ Level 3: a recording
 
 A recording is a directory of ``*.mcap`` segments below the run: ``rosbag2/``, the scenario
 recording that ``ros2 bag record`` writes, or ``roqsim_bag/``, the simulator's own, beside or
-instead of it. The decoder reads every segment in order, frames every message (the counts and
-bytes per topic come from that) and decodes only what some table needs.
+instead of it. The decoder reads every segment in order -- rosbag2's ``<name>_0.mcap``,
+``<name>_1.mcap``, …, the simulator's one file per episode ``<name>.mcap``, ``<name>-2.mcap``,
+… -- frames every message (the counts and bytes per topic come from that) and decodes only
+what some table needs.
 
 **How a channel is typed.** A channel with a schema is typed by the schema's name; one
 without, by its message encoding. A ``ros2msg`` or ``ros2idl`` schema whose data carries the
@@ -149,18 +151,22 @@ the live stream's ``frames=`` -- and ``videos`` exists only where the campaign a
 -- JSON documents under ``jsonschema`` schemas -- and the metadata records ``roqsim.recording``
 and ``roqsim.entities``:
 
+* ``roqsim.recording`` (a metadata record whose ``json`` value is the provenance document:
+  ``format_version``, ``world``, ``overrides``, ``seed``, ``episode``, ``packages``,
+  ``capture_fps`` as ``[num, den]``, ``timestep``, ``model``) -> ``sim_recording``, one row per
+  episode; written in each file before its first sample and again at close, and the episode's
+  last record wins. A file with a sample or a roster before this record, or a record naming no
+  ``episode``, fails the tables;
 * ``poses`` -> ``sim_poses``: each document is ``{"t": sim s, "w": epoch s, "bodies": {name:
   [x, y, z, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz]}}``, one row per body; a body with other
   than thirteen values fails the table;
 * ``joints`` -> ``joint_states``: ``{"t", "w", "q": {joint: position}}``, one row per joint;
-* ``clock`` -> ``clock_map``: ``{"wall_ts": epoch s, "sim_ts": sim s}``, decimated to the
-  samples that describe a rate change or a pause;
-* ``roqsim.recording`` (a metadata record whose ``json`` value is the provenance document:
-  ``format_version``, ``world``, ``overrides``, ``seed``, ``packages``, ``capture_fps`` as
-  ``[num, den]``, ``timestep``, ``model``) -> ``sim_recording``, one row; written at start and
-  again at close, and the last record wins;
+* ``clock`` -> ``clock_map``: ``{"wall_ts": epoch s, "sim_ts": sim s}``, decimated per episode
+  to the samples that describe a rate change or a pause;
 * ``roqsim.entities`` (``{"entities": [{"name", "kind", "body", "present"}]}``) ->
-  ``sim_entities``, the last roster written.
+  ``sim_entities``, the last roster each episode wrote.
+
+Each of these tables carries ``episode``, the one its file's provenance names.
 
 The ``state`` channel is not a table, and any other channel of that recording is listed in
 ``_recording`` as having no table defined. A second simulator that writes these channels in this

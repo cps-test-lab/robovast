@@ -23,12 +23,13 @@ from fastapi.testclient import TestClient
 from robovast.common import simulators
 from robovast.service import screenshot
 from robovast.service.app import build_app
+from robovast_sim_roqsim.backend import RoqsimBackend
 from tests.robovast_data.conftest import write_store
 from tests.robovast_decode.conftest import write_roqsim_mcap
 from tests.service.null_service import NullService
 CAMPAIGN = "demo-2026-08-09-000000"
 QUERY = {"config_name": "hexagon-1", "run_id": "0"}
-#: What the roqsim backend names as the run's recording; the fixture below stands in for it.
+#: The run's recording of its first episode, the one roqsim asks for.
 RECORDING = "roqsim_bag/roqsim.mcap"
 
 # A 1x1 PNG, so the response is a real image rather than bytes that merely have the name.
@@ -53,7 +54,8 @@ def _env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(NullService, "_campaigns_root", lambda self: Path(results))
     monkeypatch.setattr(simulators, "run_state_filename",
-                        lambda execution, base_dir="": RECORDING)
+                        lambda execution, run_dir, base_dir="": RoqsimBackend().run_state_file(
+                            None, execution, run_dir=run_dir))
 
     # Stands in for the backend's `roqsim render`: writes the frame the real one would, and logs
     # its arguments *outside* the render directory — that directory is deleted once the
@@ -193,6 +195,20 @@ def test_a_running_run_renders_from_what_it_has_recorded_so_far(env, tmp_path):
     resp = _post(client, at=0.02)
     assert resp.status_code == 200, resp.text
     assert resp.content == PNG
+
+
+def test_a_run_of_several_episodes_renders_its_last(env, tmp_path):
+    """One recording per episode: the frame is the last episode's, and so is the world its
+    geometry is built from."""
+    client, _ = env
+    run = tmp_path / "results" / CAMPAIGN / "hexagon-1" / "0"
+    write_roqsim_mcap(run / "roqsim_bag" / "roqsim-2.mcap", samples=4,
+                      meta={"episode": 1, "world": "pkg:hexagon-b", "overrides": {}})
+    resp = _post(client, at=0.02)
+    assert resp.status_code == 200, resp.text
+    assert "roqsim-2.mcap" in (tmp_path / "render.args").read_text()
+    recording = NullService()._scene_recording(CAMPAIGN, "hexagon-1", "0")  # noqa: SLF001
+    assert recording["world"] == "pkg:hexagon-b"
 
 
 def test_a_simulator_that_cannot_render_says_so(env, monkeypatch):

@@ -17,9 +17,11 @@
 """One pass over one recording, feeding every handler that asked for its topics.
 
 A recording is a bag directory: one or more ``*.mcap`` segments, read in order, and possibly
-a definitions sidecar. Every message is framed (cheap: the counts and bytes per topic come
-from this), and only a message whose topic some handler reads is deserialized -- once, however
-many handlers read it.
+a definitions sidecar. rosbag2 splits a recording into ``<name>_0.mcap``, ``<name>_1.mcap``,
+...; roqsim writes one file per episode, ``roqsim.mcap``, ``roqsim-2.mcap``, ... Every message
+is framed (cheap: the counts and bytes per topic come from this), and only a message whose
+topic some handler reads is deserialized -- once, however many handlers read it. Before a
+file's records, every handler's :meth:`Handler.segment` is told which file they come from.
 
 A segment that is still being written, or that a killed recorder left without its summary, is
 read up to its last complete record; nothing about it is an error.
@@ -41,15 +43,24 @@ from .framing import Channel, McapTail, Message, Metadata, Schema
 from .handlers import Handler
 
 _SEGMENT_INDEX = re.compile(r"_(\d+)\.mcap$")
+_TAKE = re.compile(r"(?P<stem>.+?)(?:-(?P<take>\d+))?\.mcap")
 
 
 def segments(bag_dir: str) -> List[str]:
-    """The ``*.mcap`` files of *bag_dir*, in recording order (``_0``, ``_1``, ...)."""
+    """The ``*.mcap`` files of *bag_dir*, in recording order.
+
+    rosbag2's segments by their index (``_0``, ``_1``, ...); roqsim's episodes by their take,
+    ``x.mcap`` being the first and ``x-2.mcap``, ``x-10.mcap`` the ones after it.
+    """
     files = glob.glob(os.path.join(bag_dir, "*.mcap"))
 
     def key(path):
-        match = _SEGMENT_INDEX.search(os.path.basename(path))
-        return (int(match.group(1)) if match else -1, os.path.basename(path))
+        name = os.path.basename(path)
+        match = _SEGMENT_INDEX.search(name)
+        if match:
+            return (int(match.group(1)), name, 0)
+        take = _TAKE.fullmatch(name)
+        return (-1, take.group("stem"), int(take.group("take") or 1))
     return sorted(files, key=key)
 
 
@@ -144,6 +155,11 @@ def decode_bag(bag_dir: str, handlers: Iterable[Handler]) -> BagReport:
                     topic_handlers.remove(handler)
 
     for path in report.segments:
+        for handler in list(active):
+            try:
+                handler.segment(path)
+            except Exception as exc:  # noqa: BLE001
+                fail(handler, exc)
         # Schema and channel ids are per file: each segment is read with fresh maps, and
         # rosbag2 writes a segment's own schema and channel records into it.
         tail = McapTail(path)

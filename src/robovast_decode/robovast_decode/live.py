@@ -61,7 +61,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .authored import with_yaw
-from .build import (BAG_METADATA, Run, derived_sources, find_runs, plugin_groups,
+from .build import (BAG_METADATA, Run, derived_sources, find_runs, one_episode, plugin_groups,
                     recorded_topics, recording_closed, recordings_closed, roqsim_recording,
                     scenario_recording, source_size)
 from .decode import SIDECAR_NAME, channel_type, segments, undecodable_tables
@@ -137,7 +137,8 @@ class Session:
         self.topics_changed = False
         #: The campaign's configured handlers for this recording, as the registry takes them.
         self.plugins = plugin_groups(config).get(self.role)
-        plan = plan_for(self.role, self.recorded, self.plugins)
+        plan = plan_for(self.role, self.recorded, self.plugins,
+                        one_episode=one_episode(run, config))
         handlers, self.unknown = narrow(plan, tables)
         self._wanted_tables = None if tables is None else set(tables)
         #: The tables this session gives, in the order their handlers fill them.
@@ -256,6 +257,11 @@ class Session:
                 self._feed(tail)
 
     def _feed(self, tail: McapTail) -> None:
+        for handler in list(self._active):
+            try:
+                handler.segment(tail.path)
+            except Exception as exc:  # noqa: BLE001
+                self._fail(handler, exc)
         # Where a message lies, for the taps: the tail's offset is the start of the
         # top-level record being yielded, and a chunk's messages are counted from there.
         record_offset, ordinal = -1, 0
@@ -353,7 +359,8 @@ class PartWriter:
     """Batches of one run's tables into parquet parts the manifest names, then one file.
 
     The rows are filed under the run's key, whichever of its recordings gave them -- its
-    job's infrastructure recording included, since a job runs one run. While parts are
+    job's infrastructure recording included, which is decoded for a run only when its job
+    ran it alone. While parts are
     written the entry is ``live``-stamped and owned by this writer: a write finds the entry's
     files are its own parts and appends, or replaces them when something else wrote the entry
     in between.

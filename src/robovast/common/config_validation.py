@@ -54,6 +54,7 @@ from robovast.common.config_presets import expand_configuration_presets
 from robovast.common.config import PINNED_REF
 from robovast.common.config_channels import SCENARIO, channel
 from robovast.common.containers import ros_repo_name
+from robovast.execution.jobs import declared_runs_per_job, job_count
 
 logger = logging.getLogger(__name__)
 
@@ -1561,7 +1562,7 @@ def validate_project_file(config_path):
     raw, parse_problem = _safe_load(config_path)
     if parse_problem is not None:
         return {"valid": False, "problems": [parse_problem],
-                "configs": 0, "runs_per_config": 0, "total_trials": 0}
+                "configs": 0, "runs_per_config": 0, "total_trials": 0, "jobs": 0}
 
     problems = _schema_problems(raw)
 
@@ -1613,7 +1614,7 @@ def validate_project_file(config_path):
 
     if problems:
         return {"valid": False, "problems": problems,
-                "configs": 0, "runs_per_config": 0, "total_trials": 0}
+                "configs": 0, "runs_per_config": 0, "total_trials": 0, "jobs": 0}
 
     # No problems — compute the same counts as ``vast config info``.
     if raw.get("search"):
@@ -1688,7 +1689,7 @@ def _batch_composition_report(config_path):
         except Exception as retry:  # noqa: BLE001 - the report is what must still arrive
             return {"valid": False,
                     "problems": [_problem("generation", _message_with_next_step(retry))],
-                    "configs": 0, "runs_per_config": 0, "total_trials": 0}
+                    "configs": 0, "runs_per_config": 0, "total_trials": 0, "jobs": 0}
         unchecked.extend(_skipped_generator_problems(campaign_data.get("_generated")))
         unchecked.append(_problem(
             "generation",
@@ -1708,13 +1709,14 @@ def _batch_composition_report(config_path):
                     "Composition stopped here, so any later configuration was "
                     "not checked.",
                     config=e.config_name)],
-                "configs": 0, "runs_per_config": 0, "total_trials": 0}
+                "configs": 0, "runs_per_config": 0, "total_trials": 0, "jobs": 0}
     except Exception as e:  # noqa: BLE001 - a check the linter missed; report it
         return {"valid": False,
                 "problems": [_problem("generation", _message_with_next_step(e))],
-                "configs": 0, "runs_per_config": 0, "total_trials": 0}
+                "configs": 0, "runs_per_config": 0, "total_trials": 0, "jobs": 0}
     configs = campaign_data["configs"]
-    runs_per_config = campaign_data.get("execution", {}).get("runs", 1)
+    execution = campaign_data.get("execution", {}) or {}
+    runs_per_config = execution.get("runs", 1)
     return {"valid": not unchecked,
             "problems": (unchecked
                          + _build_context_advisories(config_path)
@@ -1722,7 +1724,8 @@ def _batch_composition_report(config_path):
                          + _calibration_role_advisories(config_path)
                          + _liveness_advisories(config_path)),
             "configs": len(configs), "runs_per_config": runs_per_config,
-            "total_trials": len(configs) * runs_per_config}
+            "total_trials": len(configs) * runs_per_config,
+            "jobs": job_count(len(configs), runs_per_config, declared_runs_per_job(execution))}
 
 
 def _search_composition_report(config_path):
@@ -1752,7 +1755,7 @@ def _search_composition_report(config_path):
         except Exception as retry:  # noqa: BLE001 - the report is what must still arrive
             return {"valid": False,
                     "problems": [_problem("generation", _message_with_next_step(retry))],
-                    "configs": 0, "runs_per_config": 0, "total_trials": 0}
+                    "configs": 0, "runs_per_config": 0, "total_trials": 0, "jobs": 0}
         unchecked.extend(_skipped_generator_problems(sample.get("_generated")))
         unchecked.append(_problem(
             "generation",
@@ -1764,7 +1767,7 @@ def _search_composition_report(config_path):
     except Exception as e:  # noqa: BLE001 - a check the linter missed; report it
         return {"valid": False,
                 "problems": [_problem("generation", _message_with_next_step(e))],
-                "configs": 0, "runs_per_config": 0, "total_trials": 0}
+                "configs": 0, "runs_per_config": 0, "total_trials": 0, "jobs": 0}
 
     problems = list(unchecked)
     if sample["infeasible"]:
@@ -1801,4 +1804,5 @@ def _search_composition_report(config_path):
                          + _calibration_role_advisories(config_path)
                          + _liveness_advisories(config_path)),
             "configs": configs, "runs_per_config": runs_per_config,
-            "total_trials": configs * runs_per_config}
+            "total_trials": configs * runs_per_config,
+            "jobs": job_count(configs, runs_per_config, sample["runs_per_job"])}

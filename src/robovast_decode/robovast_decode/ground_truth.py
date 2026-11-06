@@ -33,7 +33,8 @@ the simulator backend of the campaign (``SimulatorBackend.ground_truth``):
 
 Rows are in the run's world frame, one per frame per sample. ``timestamp`` is the time the pose
 was true, in sim seconds: the source's ``stamp`` where it has one (a pose that arrived over a
-transport), else its ``timestamp`` (a pose the simulator wrote itself). A run whose source has no
+transport), else its ``timestamp`` (a pose the simulator wrote itself). ``episode`` is the
+source's, where it has one (a simulator's recording), and NULL otherwise. A run whose source has no
 such frame gets no rows and a reason, never an empty table that reads as a robot that did not
 move.
 """
@@ -61,9 +62,10 @@ COLUMNS = ["timestamp", "frame", "source_table",
            "position.x", "position.y", "position.z",
            "orientation.x", "orientation.y", "orientation.z", "orientation.w",
            "twist.linear.x", "twist.linear.y", "twist.linear.z",
-           "twist.angular.x", "twist.angular.y", "twist.angular.z"]
+           "twist.angular.x", "twist.angular.y", "twist.angular.z", "episode"]
 
 _TEXT = {"frame", "source_table"}
+_INTEGER = {"episode"}
 
 #: Column notes, for the catalog.
 NOTES = {
@@ -76,6 +78,10 @@ NOTES = {
     "source_table": (
         "the table these rows were taken from: which producer answered for this run."),
     "twist.linear.x": "world-frame velocity where the producer knows it; NULL from /tf.",
+    "episode": (
+        "the simulator's episode the pose belongs to, where the source records one: simulated "
+        "time starts over at each, so group by it before ordering by or differencing "
+        "`timestamp`. NULL from /tf."),
 }
 
 
@@ -150,12 +156,16 @@ def derive(campaign_dir: str, manifest: dict, run_key: str, source: dict,
                                             value_set=pa.array(frames, type=pa.string())),
                                    pc.is_valid(rows.column(clock))))
     # pylint: enable=no-member
-    selected = selected.sort_by([("frame", "ascending"), (clock, "ascending")])
+    order = [("frame", "ascending"), (clock, "ascending")]
+    if "episode" in selected.column_names:
+        order.insert(0, ("episode", "ascending"))
+    selected = selected.sort_by(order)
     n = selected.num_rows
     arrays = {key: pa.array([value] * n, type=pa.int64() if key == "run_id" else pa.string())
               for key, value in context.items()}
     for column in COLUMNS:
-        kind = pa.string() if column in _TEXT else pa.float64()
+        kind = (pa.string() if column in _TEXT
+                else pa.int64() if column in _INTEGER else pa.float64())
         if column == "timestamp":
             arrays[column] = selected.column(clock).cast(pa.float64())
         elif column == "source_table":
