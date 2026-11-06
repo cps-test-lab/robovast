@@ -4797,6 +4797,10 @@ export interface components {
          *     whose points state no height (a floor plan's) is compared in the plane, since the tracked
          *     frame sits above the floor -- and both lengths are then measured in the plane too, so the
          *     two are comparable.
+         *
+         *     A run of several episodes drove the path once in each, and its sim time starts over at
+         *     each reset: ``episodes`` measures each on its own, and the run's figures are over all of
+         *     them.
          */
         TrackDeviation: {
             /** Campaign Id */
@@ -4805,6 +4809,8 @@ export interface components {
             config_name: string;
             /** Efficiency */
             efficiency: number | null;
+            /** Episodes */
+            episodes: components["schemas"]["TrackDeviationEpisode"][];
             /** Frame */
             frame: string;
             /**
@@ -4835,6 +4841,30 @@ export interface components {
             run_id: number;
             /** Source */
             source: string;
+            /**
+             * Track Length M
+             * @default 0
+             */
+            track_length_m: number;
+        };
+        /**
+         * TrackDeviationEpisode
+         * @description One episode's track against the path: the run's figures, for that episode alone.
+         */
+        TrackDeviationEpisode: {
+            /** Efficiency */
+            efficiency: number | null;
+            /** Episode */
+            episode: number;
+            /** Max M */
+            max_m: number | null;
+            /** Mean M */
+            mean_m: number | null;
+            /**
+             * Points
+             * @default 0
+             */
+            points: number;
             /**
              * Track Length M
              * @default 0

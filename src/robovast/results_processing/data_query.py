@@ -311,8 +311,9 @@ _TABLE_DESCRIPTIONS = {
         "neither cgroup layout -- which is silence, not a pass. "
         "Join on (config_name, run_id)."),
     ("main", "pose_track_view"): (
-        "WHERE DID IT GO? One row per TRACK -- one entity (frame) of one run as one pose table "
-        "recorded it -- summarised over EVERY recorded pose: source, config_name, run_id, frame, "
+        "WHERE DID IT GO? One row per TRACK -- one entity (frame) of one episode of one run as "
+        "one pose table recorded it -- summarised over EVERY recorded pose: source, config_name, "
+        "run_id, episode (the simulator's; NULL for a table from a ROS recording), frame, "
         "points, length_m, duration_s, avg_speed_m_s, max_speed_m_s, max_step_m, start_x/y/z/yaw, "
         "end_x/y/z/yaw, min_/max_x/y/z. Query unqualified: FROM pose_track_view. "
         "Read this INSTEAD of differencing a pose table yourself: it takes each table's "

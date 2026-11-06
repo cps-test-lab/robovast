@@ -27,11 +27,12 @@ Each exists because the raw form is a trap every consumer would otherwise walk i
   counters, so a ``SUM`` means nothing and a bare ``MAX`` includes what happened before the
   trial window; the ratio carries the meaning; and the threshold separating binding from noise
   is calibrated (:data:`THROTTLE_WARN_RATIO`). It flags and never filters.
-* ``pose_track_view`` is one row per recorded track -- one entity (``frame``) of one run, as one
-  pose-contract table recorded it -- summarised over every pose, on the table's measurement
-  clock (:func:`pose_clock`). A speed differenced on an arrival clock measures the transport,
-  and a length summed across two campaigns joins their tracks with a jump across the map; the
-  window partitions by the whole key so neither can happen.
+* ``pose_track_view`` is one row per recorded track -- one entity (``frame``) of one episode of
+  one run, as one pose-contract table recorded it -- summarised over every pose, on the table's
+  measurement clock (:func:`pose_clock`). A speed differenced on an arrival clock measures the
+  transport, and a length summed across two campaigns joins their tracks with a jump across the
+  map, as one summed across two episodes interleaves them, their sim time starting over at each;
+  the window partitions by the whole key so none of these can happen.
 
 Every view here is SQL over the relations a query connection defines
 (:mod:`robovast_data.engine`); which tables each reads is declared beside it, so a query naming
@@ -206,7 +207,7 @@ def pose_clock(columns: Iterable[str]) -> Optional[str]:
 POSE_COLUMNS = frozenset({"campaign_id", "config_name", "run_id", "frame", "position.x",
                           "position.y"})
 
-_TRACK_KEY = "source, campaign_id, config_name, run_id, frame"
+_TRACK_KEY = "source, campaign_id, config_name, run_id, episode, frame"
 
 
 def is_pose_table(columns: Iterable[str]) -> bool:
@@ -219,7 +220,8 @@ def pose_track_sql(tables: dict) -> Optional[str]:
 
     A sample with no measurement time (a latched ``/tf_static`` transform) is not a point on a
     track. ``position.z`` is part of the length where a table has it. A reposition is travel:
-    ``max_step_m`` makes it visible rather than a threshold hiding it.
+    ``max_step_m`` makes it visible rather than a threshold hiding it. A table without
+    ``episode`` (one decoded from a ROS recording) gives NULL there: its run is one track.
     """
     branches = []
     for table in sorted(tables):
@@ -230,9 +232,11 @@ def pose_track_sql(tables: dict) -> Optional[str]:
         z = 'CAST("position.z" AS DOUBLE)' if "position.z" in columns else "0.0"
         yaw = ('CAST("orientation.yaw" AS DOUBLE)' if "orientation.yaw" in columns
                else "CAST(NULL AS DOUBLE)")
+        episode = ("CAST(episode AS BIGINT)" if "episode" in columns
+                   else "CAST(NULL AS BIGINT)")
         branches.append(f"""
             SELECT '{table}' AS source, campaign_id, config_name,
-                   CAST(run_id AS BIGINT) AS run_id, frame,
+                   CAST(run_id AS BIGINT) AS run_id, {episode} AS episode, frame,
                    CAST("{clock}" AS DOUBLE) AS t,
                    CAST("position.x" AS DOUBLE) AS x, CAST("position.y" AS DOUBLE) AS y,
                    {z} AS z, {yaw} AS yaw

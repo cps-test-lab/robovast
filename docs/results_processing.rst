@@ -443,8 +443,17 @@ deserialized; custom message types decode from the definitions embedded in the b
 provenance travels as mcap metadata, the episode among it. They are decoded like a bag's
 segments, in episode order, and are the only recording a **stepped** (ROS-less) run has. Every
 table below carries ``episode``, the episode its file's provenance names, since simulated time
-starts over at each; a run of one episode has one value throughout, and a file whose simulated
-time goes back holds several episodes under its one number.
+starts over at each; a run of one episode has one value throughout. A file that holds several
+episodes -- an older roqsim wrote a run's trials into one file -- is split where its simulated
+time goes back, and its parts are numbered upward from the episode its provenance names, one per
+reset, in every table built from its samples.
+
+**A ROS run has one episode.** Several episodes per run happen only in the stepped shape
+(``mode: base``): under ``mode: ros2`` the simulator is a sidecar the run cannot reset. A ROS
+run whose recording holds more than one episode has every table below fail for that run, with
+the reason, rather than tables that mix its trials. The campaign's ``mode`` decides which a run
+is; under ``mode: auto``, decided inside the container, a run recorded with ROS -- a scenario
+or infrastructure recording beside the simulator's -- is a ROS run.
 
 * ``poses`` → ``sim_poses``, one row per named body per sample, in the :ref:`pose contract
   <pose-contract>`'s simulator shape: ``timestamp`` (exact sim seconds), ``wall_time``,
@@ -458,9 +467,11 @@ time goes back holds several episodes under its one number.
 * the ``roqsim.recording`` metadata → ``sim_recording``, one row per episode:
   ``format_version``, ``world``, ``overrides_json``, ``seed``, ``packages_json``,
   ``capture_fps`` (``num/den``), ``timestep``, ``model_json``, ``episode`` -- the episode's last
-  record of the name wins;
+  record of the name wins; a file of several episodes gives its last record to each of them;
 * the ``roqsim.entities`` metadata → ``sim_entities``: ``name``, ``kind``, ``body``,
-  ``present``, ``episode``, the rows of the last roster each episode wrote.
+  ``present``, ``episode``, the rows of the last roster each episode wrote; a file of several
+  episodes gives its last roster to its last episode, since which of them a roster written
+  mid-file belongs to cannot be told.
 
 The ``state`` channel, the raw simulator state roqsim itself reads back, is not a table and says
 so in ``_recording``. The recording is closed once its writer wrote the footer -- a killed run's
@@ -650,7 +661,8 @@ came from: ``time_base: timestamp`` is the *exact* base on a simulator-written t
 comparable despite the identical label.
 
 **Every table that follows the contract gets a track summary,** ``pose_track_view``. One row per
-track, meaning one ``frame`` of one run as one table recorded it: ``points``, ``length_m``,
+track, meaning one ``frame`` of one episode of one run as one table recorded it (``episode`` is
+NULL for a table without one, such as ``poses``): ``points``, ``length_m``,
 ``duration_s``, ``avg_speed_m_s``, ``max_speed_m_s``, ``max_step_m``, start and end pose, and the
 bounding box. It is computed over every recorded pose, on each table's measurement clock
 (``stamp`` where the table has one, else ``timestamp``), with ``position.z`` in the length where
@@ -747,7 +759,9 @@ during image boot has no sim time — a different statement from "we could not c
 ``run_clock`` table says, per run, which producer answered (``clock_map_source``:
 ``ros_clock_bag`` / ``roqsim`` / ``none``), how many samples it has and the wall and sim
 spans they cover, so a reader can tell a *missing* map from a *quiet* one;
-``clock_map_sim_span_s / clock_map_wall_span_s`` is the run's realtime factor.
+``clock_map_sim_span_s / clock_map_wall_span_s`` is the run's realtime factor. A reset is not
+part of the map either: where the samples carry the simulator's episode, a line logged between
+two episodes has no sim time, and the sim span is the sum of the episodes' own.
 
 .. _results-derived-tables:
 

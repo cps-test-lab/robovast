@@ -565,7 +565,7 @@ is what makes them work on the cluster too. What a configuration's variations pl
 planned path, goals, obstacles — is in no table either: ``get_config_contribution`` derives it
 from the campaign's frozen ``configurations.yaml`` and ``.vast``, the same markers its config
 view draws, for any robot type. ``get_track_deviation`` measures a recorded track against one
-of those ``path`` markers, over every pose.
+of those ``path`` markers, over every pose, and each of a run's episodes on its own.
 
 **Looking at a run: two tools, and the difference between them is the point.**
 

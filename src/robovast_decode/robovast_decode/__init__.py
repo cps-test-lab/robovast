@@ -39,4 +39,5 @@ except PackageNotFoundError:  # a source tree that was never installed
 #: 6: sim_poses, joint_states, sim_recording, sim_entities and clock_map from the simulator's
 #: recording, and ground_truth_poses, have episode; sim_recording and sim_entities hold each
 #: episode's rows.
-DATA_CONTRACT = 6
+#: 7: pose_track_view has episode, and is one row per track of each episode.
+DATA_CONTRACT = 7

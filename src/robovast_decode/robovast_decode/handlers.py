@@ -51,7 +51,8 @@ documents and whose provenance and entity roster travel as mcap metadata records
 receive time *is* the simulated time, taken inside the simulator: ``timestamp`` is exact, and
 ``wall_time`` beside it is the epoch second of the same sample. The recording is one file per
 episode, and every row of these tables carries the ``episode`` its file's provenance names, so
-the episodes of a run stay apart while their sim time starts over at each.
+the episodes of a run stay apart while their sim time starts over at each. A file that holds
+several episodes, its sim time going back at each reset, is split there (:class:`_Episodes`).
 """
 
 from __future__ import annotations
@@ -627,17 +628,30 @@ def _json_document(name: str, data: Dict[str, str]) -> dict:
 
 
 class _Episodes(Handler):
-    """A table of roqsim's recording, whose rows carry the episode of the file they come from.
+    """A table of roqsim's recording, whose rows carry the episode of the sample they hold.
 
     roqsim records one file per episode and writes each file's provenance, which names its
-    ``episode``, before the file's first sample. A file whose sim time goes back holds several
-    episodes under the one number its provenance names.
+    ``episode``, before the file's first sample. A file written by an older roqsim holds all of
+    a run's episodes, its sim time starting over at each reset, under the one episode its
+    provenance names: such a file is split where sim time does not move forward, and its parts
+    are numbered upward from that episode, one per reset. Within an episode, every sample is
+    later than the one before; the samples of one capture step share their sim time across
+    channels, so every table of the file splits at the same places.
+
+    With :attr:`one_episode` set -- for a ROS run, whose simulator is a sidecar the run cannot
+    reset -- a recording of more than one episode fails the table rather than mixing trials.
     """
+
+    #: Whether the run can have one episode only; set by the plan for a ROS run.
+    one_episode = False
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._path: Optional[str] = None
         self._episodes: Dict[Optional[str], int] = {}
+        #: Per file: the sim time of its last sample, and the resets met before it.
+        self._last_ns: Dict[Optional[str], int] = {}
+        self._resets: Dict[Optional[str], int] = {}
 
     def segment(self, path):
         self._path = path
@@ -649,11 +663,32 @@ class _Episodes(Handler):
         if episode is None:
             raise HandlerError(f"{name}: the provenance of {self._path or 'the recording'} "
                                "names no episode")
+        if self.one_episode and set(self._episodes) - {self._path}:
+            self._more_than_one(f"{len(self._episodes) + 1} episode files")
         self._episodes[self._path] = int(episode)
+
+    def _more_than_one(self, what: str) -> None:
+        raise HandlerError(
+            f"this run's simulator recording holds more than one episode ({what}), but it is "
+            "a ROS run, which has one: a reset within a ROS run is not supported, so its "
+            "trials are not built into one table")
+
+    def sample(self, log_time: int) -> int:
+        """The episode of a sample at sim time *log_time* (ns) of the file being read: the
+        file's episode, plus the resets met in it so far, this sample's own among them."""
+        episode = self.episode
+        last = self._last_ns.get(self._path)
+        if last is not None and log_time <= last:
+            if self.one_episode:
+                self._more_than_one(f"{os.path.basename(self._path or '')} goes back in sim "
+                                    "time")
+            self._resets[self._path] = self._resets.get(self._path, 0) + 1
+        self._last_ns[self._path] = log_time
+        return episode + self._resets.get(self._path, 0)
 
     @property
     def episode(self) -> int:
-        """The episode of the file being read, from its provenance."""
+        """The episode the provenance of the file being read names."""
         try:
             return self._episodes[self._path]
         except KeyError:
@@ -700,7 +735,7 @@ class SimPoses(_Episodes):
 
     def message(self, topic, msg, typename, log_time):
         sim, wall = _sample_times(msg)
-        episode = self.episode
+        episode = self.sample(log_time)
         buf = self._buffer(self.TABLE, fixed(self.FIELDNAMES))
         for frame, values in msg["bodies"].items():
             if len(values) != 13:
@@ -737,7 +772,7 @@ class SimJoints(_Episodes):
 
     def message(self, topic, msg, typename, log_time):
         sim, wall = _sample_times(msg)
-        episode = self.episode
+        episode = self.sample(log_time)
         buf = self._buffer(self.TABLE, fixed(self.FIELDNAMES))
         for joint, position in msg["q"].items():
             buf.add({"timestamp": sim, "wall_time": wall, "joint": joint,
@@ -767,7 +802,7 @@ class SimClock(_Episodes, Clock):
         self._decimating: Optional[int] = None
 
     def message(self, topic, msg, typename, log_time):
-        episode = self.episode
+        episode = self.sample(log_time)
         if episode != self._decimating:
             self._close_episode()
             self._decimator = ClockDecimator(self._tolerance_s)
@@ -795,28 +830,42 @@ class SimClock(_Episodes, Clock):
 
 
 class _LastMetadata(_Episodes):
-    """A table from the last metadata record of one name in each episode: the rows are known
-    at the end.
+    """A table from the last metadata record of one name in each file: the rows are known at
+    the end.
 
     The recording writes the record at start and again whenever what it describes changes,
-    and the reader takes each episode's last; so nothing is flushed before ``end``, as with
+    and the reader takes each file's last; so nothing is flushed before ``end``, as with
     :class:`Videos`, and a session following the run gives the table when the run closes.
+
+    The ``clock`` channel is read only to find where a file of several episodes splits
+    (:class:`_Episodes`). Which of those episodes a record belongs to cannot be told: a
+    metadata record goes into the file at once, ahead of the samples still held in the open
+    chunk, so its place among the samples is not when it was written. The file's last record
+    is given to the episodes :meth:`_episodes_of` names.
     """
 
     NAME = ""
+    TOPIC = "clock"
 
     def __init__(self):
         super().__init__()
-        self._last: Dict[int, dict] = {}
+        #: Per file: the episode its provenance names, and its last record of :attr:`NAME`.
+        self._last: Dict[Optional[str], Tuple[int, dict]] = {}
         self._ended = False
 
     def topics(self):
+        return [self.TOPIC]
+
+    def tables_of(self, topic):
         return []
+
+    def message(self, topic, msg, typename, log_time):
+        self.sample(log_time)
 
     def metadata(self, name, data):
         super().metadata(name, data)
         if name == self.NAME:
-            self._last[self.episode] = _json_document(name, data)
+            self._last[self._path] = (self.episode, _json_document(name, data))
 
     def flush(self, context=None):
         if not self._ended:
@@ -825,8 +874,16 @@ class _LastMetadata(_Episodes):
 
     def end(self, recorded):
         self._ended = True
-        for episode, record in self._last.items():
+        rows: Dict[int, dict] = {}
+        for path, (first, record) in self._last.items():
+            for episode in self._episodes_of(first, first + self._resets.get(path, 0)):
+                rows[episode] = record
+        for episode, record in rows.items():
             self._rows(episode, record)
+
+    def _episodes_of(self, first: int, last: int) -> Iterable[int]:
+        """The episodes a file holding *first* to *last* gives its last record to."""
+        raise NotImplementedError
 
     def _rows(self, episode: int, record: dict) -> None:
         raise NotImplementedError
@@ -844,6 +901,10 @@ def _fraction_text(value) -> Optional[str]:
 class SimRecording(_LastMetadata):
     """``roqsim.recording`` metadata -> ``sim_recording``: one row per episode, its provenance.
 
+    A file of several episodes gives each of them its provenance: what this table holds of it
+    -- the world, its overrides, the seed, the packages, the rates and the model -- is the
+    process's, and a reset does not change it.
+
     ``world`` is the world as the record names it; ``overrides_json``, ``packages_json`` and
     ``model_json`` are JSON text of the record's ``overrides``, ``packages`` and ``model``;
     ``capture_fps`` is ``num/den`` text and ``timestep`` the physics step in seconds.
@@ -856,6 +917,9 @@ class SimRecording(_LastMetadata):
 
     def tables(self):
         return [self.TABLE]
+
+    def _episodes_of(self, first, last):
+        return range(first, last + 1)
 
     def _rows(self, episode, record):
         world = record.get("world")
@@ -878,7 +942,10 @@ class SimEntities(_LastMetadata):
     per entity and episode.
 
     The roster is written again whenever it changes, and an episode's last one is its: an
-    entity despawned mid-episode is a row with ``present`` 0, not a missing row.
+    entity despawned mid-episode is a row with ``present`` 0, not a missing row. A file of
+    several episodes gives its last roster to its last episode, the one it ended in; its
+    earlier episodes have no roster, since which of them a roster written mid-file belongs
+    to cannot be told.
     """
 
     NAME = "roqsim.entities"
@@ -887,6 +954,9 @@ class SimEntities(_LastMetadata):
 
     def tables(self):
         return [self.TABLE]
+
+    def _episodes_of(self, first, last):
+        return [last]
 
     def _rows(self, episode, record):
         buf = self._buffer(self.TABLE, fixed(self.FIELDNAMES))

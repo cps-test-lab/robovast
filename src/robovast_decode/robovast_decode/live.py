@@ -61,7 +61,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from .authored import with_yaw
-from .build import (BAG_METADATA, Run, derived_sources, find_runs, plugin_groups,
+from .build import (BAG_METADATA, Run, derived_sources, find_runs, one_episode, plugin_groups,
                     recorded_topics, recording_closed, recordings_closed, roqsim_recording,
                     scenario_recording, source_size)
 from .decode import SIDECAR_NAME, channel_type, segments, undecodable_tables
@@ -137,7 +137,8 @@ class Session:
         self.topics_changed = False
         #: The campaign's configured handlers for this recording, as the registry takes them.
         self.plugins = plugin_groups(config).get(self.role)
-        plan = plan_for(self.role, self.recorded, self.plugins)
+        plan = plan_for(self.role, self.recorded, self.plugins,
+                        one_episode=one_episode(run, config))
         handlers, self.unknown = narrow(plan, tables)
         self._wanted_tables = None if tables is None else set(tables)
         #: The tables this session gives, in the order their handlers fill them.

@@ -135,18 +135,20 @@ def pose_time_base(df: pd.DataFrame) -> str:
 
 
 def calculate_speeds_from_poses(df_groundtruth: pd.DataFrame) -> pd.DataFrame:
-    """Linear and angular speed per pose sample, differentiated within each run.
+    """Linear and angular speed per pose sample, differentiated within each run and episode.
 
     Args:
         df_groundtruth: ``position.x``, ``position.y``, ``orientation.yaw``, ``timestamp``,
-            plus whichever run-key pair the source uses. Differentiating across a run boundary
-            would produce a spike, so the frame is grouped by that key first. When a ``stamp``
+            plus whichever run-key pair the source uses, and ``episode`` where it has one.
+            Differentiating across a run boundary would produce a spike, and across an
+            episode boundary would order the samples of several episodes by a sim time that
+            starts over at each, so the frame is grouped by both first. When a ``stamp``
             column is present it is differentiated against instead -- see :func:`pose_time_base`.
 
     Returns:
         The input columns plus ``linear_speed``, ``angular_speed``, ``dt`` and ``time_base``, minus
-        the last sample of each run (no successor to difference against) and any sample whose
-        ``dt`` is too small to divide by.
+        the last sample of each run and episode (no successor to difference against) and any
+        sample whose ``dt`` is too small to divide by.
 
         ``timestamp`` is returned unchanged whichever base was used, because it is the column every
         caller plots and joins against. ``time_base`` names what ``dt`` was actually computed from,
@@ -154,6 +156,8 @@ def calculate_speeds_from_poses(df_groundtruth: pd.DataFrame) -> pd.DataFrame:
         silently comparing an exact base against a quantized one.
     """
     key_cols = run_key_columns(df_groundtruth)
+    if 'episode' in df_groundtruth.columns:
+        key_cols = (*key_cols, 'episode')
     time_col = pose_time_base(df_groundtruth)
     value_cols = ['position.x', 'position.y', 'orientation.yaw', 'timestamp']
     if time_col not in value_cols:
@@ -164,7 +168,9 @@ def calculate_speeds_from_poses(df_groundtruth: pd.DataFrame) -> pd.DataFrame:
     # Without a run key the whole frame is one run. Differencing it as such is right for a
     # single run's poses and wrong for a concatenation of several -- which is exactly what the
     # key columns exist to tell us, so there is nothing to guess here.
-    groups = (df_groundtruth.groupby(list(key_cols), observed=False)
+    # dropna=False: a pose table decoded from a ROS recording has a NULL episode, and is one
+    # series per run rather than none.
+    groups = (df_groundtruth.groupby(list(key_cols), observed=False, dropna=False)
               if key_cols else [((), df_groundtruth)])
 
     result_dfs = []

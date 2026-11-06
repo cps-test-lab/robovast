@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from robovast.results_processing.track_deviation import choose_path
+from tests.robovast_decode.conftest import ROQSIM_SAMPLES, write_roqsim_mcap
 
 from .conftest import write_campaign_db
 
@@ -19,6 +20,22 @@ CAMPAIGN = "camp-deviation-2026-09-21-120000"
 
 #: More poses than fit in one capped SQL reply: a figure over a prefix would differ.
 _POSES = 3000
+
+
+def _layout(root, path):
+    """A campaign of one path-variation configuration, ``cfg-a``, planned along *path*."""
+    write_campaign_db(root, CAMPAIGN)
+    run = root / "cfg-a" / "0"
+    run.mkdir(parents=True)
+    (root / "_execution").mkdir()
+    (root / "_config").mkdir()
+    (root / "_transient").mkdir(exist_ok=True)
+    (root / "_config" / "campaign.vast").write_text(yaml.safe_dump(
+        {"configuration": [{"name": "cfg", "variations": [{"PathVariationRandom": {}}]}]}))
+    (root / "_transient" / "configurations.yaml").write_text(yaml.safe_dump({"configs": [{
+        "name": "cfg-a", "config": {}, "_config_name": "cfg",
+        "_path": [{"x": x, "y": y} for x, y in path]}]}))
+    return run
 
 
 def _campaign(results):
@@ -29,17 +46,7 @@ def _campaign(results):
     path, and the true figure are three different numbers.
     """
     root = results / CAMPAIGN
-    write_campaign_db(root, CAMPAIGN)
-    run = root / "cfg-a" / "0"
-    run.mkdir(parents=True)
-    (root / "_execution").mkdir()
-    (root / "_config").mkdir()
-    (root / "_transient").mkdir()
-    (root / "_config" / "campaign.vast").write_text(yaml.safe_dump(
-        {"configuration": [{"name": "cfg", "variations": [{"PathVariationRandom": {}}]}]}))
-    (root / "_transient" / "configurations.yaml").write_text(yaml.safe_dump({"configs": [{
-        "name": "cfg-a", "config": {}, "_config_name": "cfg",
-        "_path": [{"x": 0.0, "y": 0.0}, {"x": 30.0, "y": 0.0}]}]}))
+    run = _layout(root, [(0.0, 0.0), (30.0, 0.0)])
     lines = ["timestamp,stamp,frame,position.x,position.y,position.z"]
     for i in range(_POSES):
         offset = 0.5 if i < 2 * _POSES // 3 else 2.0
@@ -115,3 +122,54 @@ def test_the_distance_is_to_the_nearest_point_of_any_segment_in_2d_and_3d():
     assert _distances(np.array([[0.0, 1.0, 1.0]]), rising) == pytest.approx([1.0])
     # A single-point path is that point.
     assert _distances(np.array([[3.0, 4.0]]), np.array([[0.0, 0.0]])) == pytest.approx([5.0])
+
+
+# -- a run of several episodes -----------------------------------------------------------------
+
+#: The robot's track in the first episode of a roqsim recording, which the path follows.
+_EPISODE_LENGTH = 0.1 * (ROQSIM_SAMPLES - 1)
+
+
+def _simulated(results, trials):
+    """A stepped run whose recording is *trials* episodes, the robot driving along x 0.1,
+    0.2, ... m per sample in them, beside a path along x as long as the first episode's."""
+    root = results / CAMPAIGN
+    run = _layout(root, [(0.0, 0.0), (_EPISODE_LENGTH, 0.0)])
+    write_roqsim_mcap(run / "roqsim_bag" / "roqsim.mcap", trials=trials, meta={"episode": 1})
+    (run / "test.xml").write_text("<testsuite/>")
+    (root / "_transient" / "job_links.yaml").write_text("{}\n")
+
+
+@pytest.fixture(name="simulated")
+def _simulated_service(monkeypatch, tmp_path):
+    pytest.importorskip("robovast_nav")
+    from tests.service.null_service import NullService
+
+    monkeypatch.setenv("ROBOVAST_WORKSPACES_ROOT", str(tmp_path / "workspaces"))
+    return lambda trials: (_simulated(tmp_path / "results", trials), NullService())[1]
+
+
+def test_each_episode_is_measured_against_the_path_on_its_own(simulated):
+    result = simulated(3).get_track_deviation(CAMPAIGN, "cfg-a", 0, source="sim_poses",
+                                              frame="robot")
+    assert [e.episode for e in result.episodes] == [1, 2, 3]
+    for e in result.episodes:
+        assert e.points == ROQSIM_SAMPLES
+        assert e.track_length_m == pytest.approx(_EPISODE_LENGTH * e.episode)
+        assert e.efficiency == pytest.approx(1 / e.episode)
+        # On the path, then past its end: as far past it as the episode drove beyond it.
+        assert e.max_m == pytest.approx(_EPISODE_LENGTH * (e.episode - 1))
+    # The run's length is its episodes' added, with no jump from one's end to the next start.
+    assert result.points == 3 * ROQSIM_SAMPLES
+    assert result.track_length_m == pytest.approx(_EPISODE_LENGTH * 6)
+    assert result.efficiency is None, "the path was driven once in each episode"
+
+
+def test_a_run_of_one_episode_reads_as_before(simulated):
+    result = simulated(1).get_track_deviation(CAMPAIGN, "cfg-a", 0, source="sim_poses",
+                                              frame="robot")
+    (episode,) = result.episodes
+    assert result.points == episode.points == ROQSIM_SAMPLES
+    assert result.track_length_m == episode.track_length_m == pytest.approx(_EPISODE_LENGTH)
+    assert result.efficiency == episode.efficiency == pytest.approx(1.0)
+    assert result.max_m == episode.max_m == pytest.approx(0.0)

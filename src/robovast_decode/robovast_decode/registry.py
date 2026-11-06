@@ -139,12 +139,13 @@ def _stem(filename: Optional[str], default: str) -> str:
 
 def plan_for(bag_dir_name: str, recorded: Dict[str, str],
              plugins: Optional[Iterable[dict]] = None,
-             taken: Optional[Dict[str, str]] = None) -> Plan:
+             taken: Optional[Dict[str, str]] = None, one_episode: bool = False) -> Plan:
     """The handlers for a recording named *bag_dir_name* that carries *recorded* topics.
 
     *taken* is ``{table: role}`` for the tables another recording of the same run already
     gives: a channel here that would fill one of them is reported as not tabulated, for that
-    reason, rather than filling the table twice.
+    reason, rather than filling the table twice. *one_episode* says the run can have one
+    episode only (a ROS run): a simulator recording of more fails its tables.
     """
     plan = Plan()
     configured = _configured(plugins or ())
@@ -160,7 +161,7 @@ def plan_for(bag_dir_name: str, recorded: Dict[str, str],
         if "/clock" in recorded and "/clock" not in covered:
             plan.handlers.append(Clock())
     elif bag_dir_name == ROQSIM_BAG:
-        _plan_roqsim(plan, recorded, taken or {})
+        _plan_roqsim(plan, recorded, taken or {}, one_episode)
     else:
         if ({"/tf", "/tf_static"} & set(recorded)) and not ({"/tf", "/tf_static"} & covered):
             plan.handlers.append(TfPoses(frames="all"))
@@ -202,14 +203,19 @@ def plan_for(bag_dir_name: str, recorded: Dict[str, str],
                     plan.topic_table[topic] = table
         else:
             for topic in handler.topics():
-                if topic in recorded:
-                    plan.topic_table.setdefault(topic, handler.tables()[0])
+                tables = handler.tables_of(topic)
+                if topic in recorded and tables:
+                    plan.topic_table.setdefault(topic, tables[0])
     return plan
 
 
-def _plan_roqsim(plan: Plan, recorded: Dict[str, str], taken: Dict[str, str]) -> None:
+def _plan_roqsim(plan: Plan, recorded: Dict[str, str], taken: Dict[str, str],
+                 one_episode: bool) -> None:
     """roqsim's recording: its channels and metadata, less what another recording gives."""
-    for handler in (SimPoses(), SimJoints(), SimClock()):
+    sim = [SimPoses(), SimJoints(), SimClock(), SimRecording(), SimEntities()]
+    for handler in sim:
+        handler.one_episode = one_episode
+    for handler in sim[:3]:
         (table,) = handler.tables()
         if handler.TOPIC not in recorded:
             continue
@@ -217,7 +223,7 @@ def _plan_roqsim(plan: Plan, recorded: Dict[str, str], taken: Dict[str, str]) ->
             plan.untabulated[handler.TOPIC] = _TAKEN.format(table=table, role=taken[table])
             continue
         plan.handlers.append(handler)
-    plan.handlers += [SimRecording(), SimEntities()]
+    plan.handlers += sim[3:]
     handled = {t for h in plan.handlers for t in h.topics()}
     for topic in sorted(recorded):
         if topic in handled or topic in plan.untabulated:

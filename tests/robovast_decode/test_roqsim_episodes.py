@@ -19,8 +19,8 @@ from robovast_decode.live import Session
 from robovast_decode.tables import CONTEXT_COLUMNS
 from robovast_decode.values import ClockDecimator
 
-from .conftest import (ROQSIM_BODIES, ROQSIM_JOINTS, ROQSIM_SAMPLES, make_roqsim_campaign,
-                       roqsim_wall_time, write_roqsim_mcap)
+from .conftest import (ROQSIM_BODIES, ROQSIM_JOINTS, ROQSIM_SAMPLES, make_campaign,
+                       make_roqsim_campaign, roqsim_wall_time, write_roqsim_mcap)
 
 TABLES = ["sim_poses", "joint_states", "clock_map", "sim_recording", "sim_entities"]
 #: The takes a run's files are numbered by, and the episodes their provenance names: not the
@@ -190,3 +190,89 @@ def test_ground_truth_keeps_each_episode_apart(tmp_path):
     for episode in EPISODES:
         times = [r["timestamp"] for r in rows if r["episode"] == episode]
         assert times == sorted(times) and times[0] == 0.0
+
+
+# -- a file that holds several episodes --------------------------------------------------------
+
+def test_a_file_whose_sim_time_goes_back_is_split_into_episodes_in_every_table(tmp_path):
+    """An older roqsim wrote every trial of a run into one file, its provenance naming the
+    first; each reset starts the next episode."""
+    campaign = make_roqsim_campaign(tmp_path / "one_file")
+    write_roqsim_mcap(campaign / "cfg" / "0" / "roqsim_bag" / "roqsim.mcap", trials=3,
+                      meta={"episode": 2})
+    report = build(str(campaign))
+    assert not report.failed
+    episodes = (2, 3, 4)
+
+    poses = _table(campaign, "sim_poses").to_pylist()
+    assert [r["episode"] for r in poses] == [
+        e for e in episodes for _ in range(ROQSIM_SAMPLES * len(ROQSIM_BODIES))]
+    for episode in episodes:
+        times = [r["timestamp"] for r in poses if r["episode"] == episode]
+        assert times[0] == 0.0 and times == sorted(times), "each episode's time runs one way"
+
+    joints = _table(campaign, "joint_states").to_pylist()
+    assert [r["episode"] for r in joints] == [
+        e for e in episodes for _ in range(ROQSIM_SAMPLES * len(ROQSIM_JOINTS))]
+
+    clock = _table(campaign, "clock_map").to_pylist()
+    assert sorted({r["episode"] for r in clock}) == list(episodes)
+    for episode in episodes:
+        sim = [r["sim_ts"] for r in clock if r["episode"] == episode]
+        assert sim[0] == 0.0 and sim[-1] == pytest.approx((ROQSIM_SAMPLES - 1) / 50), (
+            "each episode is decimated on its own and keeps its first and last sample")
+
+    recording = _table(campaign, "sim_recording").to_pylist()
+    assert [r["episode"] for r in recording] == list(episodes), (
+        "the process's provenance holds for each of its episodes")
+    assert all(json.loads(r["model_json"])["nq"] == 2 for r in recording)
+
+    entities = _table(campaign, "sim_entities").to_pylist()
+    assert [(r["episode"], r["name"], r["present"]) for r in entities] == [
+        (4, name, int(name != "box")) for name in ROQSIM_BODIES], (
+        "the file's last roster is its last episode's, and no earlier one is guessed")
+
+
+# -- a ROS run has one episode -----------------------------------------------------------------
+
+def _two_episodes(bag, one_file):
+    if one_file:
+        write_roqsim_mcap(bag / "roqsim.mcap", trials=2, meta={"episode": 0})
+    else:
+        write_roqsim_mcap(bag / "roqsim.mcap", meta={"episode": 0})
+        write_roqsim_mcap(bag / "roqsim-2.mcap", meta={"episode": 1})
+
+
+@pytest.mark.parametrize("one_file", [False, True], ids=["two files", "one file"])
+def test_a_ros_run_whose_simulator_recording_holds_two_episodes_fails_its_tables(tmp_path,
+                                                                                  one_file):
+    """A ROS run's simulator is a sidecar the run cannot reset, so two episodes in its
+    recording are refused by name rather than built into tables that mix the trials."""
+    campaign = make_campaign(tmp_path / "ros")
+    _two_episodes(campaign / "cfg" / "0" / "roqsim_bag", one_file)
+    report = build(str(campaign), tables=["sim_poses", "sim_recording", "sim_entities"])
+    for table in ("sim_poses", "sim_recording", "sim_entities"):
+        assert "cfg/0" not in report.built.get(table, []), table
+        assert "a ROS run, which has one" in report.failed[table]["cfg/0"], table
+
+
+@pytest.mark.parametrize("one_file", [False, True], ids=["two files", "one file"])
+def test_a_stepped_run_whose_simulator_recording_holds_two_episodes_is_built(tmp_path,
+                                                                             one_file):
+    campaign = make_roqsim_campaign(tmp_path / "stepped")
+    _two_episodes(campaign / "cfg" / "0" / "roqsim_bag", one_file)
+    report = build(str(campaign), tables=["sim_poses", "sim_recording", "sim_entities"])
+    assert not report.failed
+    assert sorted(set(_table(campaign, "sim_poses").column("episode").to_pylist())) == [0, 1]
+
+
+def test_the_campaigns_mode_says_whether_a_run_can_hold_several_episodes(tmp_path):
+    """``base`` is the stepped shape whatever else the run recorded; ``ros2`` is a ROS run
+    whatever it did not."""
+    ros = make_campaign(tmp_path / "ros")
+    _two_episodes(ros / "cfg" / "0" / "roqsim_bag", one_file=False)
+    assert not build(str(ros), tables=["sim_poses"], config={"mode": "base"}).failed
+    stepped = make_roqsim_campaign(tmp_path / "stepped")
+    _two_episodes(stepped / "cfg" / "0" / "roqsim_bag", one_file=False)
+    report = build(str(stepped), tables=["sim_poses"], config={"mode": "ros2"})
+    assert "a ROS run, which has one" in report.failed["sim_poses"]["cfg/0"]

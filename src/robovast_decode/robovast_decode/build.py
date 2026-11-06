@@ -268,7 +268,7 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
     """Build *tables* (every one the recordings can give, for ``None``) for *runs*.
 
     *runs* are ``config/run`` keys (every run, for ``None``); *config* is the campaign's
-    decoder configuration (``{"groups": [...]}``). A table already built for a run from the
+    decoder configuration (``{"groups": [...], "mode": ...}``). A table already built for a run from the
     same source bytes by this decoder version is left alone unless *force*.
 
     *catalog* holds the manifest the build reads and records into: the campaign's file
@@ -307,7 +307,7 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
     for run in selected:
         with run_lock(campaign_dir, run.key):
             _build_run(campaign_dir, campaign_id, run, groups, wanted_tables, force, report,
-                       known_tables, catalog)
+                       known_tables, catalog, one_episode(run, config))
     if derived_wanted:
         _build_derived(campaign_dir, campaign_id, selected, derived_wanted,
                        (config or {}).get("containers"), force, report, catalog)
@@ -324,8 +324,9 @@ def build(campaign_dir: str, tables: Optional[Iterable[str]] = None,
 
 def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, list],
                wanted_tables: Optional[List[str]], force: bool, report: BuildReport,
-               known_tables: set, catalog) -> None:
-    """One run's tables from its recordings and its own files; the caller holds its lock."""
+               known_tables: set, catalog, single: bool) -> None:
+    """One run's tables from its recordings and its own files; the caller holds its lock.
+    *single* says the run can have one episode only (:func:`one_episode`)."""
     sources = _sources(run)
     manifest = catalog.read()
     sizes = {os.path.relpath(b, campaign_dir): source_size(b) for _, b in sources}
@@ -342,7 +343,8 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
     bag_sources: Dict[str, dict] = {}
     for role, bag_dir in sources:
         recorded = recorded_topics(bag_dir)
-        plan = plan_for(role, recorded, groups.get(role), taken=claimed)
+        plan = plan_for(role, recorded, groups.get(role), taken=claimed,
+                        one_episode=single)
         claimed.update({t: role for t in plan.tables})
         rel_bag = os.path.relpath(bag_dir, campaign_dir)
         bag_sources.update({t: {rel_bag: sizes[rel_bag]} for t in plan.tables})
@@ -416,6 +418,21 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
         _record_absent(campaign_dir, run, wanted_tables, report, sizes, bag_sources,
                        known=run_bag_tables | file_tables | {RECORDING_TABLE},
                        catalog=catalog)
+
+
+def one_episode(run: Run, config: Optional[dict] = None) -> bool:
+    """Whether *run* can have one episode only: whether it is a ROS run, whose simulator is a
+    sidecar the run cannot reset. Several episodes per run happen only in the stepped shape.
+
+    The campaign's ``mode`` in its decoder *config* says which: ``ros2`` is a ROS run and
+    ``base`` the stepped shape. ``auto``, the default, is decided inside the container, where
+    the ROS runner starts wherever ROS 2 is installed, which is also where a run is recorded
+    with ROS: a run with a ROS recording beside its simulator's is a ROS run.
+    """
+    mode = (config or {}).get("mode", "auto")
+    if mode in ("ros2", "base"):
+        return mode == "ros2"
+    return any(role != ROQSIM_BAG for role, _ in _sources(run))
 
 
 def _sources(run: Run) -> List[Tuple[str, str]]:

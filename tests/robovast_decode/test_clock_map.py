@@ -121,3 +121,17 @@ def test_the_clock_map_tables_rows_are_a_map():
     m = from_rows([{"wall_ts": 110.0, "sim_ts": 10.0}, {"wall_ts": 100.0, "sim_ts": 0.0}])
     assert m.to_sim(105.0) == pytest.approx(5.0)
     assert not from_rows([{"wall_ts": 100.0, "sim_ts": 0.0}])
+
+
+def test_a_reset_between_two_episodes_is_no_stretch_of_the_clock():
+    """The simulator's own map carries its episodes, and sim time starts over at each."""
+    rows = [{"wall_ts": 100.0, "sim_ts": 0.0, "episode": 1},
+            {"wall_ts": 110.0, "sim_ts": 10.0, "episode": 1},
+            {"wall_ts": 125.0, "sim_ts": 10.0, "episode": 2},
+            {"wall_ts": 115.0, "sim_ts": 0.0, "episode": 2}]
+    m = from_rows(rows, "roqsim")
+    assert m.to_sim(105.0) == pytest.approx(5.0)
+    assert m.to_sim(120.0) == pytest.approx(5.0)
+    assert m.to_sim(112.0) is None, "the reset has no sim time, not one between the two"
+    assert m.info.sim_span_s == pytest.approx(20.0), "each episode's span, added"
+    assert m.info.wall_span_s == pytest.approx(25.0)

@@ -266,6 +266,7 @@
   "campaign_id TEXT",
   "config_name TEXT",
   "run_id INTEGER",
+  "episode INTEGER",
   "frame TEXT",
   "points INTEGER",
   "length_m REAL",

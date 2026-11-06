@@ -94,6 +94,10 @@ _EPISODE_NOTE = (
 STATIC_NOTES: dict = {
     **{(table, "episode"): _EPISODE_NOTE
        for table in ("sim_poses", "joint_states", "clock_map", "sim_entities")},
+    ("pose_track_view", "episode"): (
+        "the simulator's episode the track belongs to, from a table that has one (sim_poses, "
+        "ground_truth_poses from it); NULL for a table from a ROS recording, whose run is one "
+        "track. A run of several episodes is one row per episode: SUM or AVG over them."),
     ("sim_recording", "episode"): (
         _EPISODE_NOTE + " One row per episode: its provenance as the simulator last wrote it."),
     ("behaviors", "seq"): (

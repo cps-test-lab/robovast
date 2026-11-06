@@ -36,6 +36,10 @@ after the container did. A line logged during image boot or stack bring-up has n
 time because sim time did not exist yet, which is a different statement from "we could
 not compute it". :meth:`ClockMap.to_sim` returns ``None`` there; callers keep the wall
 stamp and say so, rather than extrapolating backwards into a clock that was not running.
+
+**A reset is not a stretch of the clock.** Where the samples carry the simulator's episode
+(roqsim's own map), sim time starts over at each reset; between the last sample of one
+episode and the first of the next there is no rate to interpolate, and no answer either.
 """
 
 from __future__ import annotations
@@ -62,9 +66,11 @@ class ClockMapInfo(NamedTuple):
     gap between two kept samples means "the rate was steady here", not "data is missing" —
     a gap metric would report the healthiest stretch of a run as its worst.
 
-    ``sim_span_s`` is the same window measured on the other axis, and it is here so that
-    ``sim_span_s / wall_span_s`` — how much simulated time a second of wall time bought —
-    is a fact about the run rather than something each reader recomputes from the samples.
+    ``sim_span_s`` is the same window measured on the other axis -- summed over the
+    episodes, where the samples carry several, since sim time starts over at each -- and it
+    is here so that ``sim_span_s / wall_span_s`` — how much simulated time a second of
+    wall time bought — is a fact about the run rather than something each reader
+    recomputes from the samples.
     It is deliberately defined on THIS series and not asked of the simulator: the series
     is the one contract every simulator already feeds (``/clock`` for a ROS one, its own
     record for a stepped one), so one definition applies to all of them and runs on
@@ -84,13 +90,17 @@ class ClockMapInfo(NamedTuple):
 class ClockMap:
     """Wall→sim for one run, from ``(wall_ts, sim_ts)`` samples.
 
-    Samples must be sorted by ``wall_ts``; :func:`from_rows` sorts them.
+    Samples must be sorted by ``wall_ts``; :func:`from_rows` sorts them. *episodes*, one per
+    sample where given, keeps the samples of two episodes from being interpolated between.
     """
 
     def __init__(self, samples: Sequence[Tuple[float, float]],
-                 source: str = SOURCE_ROS_CLOCK_BAG) -> None:
+                 source: str = SOURCE_ROS_CLOCK_BAG,
+                 episodes: Optional[Sequence[Optional[int]]] = None) -> None:
         self._wall: List[float] = [w for w, _ in samples]
         self._sim: List[float] = [s for _, s in samples]
+        self._episodes: List[Optional[int]] = (list(episodes) if episodes is not None
+                                               else [None] * len(self._wall))
         self._source = source if self._wall else SOURCE_NONE
 
     def __bool__(self) -> bool:
@@ -103,7 +113,13 @@ class ClockMap:
         span = (self._wall[-1] - self._wall[0]) if enough else 0.0
         # Endpoints, not a sum of steps: the samples are decimated, so the interval
         # between the first and last is the only span the series actually claims.
-        sim_span = (self._sim[-1] - self._sim[0]) if enough else 0.0
+        sim_span = 0.0
+        if enough:
+            start = 0
+            for i in range(1, len(self._sim) + 1):
+                if i == len(self._sim) or self._episodes[i] != self._episodes[start]:
+                    sim_span += self._sim[i - 1] - self._sim[start]
+                    start = i
         return ClockMapInfo(self._source, len(self._wall), span, sim_span)
 
     def to_sim(self, wall: Optional[float]) -> Optional[float]:
@@ -115,6 +131,8 @@ class ClockMap:
         i = bisect.bisect_left(self._wall, wall)
         if self._wall[i] == wall:
             return self._sim[i]
+        if self._episodes[i - 1] != self._episodes[i]:
+            return None
         w0, w1 = self._wall[i - 1], self._wall[i]
         s0, s1 = self._sim[i - 1], self._sim[i]
         span = w1 - w0
@@ -129,15 +147,15 @@ NO_CLOCK_MAP = ClockMap([], SOURCE_NONE)
 
 
 def from_rows(rows, source: str = SOURCE_ROS_CLOCK_BAG) -> ClockMap:
-    """A map from ``clock_map`` rows (``wall_ts``, ``sim_ts``); :data:`NO_CLOCK_MAP` when they
-    hold fewer than two samples."""
-    samples: List[Tuple[float, float]] = []
+    """A map from ``clock_map`` rows (``wall_ts``, ``sim_ts``, and ``episode`` where the table
+    has it); :data:`NO_CLOCK_MAP` when they hold fewer than two samples."""
+    samples: List[Tuple[float, float, Optional[int]]] = []
     for row in rows:
         try:
-            samples.append((float(row["wall_ts"]), float(row["sim_ts"])))
+            samples.append((float(row["wall_ts"]), float(row["sim_ts"]), row.get("episode")))
         except (KeyError, TypeError, ValueError):
             continue
     if len(samples) < 2:
         return NO_CLOCK_MAP
-    samples.sort(key=lambda pair: pair[0])
-    return ClockMap(samples, source)
+    samples.sort(key=lambda sample: sample[0])
+    return ClockMap([(w, s) for w, s, _ in samples], source, [e for _, _, e in samples])
