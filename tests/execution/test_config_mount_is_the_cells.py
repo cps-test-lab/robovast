@@ -25,7 +25,7 @@ def _job(name, run=0, files=(DEPLOY_REL,)):
         config={"name": name,
                 "config": {"params_file": DEPLOY_REL},
                 "_config_files": [(rel, f"/gen/{name}/{rel}") for rel in files]},
-        run_number=run)
+        runs=[run])
 
 
 # -- the job parameter documents -------------------------------------------------------

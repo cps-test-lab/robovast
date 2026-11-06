@@ -53,6 +53,7 @@ from robovast.common.campaign_data import (aggregate_run_status, invalid_runs,
                                            read_execution_metadata, read_run_outcomes)
 from robovast.common.config import declared_job_seconds
 from robovast.common.store import STORE_FILENAME, CampaignStore
+from robovast.execution.jobs import declared_runs_per_job
 from robovast.search.extractor import NoSampleError
 
 from .backends import (CampaignConfigError, CampaignStopped, ExecutionBackend, RunOptions,
@@ -350,12 +351,15 @@ class CampaignController:
     def _progress_deadline(self) -> int | None:
         """How long this campaign's progress may legitimately stand still, in seconds.
 
-        The **declared** budget of one run, which is one job. Published on the status
-        because only the controller can see the ``.vast``; readers just compare against it.
+        The **declared** budget of the campaign's largest job: one run's budget times the
+        runs a job holds (``execution.runs_per_job``, at most ``runs``). A job's results
+        arrive when it ends, so progress stands still for a whole job, not for one of its
+        runs. Published on the status because only the controller can see the ``.vast``;
+        readers just compare against it.
 
-        This is the same number the cluster puts on ``activeDeadlineSeconds``, which
-        is the point -- were the two to diverge, a Job could be force-killed while the
-        status still called the run healthy.
+        This is the same number the cluster puts on the largest Job's
+        ``activeDeadlineSeconds``, which is the point -- were the two to diverge, a Job
+        could be force-killed while the status still called the run healthy.
 
         ``None`` when the ``.vast`` declares no ``execution.timeout`` — the cluster's
         force-kill backstop is deliberately *not* substituted here. It exists so a run
@@ -363,7 +367,11 @@ class CampaignController:
         reason to call a two-minute pilot healthy for the first fifty-nine.
         """
         execution = (self.campaign_config_dump or {}).get("execution") or {}
-        return declared_job_seconds(execution)
+        declared = declared_job_seconds(execution)
+        if declared is None:
+            return None
+        runs = int(execution.get("runs") or 1)
+        return declared * max(1, min(declared_runs_per_job(execution), runs))
 
     def _record_container_failures(self, campaign_id: int) -> None:
         """Lift ``_execution/container_failures.json`` into the ``container_failure`` table.

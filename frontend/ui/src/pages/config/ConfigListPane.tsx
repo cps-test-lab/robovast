@@ -30,6 +30,7 @@ export function ConfigListPane({ editor }: { editor: ConfigEditor }) {
       {preview ? (
         <Typography variant="caption" color="text.secondary">
           {preview.configs} configs · {preview.total_trials} trials
+          {preview.jobs !== preview.total_trials ? ` · ${preview.jobs} jobs` : ''}
         </Typography>
       ) : null}
       {previewErr ? (

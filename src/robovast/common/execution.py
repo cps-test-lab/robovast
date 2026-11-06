@@ -2065,11 +2065,13 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
 
 
 def build_job_parameter_documents(job, scenario_name):
-    """Build the scenario-parameter override document for a job.
+    """Build the scenario-parameter override documents for a job: one per run.
 
-    The document overrides ``scenario_name``'s parameters for the job's configuration and
+    Each document overrides ``scenario_name``'s parameters for the job's configuration and
     sets the special ``_output_dir`` key to ``<config-name>/<run_number>`` so
-    scenario_execution writes the run's results into robovast's per-config/run layout.
+    scenario_execution writes that run's results into robovast's per-config/run layout. A
+    job of several runs is a parameter file of several documents, which scenario_execution
+    runs one after another in one process, resetting the simulator between them.
 
     A file-valued parameter is carried **as the campaign wrote it**. It needs no
     rewriting: a scenario resolves a file parameter against its own directory, which is
@@ -2082,16 +2084,18 @@ def build_job_parameter_documents(job, scenario_name):
             the single-config ``scenario.config`` wrapping).
 
     Returns:
-        list[dict]: The override document, ready to dump as the multi-document YAML
-        ``--scenario-parameter-file`` reads.
+        list[dict]: The override documents, in the runs' order, ready to dump as the
+        multi-document YAML ``--scenario-parameter-file`` reads.
     """
     config = job.config.get("config") or {}
-    config_dict = convert_dataclasses_to_dict(copy.deepcopy(config))
-
-    # _output_dir is consumed by scenario_execution to place this run's
-    # results; relative paths resolve under -o/--output-dir.
-    config_dict["_output_dir"] = f"{job.config_name}/{job.run_number}"
-    return [{scenario_name: config_dict}]
+    documents = []
+    for run in job.runs:
+        config_dict = convert_dataclasses_to_dict(copy.deepcopy(config))
+        # _output_dir is consumed by scenario_execution to place this run's
+        # results; relative paths resolve under -o/--output-dir.
+        config_dict["_output_dir"] = f"{job.config_name}/{run}"
+        documents.append({scenario_name: config_dict})
+    return documents
 
 
 def dump_multi_document_yaml(documents) -> str:
@@ -2147,7 +2151,8 @@ def build_job_links(jobs, job_prefix="") -> dict:
     and the job-level artifacts (sysinfo, logs, resource monitor) live in
     ``_jobs[/<prefix>]/job-N``. This returns a ``{link: target}``
     mapping where the link is ``C/R/job`` and the target is that dir relative to the
-    link's directory, so a user can ``cd C/R/job`` to reach the job's artifacts.
+    link's directory, so a user can ``cd C/R/job`` to reach the job's artifacts. The runs
+    of a job of several share its target: they ran on one host, in one process.
 
     Args:
         jobs: An iterable of :class:`~robovast.execution.jobs.Job`.
@@ -2161,8 +2166,9 @@ def build_job_links(jobs, job_prefix="") -> dict:
     """
     links = {}
     for job in jobs:
-        links[f"{job.config_name}/{job.run_number}/job"] = \
-            f"../../_jobs/{job_artifact_rel(job.index, job_prefix)}"
+        for run in job.runs:
+            links[f"{job.config_name}/{run}/job"] = \
+                f"../../_jobs/{job_artifact_rel(job.index, job_prefix)}"
     return links
 
 
