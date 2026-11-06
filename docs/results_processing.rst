@@ -383,8 +383,8 @@ Where the tables come from
      - the job's wall-time recording, ``_jobs/…/logs/rosout_bag/``
    * - Simulator recording
      - ``sim_poses``, ``joint_states``, ``clock_map``, ``sim_recording``, ``sim_entities``
-     - roqsim's own recording, ``<run>/roqsim_bag/roqsim.mcap``, beside the scenario recording
-       or, for a stepped run, instead of it
+     - roqsim's own recording, ``<run>/roqsim_bag/``, one mcap per episode, beside the scenario
+       recording or, for a stepped run, instead of it
    * - **Derived tables**
      - ``run_log``, ``scenario_timestamps``, ``resource_usage``, ``system_usage``,
        ``run_clock``
@@ -437,25 +437,30 @@ A recording is read once per build, and only the messages some requested table n
 deserialized; custom message types decode from the definitions embedded in the bag and its
 ``message_definitions.json``, so no ROS installation is involved.
 
-**Simulator recording.** roqsim records a run as one mcap, ``<run>/roqsim_bag/roqsim.mcap``,
-whose channels are JSON documents sampled at the capture rate and whose provenance travels as
-mcap metadata. It is decoded like a bag, and is the only recording a **stepped** (ROS-less)
-run has:
+**Simulator recording.** roqsim records a run as one mcap per episode in
+``<run>/roqsim_bag/``: ``roqsim.mcap``, and after each reset the next, ``roqsim-2.mcap``,
+``roqsim-3.mcap``, … Their channels are JSON documents sampled at the capture rate and their
+provenance travels as mcap metadata, the episode among it. They are decoded like a bag's
+segments, in episode order, and are the only recording a **stepped** (ROS-less) run has. Every
+table below carries ``episode``, the episode its file's provenance names, since simulated time
+starts over at each; a run of one episode has one value throughout, and a file whose simulated
+time goes back holds several episodes under its one number.
 
 * ``poses`` → ``sim_poses``, one row per named body per sample, in the :ref:`pose contract
   <pose-contract>`'s simulator shape: ``timestamp`` (exact sim seconds), ``wall_time``,
-  ``frame``, position, quaternion ``(x, y, z, w)`` and world-frame twist;
-* ``joints`` → ``joint_states``: ``timestamp``, ``wall_time``, ``joint``, ``position``, one row
-  per hinge or slide joint per sample;
+  ``frame``, position, quaternion ``(x, y, z, w)`` and world-frame twist, then ``episode``;
+* ``joints`` → ``joint_states``: ``timestamp``, ``wall_time``, ``joint``, ``position``,
+  ``episode``, one row per hinge or slide joint per sample;
 * ``clock`` → ``clock_map``, the same ``(wall_ts, sim_ts)`` samples the infrastructure recording
-  gives, so ``run_clock`` and the derived tables work unchanged for a stepped run. A run whose
-  job also has the infrastructure recording's ``/clock`` keeps that one, and the channel is
-  listed in ``_recording`` with that reason;
-* the ``roqsim.recording`` metadata → ``sim_recording``, one row per run: ``format_version``,
-  ``world``, ``overrides_json``, ``seed``, ``packages_json``, ``capture_fps`` (``num/den``),
-  ``timestep``, ``model_json`` -- the last record of the name wins;
+  gives, decimated per episode, so ``run_clock`` and the derived tables work unchanged for a
+  stepped run. A run whose job also has the infrastructure recording's ``/clock`` keeps that
+  one, and the channel is listed in ``_recording`` with that reason;
+* the ``roqsim.recording`` metadata → ``sim_recording``, one row per episode:
+  ``format_version``, ``world``, ``overrides_json``, ``seed``, ``packages_json``,
+  ``capture_fps`` (``num/den``), ``timestep``, ``model_json``, ``episode`` -- the episode's last
+  record of the name wins;
 * the ``roqsim.entities`` metadata → ``sim_entities``: ``name``, ``kind``, ``body``,
-  ``present``, the rows of the last roster the run wrote.
+  ``present``, ``episode``, the rows of the last roster each episode wrote.
 
 The ``state`` channel, the raw simulator state roqsim itself reads back, is not a table and says
 so in ``_recording``. The recording is closed once its writer wrote the footer -- a killed run's
@@ -693,19 +698,20 @@ knowing the simulator:
      - the ``poses`` frames whose name ends in ``_gt``; the frame must be extracted
        (``rosbags_tf_to_csv`` ``frames``) and is worth listing under ``require``
 
-The columns are the pose contract's, plus ``source_table`` naming the table the rows came from.
+The columns are the pose contract's, plus ``source_table`` naming the table the rows came from
+and ``episode``, the simulator's episode where the source records one (NULL from ``/tf``).
 ``timestamp`` is the time the pose was true, in sim seconds -- the simulator's own sample time,
 or the ground-truth transform's ``stamp`` -- so the table carries no ``stamp`` and is safe to
-difference; ``twist.*`` is NULL where the source is ``/tf``. A run whose source has no such frame
+difference within an episode; ``twist.*`` is NULL where the source is ``/tf``. A run whose source has no such frame
 gets no rows and a reason naming the frames its source does have, not an empty table that reads
 as a robot that never moved. ``pose_track_view`` leaves it out: its rows are already tracks there,
 under the table they came from.
 
 .. code-block:: sql
 
-   SELECT config_name, run_id, frame, max(timestamp) - min(timestamp) AS duration_s
+   SELECT config_name, run_id, episode, frame, max(timestamp) - min(timestamp) AS duration_s
    FROM ground_truth_poses
-   GROUP BY config_name, run_id, frame;
+   GROUP BY config_name, run_id, episode, frame;
 
 .. _clock-map:
 

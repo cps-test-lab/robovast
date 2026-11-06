@@ -36,4 +36,7 @@ except PackageNotFoundError:  # a source tree that was never installed
 #: 3: campaign.batch has recalls_recorded and complete; campaign.unit has recalled_from.
 #: 4: campaign.node has calibration_json.
 #: 5: ground_truth_poses.
-DATA_CONTRACT = 5
+#: 6: sim_poses, joint_states, sim_recording, sim_entities and clock_map from the simulator's
+#: recording, and ground_truth_poses, have episode; sim_recording and sim_entities hold each
+#: episode's rows.
+DATA_CONTRACT = 6

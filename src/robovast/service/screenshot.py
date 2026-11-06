@@ -90,17 +90,19 @@ class ScreenshotUnavailable(ValueError):
     """
 
 
-def state_filename(identity: dict) -> str:
-    """The recording this campaign's simulator writes per run, or refuse saying it writes none.
+def state_filename(identity: dict, run_dir) -> str:
+    """The recording a frame of the run in *run_dir* is rendered from, run-relative, or refuse
+    saying this campaign's simulator writes none.
 
     Asked of the backend rather than assumed, for the same reason the render command is: what a
     run records is the simulator's decision, and a constant here would be a second place to
-    change when a backend's answer does.
+    change when a backend's answer does. A backend that records a run in several files names
+    the one it renders from; roqsim's is the run's last episode.
     """
     from robovast.common.simulators import \
         run_state_filename  # pylint: disable=import-outside-toplevel
 
-    filename = run_state_filename(identity.get("execution") or {})
+    filename = run_state_filename(identity.get("execution") or {}, str(run_dir))
     if not filename:
         raise ScreenshotUnavailable(
             f"this campaign's simulator ({identity.get('backend') or 'none configured'}) "

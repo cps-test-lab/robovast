@@ -82,9 +82,20 @@ _POSE_ORIENTATION_NOTES = {
         "emitted -- read that when the body is not flat."),
 }
 
+#: The ``episode`` of every table decoded from the simulator's own recording: a reset starts the
+#: next episode, and simulated time starts over with it.
+_EPISODE_NOTE = (
+    "the simulator's episode this row belongs to: a reset ends one and starts the next, and "
+    "simulated time (`timestamp`, `sim_ts`) starts over at each. Group or filter by it before "
+    "ordering by time, differencing or joining on time.")
+
 #: Notes keyed on ``(table, column)``, for columns whose name gives no hint of how they must
 #: be read.
 STATIC_NOTES: dict = {
+    **{(table, "episode"): _EPISODE_NOTE
+       for table in ("sim_poses", "joint_states", "clock_map", "sim_entities")},
+    ("sim_recording", "episode"): (
+        _EPISODE_NOTE + " One row per episode: its provenance as the simulator last wrote it."),
     ("behaviors", "seq"): (
         "the record's position in the run's behaviour log: ORDER BY seq to replay it, never "
         "by storage order or by timestamp alone, since two records of one node can share a "
@@ -139,11 +150,11 @@ STATIC_NOTES: dict = {
         "run's image: the provenance of the physics, beside the campaign's own manifest."),
     ("sim_recording", "model_json"): (
         "JSON: the compiled model's summary (body, joint and actuator counts and names). "
-        "One row per run, so a query over the campaign compares what each run simulated."),
+        "One row per episode, so a query over the campaign compares what each run simulated."),
     ("sim_entities", "present"): (
-        "1 while the entity is in the scene at the end of the run, 0 once despawned. The "
-        "roster is the LAST one the recording carries: an entity spawned and removed during "
-        "the run is a row with present 0, not a missing row."),
+        "1 while the entity is in the scene at the end of the episode, 0 once despawned. The "
+        "roster is the LAST one the episode's recording carries: an entity spawned and removed "
+        "during the episode is a row with present 0, not a missing row."),
     ("sim_entities", "body"): (
         "the MuJoCo body the entity is rooted at: the `frame` its poses are filed under in "
         "sim_poses, which is how the two tables join."),

@@ -165,7 +165,8 @@ Hooks, all optional except as noted:
    ``recording`` is the campaign's :ref:`execution.recording <recording-config>` block as its
    model, or ``None`` for an absent one, which means "record everything"; a backend that records
    reads its own section of it. roqsim reads ``execution.recording.roqsim`` and asks for its recording with
-   ``ROQSIM_RECORD`` (``roqsim_bag/roqsim.mcap``, relative to the run directory), the capture
+   ``ROQSIM_RECORD`` (``roqsim_bag/roqsim.mcap``, relative to the run directory, the first
+   episode's file; each reset starts the next, ``roqsim-2.mcap`` on), the capture
    rate with ``ROQSIM_CAPTURE_FPS`` and the tracks with ``ROQSIM_RECORD_TRACKS`` /
    ``ROQSIM_RECORD_EXCLUDE`` (comma-separated patterns) -- each only when the block sets it.
 ``input_files(cfg, execution, vast_dir)``
@@ -204,10 +205,11 @@ Hooks, all optional except as noted:
    name — or ``None``; :ref:`what the check does with it <sim-channel>`.
 ``scene_export(cfg, execution, *, world, max_tex_dim, overrides, overrides_file=None)``
    Command that compiles a world into a web scene descriptor, or ``None``.
-``run_state_file(cfg, execution)``
-   The run-relative recording a screenshot is rendered from, or ``None``. Whatever the
-   backend arranged in ``env`` to be written — one name, so the request and the later
-   lookup cannot drift apart.
+``run_state_file(cfg, execution, *, run_dir)``
+   The run-relative recording a screenshot is rendered from, for the run in ``run_dir``, or
+   ``None``. Whatever the backend arranged in ``env`` to be written — one name, so the request
+   and the later lookup cannot drift apart. roqsim answers the file of the run's last episode,
+   and the name it asked for before the run has written one.
 ``simulation_screenshot(cfg, execution, *, state, at, view, focus, camera, size)``
    Command that re-renders **one moment of one run** from a chosen viewpoint, or ``None``.
 ``health_command(cfg, execution, *, run_dir)``
@@ -374,7 +376,8 @@ can be meters from the world origin, and no reader can tell the two apart from t
 **When it is produced.** Not by the run: a scene is a function of the world, so the service
 compiles it on first view -- inside the campaign's own pinned image, through ``scene_export`` --
 and caches it by **world identity**: the simulator image's digest plus the ``world`` and
-``overrides`` the run's ``sim_recording`` row carries. The digest is what settles what
+``overrides`` the ``sim_recording`` row of the run's last episode carries -- the episode a
+screenshot renders. The digest is what settles what
 ``overrides`` means -- the convention is the simulator's, and the simulator that wrote the
 recording is the one in that image -- so the row's ``format_version`` is reported but not keyed.
 Every run and every campaign that used the same world shares the entry, and so does a

@@ -56,8 +56,8 @@ from .values import DEFAULT_CLOCK_TOLERANCE_S
 #: The scenario recording, below a run, and the infrastructure recording, below a job.
 SCENARIO_BAG = "rosbag2"
 INFRA_BAG = "logs/rosout_bag"
-#: roqsim's own recording, below a run: one mcap the simulator writes, beside or instead of
-#: the scenario recording.
+#: roqsim's own recording, below a run: one mcap per episode the simulator writes, beside or
+#: instead of the scenario recording.
 ROQSIM_BAG = "roqsim_bag"
 
 #: Types whose payload is bulk: read from the recording where they are wanted, never rows. A

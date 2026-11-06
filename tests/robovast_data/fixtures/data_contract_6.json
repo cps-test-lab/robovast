@@ -247,6 +247,7 @@
   "twist.angular.x REAL",
   "twist.angular.y REAL",
   "twist.angular.z REAL",
+  "episode INTEGER",
   "orientation.yaw REAL"
  ],
  "main.nav2_behavior_tree": [

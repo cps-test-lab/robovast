@@ -4131,7 +4131,9 @@ class RobovastInterface(ABC):
         the key would be a camera pose and a moment.
 
         Needs a simulator that can re-render (``SimulatorBackend.simulation_screenshot``) and a
-        run that recorded its state. Raises with the reason when either is missing.
+        run that recorded its state. Raises with the reason when either is missing. A run
+        recorded in several episodes is rendered from its last, and *at* is that episode's
+        simulated time.
 
         The service keeps each render for a while and serves it at
         :meth:`Routes.campaign_screenshot_frame` under the returned ``name``, so it can be

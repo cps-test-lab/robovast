@@ -256,6 +256,11 @@ class Session:
                 self._feed(tail)
 
     def _feed(self, tail: McapTail) -> None:
+        for handler in list(self._active):
+            try:
+                handler.segment(tail.path)
+            except Exception as exc:  # noqa: BLE001
+                self._fail(handler, exc)
         # Where a message lies, for the taps: the tail's offset is the start of the
         # top-level record being yielded, and a chunk's messages are counted from there.
         record_offset, ordinal = -1, 0

@@ -25,8 +25,9 @@ Where recordings live, relative to the campaign directory:
 
 * a run's scenario recording: ``<config>/<run>/rosbag2/`` (the last attempt, when a recorder
   that restarted left several ``rosbag2*`` directories);
-* a run's simulator recording: ``<config>/<run>/roqsim_bag/``, the one mcap roqsim writes,
-  beside the scenario recording or -- for a stepped run with no ROS at all -- instead of it;
+* a run's simulator recording: ``<config>/<run>/roqsim_bag/``, the mcap file per episode
+  roqsim writes, beside the scenario recording or -- for a stepped run with no ROS at all --
+  instead of it;
 * a job's wall-time infrastructure recording: ``_jobs/.../job-N/logs/rosout_bag/``, the job
   found through ``_transient/job_links.yaml``, which is written before a job starts (the
   ``job`` symlink beside a run appears only once it ends). A job of one run gives its rows
@@ -200,8 +201,8 @@ def roqsim_recording(run: Run) -> Optional[str]:
 def recording_closed(role: str, bag_dir: str) -> bool:
     """Whether the recorder closed the recording and it will not grow.
 
-    rosbag2 writes ``metadata.yaml`` when it closes a bag; roqsim's writer ends its one mcap
-    with the footer and the closing magic, so the file's tail says whether it finished.
+    rosbag2 writes ``metadata.yaml`` when it closes a bag; roqsim's writer ends each episode's
+    mcap with the footer and the closing magic, so a file's tail says whether it finished.
     """
     if role == ROQSIM_BAG:
         files = segments(bag_dir)

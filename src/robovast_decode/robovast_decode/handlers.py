@@ -36,8 +36,10 @@ handler                table                             rows
                                                          recording
 :class:`SimJoints`     ``joint_states``                  one per joint per sample of it
 :class:`SimClock`      ``clock_map``                     its wall -> sim samples, decimated
-:class:`SimRecording`  ``sim_recording``                 one: the run's provenance
-:class:`SimEntities`   ``sim_entities``                  one per entity of the final roster
+                                                         per episode
+:class:`SimRecording`  ``sim_recording``                 one per episode: its provenance
+:class:`SimEntities`   ``sim_entities``                  one per entity of each episode's final
+                                                         roster
 =====================  ===============================  ==========================================
 
 **One clock per run.** ``timestamp`` is the bag's receive time -- in seconds, except in a
@@ -47,7 +49,9 @@ on it. A topic's own stamp, where it has one, is kept beside it under its own na
 The ``Sim*`` handlers read roqsim's own recording (``roqsim_bag/``), whose channels are JSON
 documents and whose provenance and entity roster travel as mcap metadata records. There the
 receive time *is* the simulated time, taken inside the simulator: ``timestamp`` is exact, and
-``wall_time`` beside it is the epoch second of the same sample.
+``wall_time`` beside it is the epoch second of the same sample. The recording is one file per
+episode, and every row of these tables carries the ``episode`` its file's provenance names, so
+the episodes of a run stay apart while their sim time starts over at each.
 """
 
 from __future__ import annotations
@@ -100,6 +104,13 @@ class Handler:
 
     def message(self, topic: str, msg, typename: str, log_time: int) -> None:
         raise NotImplementedError
+
+    def segment(self, path: str) -> None:
+        """The decoder reads *path*'s records next: once per file, or once per read of a file
+        that is still growing.
+
+        Nothing by default; a handler whose rows depend on the file they come from overrides it.
+        """
 
     def metadata(self, name: str, data: Dict[str, str]) -> None:
         """A metadata record of the recording, as it is met: its name and its string map.
@@ -602,13 +613,62 @@ class Videos(Handler):
 
 # -- roqsim's own recording ------------------------------------------------------------------
 
+#: The metadata record holding a roqsim recording's provenance, ``episode`` among it.
+RECORDING_METADATA = "roqsim.recording"
+
+
+def _json_document(name: str, data: Dict[str, str]) -> dict:
+    """The document a roqsim metadata record carries as JSON under its ``json`` key."""
+    try:
+        return json.loads(data["json"])
+    except KeyError as exc:
+        raise HandlerError(f"{name}: the metadata record carries no 'json' key "
+                           f"(keys: {', '.join(sorted(data)) or 'none'})") from exc
+
+
+class _Episodes(Handler):
+    """A table of roqsim's recording, whose rows carry the episode of the file they come from.
+
+    roqsim records one file per episode and writes each file's provenance, which names its
+    ``episode``, before the file's first sample. A file whose sim time goes back holds several
+    episodes under the one number its provenance names.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._path: Optional[str] = None
+        self._episodes: Dict[Optional[str], int] = {}
+
+    def segment(self, path):
+        self._path = path
+
+    def metadata(self, name, data):
+        if name != RECORDING_METADATA:
+            return
+        episode = _json_document(name, data).get("episode")
+        if episode is None:
+            raise HandlerError(f"{name}: the provenance of {self._path or 'the recording'} "
+                               "names no episode")
+        self._episodes[self._path] = int(episode)
+
+    @property
+    def episode(self) -> int:
+        """The episode of the file being read, from its provenance."""
+        try:
+            return self._episodes[self._path]
+        except KeyError:
+            raise HandlerError(
+                f"{self._path or 'the recording'} has a record before its "
+                f"{RECORDING_METADATA} record, so its episode is unknown") from None
+
+
 def _sample_times(msg: dict) -> Tuple[float, float]:
     """``(sim s, wall epoch s)`` of one sample document, both required."""
     return float(msg["t"]), float(msg["w"])
 
 
 #: The pose contract as the simulator writes it: one exact clock, its wall-time bridge, and no
-#: ``stamp``, since ``timestamp`` is already the measurement.
+#: ``stamp``, since ``timestamp`` is already the measurement. ``sim_poses`` adds ``episode``.
 SIM_POSE_FIELDNAMES = [
     "timestamp", "wall_time", "frame",
     "position.x", "position.y", "position.z",
@@ -618,17 +678,19 @@ SIM_POSE_FIELDNAMES = [
 ]
 
 
-class SimPoses(Handler):
+class SimPoses(_Episodes):
     """The ``poses`` channel of roqsim's recording: one row per named body per sample.
 
     The pose contract's columns (:data:`SIM_POSE_FIELDNAMES`): ``timestamp`` is the simulated
     second the pose was true, ``wall_time`` the epoch second of the same sample, ``frame`` the
-    body's name, the quaternion in ``(x, y, z, w)`` order and a world-frame twist. A body
-    whose vector is not the thirteen values the contract states fails the table.
+    body's name, the quaternion in ``(x, y, z, w)`` order and a world-frame twist; then the
+    sample's ``episode``. A body whose vector is not the thirteen values the contract states
+    fails the table.
     """
 
     TOPIC = "poses"
     TABLE = "sim_poses"
+    FIELDNAMES = [*SIM_POSE_FIELDNAMES, "episode"]
 
     def topics(self):
         return [self.TOPIC]
@@ -638,7 +700,8 @@ class SimPoses(Handler):
 
     def message(self, topic, msg, typename, log_time):
         sim, wall = _sample_times(msg)
-        buf = self._buffer(self.TABLE, fixed(SIM_POSE_FIELDNAMES))
+        episode = self.episode
+        buf = self._buffer(self.TABLE, fixed(self.FIELDNAMES))
         for frame, values in msg["bodies"].items():
             if len(values) != 13:
                 raise HandlerError(f"sim_poses: body {frame!r} has {len(values)} values at "
@@ -651,19 +714,20 @@ class SimPoses(Handler):
                 "orientation.w": qw,
                 "twist.linear.x": vx, "twist.linear.y": vy, "twist.linear.z": vz,
                 "twist.angular.x": wx, "twist.angular.y": wy, "twist.angular.z": wz,
+                "episode": episode,
             })
 
     def end(self, recorded):
         if self.TOPIC in recorded:
-            self._buffer(self.TABLE, fixed(SIM_POSE_FIELDNAMES))
+            self._buffer(self.TABLE, fixed(self.FIELDNAMES))
 
 
-class SimJoints(Handler):
+class SimJoints(_Episodes):
     """The ``joints`` channel: one row per hinge or slide joint per sample, its position."""
 
     TOPIC = "joints"
     TABLE = "joint_states"
-    FIELDNAMES = ["timestamp", "wall_time", "joint", "position"]
+    FIELDNAMES = ["timestamp", "wall_time", "joint", "position", "episode"]
 
     def topics(self):
         return [self.TOPIC]
@@ -673,39 +737,69 @@ class SimJoints(Handler):
 
     def message(self, topic, msg, typename, log_time):
         sim, wall = _sample_times(msg)
+        episode = self.episode
         buf = self._buffer(self.TABLE, fixed(self.FIELDNAMES))
         for joint, position in msg["q"].items():
             buf.add({"timestamp": sim, "wall_time": wall, "joint": joint,
-                     "position": float(position)})
+                     "position": float(position), "episode": episode})
 
     def end(self, recorded):
         if self.TOPIC in recorded:
             self._buffer(self.TABLE, fixed(self.FIELDNAMES))
 
 
-class SimClock(Clock):
+class SimClock(_Episodes, Clock):
     """The ``clock`` channel: the simulator's own wall -> sim samples, decimated like
-    :class:`Clock`'s, into the same ``clock_map`` table.
+    :class:`Clock`'s, into the same ``clock_map`` table, with each sample's ``episode``.
 
     Each message is ``{"wall_ts": epoch s, "sim_ts": sim s}``, taken inside the simulator at
     a capture step, so a stepped run with no ROS recording at all gets the clock map its
-    derived tables need.
+    derived tables need. Each episode is decimated on its own and keeps its last sample, so
+    no kept chord spans the reset between two episodes.
     """
 
     TOPIC = "clock"
+    FIELDNAMES = ["wall_ts", "sim_ts", "episode"]
+
+    def __init__(self, tolerance_s: float = DEFAULT_CLOCK_TOLERANCE_S):
+        super().__init__(tolerance_s)
+        self._tolerance_s = tolerance_s
+        self._decimating: Optional[int] = None
 
     def message(self, topic, msg, typename, log_time):
+        episode = self.episode
+        if episode != self._decimating:
+            self._close_episode()
+            self._decimator = ClockDecimator(self._tolerance_s)
+            self._decimating = episode
         keep = self._decimator.offer(float(msg["wall_ts"]), float(msg["sim_ts"]))
         if keep is not None:
-            self._buffer(self.TABLE, fixed(["wall_ts", "sim_ts"])).add(
-                {"wall_ts": keep[0], "sim_ts": keep[1]})
+            self._row(keep, episode)
+
+    def end(self, recorded):
+        if self.TOPIC not in recorded:
+            return
+        self._buffer(self.TABLE, fixed(self.FIELDNAMES))
+        self._close_episode()
+
+    def _close_episode(self) -> None:
+        if self._decimating is None:
+            return
+        final = self._decimator.close()
+        if final is not None:
+            self._row(final, self._decimating)
+
+    def _row(self, sample: Tuple[float, float], episode: int) -> None:
+        self._buffer(self.TABLE, fixed(self.FIELDNAMES)).add(
+            {"wall_ts": sample[0], "sim_ts": sample[1], "episode": episode})
 
 
-class _LastMetadata(Handler):
-    """A table from the last metadata record of one name: the row is known at the end.
+class _LastMetadata(_Episodes):
+    """A table from the last metadata record of one name in each episode: the rows are known
+    at the end.
 
     The recording writes the record at start and again whenever what it describes changes,
-    and the reader takes the last; so nothing is flushed before ``end``, as with
+    and the reader takes each episode's last; so nothing is flushed before ``end``, as with
     :class:`Videos`, and a session following the run gives the table when the run closes.
     """
 
@@ -713,20 +807,16 @@ class _LastMetadata(Handler):
 
     def __init__(self):
         super().__init__()
-        self._last: Optional[dict] = None
+        self._last: Dict[int, dict] = {}
         self._ended = False
 
     def topics(self):
         return []
 
     def metadata(self, name, data):
-        if name != self.NAME:
-            return
-        try:
-            self._last = json.loads(data["json"])
-        except KeyError as exc:
-            raise HandlerError(f"{self.NAME}: the metadata record carries no 'json' key "
-                               f"(keys: {', '.join(sorted(data)) or 'none'})") from exc
+        super().metadata(name, data)
+        if name == self.NAME:
+            self._last[self.episode] = _json_document(name, data)
 
     def flush(self, context=None):
         if not self._ended:
@@ -735,10 +825,10 @@ class _LastMetadata(Handler):
 
     def end(self, recorded):
         self._ended = True
-        if self._last is not None:
-            self._rows(self._last)
+        for episode, record in self._last.items():
+            self._rows(episode, record)
 
-    def _rows(self, record: dict) -> None:
+    def _rows(self, episode: int, record: dict) -> None:
         raise NotImplementedError
 
 
@@ -752,22 +842,22 @@ def _fraction_text(value) -> Optional[str]:
 
 
 class SimRecording(_LastMetadata):
-    """``roqsim.recording`` metadata -> ``sim_recording``: one row, the run's provenance.
+    """``roqsim.recording`` metadata -> ``sim_recording``: one row per episode, its provenance.
 
     ``world`` is the world as the record names it; ``overrides_json``, ``packages_json`` and
     ``model_json`` are JSON text of the record's ``overrides``, ``packages`` and ``model``;
     ``capture_fps`` is ``num/den`` text and ``timestep`` the physics step in seconds.
     """
 
-    NAME = "roqsim.recording"
+    NAME = RECORDING_METADATA
     TABLE = "sim_recording"
     FIELDNAMES = ["format_version", "world", "overrides_json", "seed", "packages_json",
-                  "capture_fps", "timestep", "model_json"]
+                  "capture_fps", "timestep", "model_json", "episode"]
 
     def tables(self):
         return [self.TABLE]
 
-    def _rows(self, record):
+    def _rows(self, episode, record):
         world = record.get("world")
         seed = record.get("seed")
         self._buffer(self.TABLE, fixed(self.FIELDNAMES)).add({
@@ -779,33 +869,36 @@ class SimRecording(_LastMetadata):
             "capture_fps": _fraction_text(record.get("capture_fps")),
             "timestep": None if record.get("timestep") is None else float(record["timestep"]),
             "model_json": json_text(record.get("model")),
+            "episode": episode,
         })
 
 
 class SimEntities(_LastMetadata):
-    """``roqsim.entities`` metadata -> ``sim_entities``: the final roster, one row each.
+    """``roqsim.entities`` metadata -> ``sim_entities``: each episode's final roster, one row
+    per entity and episode.
 
-    The roster is written again whenever it changes, and the last one is the run's: an
-    entity despawned mid-run is a row with ``present`` 0, not a missing row.
+    The roster is written again whenever it changes, and an episode's last one is its: an
+    entity despawned mid-episode is a row with ``present`` 0, not a missing row.
     """
 
     NAME = "roqsim.entities"
     TABLE = "sim_entities"
-    FIELDNAMES = ["name", "kind", "body", "present"]
+    FIELDNAMES = ["name", "kind", "body", "present", "episode"]
 
     def tables(self):
         return [self.TABLE]
 
-    def _rows(self, record):
+    def _rows(self, episode, record):
         buf = self._buffer(self.TABLE, fixed(self.FIELDNAMES))
         for entity in record["entities"]:
             present = entity.get("present")
             buf.add({"name": entity["name"], "kind": entity.get("kind"),
                      "body": entity.get("body"),
-                     "present": None if present is None else int(bool(present))})
+                     "present": None if present is None else int(bool(present)),
+                     "episode": episode})
 
 
 __all__ = ["ActionTopics", "Clock", "Costmaps", "Handler", "HandlerError", "LEVEL_BY_NAME",
-           "Nav2BtLog", "POSE_FIELDNAMES", "Rosout", "SIM_POSE_FIELDNAMES", "SimClock",
+           "Nav2BtLog", "POSE_FIELDNAMES", "RECORDING_METADATA", "Rosout", "SIM_POSE_FIELDNAMES", "SimClock",
            "SimEntities", "SimJoints", "SimPoses", "SimRecording", "TfPoses", "TopicTable",
            "Videos"]

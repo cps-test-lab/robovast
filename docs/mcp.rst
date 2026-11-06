@@ -577,7 +577,9 @@ registered a video (see :ref:`the videos table <videos-table>`). Cheap.
 (``lookat`` / ``distance`` / ``azimuth`` / ``elevation``, or ``focus`` on a named entity, or a
 camera the world defines). That needs a simulator that can re-render — roqsim can, Gazebo
 cannot — and a run that recorded its state, and it runs a container in the campaign's own
-simulation image: seconds if that image is on the node, minutes if it must be pulled.
+simulation image: seconds if that image is on the node, minutes if it must be pulled. A run
+recorded in several episodes is rendered from its last, and ``at`` is that episode's
+simulated time.
 
 Both return an image, and a failure as ``{"error": …}`` like every tool
 (:ref:`mcp-errors`). For a *human* who wants to watch a run, neither is the answer — ``read_file`` on the ``.webm`` returns a URL, and a video is not something to move

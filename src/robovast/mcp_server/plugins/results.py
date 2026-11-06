@@ -749,7 +749,7 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
         campaign_id: The id from ``start_campaign``.
         config_name: Which configuration the run belongs to.
         run_id: Which run of that configuration.
-        at: Simulated seconds; snaps to the nearest sample. Default: the last one.
+        at: Simulated seconds in the last episode; snaps to a sample. Default: the last.
         view: ``key=value`` — ``lookat=x,y,z``, ``distance=``, ``azimuth=``/``elevation=`` in
             degrees (around the vertical / above the horizontal).
         focus: Entity or body names to frame on; the simulator picks a clear angle.

@@ -430,13 +430,15 @@ class SimulatorBackend:
             return None
         return ros_tap_command(selection)
 
-    def run_state_file(self, cfg, execution: dict) -> Optional[str]:
+    def run_state_file(self, cfg, execution: dict, *, run_dir: str) -> Optional[str]:
         """The run-relative recording :meth:`simulation_screenshot` renders from, or ``None``.
 
         A backend that sets up a recording (roqsim asks for one in :meth:`env`) is the only
         thing that knows what the file is called, so it says so here rather than the service
-        keeping a second copy of that name. ``None`` -- the default -- goes with a backend that
-        records nothing, which is also one that cannot re-render.
+        keeping a second copy of that name. *run_dir* is the run's directory, for a backend
+        that records a run in more than one file and names the one it renders from by what
+        is there. ``None`` -- the default -- goes with a backend that records nothing, which is
+        also one that cannot re-render.
         """
         return None
 
@@ -503,13 +505,15 @@ def parse_view(pairs) -> dict:
     return out
 
 
-def run_state_filename(execution: dict, base_dir: str = "") -> Optional[str]:
-    """The configured backend's :meth:`SimulatorBackend.run_state_file`, or ``None``."""
+def run_state_filename(execution: dict, run_dir: str, base_dir: str = "") -> Optional[str]:
+    """The configured backend's :meth:`SimulatorBackend.run_state_file` for the run in
+    *run_dir*, or ``None``."""
     if not (name := backend_name(execution or {})):
         return None
     backend = resolve_backend(name, base_dir)
     block = ((execution.get("containers") or {}).get(SIMULATION_CONTAINER) or {})
-    return backend.run_state_file(_validated_cfg(backend, block, name), execution)
+    return backend.run_state_file(_validated_cfg(backend, block, name), execution,
+                                  run_dir=run_dir)
 
 
 def health_command(execution: dict, *, run_dir: str, base_dir: str = "") -> Optional[str]:
