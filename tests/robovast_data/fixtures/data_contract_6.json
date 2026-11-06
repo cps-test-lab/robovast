@@ -393,6 +393,16 @@
   "function TEXT",
   "line TEXT"
  ],
+ "main.run_rtf_view": [
+  "campaign_id TEXT",
+  "config_name TEXT",
+  "run_id INTEGER",
+  "sim_start REAL",
+  "sim_end REAL",
+  "wall_span_s REAL",
+  "sim_span_s REAL",
+  "realtime_factor REAL"
+ ],
  "main.run_view": [
   "campaign_id TEXT",
   "config_name TEXT",

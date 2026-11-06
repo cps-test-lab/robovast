@@ -2922,7 +2922,7 @@ The connection then sees every table as a view over the parquet files the manife
 the runs in scope — never a directory listing — plus ``runs`` (computed from ``campaign.db``,
 :mod:`robovast_decode.runs`), the ``campaign`` schema (:mod:`robovast_data.record`) and the views
 over them (``run_view``, ``config_view``, ``container_failure_view``, ``run_validity_view``,
-``pose_track_view``; :mod:`robovast_data.views`). A view declares the tables it reads, so a query
+``pose_track_view``, ``run_rtf_view``; :mod:`robovast_data.views`). A view declares the tables it reads, so a query
 naming one builds what the view needs. The connection may read the campaigns' ``.cache/tables/``
 files and nothing else: external access is off, the configuration is locked, and a query that
 runs past its time is interrupted. A query sees one campaign unless further campaigns are passed
