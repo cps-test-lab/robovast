@@ -30,7 +30,8 @@ Invoked by ``config_generation._compose_isolated`` as::
 
 where ``job.json`` is ``{variation_file, output_dir, use_cache, tolerate_infeasible,
 container_queries,
-image_project, image_project_tag, image_pins, result_path, container_runner_socket}``. The
+image_project, image_project_tag, image_pins, built_images, result_path,
+container_runner_socket}``. The
 parent sets ``ROBOVAST_ISOLATED_COMPOSE=1`` in this process's environment so the
 ``generate_scenario_variations`` call composes in-process (it does not re-fork).
 
@@ -67,8 +68,12 @@ def main(argv) -> int:
     # where the plugin gets pulled onto sys.path (inside generate_scenario_variations
     # via ensure_workspace_plugins).
     from robovast.common.config_generation import (  # pylint: disable=import-outside-toplevel
-        _result_to_transport, generate_scenario_variations,
+        _result_to_transport, generate_scenario_variations, set_built_images,
         set_container_runner_factory)
+
+    # The parent's built images (``config_generation.set_built_images``), so a simulator query
+    # here runs in the image the campaign runs and the cache key is the parent's.
+    set_built_images(job.get("built_images"))
 
     # Before composing, so a variation that asks for its container during the very first
     # config already has one. Left unset when the parent serves none: the local fallback

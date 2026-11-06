@@ -568,9 +568,11 @@ not as a debug line, which is indistinguishable from a check that passed.
 so an experiment shipping its own world package has worlds that exist in its built image and
 nowhere else -- described against a fixed base image, the ref does not resolve, the simulator
 answers nothing, and the check silently passed for exactly those campaigns. The query therefore
-takes the image from the container the simulator runs in, with the same precedence the run uses.
-An unresolved ``build:<tag>`` is reported as "build the experiment image first" rather than
-handed to a runner as an image name.
+takes the image from the container the simulator runs in, with the same precedence the run uses:
+for a container that adds packages, the image the campaign builds. A campaign asks it there once
+the image is built, and does not start if the answer is a failure; a validation or a preview
+before the first build reports the check as a ``warning`` that names the build, and asks no other
+image in its place.
 
 The same description is what a *caller* can ask for directly, before writing an override at all:
 :meth:`~robovast.service.interface.RobovastInterface.describe_world`, surfaced as ``vast

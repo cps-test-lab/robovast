@@ -85,13 +85,16 @@ def test_targets_and_entities_are_opt_in_because_each_costs_a_model_build():
 
 # -- when nothing can answer --------------------------------------------------------------
 def test_an_unbuilt_image_is_reported_rather_than_silently_skipped():
-    """`build:<tag>` is not an image name. Saying so beats a check that quietly passes."""
-    with pytest.raises(WorldQueryUnavailable, match="does not exist yet"):
+    """`build:<tag>` is not an image name. With no built image registered for it, saying so --
+    and how to build it -- beats a check that quietly passes or asks another image."""
+    from robovast.common.errors import ImageNotBuilt
+    with pytest.raises(ImageNotBuilt, match="not built") as refused:
         describe_world_payload(
             {"mode": "base",
              "containers": {"simulation": {"backend": "roqsim"},
                             "scenario": {"image": "build:scenario"}}},
             {"config": "roqsim_scenes:depot"}, ".")
+    assert "start_campaign" in refused.value.next_step
 
 
 def test_no_backend_is_a_reason_not_a_shrug():

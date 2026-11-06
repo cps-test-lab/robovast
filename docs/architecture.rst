@@ -310,14 +310,23 @@ Four rules make those answers trustworthy:
   for an experiment whose world ships in its own built image.
   :func:`~robovast.common.simulators.simulator_image` is the one place that decides, because
   :func:`~robovast.common.simulators.apply_backend` applies the same precedence to the *run* and
-  a second copy would be free to disagree with it.
+  a second copy would be free to disagree with it. For a simulator container that adds packages
+  it answers the symbolic ``build:<container>``, and composition runs the query in the image the
+  service registered for that container over the span
+  (:func:`~robovast.common.config_generation.set_built_images`, installed by
+  ``ServiceBase._built_images_context``): the image a campaign pinned, or, for a validation, a
+  preview, an exec or a description, the one the service's store holds. One that is not built
+  yet raises :class:`~robovast.common.errors.ImageNotBuilt` and is never answered from another
+  image; the composition cache is keyed on the registered images' identities, so a rebuilt
+  image is asked again.
 * **In the environment the run has.** Loading a world loads its plugins, and a ROS simulator's
   bridge is installed in the overlay a run's entrypoint sources. A runner enters a query's
   container without that entrypoint, so the query's command sets the environment up itself
   (:func:`~robovast.common.execution.run_env_prefix`, the same setup the entrypoint runs); asked
   without it, the world the query loads is not the one the run will.
 * **An unanswerable question says so.** ``WorldQueryUnavailable`` names which reason it is -- no
-  backend, an unbuilt ``build:<tag>``, no container runner here, a command that failed. A
+  backend, no container runner here, a command that failed -- and ``ImageNotBuilt`` names the
+  image the campaign has still to build, with the call that builds it. A
   pre-check that logged this at debug and carried on would be indistinguishable from a check
   that passed, and a misspelled plugin key would first surface in the container.
 * **Half an answer beats none.** A simulator that exits non-zero having still *printed* a payload

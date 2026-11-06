@@ -193,10 +193,12 @@ def is_floating_image_tag(reference: str) -> bool:
 
 # Marks an image ref that is *produced by a build* rather than pulled: ``build:<name>``,
 # where the name is the container whose packages produced it. Internal only -- no .vast
-# writes one, and it is resolved to a concrete image before reaching a pod/compose spec
-# by the build lifecycle (which knows the registry + digest). It survives as the guard
-# that catches an unresolved ref reaching a container spec, where it would otherwise be
-# used verbatim as an invalid image name.
+# writes one, and it is resolved to a concrete image before reaching a pod/compose spec:
+# by the build lifecycle for a run (which knows the registry + digest), and by the images a
+# service registers for composition for a simulator's query (``simulators.simulator_image``,
+# ``config_generation.set_built_images``). It survives as the guard that catches an
+# unresolved ref reaching a container spec, where it would otherwise be used verbatim as an
+# invalid image name.
 BUILD_IMAGE_PREFIX = "build:"
 
 
