@@ -92,17 +92,14 @@ def roqsim_wall_time(t: float, span: float) -> float:
 
 
 def write_roqsim_mcap(path: Path, samples: int = ROQSIM_SAMPLES, chunk_size: int = 2048,
-                      finish: bool = True, meta: dict | None = None, trials: int = 1) -> Path:
+                      finish: bool = True, meta: dict | None = None) -> Path:
     """A recording in roqsim's shape: its four channels, chunked zstd, its metadata at start
-    and again at close, the entity roster changing halfway through the first trial.
+    and again at close, the entity roster changing halfway.
 
     *chunk_size* is small so the file is many chunks and a reader following it sees the rows
     arrive in batches. With *finish* false the writer is dropped without its footer, as a
     killed run leaves it. *meta* overrides fields of the provenance record (``world``,
-    ``overrides``, ``format_version``), in both the opening and the closing copy. *trials*
-    above one writes a file as an older roqsim did: every trial of the run in it, *samples*
-    each, sim time starting over at each reset, and the bodies of trial ``k`` (from 0) moving
-    ``k + 1`` times as fast as in the first.
+    ``overrides``, ``format_version``), in both the opening and the closing copy.
     """
     import struct
 
@@ -123,26 +120,25 @@ def write_roqsim_mcap(path: Path, samples: int = ROQSIM_SAMPLES, chunk_size: int
         for name in ("poses", "joints", "clock"):
             sid = writer.register_schema(f"roqsim.{name}", "jsonschema", b'{"type": "object"}')
             channels[name] = writer.register_channel(name, "json", sid)
-        for n in range(samples * trials):
-            trial, i = divmod(n, samples)
+        for i in range(samples):
             t = i * den / num
-            w = roqsim_wall_time(n * den / num, samples * trials * den / num)
+            w = roqsim_wall_time(t, samples * den / num)
             log, pub = int(round(t * 1e9)), int(round(w * 1e9))
-            if n == samples // 2:
+            if i == samples // 2:
                 writer.add_metadata("roqsim.entities",
                                     {"json": json.dumps({"entities": ROQSIM_ROSTER_END})})
-            bodies = {b: [k + 0.1 * i * (trial + 1), 2.0 * k, 0.0, 0.0, 0.0, 0.0, 1.0,
-                          0.1 * (trial + 1) * num / den, 0.0, 0.0, 0.0, 0.0, 0.0]
+            bodies = {b: [k + 0.1 * i, 2.0 * k, 0.0, 0.0, 0.0, 0.0, 1.0,
+                          0.1 * num / den, 0.0, 0.0, 0.0, 0.0, 0.0]
                       for k, b in enumerate(ROQSIM_BODIES)}
             writer.add_message(channels["poses"], log,
-                               json.dumps({"t": t, "w": w, "bodies": bodies}).encode(), pub, n)
+                               json.dumps({"t": t, "w": w, "bodies": bodies}).encode(), pub, i)
             writer.add_message(channels["joints"], log, json.dumps(
                 {"t": t, "w": w, "q": {j: 0.01 * i * (k + 1)
-                                        for k, j in enumerate(ROQSIM_JOINTS)}}).encode(), pub, n)
+                                        for k, j in enumerate(ROQSIM_JOINTS)}}).encode(), pub, i)
             writer.add_message(channels["clock"], log,
-                               json.dumps({"wall_ts": w, "sim_ts": t}).encode(), pub, n)
+                               json.dumps({"wall_ts": w, "sim_ts": t}).encode(), pub, i)
             writer.add_message(state, log, struct.pack("<dd4f", t, w, 1.0, 2.0, 3.0, 4.0),
-                               pub, n)
+                               pub, i)
         if finish:
             writer.add_metadata("roqsim.recording", {"json": json.dumps(meta_close)})
             writer.finish()

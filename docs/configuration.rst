@@ -1158,11 +1158,6 @@ reset between them, so the simulator is built once per job rather than once per 
   the simulator is another container, started once with one world and told nothing per run, so
   it cannot be reset per run or told where each run writes; ``auto``, the default, is resolved
   inside the container, to ``ros2`` wherever ROS 2 is installed.
-- **A ROS run has one episode.** For the same reason a scenario cannot reset the simulator
-  within a ROS run either. A ROS run whose simulator recording holds more than one episode --
-  several episode files, or one file whose simulated time goes back -- has the tables built from
-  that recording fail with that reason, rather than tables that mix its trials
-  (:ref:`results-processing`). Several episodes per run happen only in the stepped shape.
 - **No scenario bag.** The ROS bag the entrypoint records of a run (``<run>/rosbag2``,
   :ref:`recording-config`) is recorded only by a job of one run; a job of several records none,
   and says so in its log. A world whose runs publish ROS topics worth keeping -- a simulator

@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shlex
 from typing import Optional
 
@@ -33,11 +32,10 @@ _WORLD_ROOTS = ("sim", "components")
 ROQSIM_CONTROL_URI = f"ipc://{IPC_DIR}/roqsim-control.sock"
 
 #: The simulator's recording of each run, relative to the run's output directory: one MCAP
-#: file per episode holding the clock, the poses and the joint tracks, in its own directory so
-#: the files that appear beside it (the later episodes', ``roqsim-2.mcap`` on, and its message
-#: definitions) stay with it. Named once and read twice -- :meth:`RoqsimBackend.env` asks for
-#: it, :meth:`run_state_file` tells the service where to find the run's episodes -- so the
-#: request and the lookup cannot drift apart.
+#: file holding the clock, the poses and the joint tracks, in its own directory so the files
+#: that appear beside it (its message definitions) stay with it. Named once and read twice --
+#: :meth:`RoqsimBackend.env` asks for it, :meth:`run_state_file` tells the service where to
+#: find it -- so the request and the lookup cannot drift apart.
 _RECORD_FILE = "roqsim_bag/roqsim.mcap"
 
 
@@ -462,20 +460,14 @@ class RoqsimBackend(SimulatorBackend):
                 f"--meshopt --texture-format webp --max-tex-dim {int(max_tex_dim)} "
                 f"--manifest {{out}}/.generated.json")
 
-    def run_state_file(self, cfg, execution: dict, *, run_dir: str) -> str:
-        """The recording of the run's last episode in *run_dir*, run-relative.
+    def run_state_file(self, cfg, execution: dict) -> str:
+        """The recording :meth:`env` asks every run to write.
 
-        roqsim records one file per episode: the first under the name :meth:`env` asks for,
-        :data:`_RECORD_FILE`, and each after a reset beside it, numbered (``roqsim-2.mcap``,
-        ...). The last is the episode the run ended in, or is in now; before the run has
-        written any, this is the name it was asked for.
+        Both sides read :data:`_RECORD_FILE`, so the name that is *requested* and the name that
+        is later *looked for* cannot drift apart.
         """
         del cfg, execution
-        from robovast_decode.decode import segments  # pylint: disable=import-outside-toplevel
-
-        bag = os.path.dirname(_RECORD_FILE)
-        files = segments(os.path.join(run_dir, bag))
-        return f"{bag}/{os.path.basename(files[-1])}" if files else _RECORD_FILE
+        return _RECORD_FILE
 
     def health_command(self, cfg, execution: dict, *, run_dir: str) -> str:
         """``roqsim health``, judging the records this run is streaming as it goes.

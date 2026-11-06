@@ -531,8 +531,8 @@ Three more views carry a derivation that is easy to get wrong by hand. ``run_val
 says whether a run was a clean observation or was capped at its CPU limit.
 ``pose_track_view`` summarizes every recorded track (length, duration, speeds, start and end
 pose) over every pose, on the measurement clock (:ref:`pose-contract`). ``run_rtf_view`` gives
-a run's realtime factor per simulated second of each episode from its clock map. All three are
-listed with their columns by ``describe_campaign_data``.
+a run's realtime factor per simulated second from its clock map. All three are listed with
+their columns by ``describe_campaign_data``.
 
 What survives as a tool is the one aggregate asked constantly —
 ``get_campaign_summary`` (pass/fail counts plus the campaign's provenance), itself
@@ -566,7 +566,7 @@ is what makes them work on the cluster too. What a configuration's variations pl
 planned path, goals, obstacles — is in no table either: ``get_config_contribution`` derives it
 from the campaign's frozen ``configurations.yaml`` and ``.vast``, the same markers its config
 view draws, for any robot type. ``get_track_deviation`` measures a recorded track against one
-of those ``path`` markers, over every pose, and each of a run's episodes on its own.
+of those ``path`` markers, over every pose.
 
 **Looking at a run: two tools, and the difference between them is the point.**
 
@@ -578,9 +578,7 @@ registered a video (see :ref:`the videos table <videos-table>`). Cheap.
 (``lookat`` / ``distance`` / ``azimuth`` / ``elevation``, or ``focus`` on a named entity, or a
 camera the world defines). That needs a simulator that can re-render — roqsim can, Gazebo
 cannot — and a run that recorded its state, and it runs a container in the campaign's own
-simulation image: seconds if that image is on the node, minutes if it must be pulled. A run
-recorded in several episodes is rendered from its last, and ``at`` is that episode's
-simulated time.
+simulation image: seconds if that image is on the node, minutes if it must be pulled.
 
 Both return an image, and a failure as ``{"error": …}`` like every tool
 (:ref:`mcp-errors`). For a *human* who wants to watch a run, neither is the answer — ``read_file`` on the ``.webm`` returns a URL, and a video is not something to move

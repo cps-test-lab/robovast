@@ -54,8 +54,7 @@ def test_a_stepped_run_gives_its_five_tables_typed(tmp_path):
 
     poses = _table(campaign, "sim_poses")
     assert poses.num_rows == ROQSIM_SAMPLES * len(ROQSIM_BODIES)
-    assert poses.column_names == [*CONTEXT_COLUMNS, *SIM_POSE_FIELDNAMES, "episode",
-                                  "orientation.yaw"]
+    assert poses.column_names == [*CONTEXT_COLUMNS, *SIM_POSE_FIELDNAMES, "orientation.yaw"]
     for name in SIM_POSE_FIELDNAMES:
         expected = pa.string() if name == "frame" else pa.float64()
         assert poses.schema.field(name).type == expected, name
@@ -68,12 +67,12 @@ def test_a_stepped_run_gives_its_five_tables_typed(tmp_path):
     joints = _table(campaign, "joint_states")
     assert joints.num_rows == ROQSIM_SAMPLES * len(ROQSIM_JOINTS)
     assert joints.column_names == [*CONTEXT_COLUMNS, "timestamp", "wall_time", "joint",
-                                   "position", "episode"]
+                                   "position"]
     assert joints.schema.field("position").type == pa.float64()
     assert set(joints.column("joint").to_pylist()) == set(ROQSIM_JOINTS)
 
     clock = _table(campaign, "clock_map")
-    assert clock.column_names == [*CONTEXT_COLUMNS, "wall_ts", "sim_ts", "episode"]
+    assert clock.column_names == [*CONTEXT_COLUMNS, "wall_ts", "sim_ts"]
     rows = clock.to_pylist()
     assert len(rows) >= 3, "a rate change and a pause keep more than the two ends"
     assert rows[0]["wall_ts"] == ROQSIM_WALL_START and rows[0]["sim_ts"] == 0.0
@@ -81,7 +80,6 @@ def test_a_stepped_run_gives_its_five_tables_typed(tmp_path):
 
     (recording,) = _table(campaign, "sim_recording").to_pylist()
     assert recording["format_version"] == 3 and recording["seed"] == 7
-    assert recording["episode"] == 0
     assert recording["world"] == "worlds/open_space.yaml"
     assert recording["capture_fps"] == "50/1" and recording["timestep"] == 0.002
     assert json.loads(recording["overrides_json"]) == {"robot.speed": 0.5}
@@ -89,9 +87,8 @@ def test_a_stepped_run_gives_its_five_tables_typed(tmp_path):
     assert json.loads(recording["model_json"])["nq"] == 2, "the closing record wins"
 
     entities = _table(campaign, "sim_entities").to_pylist()
-    assert [(e["name"], e["kind"], e["body"], e["present"], e["episode"])
-            for e in entities] == [("robot", "robot", "robot", 1, 0), ("box", "prop", "box", 0, 0),
-                                   ("shelf", "prop", "shelf", 1, 0)]
+    assert [(e["name"], e["kind"], e["body"], e["present"]) for e in entities] == [
+        ("robot", "robot", "robot", 1), ("box", "prop", "box", 0), ("shelf", "prop", "shelf", 1)]
     assert _table(campaign, "sim_entities").schema.field("present").type == pa.int64()
 
 
@@ -266,13 +263,8 @@ def test_the_metadata_hook_is_a_no_op_unless_a_handler_wants_it():
     Nothing().metadata("roqsim.recording", {"json": "{}"})
 
 
-def _provenance(handler, episode=0):
-    handler.metadata("roqsim.recording", {"json": json.dumps({"episode": episode})})
-
-
 def test_a_metadata_table_is_flushed_at_the_end_and_the_last_record_wins():
     handler = SimEntities()
-    _provenance(handler)
     handler.metadata("roqsim.entities", {"json": json.dumps({"entities": [
         {"name": "a", "kind": "prop", "body": "a", "present": True}]})})
     assert handler.flush() == {}
@@ -291,7 +283,6 @@ def test_a_metadata_record_without_its_document_fails_loudly():
 
 def test_a_body_vector_of_the_wrong_length_fails_the_table():
     handler = SimPoses()
-    _provenance(handler)
     with pytest.raises(HandlerError, match="12 values"):
         handler.message("poses", {"t": 0.0, "w": 1.0, "bodies": {"robot": [0.0] * 12}},
                         "roqsim.poses", 0)

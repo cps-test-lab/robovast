@@ -247,7 +247,6 @@
   "twist.angular.x REAL",
   "twist.angular.y REAL",
   "twist.angular.z REAL",
-  "episode INTEGER",
   "orientation.yaw REAL"
  ],
  "main.nav2_behavior_tree": [
@@ -266,7 +265,6 @@
   "campaign_id TEXT",
   "config_name TEXT",
   "run_id INTEGER",
-  "episode INTEGER",
   "frame TEXT",
   "points INTEGER",
   "length_m REAL",
@@ -399,7 +397,6 @@
   "campaign_id TEXT",
   "config_name TEXT",
   "run_id INTEGER",
-  "episode INTEGER",
   "sim_start REAL",
   "sim_end REAL",
   "wall_span_s REAL",

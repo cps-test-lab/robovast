@@ -4304,7 +4304,7 @@
         "type": "object"
       },
       "TrackDeviation": {
-        "description": "How far one recorded track stayed from a path its configuration contributed.\n\nComputed over **every** pose of the track, so ``points`` is the whole recording rather\nthan a sample of it. ``planar`` says whether heights were ignored: a path\nwhose points state no height (a floor plan's) is compared in the plane, since the tracked\nframe sits above the floor -- and both lengths are then measured in the plane too, so the\ntwo are comparable.\n\nA run of several episodes drove the path once in each, and its sim time starts over at\neach reset: ``episodes`` measures each on its own, and the run's figures are over all of\nthem.",
+        "description": "How far one recorded track stayed from a path its configuration contributed.\n\nComputed over **every** pose of the track, so ``points`` is the whole recording rather\nthan a sample of it. ``planar`` says whether heights were ignored: a path\nwhose points state no height (a floor plan's) is compared in the plane, since the tracked\nframe sits above the floor -- and both lengths are then measured in the plane too, so the\ntwo are comparable.",
         "properties": {
           "campaign_id": {
             "title": "Campaign Id",
@@ -4324,13 +4324,6 @@
               }
             ],
             "title": "Efficiency"
-          },
-          "episodes": {
-            "items": {
-              "$ref": "#/components/schemas/TrackDeviationEpisode"
-            },
-            "title": "Episodes",
-            "type": "array"
           },
           "frame": {
             "title": "Frame",
@@ -4396,7 +4389,6 @@
           "campaign_id",
           "config_name",
           "efficiency",
-          "episodes",
           "frame",
           "marker_label",
           "max_m",
@@ -4409,68 +4401,6 @@
           "track_length_m"
         ],
         "title": "TrackDeviation",
-        "type": "object"
-      },
-      "TrackDeviationEpisode": {
-        "description": "One episode's track against the path: the run's figures, for that episode alone.",
-        "properties": {
-          "efficiency": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Efficiency"
-          },
-          "episode": {
-            "title": "Episode",
-            "type": "integer"
-          },
-          "max_m": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max M"
-          },
-          "mean_m": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mean M"
-          },
-          "points": {
-            "default": 0,
-            "title": "Points",
-            "type": "integer"
-          },
-          "track_length_m": {
-            "default": 0.0,
-            "title": "Track Length M",
-            "type": "number"
-          }
-        },
-        "required": [
-          "efficiency",
-          "episode",
-          "max_m",
-          "mean_m",
-          "points",
-          "track_length_m"
-        ],
-        "title": "TrackDeviationEpisode",
         "type": "object"
       },
       "UpdatePanelsSourceRequest": {

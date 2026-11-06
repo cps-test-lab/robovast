@@ -24,10 +24,6 @@ nothing is thinned or cut off -- and the distance of every pose to the nearest p
 path is computed here, vectorised. Doing it in SQL instead means one pose-by-segment row per
 pair, an order of magnitude slower than the arithmetic itself.
 
-A run of several episodes -- a table with an ``episode`` column, whose sim time starts over
-at each -- is several tracks against the one path: each is measured on its own, and the run's
-figures are over all of them, its length the sum of theirs.
-
 The distance is 3D when every point of the path states a height and planar when any omits
 it. A path drawn on a floor plan has no height, and a robot's reference frame sits above
 the floor, so measuring that frame against height zero would add a constant offset to every
@@ -100,10 +96,6 @@ def track_deviation(campaign_dir, config_name: str, run_id: int, *, path: dict,
     Lengths are measured in the dimensions the comparison uses: against a path that states no
     height, both the path and the track are measured in the plane, so the two are comparable.
 
-    ``episodes`` holds the same figures per episode where *source* has an ``episode`` column,
-    and is empty where it has none. The run's ``efficiency`` is ``None`` for a run of several
-    episodes, which drove the path once in each: theirs are in ``episodes``.
-
     Raises ``ValueError`` for a source that is not a pose table, and ``KeyError`` for a
     track with no poses, naming the frames the run did record.
     """
@@ -138,41 +130,22 @@ def track_deviation(campaign_dir, config_name: str, run_id: int, *, path: dict,
         raise KeyError(f"no {source} poses of frame {frame!r} in run {run_id} of "
                        f"{config_name!r}; recorded frames: "
                        f"{', '.join(sorted(frames)) or 'none'}")
-    # Ordered by episode, then the measurement clock: the distances do not need an order, the
-    # length travelled between consecutive poses does, and a table returns its rows in none.
-    episode = "CAST(episode AS BIGINT)" if "episode" in columns else "CAST(NULL AS BIGINT)"
-    with engine.execute(f'SELECT {episode}, CAST("position.x" AS DOUBLE), '
+    # Ordered by the measurement clock: the distances do not need an order, the length
+    # travelled between consecutive poses does, and a table returns its rows in none.
+    with engine.execute('SELECT CAST("position.x" AS DOUBLE), '
                         f'CAST("position.y" AS DOUBLE){z} {track} AND frame = {_lit(frame)} '
-                        f'ORDER BY 1, "{clock}"') as (con, _problems):
+                        f'ORDER BY "{clock}"') as (con, _problems):
         rows = con.fetchall()
 
+    track_points = np.array(rows, dtype=float)
+    distances = _distances(track_points, polyline)
     path_length = float(np.linalg.norm(np.diff(polyline, axis=0), axis=1).sum())
-    tracks: dict = {}
-    for row in rows:
-        tracks.setdefault(row[0], []).append(row[1:])
-    episodes = []
-    for number, points in tracks.items():
-        figures = _deviation(np.array(points, dtype=float), polyline, path_length)
-        episodes.append({"episode": number, **figures})
-    distances = np.concatenate([e.pop("_distances") for e in episodes])
-    track_length = sum(e["track_length_m"] for e in episodes)
+    track_length = float(np.linalg.norm(np.diff(track_points, axis=0), axis=1).sum())
     return {"campaign_id": campaign_id, "config_name": config_name, "run_id": int(run_id),
             "source": source, "frame": frame, "marker_label": path.get("label", ""),
             "planar": planar, "points": len(distances),
             "mean_m": float(distances.mean()), "max_m": float(distances.max()),
             "path_length_m": path_length, "track_length_m": track_length,
-            "efficiency": (path_length / track_length
-                           if track_length and len(episodes) == 1 else None),
-            "episodes": [e for e in episodes if e["episode"] is not None]}
-
-
-def _deviation(points: np.ndarray, polyline: np.ndarray, path_length: float) -> dict:
-    """One track's figures against *polyline*, its per-pose distances under ``_distances``."""
-    distances = _distances(points, polyline)
-    track_length = float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
-    return {"points": len(distances), "mean_m": float(distances.mean()),
-            "max_m": float(distances.max()), "track_length_m": track_length,
             # How much of the driving the path accounts for. 1.0 is a track as short as the
             # path it followed; below it, the run drove further than the path is long.
-            "efficiency": (path_length / track_length) if track_length else None,
-            "_distances": distances}
+            "efficiency": (path_length / track_length) if track_length else None}

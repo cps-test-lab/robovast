@@ -446,9 +446,8 @@ def get_track_deviation(campaign_id: str, config_name: str, run_id: int,
         marker_label: Which path, when there are several; none named is then refused.
 
     Returns:
-        ``{points, mean_m, max_m, path_length_m, planar, episodes, ...}``; ``planar`` when
-        the path has no heights; ``episodes`` the same figures per simulator episode. Or
-        ``{error}``.
+        ``{points, mean_m, max_m, path_length_m, planar, ...}``; ``planar`` when the path
+        has no heights. Or ``{error}``.
     """
     client = service_access.require_service()
     return client.get_track_deviation(
@@ -492,17 +491,14 @@ def _drawn_track(campaign_id: str, config_name: str, run_id: int, source: str,
     from robovast_data.views import pose_clock  # noqa: PLC0415
     clock = pose_clock(columns)
     z = 'CAST("position.z" AS DOUBLE)' if "position.z" in columns else "0.0"
-    # A run of several episodes is drawn one episode after the other: its sim time starts
-    # over at each, so ordering by time alone would interleave them.
-    episode = "episode" if "episode" in columns else "NULL"
     scope = f"{run_scope} AND \"{clock}\" IS NOT NULL"
     n = _DRAWN_TRACK_POINTS
     result = data_access.query(campaign_id, f"""
-        WITH src AS (SELECT {episode} AS ep, CAST("{clock}" AS DOUBLE) AS t,
+        WITH src AS (SELECT CAST("{clock}" AS DOUBLE) AS t,
                             CAST("position.x" AS DOUBLE) AS x,
                             CAST("position.y" AS DOUBLE) AS y, {z} AS z
                      FROM "{source}" WHERE {scope} AND frame = {lit(frame)}),
-             idx AS (SELECT *, ROW_NUMBER() OVER (ORDER BY ep, t) - 1 AS _i,
+             idx AS (SELECT *, ROW_NUMBER() OVER (ORDER BY t) - 1 AS _i,
                             COUNT(*) OVER () AS _n FROM src)
         SELECT x, y, z, _n FROM idx
         WHERE _n <= {n} OR _i % GREATEST(1, (_n + {n} - 1) // {n}) = 0 OR _i = _n - 1
@@ -753,7 +749,7 @@ def get_simulation_screenshot(campaign_id: str, config_name: str, run_id: int = 
         campaign_id: The id from ``start_campaign``.
         config_name: Which configuration the run belongs to.
         run_id: Which run of that configuration.
-        at: Simulated seconds in the last episode; snaps to a sample. Default: the last.
+        at: Simulated seconds; snaps to the nearest sample. Default: the last one.
         view: ``key=value`` — ``lookat=x,y,z``, ``distance=``, ``azimuth=``/``elevation=`` in
             degrees (around the vertical / above the horizontal).
         focus: Entity or body names to frame on; the simulator picks a clear angle.

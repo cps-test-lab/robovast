@@ -5248,18 +5248,16 @@ class ServiceBase(RobovastInterface):
 
     # -- on-demand 3D geometry ---------------------------------------------
 
-    #: The run's ``sim_recording`` rows, one per episode. ``*`` rather than the columns the
-    #: identity reads: a campaign none of whose runs recorded anything has the table with its key
-    #: columns alone, and naming a column it lacks answers a binder error where "no row" is the
-    #: fact.
+    #: The run's ``sim_recording`` row. ``*`` rather than the three columns the identity reads:
+    #: a campaign none of whose runs recorded anything has the table with its key columns alone,
+    #: and naming a column it lacks answers a binder error where "no row" is the fact.
     _SCENE_RECORDING_SQL = "SELECT * FROM sim_recording WHERE config_name = ? AND run_id = ?"
     #: What the identity reads of that row: the world it was recorded from, the overrides it was
     #: built with, and the format that says what those mean.
     _SCENE_RECORDING_COLUMNS = ("world", "overrides_json", "format_version")
 
     def _scene_recording(self, campaign_id: str, config_name: str, run_id: str) -> dict:
-        """The ``sim_recording`` row of the run's last episode, which names the world it needs:
-        the episode a screenshot renders (:meth:`_run_recording_path`).
+        """The run's ``sim_recording`` row, which names the world it needs.
 
         Read through the campaign's tables rather than off a file: the recording is the
         simulator's own format, and the decoder is the one reader of it. A run still going has
@@ -5277,41 +5275,31 @@ class ServiceBase(RobovastInterface):
         try:
             db = open_data_db(self.campaign_dir(campaign_id), campaign_id)
             cursor = db.execute(self._SCENE_RECORDING_SQL, (config_name, int(run_id)))
-            rows = cursor.fetchall()
+            row = cursor.fetchone()
         except (DataQueryError, ValueError) as err:
             raise SceneUnavailable(
                 f"this run's recording could not be read from the campaign's tables: {err}") from err
-        columns = [d[0] for d in cursor.description]
-        if len(rows) > 1 and "episode" not in columns:
-            raise SceneUnavailable(
-                f"this run has {len(rows)} sim_recording rows and no episode column to tell "
-                "which is the last episode's, so which world to build is not known.")
-        if "episode" in columns:
-            at = columns.index("episode")
-            rows.sort(key=lambda r: (r[at] is not None, r[at] if r[at] is not None else 0))
-        row = rows[-1] if rows else None
         if row is None:
             raise SceneUnavailable(
                 "this run has no sim_recording row, so there is nothing to replay and no world to "
                 "build geometry from. The recording is the simulator backend's to write -- see its "
                 "documentation for what enables one -- and a run that never reached its first "
                 "sample leaves none.")
-        record = dict(zip(columns, row))
+        record = dict(zip((d[0] for d in cursor.description), row))
         return {name: record.get(name) for name in self._SCENE_RECORDING_COLUMNS}
 
     def _run_recording_path(self, campaign_id: str, config_name: str, run_id: str):
-        """Where the recording of this run's last episode sits, or ``None`` for a campaign whose
-        simulator records none or whose configuration cannot say."""
+        """Where this run's recording sits, or ``None`` for a campaign whose simulator records none
+        or whose configuration cannot say."""
         from robovast.common.simulators import \
             run_state_filename  # pylint: disable=import-outside-toplevel
-        run_dir = self._run_dir(campaign_id, config_name, run_id)
         try:
-            filename = run_state_filename(self._campaign_execution(campaign_id), str(run_dir))
+            filename = run_state_filename(self._campaign_execution(campaign_id))
         except Exception:  # noqa: BLE001 - an unreadable config is reported by the read itself
             return None
         if not filename:
             return None
-        return run_dir / filename
+        return self._run_state_path(campaign_id, config_name, run_id, filename)
 
     @abstractmethod
     def _scene_runner_context(self, identity: dict, on_wait=None):
@@ -5560,9 +5548,11 @@ class ServiceBase(RobovastInterface):
         del workspace_id
         return self.resolve_campaign_scene_asset("", path)
 
-    def _run_dir(self, campaign_id: str, config_name: str, run_id: str) -> Path:
-        """This run's directory, which its recordings are named relative to."""
-        return self.campaign_dir(campaign_id) / config_name / str(run_id)
+    def _run_state_path(self, campaign_id: str, config_name: str, run_id: str,
+                        filename: str) -> Path:
+        """Where this run's recording sits."""
+        return (self.campaign_dir(campaign_id) / config_name / str(run_id)
+                / filename)
 
     def campaign_screenshot(self, campaign_id, config_name, run_id, *, at=None, view=None,
                             focus=None, camera=None, size="960x720") -> "ScreenshotFrame":  # noqa: F821
@@ -5581,10 +5571,10 @@ class ServiceBase(RobovastInterface):
             identity, _key = self._scene_identity(campaign_id, config_name, run_id)
         except SceneUnavailable as err:
             raise screenshot.ScreenshotUnavailable(str(err)) from err
-        run_dir = self._run_dir(campaign_id, config_name, run_id)
         frame = screenshot.render(
             identity,
-            state_path=run_dir / screenshot.state_filename(identity, run_dir),
+            state_path=self._run_state_path(campaign_id, config_name, run_id,
+                                            screenshot.state_filename(identity)),
             at=at, view=view or {}, focus=focus or [], camera=camera, size=size,
             runner_context=self._scene_runner_context(identity))
         kept = screenshot.keep(campaign_id, frame)

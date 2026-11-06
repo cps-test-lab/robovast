@@ -2244,17 +2244,6 @@ class DataDescribe(BaseModel):
     note: str = ""
 
 
-class TrackDeviationEpisode(BaseModel):
-    """One episode's track against the path: the run's figures, for that episode alone."""
-
-    episode: int
-    points: int = 0
-    mean_m: Optional[float] = None
-    max_m: Optional[float] = None
-    track_length_m: float = 0.0
-    efficiency: Optional[float] = None
-
-
 class TrackDeviation(BaseModel):
     """How far one recorded track stayed from a path its configuration contributed.
 
@@ -2263,10 +2252,6 @@ class TrackDeviation(BaseModel):
     whose points state no height (a floor plan's) is compared in the plane, since the tracked
     frame sits above the floor -- and both lengths are then measured in the plane too, so the
     two are comparable.
-
-    A run of several episodes drove the path once in each, and its sim time starts over at
-    each reset: ``episodes`` measures each on its own, and the run's figures are over all of
-    them.
     """
 
     campaign_id: str
@@ -2280,16 +2265,12 @@ class TrackDeviation(BaseModel):
     mean_m: Optional[float] = None
     max_m: Optional[float] = None
     path_length_m: float = 0.0
-    #: How far the track itself ran, summed between consecutive poses of one episode on the
-    #: measurement clock.
+    #: How far the track itself ran, summed between consecutive poses on the measurement clock.
     track_length_m: float = 0.0
     #: ``path_length_m / track_length_m``: how much of the driving the path accounts for. 1.0 is
     #: a track as short as the path it followed; below it, the run drove further than the path is
-    #: long. ``None`` for a track that did not move, and for a run of several episodes, whose
-    #: efficiency is each episode's.
+    #: long. ``None`` for a track that did not move.
     efficiency: Optional[float] = None
-    #: The figures per episode, in episode order; empty for a table without ``episode``.
-    episodes: list[TrackDeviationEpisode] = Field(default_factory=list)
 
 
 class ArrowQueryRequest(BaseModel):
@@ -4150,9 +4131,7 @@ class RobovastInterface(ABC):
         the key would be a camera pose and a moment.
 
         Needs a simulator that can re-render (``SimulatorBackend.simulation_screenshot``) and a
-        run that recorded its state. Raises with the reason when either is missing. A run
-        recorded in several episodes is rendered from its last, and *at* is that episode's
-        simulated time.
+        run that recorded its state. Raises with the reason when either is missing.
 
         The service keeps each render for a while and serves it at
         :meth:`Routes.campaign_screenshot_frame` under the returned ``name``, so it can be
