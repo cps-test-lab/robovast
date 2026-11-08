@@ -462,7 +462,7 @@ and its ``extends`` chain — and "world" understates what a campaign selects.
 .. _roqsim-renderer:
 
 The renderer its cameras draw through
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+`````````````````````````````````````
 
 roqsim draws every camera through one renderer, MuJoCo's own unless the world chooses another
 (roqsim's ``docs/rendering.rst``). A renderer that is not MuJoCo's needs something of the job, and
@@ -495,17 +495,21 @@ roqsim draws every camera through one renderer, MuJoCo's own unless the world ch
   configuration varies them through the ``sim:`` channel like any other world key.
 - ``gpu`` is for a renderer in roqsim's process: the container running the simulator (the
   ``simulation`` container in the ROS shape, the ``scenario`` container in the stepped one) asks
-  for that many GPUs. A ``resources`` the author wrote keeps its keys and gains ``gpu``.
+  for that many GPUs. A ``resources`` the author wrote keeps its keys and gains ``gpu`` where it
+  states none.
 - ``service`` is for a renderer in a process of its own: RoboVAST starts its ``image`` as the
   job's ``renderer`` container, with ``command`` (``{address}`` in it is replaced), and points
   the world's renderer at that address, a Unix socket on the ``/ipc`` directory every container of
   the job shares (``sim.renderers.<name>.address``; its ``command`` is cleared, since the job, not
-  roqsim, starts the server). The renderer is a subclass of roqsim's socket renderer, and its
-  ``open_timeout_s`` is how long roqsim waits for the server to come up. The container is a
-  sidecar, held to the sidecar contract, and the simulator needs no GPU.
+  roqsim, starts the server). The renderer is roqsim's socket renderer or a subclass of it: its
+  ``connect_timeout_s`` is how long roqsim waits for the server to accept, and ``open_timeout_s``
+  how long the server may take to load the scene. The container is an ad-hoc container of the
+  job: an image RoboVAST neither builds nor publishes states its ``provenance``, and the simulator
+  needs no GPU.
 
-The image must carry the renderer: an in-process renderer's package in the simulator's image
-(``python_packages``), a service's in its own. A renderer the image does not have is refused when
+The images must carry the renderer: an in-process renderer's package in the simulator's image
+(``python_packages``); for a service, the socket renderer it names in the simulator's image and
+its server in the service's own. A renderer the simulator's image does not have is refused when
 the world loads, naming the ones it has.
 
 .. _sim-channel:

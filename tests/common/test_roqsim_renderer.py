@@ -27,6 +27,11 @@ def _execution(mode="base", renderer=None, **sim):
     return {"mode": mode, "runs": 1, "containers": {"simulation": block}}
 
 
+#: A renderer image RoboVAST does not build, with the provenance that makes it identifiable.
+_SERVICE = {"image": "r:1", "command": ["serve"],
+            "provenance": {"source": "https://example.org/renderer", "revision": "1"}}
+
+
 def _document(execution):
     from robovast.common.simulators import resolve_backend, _validated_cfg
 
@@ -68,6 +73,13 @@ def test_the_author_s_overrides_are_kept_beside_the_renderer():
         "sim": {"renderer": "splat", "renderers": {"splat": {"min_opacity": 0.05}}}}
 
 
+def test_a_renderer_service_from_the_family_needs_no_provenance():
+    ex = _execution("ros2", {"name": "raytracer", "service": {
+        "image": "family:robovast-roqsim", "command": ["serve"]}})
+    applied = apply_backend(dict(ex))
+    assert "provenance" not in applied["containers"]["renderer"]
+
+
 def test_a_renderer_service_runs_in_its_own_container_and_the_world_reaches_it():
     service = {"image": "registry.example.org/renderer:1",
                "command": ["serve", "--listen", "{address}"],
@@ -81,6 +93,7 @@ def test_a_renderer_service_runs_in_its_own_container_and_the_world_reaches_it()
     assert renderer["image"] == "registry.example.org/renderer:1"
     assert renderer["command"] == ["serve", "--listen", "unix:/ipc/roqsim-render.sock"]
     assert renderer["resources"] == {"gpu": 1, "memory": "24Gi"}
+    assert renderer["provenance"] == {"source": "https://example.org/renderer", "revision": "1"}
     # The simulator draws nothing itself, so it needs no GPU.
     assert "resources" not in applied["containers"]["simulation"]
     assert _document(ex) == {"sim": {"renderer": "raytracer", "renderers": {"raytracer": {
@@ -90,12 +103,17 @@ def test_a_renderer_service_runs_in_its_own_container_and_the_world_reaches_it()
 @pytest.mark.parametrize(("renderer", "overrides", "message"), [
     ({"name": "splat", "gpu": 1}, {"sim": {"renderer": "mujoco"}},
      "overrides set sim.renderer to 'mujoco' and renderer.name is 'splat'"),
-    ({"name": "raytracer", "gpu": 1, "service": {"image": "r:1", "command": ["serve"]}}, None,
+    ({"name": "raytracer", "gpu": 1, "service": _SERVICE}, None,
      "a renderer service draws in its own container"),
-    ({"name": "raytracer", "service": {"image": "r:1", "command": ["serve"]}},
+    ({"name": "raytracer", "service": _SERVICE},
      {"sim": {"renderers": {"raytracer": {"address": "tcp://elsewhere:1"}}}},
      "overrides set sim.renderers.raytracer.address"),
     ({"name": "splat", "gpus": 1}, None, "gpus"),
+    ({"name": "raytracer", "service": {"image": "r:1", "command": ["serve"]}}, None,
+     "renderer.service.provenance"),
+    ({"name": "raytracer", "service": {**_SERVICE, "resources": {"gpus": 1}}}, None, "gpus"),
+    ({"name": "raytracer", "service": {**_SERVICE, "provenance": {"source": "x"}}}, None,
+     "revision"),
 ])
 def test_a_renderer_that_contradicts_itself_is_refused_at_composition(
         renderer, overrides, message):

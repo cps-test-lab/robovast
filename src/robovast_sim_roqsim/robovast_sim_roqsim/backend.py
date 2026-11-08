@@ -13,7 +13,9 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from robovast.client.safe_path import UnsafePathError, check_relative
-from robovast.common.execution import IPC_DIR, MEMBER_ROQSIM, family_image_ref
+from robovast.common.config import ImageProvenanceConfig, ResourcesConfig
+from robovast.common.execution import (IMAGE_TIER_OPAQUE, IPC_DIR, MEMBER_ROQSIM, family_image_ref,
+                                       image_provenance_tier)
 from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER, SCENE_FILE, SHAPE_ROS,
                                         SHAPE_STEPPED, SIM_OVERRIDES_MOUNT, SIM_QUERY_OVERRIDES_MOUNT,
                                         SIMULATION_CONTAINER, ContainerQuery, SimulatorBackend,
@@ -53,16 +55,30 @@ class RendererService(BaseModel):
 
     roqsim reaches it through its socket renderer (``roqsim.render_socket``): the backend points
     the renderer's ``address`` at :data:`RENDERER_ADDRESS`, and the service's ``command`` starts
-    its server there (``{address}`` in it is replaced by that address). The image is a sidecar's,
-    held to the sidecar contract, and states its ``provenance`` when it is not one RoboVAST builds.
+    its server there (``{address}`` in it is replaced by that address). It becomes an ad-hoc
+    container of the job, so its ``provenance`` and ``resources`` are the container keys of those
+    names, and an image RoboVAST neither builds nor publishes states where it came from.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     image: str
     command: list[str] = Field(min_length=1)
-    provenance: Optional[dict] = None
-    resources: Optional[dict] = None
+    provenance: Optional[ImageProvenanceConfig] = None
+    resources: Optional[ResourcesConfig] = None
+
+    @model_validator(mode="after")
+    def _image_is_identifiable(self):
+        """Held to the rule every authored container is: the container is the backend's, so the
+        check that reads ``execution.containers`` never sees it."""
+        tier, _why = image_provenance_tier(
+            RENDERER_CONTAINER, {"image": self.image, "provenance": self.provenance})
+        if tier == IMAGE_TIER_OPAQUE:
+            raise ValueError(
+                f"renderer.service.image {self.image!r} is an image RoboVAST neither builds nor "
+                "publishes; state where it came from in renderer.service.provenance "
+                "({source, revision}), or the results cannot say what drew the cameras")
+        return self
 
 
 class RoqsimRenderer(BaseModel):
@@ -297,9 +313,9 @@ class RoqsimBackend(SimulatorBackend):
         block = {"image": service.image,
                  "command": [arg.replace("{address}", RENDERER_ADDRESS) for arg in service.command]}
         if service.provenance is not None:
-            block["provenance"] = service.provenance
+            block["provenance"] = service.provenance.model_dump(exclude_none=True)
         if service.resources is not None:
-            block["resources"] = service.resources
+            block["resources"] = service.resources.model_dump(exclude_none=True)
         return {**containers, RENDERER_CONTAINER: block}
 
     def simulation_ref(self, cfg, execution: dict) -> Optional[str]:
