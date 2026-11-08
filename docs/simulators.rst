@@ -499,8 +499,8 @@ roqsim draws every camera through one renderer, MuJoCo's own unless the world ch
   configuration varies them through the ``sim:`` channel like any other world key.
 - ``gpu`` is for a renderer in roqsim's process: the container running the simulator (the
   ``simulation`` container in the ROS shape, the ``scenario`` container in the stepped one) asks
-  for that many GPUs. A ``resources`` the author wrote keeps its keys and gains ``gpu`` where it
-  states none.
+  for that many GPUs. A ``resources`` the author wrote keeps its keys and gains ``gpu``; one that
+  states another ``gpu`` is refused.
 - ``service`` is for a renderer in a process of its own: RoboVAST starts its ``image`` as the
   job's ``renderer`` container, with ``command`` (``{address}`` in it is replaced), and points
   the world's renderer at that address, a Unix socket on the ``/ipc`` directory every container of

@@ -66,6 +66,14 @@ def test_the_author_s_resources_keep_their_keys_and_gain_the_gpu():
     assert applied["containers"]["scenario"]["resources"] == {"cpu": 4, "memory": "16Gi", "gpu": 1}
 
 
+@pytest.mark.parametrize("block", ["simulation", "scenario"])
+def test_an_authored_gpu_that_contradicts_the_renderer_s_is_refused(block):
+    ex = _execution("base", {"name": "splat", "gpu": 1})
+    ex["containers"].setdefault(block, {})["resources"] = {"cpu": 4, "gpu": 0}
+    with pytest.raises(ValueError, match="state the renderer's GPUs once"):
+        apply_backend(dict(ex))
+
+
 def test_the_author_s_overrides_are_kept_beside_the_renderer():
     ex = _execution("base", {"name": "splat", "gpu": 1},
                     overrides={"sim": {"renderers": {"splat": {"min_opacity": 0.05}}}})

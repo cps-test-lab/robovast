@@ -290,24 +290,34 @@ class RoqsimBackend(SimulatorBackend):
                 # the cell. RoboVAST mounts the document; this only names where.
                 command += ["--override", SIM_OVERRIDES_MOUNT]
             return self._with_renderer(
-                cfg, {SIMULATION_CONTAINER: {"image": image, "command": command}},
+                cfg, execution, {SIMULATION_CONTAINER: {"image": image, "command": command}},
                 SIMULATION_CONTAINER)
         # Stepped: scenario-execution calls step(), so the simulator is in its process
         # and the two roles are one container.
-        return self._with_renderer(cfg, {SCENARIO_CONTAINER: {"image": image}}, SCENARIO_CONTAINER)
+        return self._with_renderer(
+            cfg, execution, {SCENARIO_CONTAINER: {"image": image}}, SCENARIO_CONTAINER)
 
     @staticmethod
-    def _with_renderer(cfg, containers: dict, simulator: str) -> dict:
+    def _with_renderer(cfg, execution: dict, containers: dict, simulator: str) -> dict:
         """*containers* with what the renderer adds to the job: a GPU on the container running
         the simulator, or the renderer's own container.
 
         Merged under the author's blocks like every backend default: a ``resources`` the author
-        wrote keeps its keys, and gains ``gpu`` only where it states none.
+        wrote keeps its keys and gains ``gpu``. A ``gpu`` the author wrote there that differs from
+        ``renderer.gpu`` is refused rather than either one being ignored.
         """
         renderer = cfg.renderer
         if renderer is None:
             return containers
         if renderer.service is None:
+            authored = execution.get("containers") or {}
+            for name in dict.fromkeys((SIMULATION_CONTAINER, simulator)):
+                gpu = ((authored.get(name) or {}).get("resources") or {}).get("gpu")
+                if renderer.gpu and gpu is not None and gpu != renderer.gpu:
+                    raise ValueError(
+                        f"execution.containers.{name}.resources.gpu is {gpu!r} and "
+                        f"renderer.gpu is {renderer.gpu!r}; state the renderer's GPUs once, in "
+                        "renderer.gpu")
             if renderer.gpu:
                 containers[simulator]["resources"] = {"gpu": renderer.gpu}
             return containers
