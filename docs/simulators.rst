@@ -459,8 +459,8 @@ following anything.
 
 Its own keys are ``config`` (a world YAML beside the ``.vast``, or a package ref such as
 ``roqsim_scenes:depot``), ``overrides`` (what the ``sim:`` channel below writes into),
-``renderer`` (below) and ``adapter`` (the stepped shape's ``SimulationInterface``). It is ``config`` rather than
-``world`` because the file is roqsim's whole configuration — physics, plugins, robot, sensors
+``renderer`` (below) and ``adapter`` (the stepped shape's ``SimulationInterface``). It is
+``config`` rather than ``world`` because the file is roqsim's whole configuration — physics, plugins, robot, sensors
 and its ``extends`` chain — and "world" understates what a campaign selects.
 
 .. _roqsim-renderer:
@@ -502,14 +502,15 @@ roqsim draws every camera through one renderer, MuJoCo's own unless the world ch
   for that many GPUs. A ``resources`` the author wrote keeps its keys and gains ``gpu``; one that
   states another ``gpu`` is refused.
 - ``service`` is for a renderer in a process of its own: RoboVAST starts its ``image`` as the
-  job's ``renderer`` container, with ``command`` (``{address}`` in it is replaced), and points
-  the world's renderer at that address, a Unix socket on the ``/ipc`` directory every container of
-  the job shares (``sim.renderers.<name>.address``; its ``command`` is cleared, since the job, not
-  roqsim, starts the server). The renderer is roqsim's socket renderer or a subclass of it: its
-  ``connect_timeout_s`` is how long roqsim waits for the server to accept, and ``open_timeout_s``
-  how long the server may take to load the scene. The container is an ad-hoc container of the
-  job: an image RoboVAST neither builds nor publishes states its ``provenance``, and the simulator
-  needs no GPU.
+  job's ``renderer`` container, with ``command`` (which must contain ``{address}``, replaced by
+  that address), and points the world's renderer at the address, a Unix socket on the ``/ipc``
+  directory every container of the job shares (``sim.renderers.<name>.address``; its
+  ``command`` is cleared, since the job, not roqsim, starts the server). The renderer is roqsim's
+  socket renderer or a subclass of it: its ``connect_timeout_s`` is how long roqsim waits for the
+  server to accept, and ``open_timeout_s`` how long the server may take to load the scene. The
+  container is an ad-hoc container of the job: an image RoboVAST neither builds nor publishes
+  states its ``provenance``, a ``renderer`` block of the author's own beside it is refused, and
+  the simulator needs no GPU.
 
 ``renderer`` is set once for the campaign: a configuration varies the renderer's settings
 (``sim.renderers.<name>``), not which renderer draws or what the job gives it, and a ``sim:``

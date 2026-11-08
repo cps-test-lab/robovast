@@ -67,6 +67,16 @@ class RendererService(BaseModel):
     provenance: Optional[ImageProvenanceConfig] = None
     resources: Optional[ResourcesConfig] = None
 
+    @field_validator("command")
+    @classmethod
+    def _command_names_the_address(cls, command):
+        """The server listens where roqsim reaches it only when it is told where."""
+        if not any("{address}" in arg for arg in command):
+            raise ValueError(
+                "renderer.service.command must contain '{address}', where the server listens "
+                "and roqsim's socket renderer connects")
+        return command
+
     @model_validator(mode="after")
     def _image_is_identifiable(self):
         """Held to the rule every authored container is: the container is the backend's, so the
@@ -317,11 +327,16 @@ class RoqsimBackend(SimulatorBackend):
                     raise ValueError(
                         f"execution.containers.{name}.resources.gpu is {gpu!r} and "
                         f"renderer.gpu is {renderer.gpu!r}; state the renderer's GPUs once, in "
-                        "renderer.gpu")
+                        "renderer.gpu, or for a per-cluster figure leave renderer.gpu unset and "
+                        f"write it in execution.containers.{name}.resources.gpu")
             if renderer.gpu:
                 containers[simulator]["resources"] = {"gpu": renderer.gpu}
             return containers
         service = renderer.service
+        if (execution.get("containers") or {}).get(RENDERER_CONTAINER) is not None:
+            raise ValueError(
+                f"execution.containers.{RENDERER_CONTAINER} is the container renderer.service "
+                "starts; state its image, command and resources in renderer.service")
         block = {"image": service.image,
                  "command": [arg.replace("{address}", RENDERER_ADDRESS) for arg in service.command]}
         if service.provenance is not None:

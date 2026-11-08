@@ -28,7 +28,7 @@ def _execution(mode="base", renderer=None, **sim):
 
 
 #: A renderer image RoboVAST does not build, with the provenance that makes it identifiable.
-_SERVICE = {"image": "r:1", "command": ["serve"],
+_SERVICE = {"image": "r:1", "command": ["serve", "{address}"],
             "provenance": {"source": "https://example.org/renderer", "revision": "1"}}
 
 
@@ -66,6 +66,13 @@ def test_the_author_s_resources_keep_their_keys_and_gain_the_gpu():
     assert applied["containers"]["scenario"]["resources"] == {"cpu": 4, "memory": "16Gi", "gpu": 1}
 
 
+def test_an_authored_renderer_container_beside_the_service_is_refused():
+    ex = _execution("ros2", {"name": "raytracer", "service": _SERVICE})
+    ex["containers"]["renderer"] = {"image": "mine:1"}
+    with pytest.raises(ValueError, match="the container renderer.service starts"):
+        apply_backend(dict(ex))
+
+
 @pytest.mark.parametrize("block", ["simulation", "scenario"])
 def test_an_authored_gpu_that_contradicts_the_renderer_s_is_refused(block):
     ex = _execution("base", {"name": "splat", "gpu": 1})
@@ -83,7 +90,7 @@ def test_the_author_s_overrides_are_kept_beside_the_renderer():
 
 def test_a_renderer_service_from_the_family_needs_no_provenance():
     ex = _execution("ros2", {"name": "raytracer", "service": {
-        "image": "family:robovast-roqsim", "command": ["serve"]}})
+        "image": "family:robovast-roqsim", "command": ["serve", "{address}"]}})
     applied = apply_backend(dict(ex))
     assert "provenance" not in applied["containers"]["renderer"]
 
@@ -117,8 +124,10 @@ def test_a_renderer_service_runs_in_its_own_container_and_the_world_reaches_it()
      {"sim": {"renderers": {"raytracer": {"address": "tcp://elsewhere:1"}}}},
      "overrides set sim.renderers.raytracer.address"),
     ({"name": "splat", "gpus": 1}, None, "gpus"),
-    ({"name": "raytracer", "service": {"image": "r:1", "command": ["serve"]}}, None,
+    ({"name": "raytracer", "service": {"image": "r:1", "command": ["serve", "{address}"]}}, None,
      "renderer.service.provenance"),
+    ({"name": "raytracer", "service": {**_SERVICE, "command": ["serve"]}}, None,
+     "must contain '{address}'"),
     ({"name": "raytracer", "service": {**_SERVICE, "resources": {"gpus": 1}}}, None, "gpus"),
     ({"name": "raytracer", "service": {**_SERVICE, "provenance": {"source": "x"}}}, None,
      "revision"),
