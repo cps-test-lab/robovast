@@ -152,6 +152,16 @@ def test_a_backend_default_fills_the_keys_an_authored_mapping_leaves_out(monkeyp
     assert ex["containers"]["scenario"]["resources"] == {"gpu": 0, "cpu": 2}
 
 
+def test_a_provenance_is_one_image_s_and_is_never_filled_from_another_block(monkeypatch):
+    import robovast.common.simulators as mod
+    monkeypatch.setattr(mod, "resolve_backend", lambda name, base_dir="": StubBackend())
+    ex = apply_backend({"mode": "base", "containers": {
+        "simulation": {"backend": "stub", "stage": "s", "image": "a:1",
+                       "provenance": {"source": "https://example.org/a", "revision": "1"}},
+        "scenario": {"image": "b:1", "provenance": {"source": "https://example.org/b"}}}})
+    assert ex["containers"]["scenario"]["provenance"] == {"source": "https://example.org/b"}
+
+
 def test_a_query_is_asked_in_the_image_the_run_will_use():
     """``simulator_image`` and ``apply_backend`` answer one question, so they answer it alike.
 

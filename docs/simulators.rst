@@ -146,6 +146,10 @@ Hooks, all optional except as noted:
 ``DOTTED_ROOT``
    The backend key a bare dotted ``sim:`` path lands under, or ``None`` for no short form
    (:ref:`varying the simulator <sim-channel>`).
+``CAMPAIGN_KEYS``
+   The backend's own keys a configuration may not vary through ``sim:``: those that shape the
+   job's containers (a GPU, a container of its own), which are planned once per campaign while
+   the world, command and environment are each configuration's own.
 ``ASSET_ENTRY_POINT_GROUPS``
    Entry-point groups whose providers supply the simulator's assets: which of the
    distributions a run records (version, and commit for a VCS install) its results name as
@@ -506,6 +510,10 @@ roqsim draws every camera through one renderer, MuJoCo's own unless the world ch
   how long the server may take to load the scene. The container is an ad-hoc container of the
   job: an image RoboVAST neither builds nor publishes states its ``provenance``, and the simulator
   needs no GPU.
+
+``renderer`` is set once for the campaign: a configuration varies the renderer's settings
+(``sim.renderers.<name>``), not which renderer draws or what the job gives it, and a ``sim:``
+value naming ``renderer`` is refused.
 
 The images must carry the renderer: an in-process renderer's package in the simulator's image
 (``python_packages``); for a service, the socket renderer it names in the simulator's image and

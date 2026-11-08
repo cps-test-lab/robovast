@@ -249,6 +249,8 @@ class RoqsimBackend(SimulatorBackend):
     #: world file, because a bare backend key wins; a world key colliding with one is
     #: reached by spelling this root out.
     DOTTED_ROOT = "overrides"
+    #: What the renderer needs of the job, a GPU or a container, is planned once per campaign.
+    CAMPAIGN_KEYS = frozenset({"renderer"})
 
     #: Where roqsim's worlds and models come from. Naming these belongs HERE and nowhere else:
     #: this distribution exists to be the one place that knows roqsim, so core stays free of

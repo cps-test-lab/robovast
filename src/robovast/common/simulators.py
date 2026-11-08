@@ -130,6 +130,15 @@ class SimulatorBackend:
     #: ``sim:`` value must name one of this backend's keys.
     DOTTED_ROOT: Optional[str] = None
 
+    #: This backend's own keys that a configuration may not vary through ``sim:``.
+    #:
+    #: A job takes its simulator's command, environment and world document from its own
+    #: configuration's block (:func:`sim_job_overlay`), but its containers and their resources
+    #: are planned once, from the campaign's. A key that shapes those -- a GPU, a container of
+    #: its own -- would reach the world of one configuration while its job ran without what the
+    #: value asked for, so a ``sim:`` value naming it is refused.
+    CAMPAIGN_KEYS: frozenset = frozenset()
+
     #: Entry-point groups whose *providers* supplied this campaign's assets, as strings.
     #:
     #: A simulator's worlds and models often come from separate distributions resolved by
@@ -1068,7 +1077,13 @@ def merge_sim_block(execution: dict, sim_values=None, base_dir: str = "", *,
     for path, value in flatten_sim_block(campaign_sim_block(execution)).items():
         _deep_set(merged, resolve_sim_path(backend, path, name), value)
     for path, value in (sim_values or {}).items():
-        _deep_set(merged, resolve_sim_path(backend, path, name), value)
+        resolved = resolve_sim_path(backend, path, name)
+        if resolved[0] in backend.CAMPAIGN_KEYS:
+            raise ValueError(
+                f"sim: {path} varies '{resolved[0]}' of simulator backend '{name}', which "
+                "shapes the job's containers and is set once for the campaign, in "
+                f"execution.containers.simulation.{resolved[0]}")
+        _deep_set(merged, resolved, value)
 
     if deploy_paths:
         # The config mount itself: a configuration's own copy of a file is staged where the
@@ -1195,12 +1210,18 @@ def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
     }
 
 
-def _set_if_unset(block: dict, key: str, value) -> None:
-    """Fill ``key`` when the block does not really carry a value for it, and a mapping key for key.
+#: Container keys whose mapping is filled key by key rather than as a whole: a
+#: ``resources: {cpu: 4}`` and a backend's ``resources: {gpu: 1}`` are a job asking for both, not
+#: a choice between them. Not ``provenance``: its keys describe one image together, and filling
+#: one from another block's would describe an image that does not exist.
+_MERGED_MAPPINGS = ("resources",)
 
-    A mapping the author wrote keeps every key they set and gains the backend's others: a
-    ``resources: {cpu: 4}`` and a backend's ``resources: {gpu: 1}`` are a job asking for both, not
-    a choice between them, so a renderer's GPU is not dropped because the author sized the CPU.
+
+def _set_if_unset(block: dict, key: str, value) -> None:
+    """Fill ``key`` when the block does not really carry a value for it.
+
+    The keys of :data:`_MERGED_MAPPINGS` are filled key by key: a mapping the author wrote keeps
+    every key they set and gains the backend's others.
 
     Not ``setdefault``: an unset optional field survives ``model_dump()`` as an explicit
     ``None``, so the key is *present* and ``setdefault`` declines -- and every backend
@@ -1210,11 +1231,8 @@ def _set_if_unset(block: dict, key: str, value) -> None:
     image. Treating ``None`` as "unset" makes both callers agree.
     """
     current = block.get(key)
-    if isinstance(current, dict) and isinstance(value, dict):
-        merged = dict(current)
-        for inner, inner_value in value.items():
-            _set_if_unset(merged, inner, inner_value)
-        block[key] = merged
+    if key in _MERGED_MAPPINGS and isinstance(current, dict) and isinstance(value, dict):
+        block[key] = {**value, **{k: v for k, v in current.items() if v is not None}}
     elif current is None:
         block[key] = value
 

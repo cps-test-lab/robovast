@@ -120,3 +120,21 @@ def test_a_renderer_that_contradicts_itself_is_refused_at_composition(
     ex = _execution("base", renderer, **({"overrides": overrides} if overrides else {}))
     with pytest.raises(ValueError, match=message):
         apply_backend(dict(ex))
+
+
+@pytest.mark.parametrize("path", ["renderer.name", "renderer.gpu", "renderer"])
+def test_a_configuration_cannot_vary_what_the_renderer_needs_of_the_job(path):
+    from robovast.common.simulators import merge_sim_block
+
+    ex = _execution("base", {"name": "splat", "gpu": 1})
+    with pytest.raises(ValueError, match="set once for the campaign"):
+        merge_sim_block(ex, {path: {"name": "splat"} if path == "renderer" else "splat"})
+
+
+def test_a_configuration_varies_the_renderer_s_settings():
+    from robovast.common.simulators import merge_sim_block
+
+    ex = _execution("base", {"name": "splat", "gpu": 1})
+    block = merge_sim_block(ex, {"sim.renderers.splat.min_opacity": 0.1})
+    assert block["renderer"] == {"name": "splat", "gpu": 1}
+    assert block["overrides"] == {"sim": {"renderers": {"splat": {"min_opacity": 0.1}}}}
