@@ -462,8 +462,9 @@ following anything.
 Its own keys are ``config`` (a world YAML beside the ``.vast``, or a package ref such as
 ``roqsim_scenes:depot``), ``overrides`` (what the ``sim:`` channel below writes into),
 ``renderer`` (below) and ``adapter`` (the stepped shape's ``SimulationInterface``). It is
-``config`` rather than ``world`` because the file is roqsim's whole configuration — physics, plugins, robot, sensors
-and its ``extends`` chain — and "world" understates what a campaign selects.
+``config`` rather than ``world`` because the file is roqsim's whole configuration — physics,
+plugins, robot, sensors and its ``extends`` chain — and "world" understates what a campaign
+selects.
 
 .. _roqsim-renderer:
 

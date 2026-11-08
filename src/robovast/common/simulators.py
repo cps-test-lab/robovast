@@ -170,9 +170,14 @@ class SimulatorBackend:
     def containers(self, cfg, execution: dict) -> dict:
         """Container blocks this backend contributes, keyed by container name.
 
-        Merged *underneath* what the campaign declared, so an author always wins. This
-        is where a backend supplies its default image, and -- in the ``ros`` shape --
-        the command that starts the simulator in its own container.
+        Merged *underneath* what the campaign declared, so an author always wins; ``resources``
+        are filled key by key. This is where a backend supplies its default image, and -- in the
+        ``ros`` shape -- the command that starts the simulator in its own container. A container
+        named other than a role is the backend's alone: :func:`apply_backend` refuses an authored
+        block of that name.
+
+        Asked again per job, by :func:`sim_job_overlay`, with the composed execution, which
+        already holds these blocks: a check here against ``execution`` must accept them.
         """
         return {}
 
