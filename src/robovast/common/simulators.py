@@ -46,7 +46,8 @@ import re
 import shlex
 from typing import Optional
 
-from robovast.common.config import (ALWAYS_ON_PANELS, SCENARIO_CONTAINER, SIMULATION_CONTAINER,
+from robovast.common.config import (ALWAYS_ON_PANELS, CONTAINER_ROLES, SCENARIO_CONTAINER,
+                                    SIMULATION_CONTAINER,
                                     RecordingConfig, recording_config,
                                     SUT_CONTAINER, flatten_panel_shorthand)
 
@@ -748,7 +749,16 @@ def apply_backend(execution: dict, base_dir: str = "") -> dict:
             if sim_block.get(key) is not None:
                 _set_if_unset(scenario_block, key, sim_block.pop(key))
 
+    authored = execution.get("containers") or {}
     for target, defaults in backend.containers(cfg, execution).items():
+        if target not in CONTAINER_ROLES and authored.get(target) is not None:
+            # A container of the backend's own, not a role the author may extend: merged under
+            # an authored block of that name, the author's image and command would run where
+            # the backend's are expected, and nothing would say so.
+            raise ValueError(
+                f"execution.containers.{target} is a container simulator backend '{name}' "
+                "starts; state it through the backend's own keys, or name your container "
+                "differently")
         block = containers.setdefault(target, {})
         for key, value in (defaults or {}).items():
             _set_if_unset(block, key, value)

@@ -69,8 +69,24 @@ def test_the_author_s_resources_keep_their_keys_and_gain_the_gpu():
 def test_an_authored_renderer_container_beside_the_service_is_refused():
     ex = _execution("ros2", {"name": "raytracer", "service": _SERVICE})
     ex["containers"]["renderer"] = {"image": "mine:1"}
-    with pytest.raises(ValueError, match="the container renderer.service starts"):
+    with pytest.raises(ValueError, match="is a container simulator backend 'roqsim' starts"):
         apply_backend(dict(ex))
+
+
+@pytest.mark.parametrize("renderer", [
+    {"name": "splat", "gpu": 1},
+    {"name": "raytracer", "service": _SERVICE},
+])
+@pytest.mark.parametrize("mode", ["base", "ros2"])
+def test_each_job_s_overlay_reads_the_composed_campaign(renderer, mode):
+    """A job's overlay is asked of the execution composition stored, its backend containers in it."""
+    from robovast.common.simulators import campaign_sim_block, merge_sim_block, sim_job_overlay
+
+    ex = _execution(mode, renderer, resources={"cpu": 4})
+    applied = apply_backend(dict(ex))
+    overlay = sim_job_overlay(applied, merge_sim_block(ex, {}))
+    assert overlay["document"]["sim"]["renderer"] == renderer["name"]
+    assert sim_job_overlay(applied, campaign_sim_block(ex))["document"] == overlay["document"]
 
 
 @pytest.mark.parametrize("block", ["simulation", "scenario"])

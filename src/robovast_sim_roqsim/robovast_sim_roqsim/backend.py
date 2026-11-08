@@ -333,10 +333,6 @@ class RoqsimBackend(SimulatorBackend):
                 containers[simulator]["resources"] = {"gpu": renderer.gpu}
             return containers
         service = renderer.service
-        if (execution.get("containers") or {}).get(RENDERER_CONTAINER) is not None:
-            raise ValueError(
-                f"execution.containers.{RENDERER_CONTAINER} is the container renderer.service "
-                "starts; state its image, command and resources in renderer.service")
         block = {"image": service.image,
                  "command": [arg.replace("{address}", RENDERER_ADDRESS) for arg in service.command]}
         if service.provenance is not None:

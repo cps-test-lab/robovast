@@ -160,7 +160,9 @@ Hooks, all optional except as noted:
    (the default) means everything the backend needs is already on argv.
 ``containers(cfg, execution)``
    Container blocks it contributes, merged **underneath** what the campaign declared, so
-   an author always wins.
+   an author always wins; ``resources`` are filled key by key. A container of the backend's own,
+   named other than a role (``scenario``, ``simulation``, ``sut``), is the backend's alone: an
+   authored block of that name is refused.
 ``simulation_ref(cfg, execution)``
    ``module:Class`` of the ``SimulationInterface`` — stepped shape only, and never called
    otherwise.
@@ -509,8 +511,8 @@ roqsim draws every camera through one renderer, MuJoCo's own unless the world ch
   socket renderer or a subclass of it: its ``connect_timeout_s`` is how long roqsim waits for the
   server to accept, and ``open_timeout_s`` how long the server may take to load the scene. The
   container is an ad-hoc container of the job: an image RoboVAST neither builds nor publishes
-  states its ``provenance``, a ``renderer`` block of the author's own beside it is refused, and
-  the simulator needs no GPU.
+  states its ``provenance``, an ``execution.containers.renderer`` of the author's own is
+  refused, and the simulator needs no GPU.
 
 ``renderer`` is set once for the campaign: a configuration varies the renderer's settings
 (``sim.renderers.<name>``), not which renderer draws or what the job gives it, and a ``sim:``
