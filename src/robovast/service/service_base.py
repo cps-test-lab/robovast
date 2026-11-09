@@ -63,7 +63,6 @@ from robovast.common.campaign_data import (LaunchImages, campaign_has_runs,
                                            read_campaign_results_bytes)
 from robovast.common.errors import InsufficientStorageError
 from robovast.common.store import read_campaign_created_at, read_campaign_description
-from robovast.execution.jobs import declared_runs_per_job, job_count
 from robovast.execution.control_server import (STOP_RUNS,
                                                ControllerState, Phase, Status, failure_detail,
                                                is_terminal, stop_checker)
@@ -4934,7 +4933,7 @@ class ServiceBase(RobovastInterface):
         progress lines."""
         from robovast.common.common import load_config
         from robovast.common.config_generation import generate_scenario_variations
-        from robovast.common.execution import planned_job_count
+        from robovast.common.execution import planned_job_count, planned_pod_statements
         aux_containers: list = []
         # Both branches compose, so both need whatever the service uses to reach a variation's
         # helper image -- and a search .vast reaches it through the same variation loop.
@@ -4986,6 +4985,7 @@ class ServiceBase(RobovastInterface):
         return PreviewResponse(configs=len(configs), runs_per_config=runs,
                                total_trials=len(configs) * runs,
                                jobs=planned_job_count(execution, configs, runs, vast_dir),
+                               pods=planned_pod_statements(execution, configs, runs, vast_dir),
                                configurations=items, truncated=truncated,
                                aux_containers=aux_containers,
                                # The config view is declared in the same file this expanded, and
