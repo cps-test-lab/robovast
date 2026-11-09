@@ -15,8 +15,8 @@ from robovast.client.safe_path import UnsafePathError, check_relative
 from robovast.common.execution import IPC_DIR, MEMBER_ROQSIM, family_image_ref
 from robovast.common.simulators import (CONFIG_MOUNT, SCENARIO_CONTAINER, SCENE_FILE, SHAPE_ROS,
                                         SHAPE_STEPPED, SIM_OVERRIDES_MOUNT, SIM_QUERY_OVERRIDES_MOUNT,
-                                        SIMULATION_CONTAINER, ContainerQuery, SimulatorBackend,
-                                        shape_for, simulator_image)
+                                        SIMULATION_CONTAINER, ContainerQuery, RunReset,
+                                        SimulatorBackend, shape_for, simulator_image)
 from robovast.common.variation.container_runner import ContainerSpec
 
 #: The ``SimulationInterface`` scenario-execution steps.
@@ -189,6 +189,22 @@ class RoqsimBackend(SimulatorBackend):
 
     def simulation_ref(self, cfg, execution: dict) -> Optional[str]:
         return cfg.adapter or ADAPTER
+
+    def run_reset(self, cfg, execution: dict) -> Optional[RunReset]:
+        """Stepped: the world and its overrides, as the adapter's ``reset()`` takes them.
+
+        The same two facts :meth:`env` states for the process (``ROQSIM_WORLD``,
+        ``ROQSIM_WORLD_OVERRIDES``), stated per run so one process can run several worlds. The
+        overrides go as the mapping itself rather than a file: the adapter compares mappings
+        to decide whether to rebuild, and an empty one is "no overrides" to it, so a
+        configuration without overrides neither inherits the process default nor rebuilds.
+        """
+        if shape_for(execution.get("mode", "auto")) != SHAPE_STEPPED:
+            return None
+        return RunReset(
+            arguments={"world": _config_in_container(cfg.config),
+                       "world_overrides": cfg.overrides or {}},
+            supersedes=("ROQSIM_WORLD", "ROQSIM_WORLD_OVERRIDES"))
 
     def env(self, cfg, execution: dict, recording) -> dict:
         """What has one correct value for any campaign, plus what ``execution.recording.roqsim`` asks.

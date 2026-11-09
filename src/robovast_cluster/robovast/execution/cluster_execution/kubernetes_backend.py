@@ -74,7 +74,8 @@ from robovast.common.execution import (COMPAT_VERSION_LABEL, build_job_parameter
                                        create_job_links, dump_multi_document_yaml,
                                        job_artifact_rel, node_label, plan_keys, pod_keys,
                                        read_job_links, recording_env, resolve_sidecar_image,
-                                       sidecar_backend_env, write_job_links_manifest)
+                                       run_reset_arguments, sidecar_backend_env,
+                                       write_job_links_manifest)
 from robovast.common.simulators import SIM_OVERRIDES_MOUNT, SIMULATION_CONTAINER, sim_job_overlay
 from robovast.execution.backends import (CampaignConfigError, ExecutionBackend, RunOptions,
                                          refuse_unimportable,
@@ -1346,12 +1347,16 @@ class BatchJobRunner:
         transient_dir = os.path.join(out_dir, "_transient")
         os.makedirs(transient_dir, exist_ok=True)
         jobs = self._build_jobs()
+        execution = self.campaign_data.get("execution") or {}
         for job in jobs:
-            docs = build_job_parameter_documents(job, scenario_name)
+            docs = build_job_parameter_documents(
+                job, scenario_name,
+                run_reset=lambda config: run_reset_arguments(execution, config, self._vast_dir()))
             params_name, sim_name = job_documents(self._job_tag(job.index))
             with open(os.path.join(transient_dir, params_name), "w") as f:
                 f.write(dump_multi_document_yaml(docs))
-            # The simulation channel's per-job document.
+            # The simulation channel's per-job document: the first item's, which is also the
+            # process default the first run is reset with (its document says the same).
             document = self._sim_overlay(job)["document"]
             if document:
                 with open(os.path.join(transient_dir, sim_name), "w") as f:
