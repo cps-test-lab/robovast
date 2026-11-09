@@ -35,7 +35,8 @@ def test_less_than_one_run_per_job_is_refused():
 
 
 def test_the_validation_report_says_what_the_trials_dispatch_as(tmp_path):
-    """A reader sees the job count beside the trial count before anything is dispatched."""
+    """A reader sees the job count beside the trial count before anything is dispatched: two
+    configurations whose pod is the same pack together, ten runs at two per job being five."""
     from robovast.common.config_validation import validate_project_file
     (tmp_path / "scenario.osc").write_text("import osc.helpers\n\nscenario trial:\n"
                                            "    do serial:\n        wait elapsed(1s)\n")
@@ -46,7 +47,7 @@ def test_the_validation_report_says_what_the_trials_dispatch_as(tmp_path):
         "  mode: base\n  runs: 5\n  runs_per_job: 2\n")
     report = validate_project_file(str(vast))
     assert (report["configs"], report["runs_per_config"], report["total_trials"]) == (2, 5, 10)
-    assert report["jobs"] == 6
+    assert report["jobs"] == 5
 
 
 def test_the_deadline_is_the_runs_budget_times_the_jobs_runs():

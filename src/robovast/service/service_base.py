@@ -4934,6 +4934,7 @@ class ServiceBase(RobovastInterface):
         progress lines."""
         from robovast.common.common import load_config
         from robovast.common.config_generation import generate_scenario_variations
+        from robovast.common.execution import planned_job_count
         aux_containers: list = []
         # Both branches compose, so both need whatever the service uses to reach a variation's
         # helper image -- and a search .vast reaches it through the same variation loop.
@@ -4951,6 +4952,7 @@ class ServiceBase(RobovastInterface):
                     raise ValueError(str(e)) from e
                 configs = sample["configs"]
                 runs = sample["runs_per_config"]
+                execution = sample["execution"]
             else:
                 try:
                     campaign_data = generate_scenario_variations(
@@ -4959,7 +4961,8 @@ class ServiceBase(RobovastInterface):
                 except Exception as e:  # noqa: BLE001 - surface resolution errors as 400
                     raise ValueError(str(e)) from e
                 configs = campaign_data["configs"]
-                runs = campaign_data.get("execution", {}).get("runs", 1)
+                execution = campaign_data.get("execution") or {}
+                runs = execution.get("runs", 1)
                 aux_containers = list(campaign_data.get("aux_containers") or [])
         from robovast.common.common import convert_dataclasses_to_dict
         remotes = _variation_remotes()
@@ -4982,8 +4985,7 @@ class ServiceBase(RobovastInterface):
         truncated = bool(max_configs) and len(configs) > max_configs
         return PreviewResponse(configs=len(configs), runs_per_config=runs,
                                total_trials=len(configs) * runs,
-                               jobs=job_count(len(configs), runs, declared_runs_per_job(
-                                   campaign_data.get("execution") or {})),
+                               jobs=planned_job_count(execution, configs, runs, vast_dir),
                                configurations=items, truncated=truncated,
                                aux_containers=aux_containers,
                                # The config view is declared in the same file this expanded, and

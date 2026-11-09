@@ -21,6 +21,7 @@ these tools create one, put files in it (through the address space), check the `
 they wrote, and see what configurations it would expand to. Nothing here starts work.
 """
 
+import os
 import json
 import logging
 
@@ -307,7 +308,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
     """
     from robovast.common.common import load_config
     from robovast.common.config_generation import generate_scenario_variations
-    from robovast.execution.jobs import declared_runs_per_job, job_count
+    from robovast.common.execution import planned_job_count
     from robovast.service.project_push import _resolve_workspace_id
     target = _address_route(address)
     if target is None:
@@ -319,13 +320,13 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
             sample = preview_search_sample(address)
             configs = sample["configs"]
             runs = sample["runs_per_config"]
-            packing = sample["runs_per_job"]
+            execution = sample["execution"]
         else:
             campaign_data = generate_scenario_variations(
                 variation_file=address, output_dir=None)
             configs = campaign_data["configs"]
-            runs = campaign_data.get("execution", {}).get("runs", 1)
-            packing = declared_runs_per_job(campaign_data.get("execution", {}))
+            execution = campaign_data.get("execution", {})
+            runs = execution.get("runs", 1)
             aux = list(campaign_data.get("aux_containers") or [])
         items = [{"name": c["name"], "parameters": c.get("config", {})}
                  for c in configs]
@@ -334,7 +335,8 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
             "configs": len(configs),
             "runs_per_config": runs,
             "total_trials": len(configs) * runs,
-            "jobs": job_count(len(configs), runs, packing),
+            "jobs": planned_job_count(execution, configs, runs,
+                                      os.path.dirname(os.path.abspath(address))),
             "configurations": items[:limit] if truncated else items,
             "truncated": truncated,
             "aux_containers": aux,

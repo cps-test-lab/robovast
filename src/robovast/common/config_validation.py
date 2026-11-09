@@ -54,7 +54,7 @@ from robovast.common.config_presets import expand_configuration_presets
 from robovast.common.config import PINNED_REF
 from robovast.common.config_channels import SCENARIO, channel
 from robovast.common.containers import ros_repo_name
-from robovast.execution.jobs import declared_runs_per_job, job_count
+from robovast.common.execution import planned_job_count
 
 logger = logging.getLogger(__name__)
 
@@ -1725,7 +1725,8 @@ def _batch_composition_report(config_path):
                          + _liveness_advisories(config_path)),
             "configs": len(configs), "runs_per_config": runs_per_config,
             "total_trials": len(configs) * runs_per_config,
-            "jobs": job_count(len(configs), runs_per_config, declared_runs_per_job(execution))}
+            "jobs": planned_job_count(execution, configs, runs_per_config,
+                                      os.path.dirname(os.path.abspath(config_path)))}
 
 
 def _search_composition_report(config_path):
@@ -1805,4 +1806,5 @@ def _search_composition_report(config_path):
                          + _liveness_advisories(config_path)),
             "configs": configs, "runs_per_config": runs_per_config,
             "total_trials": configs * runs_per_config,
-            "jobs": job_count(configs, runs_per_config, sample["runs_per_job"])}
+            "jobs": planned_job_count(sample["execution"], sample["configs"], runs_per_config,
+                                      os.path.dirname(os.path.abspath(config_path)))}
