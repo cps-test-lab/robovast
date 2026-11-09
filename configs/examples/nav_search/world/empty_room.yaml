@@ -18,7 +18,10 @@ sim:
   # Sensor degradation is PRESENT but not searched. It is part of the problem -- and part of why
   # outcomes are stochastic -- without spending a search dimension on a variable whose effect is
   # monotonic and unsurprising. `robot.rplidar.lidar.range_stddev` is addressable if a campaign wants it.
-  seed: 0
+  #
+  # No `seed`: a stated seed is a chosen seed, and every repetition of a cell would then draw the
+  # same sensor noise and the same walker pauses. Left unset, each run draws its own, which is
+  # what a repetition is for -- the spread across a cell's runs is what `aggregate: worst` reads.
 
 components:
   # Start pose. Must match scenario_roqsim.osc's start_pose, which is what seeds AMCL.
@@ -58,27 +61,33 @@ components:
   - boxes: {instances: []}
     name: barrier
 
-  # THE PEDESTRIAN. `avoidance: false` is deliberate: an oblivious walker that does NOT yield.
-  # The robot is the system under test, so the robot must do the avoiding.
+  # THE PEDESTRIAN. Where it goes is its nested `navigator`'s, named `walk` so a campaign can
+  # address its keys: `sim: components.pedestrian.walk.dwell`. `avoidance: {steer: none}` is
+  # deliberate: an oblivious walker that does NOT yield. The robot is the system under test, so
+  # the robot must do the avoiding.
   #
-  # The patrol crosses the robot's route just past the doorway. `speed` and `dwell` are the searched
-  # timing knobs -- dwell shifts the patrol's phase, so a campaign controls WHEN the walker is at
-  # the crossing relative to the robot's arrival. Scalar dwell, never a [lo, hi] range: random dwell
-  # would put uncontrolled randomness inside a search dimension.
-  - walker:
-      walker: MaleVisitorWalk
-      speed: 1.0
-      dwell: 0.0
-      avoidance: false
-      loop: true
-      arrival_radius: 0.25
-      # Patrol only: declares no goal endpoint, so the bridge needs no NavigateThroughPoses
-      # handler and this world drops that dependency.
-      goal_endpoint: false
-      waypoints:
-        - [1.2, -3.0]
-        - [1.2, 3.0]
+  # The patrol crosses the robot's route just past the doorway. `speed` and `dwell` are the
+  # searched timing knobs -- a scalar dwell applies at every route point, the start included, so
+  # it shifts the patrol's phase and a campaign controls WHEN the walker is at the crossing
+  # relative to the robot's arrival. Scalar dwell, never a [lo, hi] range: a random dwell would
+  # put uncontrolled randomness inside a search dimension.
+  - walker: {walker: MaleVisitorWalk, pose: {position: {x: 1.2, y: -3.0}, orientation: {yaw: 1.5708}}}
     name: pedestrian
+    components:
+      - navigator:
+          output: walker
+          speed: 1.0
+          goals:
+            - [1.2, 3.0]
+            - [1.2, -3.0]
+          loop: true
+          dwell: 0.0
+          arrival_radius: 0.25
+          avoidance: {steer: none, stop: false}
+          # Patrol only: declares no goal endpoint, so the bridge needs no NavigateThroughPoses
+          # handler and this world drops that dependency.
+          goal_endpoint: false
+        name: walk
 
   # robot_state_publisher owns the URDF static TF; two publishers for one transform is a conflict.
   - ros2_bridge: {publish_static_tf: false}

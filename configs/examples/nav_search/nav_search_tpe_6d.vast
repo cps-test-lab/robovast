@@ -48,10 +48,10 @@ search:
       sim: {instances: components.barrier.instances}
       gap_width: $gap_width
   - ParameterVariationList:
-      sim: components.pedestrian.dwell
+      sim: components.pedestrian.walk.dwell
       values: [$walker_dwell]
   - ParameterVariationList:
-      sim: components.pedestrian.speed
+      sim: components.pedestrian.walk.speed
       values: [$walker_speed]
   - ParameterVariationList:
       sim: components.robot.rplidar.lidar.range_stddev

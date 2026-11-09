@@ -35,7 +35,7 @@ search:
       sim: {instances: components.barrier.instances}
       gap_width: $gap_width
   - ParameterVariationList:
-      sim: components.pedestrian.dwell
+      sim: components.pedestrian.walk.dwell
       values: [$walker_dwell]
   # THE STACK. Both costmaps inflate by the same figure -- one factor, two destinations,
   # one value. Writing them as a list is what keeps them from drifting apart: two separate
