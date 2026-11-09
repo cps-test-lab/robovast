@@ -9,6 +9,7 @@ are two different walks of the same tree, so a rule that holds in one and not th
 bar somewhere other than 100% at the end. These tests pin them to each other.
 """
 
+import pytest
 import os
 
 from robovast.execution import campaign_archive
@@ -34,11 +35,13 @@ def _counted(root, exclude=campaign_archive.DEFAULT_EXCLUDE):
     return sum(seen)
 
 
+@pytest.mark.needs_pigz
 def test_walk_matches_what_the_archiver_counts(tmp_path):
     root = _campaign(tmp_path)
     assert campaign_archive.campaign_source_bytes(str(root)) == _counted(root)
 
 
+@pytest.mark.needs_pigz
 def test_an_excluded_subtree_is_dropped_by_both(tmp_path):
     root = _campaign(tmp_path)
     cache = root / "cfg" / ".cache"
@@ -51,6 +54,7 @@ def test_an_excluded_subtree_is_dropped_by_both(tmp_path):
     assert total == campaign_archive.campaign_source_bytes(str(root), exclude=())- 9999
 
 
+@pytest.mark.needs_pigz
 def test_a_symlink_is_a_member_not_a_path_to_follow(tmp_path):
     """``dereference=False`` means the archiver stores the link and does not recurse.
 

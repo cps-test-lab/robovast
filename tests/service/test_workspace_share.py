@@ -75,6 +75,7 @@ def _env(monkeypatch, tmp_path):
     return transport, share, ws
 
 
+@pytest.mark.needs_pigz
 def test_a_workspace_round_trips_through_the_share(env):
     """Export, then import: the same files, under a new workspace."""
     transport, _share, ws = env
@@ -92,6 +93,7 @@ def test_a_workspace_round_trips_through_the_share(env):
     assert (project / "files" / "params.yaml").read_text(encoding="utf-8") == "a: 1\n"
 
 
+@pytest.mark.needs_pigz
 def test_the_executable_bit_survives_the_round_trip(env):
     """It is carried out by the export, so a run script that came back non-executable would
     fail at the point of use rather than here, where nothing would explain it."""
@@ -104,6 +106,7 @@ def test_the_executable_bit_survives_the_round_trip(env):
     assert os.access(project / "run.sh", os.X_OK)
 
 
+@pytest.mark.needs_pigz
 def test_importing_twice_makes_two_workspaces(env):
     """Nothing is replaced, so the second import is a second project -- and the registry
     suffixes the name it would otherwise duplicate."""
@@ -115,6 +118,7 @@ def test_importing_twice_makes_two_workspaces(env):
     assert {first.name, second.name} == {"growth-sim", "growth-sim-2"}
 
 
+@pytest.mark.needs_pigz
 def test_a_caller_may_name_the_imported_workspace(env):
     transport, _share, ws = env
     transport.export_workspace(ws)
@@ -123,6 +127,7 @@ def test_a_caller_may_name_the_imported_workspace(env):
     assert taken.name == "local copy"
 
 
+@pytest.mark.needs_pigz
 def test_the_listing_tells_the_two_kinds_apart(env):
     """One listing, two grammars. A campaign archive beside a workspace one must not appear
     in the other's list: the import verbs differ, and a workspace offered as a campaign would
@@ -158,6 +163,7 @@ def test_two_sources_are_refused_rather_than_ranked(env):
             from_campaign="nav-2026-08-18-194018", from_share="growth-sim"))
 
 
+@pytest.mark.needs_pigz
 def test_a_name_that_is_not_on_the_share_says_what_is(env):
     transport, _share, ws = env
     transport.export_workspace(ws)

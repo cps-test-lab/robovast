@@ -50,6 +50,7 @@ def _members(payload: bytes) -> set:
         return set(tar.getnames())
 
 
+@pytest.mark.needs_pigz
 def test_the_project_arrives_under_one_directory(env):
     client, ws = env
     resp = client.get(f"/workspaces/{ws}/archive")
@@ -63,6 +64,7 @@ def test_the_project_arrives_under_one_directory(env):
     assert f"{ws}/files/params.yaml" in names
 
 
+@pytest.mark.needs_pigz
 def test_the_executable_bit_travels_with_the_file(env):
     """A run script that arrives non-executable fails at the point of use, where nothing
     explains it -- so the archive carries the mode rather than the extractor guessing."""
@@ -72,6 +74,7 @@ def test_the_executable_bit_travels_with_the_file(env):
         assert tar.getmember(f"{ws}/run.sh").mode & 0o111
 
 
+@pytest.mark.needs_pigz
 def test_a_name_resolves_and_the_file_is_named_by_the_id(env):
     """The archive is offered under the workspace *id* even when a name was used to ask.
 
