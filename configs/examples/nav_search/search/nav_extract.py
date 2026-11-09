@@ -71,6 +71,12 @@ whenever the robot did not arrive". Scaled by the range it can actually occupy (
 full-penetration contact reaches about -1.0 and the two failure modes are comparable, which
 is what lets an adversarial search prefer the dangerous one.
 
+**The sign is the verdict.** A recorded contact bounds the clearance at zero, and the trial's
+verdict bounds the arrival distance at the arrival radius -- a passed run's at most, a failed
+run's beyond -- so a negative margin is a failed run and a failed run has a negative margin.
+Both correct the input and leave the arithmetic continuous; neither puts a verdict into the
+score.
+
 **Aggregated worst-case across repetitions**, never averaged -- four clean crossings and
 one that clipped the doorway average to "clean", and on a QD archive averaging collapses
 the very spread the archive exists to map.
@@ -91,6 +97,11 @@ logger = logging.getLogger(__name__)
 #: so a passing run occupies a cell of its own rather than being absent from the archive:
 #: "where does it succeed" is as much of the map as "how does it fail".
 FAILURE_MODES = ['none', 'collision', 'timeout', 'goal_miss']
+
+#: The resolution NavMetrics writes the ground-truth distance at (four decimals, in metres):
+#: the smallest step by which a distance the verdict puts beyond the arrival radius can
+#: differ from it.
+_ARRIVAL_RESOLUTION = 1e-4
 
 
 def _row(run_dir: Path, filename: str) -> dict:
@@ -225,6 +236,22 @@ class NavExtract(Extractor):
             # its underlying clearance.
             if collided and clearance is not None:
                 clearance = min(clearance, 0.0)
+
+            # The verdict bounds the arrival distance the same way. nav2 declares arrival
+            # against its own pose estimate and tolerance; the ground-truth distance at the
+            # last sample carries the localisation error and the settling after the recording
+            # closed, so a run nav2 declared arrived can end a little beyond the arrival
+            # radius and one it aborted a little inside it. The verdict is the arrival oracle
+            # as the contact monitor is the collision oracle: a passed run's distance is at
+            # most the radius, and a failed run's that did not collide -- it did not arrive,
+            # whether it gave up or ran out the clock -- is beyond it. Beyond by the pose
+            # track's own resolution, so a failed run's margin is strictly negative and a
+            # passed run's never is: the sign of the objective is the verdict.
+            if to_goal is not None:
+                if passed:
+                    to_goal = min(to_goal, goal_tol)
+                elif not collided:
+                    to_goal = max(to_goal, goal_tol + _ARRIVAL_RESOLUTION)
 
             # One margin per way this can go wrong, each a fraction of a comparable
             # physical scale, so the worst of them is genuinely the closest to failing.

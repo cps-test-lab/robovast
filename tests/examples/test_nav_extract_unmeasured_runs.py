@@ -37,12 +37,14 @@ def _extractor_cls():
     return module.NavExtract
 
 
-def _run(config_dir, index, *, metrics=True, clearance=0.9, duration=20.0, to_goal=0.1):
+def _run(config_dir, index, *, metrics=True, clearance=0.9, duration=20.0, to_goal=0.1,
+         passed=True):
     run_dir = config_dir / str(index)
     run_dir.mkdir(parents=True)
+    verdict = "" if passed else '<failure message="x"/>'
     (run_dir / "test.xml").write_text(
-        '<?xml version="1.0"?><testsuite tests="1" failures="0" errors="0">'
-        '<testcase name="t"/></testsuite>', encoding="utf-8")
+        f'<?xml version="1.0"?><testsuite tests="1" failures="{0 if passed else 1}" errors="0">'
+        f'<testcase name="t">{verdict}</testcase></testsuite>', encoding="utf-8")
     if metrics:
         (run_dir / "nav_metrics.csv").write_text(
             "min_clearance,duration_s,final_distance_to_goal,collided,recovery_count\n"
@@ -101,7 +103,7 @@ def test_a_cell_whose_every_run_is_unmeasured_produces_no_sample(tmp_path):
 def test_a_failing_run_is_still_scored_from_its_own_measurements(tmp_path):
     """The guard must not swallow a real failure: this run measured a collision."""
     config_dir = tmp_path / "c0"
-    _run(config_dir, 0, clearance=0.0, duration=15.0, to_goal=3.0)
+    _run(config_dir, 0, clearance=0.0, duration=15.0, to_goal=3.0, passed=False)
 
     result = _extract(config_dir)
 

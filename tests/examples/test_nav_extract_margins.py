@@ -167,7 +167,9 @@ def test_contact_does_not_flatten_runs_onto_one_value(tmp_path):
 
 
 def test_the_worst_margin_is_the_one_reported(tmp_path):
-    """A run that crossed cleanly but timed out is scored by its time, not its clearance."""
-    score = _score(tmp_path, "slow", clearance=5.0, duration=120.0, to_goal=0.0,
+    """A run that crossed cleanly but ran 10 s past the timeout is scored by its time, not
+    by its clearance (a roomy +49.5) and not by its arrival (the verdict's bound puts a run
+    that did not arrive just beyond the radius, a margin of about -0.00002)."""
+    score = _score(tmp_path, "slow", clearance=5.0, duration=130.0, to_goal=0.0,
                    collided=False, passed=False)
-    assert score == pytest.approx(0.0, abs=1e-6)
+    assert score == pytest.approx(-10.0 / 120.0, abs=1e-6)
