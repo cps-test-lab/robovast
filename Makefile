@@ -46,9 +46,20 @@ venv/.robovast_installed: Makefile pyproject.toml src/robovast_nav/pyproject.tom
                           src/robovast_client/pyproject.toml \
                           src/robovast_decode/pyproject.toml \
                           src/robovast_data/pyproject.toml
-	@if [ ! -d venv ]; then \
+	# `venv/bin/activate`, not `-d venv`: a creation that failed part-way leaves the directory
+	# behind, and the next run would then skip creation and fail at activation instead.
+	# `python3 -m venv` needs ensurepip, which a distribution's python may ship separately;
+	# without it, virtualenv (fetched into build/, never into the system python) carries its
+	# own pip and makes the same venv.
+	@if [ ! -f venv/bin/activate ]; then \
 		echo "Creating virtual environment..."; \
-		python3 -m venv venv; \
+		rm -rf venv; \
+		if python3 -c 'import ensurepip' 2>/dev/null; then \
+			python3 -m venv venv; \
+		else \
+			python3 -m pip install --quiet --target build/venv-bootstrap virtualenv \
+			&& PYTHONPATH=build/venv-bootstrap python3 -m virtualenv --quiet venv; \
+		fi; \
 	fi
 	
 	@echo "Setting up RoboVAST environment..."
