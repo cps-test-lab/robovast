@@ -33,6 +33,12 @@ see. The simulator knows the real geometry at 200 Hz, so ``clearance_monitor`` m
 there and the trial records ``/clearance``. What is left here is arithmetic over recorded
 signals.
 
+**The duration is the navigation's, not the recording's.** It runs from the first
+behaviour-tree transition -- nav2 accepting the goal -- to the last pose sample. The recording
+starts with the simulator and holds the stack's bring-up before any goal is sent, which the
+trial's timeout does not count; a run without a transition has no measured start and its
+duration is left empty.
+
 **The goal is each configuration's own.** Arrival is measured against the ``goal_pose`` the
 configuration's resolved scenario parameters (``_config/scenario.config``) carry, so a campaign
 that varies the goal scores every run against the goal it navigated to. A configuration whose
@@ -166,17 +172,33 @@ def _metrics_for_run(run_dir: Path, poses_table: str, goal) -> dict | None:
     collided = any(_true(r.get('data')) for r in tables.rows(collision))
 
     # Optional, unlike the two above: a run that needed no recovery behaviour records no
-    # transitions, and `recovery_count` is a QD measure rather than part of the verdict. So
-    # an absent table means zero recoveries -- which is what happened -- and not a defect.
+    # recovery transitions, and `recovery_count` is a QD measure rather than part of the
+    # verdict. So an absent table means zero recoveries -- which is what happened -- and not
+    # a defect.
+    behaviours = tables.rows(tables.first(_BEHAVIOR_TABLES))
     recoveries = sum(
-        1 for r in tables.rows(tables.first(_BEHAVIOR_TABLES))
+        1 for r in behaviours
         if any(k in str(r.get('behavior_name') or '').lower()
                for k in ('spin', 'backup', 'wait', 'clear'))
         and str(r.get('status_name') or '').upper().startswith('RUNNING'))
 
+    # The navigation's start is the first behaviour-tree transition: nav2 ticks the tree once
+    # it has accepted the goal and nothing ticks it before. The recording starts with the
+    # simulator, so the pose track's first sample is bring-up -- the stack launching, the
+    # initial pose being set -- which the trial's own timeout does not count and the duration
+    # must not either, or a crossing that navigated well within the timeout reads as having
+    # run past it. A run with no transition has no measured start: its duration is left
+    # empty rather than measured from the wrong moment, and the extractor drops that margin
+    # and says so. The baseline rows the tree plugin writes for nodes that never ran carry
+    # INVALID and are not transitions.
+    transitions = _floats(
+        [r for r in behaviours if str(r.get('status_name') or '').upper() != 'INVALID'],
+        'timestamp')
+    nav_start = min(transitions) if transitions else None
+
     return {
         'min_clearance': round(min(clearances), 4) if clearances else '',
-        'duration_s': round(max(times) - min(times), 3) if times else 0.0,
+        'duration_s': round(max(times) - nav_start, 3) if nav_start is not None else '',
         'final_distance_to_goal': round(math.hypot(last[0] - goal[0], last[1] - goal[1]), 4),
         'collided': int(collided),
         'recovery_count': recoveries,

@@ -118,7 +118,8 @@ class NavExtract(Extractor):
         ``contact_threshold``  clearance [m] at which a crossing counts as unsafe
         ``arrival_radius``     [m]; ground-truth distance within which a track counts as
                                arrived. NOT nav2's ``xy_goal_tolerance`` -- see below
-        ``timeout``            [s]; matches the scenario's own ``timeout()``
+        ``timeout``            [s]; the bound on the navigation's duration, which NavMetrics
+                               measures from the first behaviour-tree transition
         ``clearance_scale``    [m]; the clearance available in the most permissive
                                configuration -- the SCALE the clearance margin is a
                                fraction of, not a threshold
@@ -208,7 +209,10 @@ class NavExtract(Extractor):
                 continue
 
             clearance = _f(row, 'min_clearance')
-            duration = _f(row, 'duration_s', timeout)
+            # None, not the timeout: a run whose navigation start was not recorded has no
+            # duration, and defaulting it to the timeout would score the time margin at
+            # exactly 0.0, the level a boundary search traces.
+            duration = _f(row, 'duration_s')
             to_goal = _f(row, 'final_distance_to_goal')
             collided = bool(_f(row, 'collided', 0.0))
 
@@ -228,7 +232,8 @@ class NavExtract(Extractor):
             margins = []
             if clearance is not None:
                 margins.append((clearance - contact) / clearance_scale)
-            margins.append((timeout - duration) / timeout)
+            if duration is not None:
+                margins.append((timeout - duration) / timeout)
             if to_goal is not None:
                 margins.append((goal_tol - to_goal) / path_scale)
             # No floor, and this is the line that keeps the objective usable: a clamp
@@ -240,7 +245,8 @@ class NavExtract(Extractor):
 
             if clearance is not None:
                 clearances.append(clearance)
-            durations.append(duration)
+            if duration is not None:
+                durations.append(duration)
             recoveries.append(_f(row, 'recovery_count', 0.0))
             modes.append(self._mode(passed, collided, duration, timeout, to_goal, goal_tol))
 
@@ -281,6 +287,19 @@ class NavExtract(Extractor):
                 f"rosbag->CSV plugins listed "
                 f"in *search.postprocessing*, not only in results_processing -- the search "
                 f"loop scores each batch before the campaign-level block ever runs.")
+
+        if not durations:
+            # Every run of this cell recorded a pose track and no navigation duration, which
+            # is the campaign's recording and not an unlucky draw: NavMetrics measures the
+            # duration from the first behaviour-tree transition, so without the tree's log the
+            # time margin is silently missing from every cell and a crossing that ran out the
+            # clock scores like a prompt one. The same refusal as a missing clearance, for the
+            # same reason.
+            raise ValueError(
+                f"{config_dir}: no run recorded a navigation duration, so the robustness margin "
+                f"cannot include the time term. NavMetrics takes the navigation's start from the "
+                f"behaviour-tree log: /behavior_tree_log recorded, and rosbags_nav2bt_to_csv and "
+                f"nav2_bt_tree listed in *search.postprocessing* before NavMetrics.")
 
         failures = sum(1 for r in runs if not read_test_result(r)['success'])
         return ExtractResult(

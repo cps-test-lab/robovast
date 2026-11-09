@@ -7,19 +7,13 @@
 ``NavExtract`` refuses to invent a score for a cell with no ``test.xml`` -- its own comment
 says why: *"0.0 would look like a cell sitting exactly on the boundary, which is the most
 interesting thing a boundary search can find."* A run WITH a verdict and WITHOUT a metrics
-row slipped past that guard and produced exactly the number the guard exists to prevent.
-
-Every reader defaulted independently, and the defaults compose into a plausible-looking
-disaster::
-
-    duration = _f(row, 'duration_s', timeout)     # -> the timeout
-    margins  = [(timeout - duration) / timeout]   # -> 0.0, precisely
-
-so two clean, roomy crossings plus one unmeasured run scored ``robustness: 0.0``:
-the failure boundary, which is what an adversarial search minimizes toward and literally
-the ``level`` the ``boundary`` strategy traces. It also reported ``time_to_goal`` at the
-timeout and a ``failure_mode`` of ``'timeout'`` -- and that one is a QD archive axis, so
-the fabrication lands in a real archive cell and becomes an elite the search then chases.
+row is the other way to reach that number: were each missing value read with a plausible
+default, a duration at the timeout would put the time margin at exactly 0.0, the failure
+boundary, which is what an adversarial search minimizes toward and literally the ``level``
+the ``boundary`` strategy traces; ``time_to_goal`` would sit at the timeout and
+``failure_mode`` at ``'timeout'`` -- and that one is a QD archive axis, so the fabrication
+would land in a real archive cell and become an elite the search then chases. So such a run
+is skipped, and nothing about it is defaulted.
 
 Reachable without anything else being wrong: ``NavMetrics`` writes no row for a run whose
 ground-truth pose track is missing, and counts them in its own note.
