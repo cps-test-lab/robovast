@@ -95,7 +95,7 @@ def test_a_behaviours_table_is_still_counted_when_present(tmp_path):
     metrics = module._metrics_for_run(run, "ground_truth_poses", (2.5, 0.0))
 
     assert metrics["recovery_count"] == 2      # the two RUNNING transitions, not the third
-    assert metrics["duration_s"] == 7.0        # from the first transition to the last pose
+    assert metrics["duration_s"] == 3.0        # from the first transition to the last
 
 
 def test_the_plugin_writes_a_metrics_row_for_such_a_run(tmp_path):

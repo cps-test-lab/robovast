@@ -44,11 +44,13 @@ def _run(config_dir, index, *, clearance, duration, to_goal, collided, passed=Tr
     with open(run_dir / "nav_metrics.csv", "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=[
             "min_clearance", "duration_s", "final_distance_to_goal", "collided",
-            "recovery_count"])
+            "recovery_count", "nav_start_s", "nav_end_s"])
         writer.writeheader()
+        # The navigation starts at second 0 of the recording here, so its end is its span.
         writer.writerow({"min_clearance": clearance, "duration_s": duration,
                          "final_distance_to_goal": to_goal,
-                         "collided": 1 if collided else 0, "recovery_count": 0})
+                         "collided": 1 if collided else 0, "recovery_count": 0,
+                         "nav_start_s": 0.0, "nav_end_s": duration})
     verdict = "" if passed else '<failure message="x"/>'
     (run_dir / "test.xml").write_text(
         '<?xml version="1.0"?>\n'

@@ -10,8 +10,10 @@ from the first pose sample carries the bring-up and a crossing that navigated we
 the timeout reads as having run past it -- a passing run scored as a timeout, which is what
 a search minimising the margin then chases.
 
-``NavMetrics`` takes the navigation's start from the first behaviour-tree transition, which
-is nav2 accepting the goal. A run without one has no measured start and no duration; the
+``NavMetrics`` takes the navigation from the behaviour-tree log alone: its first transition is
+nav2 accepting the goal, its last the tree finishing or the trial ending it, and both are on
+the log's own clock, where the pose track's clock is the recording's and may not be. A run
+without a transition has no measured navigation and no duration; the
 extractor drops that margin for the run and refuses a cell where every run lacks it, as it
 does for a missing clearance, rather than defaulting the duration to the timeout and scoring
 the margin at exactly the level a boundary search traces.
@@ -53,13 +55,29 @@ ACCEPTED = {"timestamp": 30.0, "behavior_name": "NavigateRecovery", "status_name
 ARRIVED = {"timestamp": 70.0, "behavior_name": "NavigateRecovery", "status_name": "SUCCESS"}
 
 
-def test_the_duration_runs_from_the_first_transition_to_the_last_pose(tmp_path):
+def test_the_duration_runs_from_the_first_transition_to_the_last(tmp_path):
     module = example_module("nav_metrics")
     run = _run(tmp_path, transitions=[BASELINE, ACCEPTED, ARRIVED])
 
     metrics = module._metrics_for_run(run, "ground_truth_poses", (2.5, 0.0))
 
     assert metrics["duration_s"] == 40.0
+    assert metrics["nav_start_s"] == 30.0 and metrics["nav_end_s"] == 70.0
+
+
+def test_the_pose_tracks_clock_does_not_enter_the_duration(tmp_path):
+    """A pose track stamped on another clock, running on long after the tree finished, changes
+    nothing: the span is the tree log's."""
+    module = example_module("nav_metrics")
+    run = _run(tmp_path, transitions=[ACCEPTED, {**ARRIVED, "timestamp": 55.0}])
+    (run / "poses.csv").write_text(
+        "timestamp,frame,position.x,position.y\n"
+        "100.0,base_link_gt,-2.5,0.0\n"
+        "250.0,base_link_gt,2.4,0.0\n", encoding="utf-8")
+
+    metrics = module._metrics_for_run(run, "ground_truth_poses", (2.5, 0.0))
+
+    assert metrics["duration_s"] == 25.0
 
 
 def test_a_baseline_row_is_not_a_transition(tmp_path):
@@ -116,10 +134,25 @@ def test_a_cell_whose_every_run_lacks_a_duration_is_refused_by_name(tmp_path):
 
 
 def test_a_run_that_navigated_inside_the_timeout_is_not_a_timeout(tmp_path):
-    """The whole point: the margin is positive for a navigation of 100 s under a 120 s
-    timeout, whatever the recording's length was."""
+    """The whole point: the margin is positive for a navigation that ended at second 110 of
+    the trial's 120, whatever the recording's length was."""
     extractor = example_module("nav_extract").NavExtract(timeout=120.0)
-    result = extractor.extract(_cell(tmp_path, [100.0]))
+    result = extractor.extract(_cell(tmp_path, [100.0]))      # starts at 10, ends at 110
 
     assert result.objectives["robustness"] > 0
     assert result.measures["failure_mode"] == "none"
+
+
+def test_the_time_margin_is_what_the_trials_clock_had_left(tmp_path):
+    """Bring-up is the trial's time too: a navigation of 100 s that began at second 30 ended
+    at 130, past a 120 s timeout, and the run it belongs to did not pass."""
+    config_dir = tmp_path / "cell"
+    run_dir = config_dir / "0"
+    run_dir.mkdir(parents=True)
+    write_metrics_row(run_dir, clearance=0.9, duration=100.0, to_goal=3.0, collided=False,
+                      nav_start=30.0)
+    write_verdict(run_dir, passed=False)
+    result = example_module("nav_extract").NavExtract(timeout=120.0).extract(config_dir)
+
+    assert result.objectives["robustness"] < 0
+    assert result.measures["failure_mode"] == "timeout"

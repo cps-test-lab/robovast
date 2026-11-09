@@ -47,8 +47,9 @@ def _run(config_dir, index, *, metrics=True, clearance=0.9, duration=20.0, to_go
         f'<testcase name="t">{verdict}</testcase></testsuite>', encoding="utf-8")
     if metrics:
         (run_dir / "nav_metrics.csv").write_text(
-            "min_clearance,duration_s,final_distance_to_goal,collided,recovery_count\n"
-            f"{clearance},{duration},{to_goal},0,0\n", encoding="utf-8")
+            "min_clearance,duration_s,final_distance_to_goal,collided,recovery_count,"
+            "nav_start_s,nav_end_s\n"
+            f"{clearance},{duration},{to_goal},0,0,0.0,{duration}\n", encoding="utf-8")
     return run_dir
 
 
