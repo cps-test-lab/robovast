@@ -33,6 +33,11 @@ see. The simulator knows the real geometry at 200 Hz, so ``clearance_monitor`` m
 there and the trial records ``/clearance``. What is left here is arithmetic over recorded
 signals.
 
+**The goal is each configuration's own.** Arrival is measured against the ``goal_pose`` the
+configuration's resolved scenario parameters (``_config/scenario.config``) carry, so a campaign
+that varies the goal scores every run against the goal it navigated to. A configuration whose
+scenario declares no goal pose is refused by name rather than measured against a default.
+
 **``collided`` still comes from the oracle, not from the distance.** The two disagree in
 one direction: a fast pass can touch between two *published* clearance samples even when
 each sample is exact. ``contact_monitor`` reports a real contact force, so it decides
@@ -44,6 +49,7 @@ import math
 from pathlib import Path
 from typing import Tuple
 
+from robovast.common.campaign_data import read_scenario_config
 from robovast.results_processing.postprocessing_plugins import \
     BasePostprocessingPlugin
 from robovast_data import Campaign, open_data
@@ -97,6 +103,24 @@ def _floats(rows: list[dict], *keys) -> list[float]:
 
 def _true(value) -> bool:
     return str(value).strip().lower() in ('true', '1', '1.0')
+
+
+def goal_of(config_dir: Path) -> Tuple[float, float]:
+    """The goal this configuration's runs navigated to, from its resolved scenario parameters."""
+    try:
+        scenario = read_scenario_config(config_dir)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"{config_dir}: no resolved scenario parameters (_config/scenario.config), so the "
+            f"goal its runs navigated to is unknown and arrival cannot be measured") from exc
+    position = ((scenario or {}).get('goal_pose') or {}).get('position') or {}
+    try:
+        return float(position['x']), float(position['y'])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{config_dir}: the resolved scenario parameters carry no goal_pose.position with x "
+            f"and y. Arrival is measured against the goal each configuration navigated to, so the "
+            f"campaign has to state goal_pose as a scenario parameter") from exc
 
 
 def _metrics_for_run(run_dir: Path, poses_table: str, goal) -> dict | None:
@@ -170,21 +194,24 @@ class NavMetrics(BasePostprocessingPlugin):
 
     def __call__(self, results_dir: str, config_dir: str,
                  poses: str = 'ground_truth_poses', file: str = 'nav_metrics.csv',
-                 goal_x: float = 2.5, goal_y: float = 0.0,
                  force: bool = False, **kwargs) -> Tuple[bool, str]:
-        del config_dir  # every input is per-run: clearance is recorded, not derived
+        del config_dir  # every input is per-run or per-configuration: nothing is campaign-wide
         written = skipped = missing = no_clearance = 0
+        goals: dict[str, Tuple[float, float]] = {}
         runs = Campaign(results_dir).runs
         for config_name, run_id in runs.loc[runs['run_id'].notna(),
                                             ['config_name', 'run_id']].itertuples(index=False):
-            run_dir = Path(results_dir) / str(config_name) / str(int(run_id))
+            cfg_dir = Path(results_dir) / str(config_name)
+            run_dir = cfg_dir / str(int(run_id))
             if not run_dir.is_dir():
                 continue
             out = run_dir / file
             if not force and out.exists():
                 skipped += 1
                 continue
-            metrics = _metrics_for_run(run_dir, poses, (goal_x, goal_y))
+            if config_name not in goals:
+                goals[config_name] = goal_of(cfg_dir)
+            metrics = _metrics_for_run(run_dir, poses, goals[config_name])
             if metrics is None:
                 missing += 1
                 continue
