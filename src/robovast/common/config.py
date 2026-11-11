@@ -1129,9 +1129,18 @@ class ExecutionConfig(BaseModel):
     #: bind-mounted into the run exactly like a hand-written input. See
     #: :mod:`robovast.common.input_generation`.
     generate: Optional[list[Union[dict[str, Any], str]]] = None
-    # Maximum wall-clock time in seconds for one run. A run is one job, the granularity the
-    # cluster can enforce at (a Job's activeDeadlineSeconds).
+    # Maximum wall-clock time in seconds for one run. The cluster enforces it on the job
+    # (a Job's activeDeadlineSeconds), as this many times the runs the job holds.
     timeout: Optional[int] = None
+    # How many of a configuration's runs one job holds, executed one after another in one
+    # simulator process that is reset between them. 1, the default, is the right value for
+    # nearly every campaign: a job is one run, with its own pod, process and bring-up.
+    # Raise it only for a stepped in-process simulator (`mode: base`) whose run is cheap
+    # beside a job's bring-up -- MuJoCo trials of a few seconds. Refused with any other mode:
+    # under `ros2` the simulator is another container, which cannot be reset per run or told
+    # where each run writes, and `auto` becomes `ros2` inside any image that has ros2. A job
+    # never holds more than one configuration.
+    runs_per_job: int = 1
     # Simulation backend passed to scenario_execution as ``--simulation <module:Class>``.
     # Required by scenarios using wait_for_simulation_end() (e.g. MagBotSim).
     simulation: Optional[str] = None
@@ -1352,6 +1361,34 @@ class ExecutionConfig(BaseModel):
     # image for the thing under test would run something nobody named -- and is checked
     # above.
 
+    @field_validator('runs_per_job')
+    @classmethod
+    def validate_runs_per_job(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"execution.runs_per_job must be at least 1, got {v}")
+        return v
+
+    @model_validator(mode='after')
+    def _packing_needs_the_stepped_shape(self):
+        """A job of several runs resets one in-process simulator between them.
+
+        In the ROS shape the simulator is another container, started once with one world and
+        told nothing per run, so a second run in the same pod would run against the first's
+        state and write into the first's directory. ``auto`` is refused too: it is resolved
+        inside the container, to the ROS runner wherever ros2 is installed, so only ``base``
+        is known to be stepped when the campaign is composed. Refused here rather than after
+        the pod is scheduled.
+        """
+        if self.runs_per_job > 1 and self.mode != "base":
+            raise ValueError(
+                f"execution.runs_per_job is {self.runs_per_job}, which needs the stepped shape, "
+                f"execution.mode: base; mode {self.mode!r} "
+                + ("runs the simulator in its own container, which cannot be reset per run"
+                   if self.mode == "ros2" else
+                   "is resolved inside the container, to the ROS shape wherever ros2 is "
+                   "installed"))
+        return self
+
     @model_validator(mode='after')
     def _mode_auto_is_ambiguous_with_a_backend(self):
         """``auto`` resolves inside the container, too late for a backend to plan.
@@ -1393,19 +1430,20 @@ def declared_job_seconds(execution_params: dict) -> Optional[int]:
     return int(timeout) if timeout else None
 
 
-def job_deadline_seconds(execution_params: dict) -> int:
-    """How long one job may take before it is force-killed, in seconds.
+def job_deadline_seconds(execution_params: dict, runs: int = 1) -> int:
+    """How long a job of *runs* runs may take before it is force-killed, in seconds.
 
     The **enforcement** figure: the cluster backend sets it as a Job
     ``activeDeadlineSeconds`` so a scenario that never shuts itself down cannot hang
-    the campaign forever. Falls back to :data:`DEFAULT_RUN_DEADLINE_SECONDS`, which is why
-    it must not be used to *report* health -- see :func:`declared_job_seconds`.
+    the campaign forever. The budget is one run's, declared or the backstop
+    :data:`DEFAULT_RUN_DEADLINE_SECONDS`, times the runs the job holds -- which is why the
+    backstop must not be used to *report* health; see :func:`declared_job_seconds`.
 
     The backstop is the backend's: enforcing a value the author set is a different decision
     from supplying one they did not, and only the backend knows what an unbounded run costs.
     """
     declared = declared_job_seconds(execution_params)
-    return declared if declared is not None else DEFAULT_RUN_DEADLINE_SECONDS
+    return (declared if declared is not None else DEFAULT_RUN_DEADLINE_SECONDS) * max(1, int(runs))
 
 
 class ResultsConfig(BaseModel):
@@ -2269,9 +2307,9 @@ class RepetitionsConfig(BaseModel):
             #   - a simulator override document is written per CONFIG, so every repetition of a
             #     cell would read one seed and stop varying -- worse than an unseeded run,
             #     which draws its own;
-            #   - the simulator's own episode counter cannot stand in for it: every run is its
-            #     own job and its own simulator process, so each one counts from the first
-            #     episode and "episode i" is not "repetition i".
+            #   - the simulator's own episode counter cannot stand in for it: a job's runs
+            #     share one simulator process and the next job starts a new one, so the
+            #     episode counts within a job and "episode i" is not "repetition i".
             #
             # What it needs is a per-run seed on the execution backend. Without one, saying
             # 'paired' would claim a comparison the data cannot support.

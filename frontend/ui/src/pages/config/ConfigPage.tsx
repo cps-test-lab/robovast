@@ -23,6 +23,7 @@ import { ConfigViewPane } from './ConfigViewPane'
 import { ShareWorkspaceDialog } from './ShareWorkspaceDialog'
 import { FilesView } from './FilesView'
 import { useConfigEditor } from './useConfigEditor'
+import { denseHeight, useCompact } from '@/lib/compact'
 
 // The Config topic: one consolidated view. The left column is a tabbed [Config | Files] panel
 // (full height), the right column keeps the resolved-config preview. The header bar and the
@@ -41,6 +42,7 @@ export function ConfigPage({
   campaignId?: string
   onExit?: () => void
 } = {}) {
+  const { compact } = useCompact()
   const qc = useQueryClient()
   const { prompt, confirm } = useDialogs()
   const { notify } = useToasts()
@@ -175,7 +177,9 @@ export function ConfigPage({
   }
 
   return (
-    <Stack spacing={2} sx={{ height: 'calc(100vh - 48px)' }}>
+    // A compact screen does not fit three columns, nor a page that fills the screen exactly: the
+    // columns stack, each a screen tall, and the page scrolls. Usable on a phone, not comfortable.
+    <Stack spacing={2} sx={{ height: compact ? 'auto' : 'var(--page-height)' }}>
       {createWs.isError && campaignMode ? (
         <Alert severity="error" variant="outlined">
           {(createWs.error as Error).message}
@@ -198,7 +202,7 @@ export function ConfigPage({
       {/* One header row in both modes. Where a workspace has a picker, a campaign has nothing
           to pick — so the same slot names the file on screen and says it is read-only, and the
           buttons beside it are the two ways out. */}
-      <Stack direction="row" spacing={2} alignItems="center">
+      <Stack direction="row" spacing={2} useFlexGap alignItems="center" sx={{ flexWrap: 'wrap', rowGap: 1 }}>
         <Typography variant="h6">Configuration</Typography>
         {campaignMode ? (
           <>
@@ -226,7 +230,7 @@ export function ConfigPage({
               value={list.some((w) => w.workspace_id === workspaceId) ? workspaceId : ''}
               disabled={!list.length}
               onChange={(e) => setWorkspaceId(e.target.value)}
-              sx={{ minWidth: 240 }}
+              sx={{ minWidth: { xs: 0, sm: 240 }, width: { xs: '100%', sm: 'auto' } }}
             >
               {/* Gives the empty selection an option to match, so MUI does not warn about an
                   out-of-range value. Creating the first one is the button beside this field. */}
@@ -303,7 +307,8 @@ export function ConfigPage({
             //
             // One column in campaign mode: Generate and validation are workspace operations, so
             // there is no resolved-config preview to put beside the editor.
-            gridTemplateColumns: campaignMode ? '1fr' : '40fr 10fr 50fr',
+            gridTemplateColumns: campaignMode || compact ? 'minmax(0, 1fr)' : '40fr 10fr 50fr',
+            gridAutoRows: compact ? 'calc(var(--page-height) - 24px)' : undefined,
             gap: 2,
             flexGrow: 1,
             minHeight: 0,
@@ -315,7 +320,7 @@ export function ConfigPage({
             <Tabs
               value={tab}
               onChange={(_, v) => setTab(v)}
-              sx={{ minHeight: 36, mb: 1, '& .MuiTab-root': { minHeight: 36, py: 0 } }}
+              sx={{ ...denseHeight(36), mb: 1, '& .MuiTab-root': { ...denseHeight(36), py: 0 } }}
             >
               <Tab value="editor" label="Config" />
               <Tab value="files" label="Files" />

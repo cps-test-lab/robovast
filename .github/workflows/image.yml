@@ -26,6 +26,12 @@ concurrency:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Whether this run may write the repository's packages: a push, or a pull request from a branch
+  # of this repository. A fork's GITHUB_TOKEN cannot write them, so a pull request from a fork
+  # builds every image without pushing it, and what needs the pushed images -- the recipe check
+  # of the pushed bytes, the multi-architecture index, the roqsim image built FROM it and the
+  # integration test -- does not run.
+  PUBLISH: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -214,7 +220,7 @@ jobs:
           file: ./container/robovast/Dockerfile
           # No tags here: a tag can name only one image, and two jobs pushing the same tag would
           # race. Each pushes an untagged manifest and merge-base names the index they form.
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=${{ env.PUBLISH }}
           # Registry cache rather than type=gha. The Actions cache is capped at 10 GB per
           # repository AND scoped per git ref, so each of these jobs wrote its own multi-GB
           # mode=max copy under main and a second one under every PR ref. The repo sat at the
@@ -244,11 +250,13 @@ jobs:
       # --skip-network: whether the archives still serve is asked once, on the pull-request
       # job, not once per architecture here.
       - name: Assert the pushed image carries its build recipe
+        if: env.PUBLISH == 'true'
         run: |
           python3 tools/check_recipe.py --skip-network \
             --image "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}"
 
       - name: Record the digest for merge-base
+        if: env.PUBLISH == 'true'
         run: |
           mkdir -p /tmp/digests
           # The bare hex, not the full "sha256:..." reference: upload-artifact refuses a colon in
@@ -257,6 +265,7 @@ jobs:
           touch "/tmp/digests/${digest#sha256:}"
 
       - uses: actions/upload-artifact@v4
+        if: env.PUBLISH == 'true'
         with:
           name: digest-${{ matrix.slug }}
           path: /tmp/digests/*
@@ -267,6 +276,9 @@ jobs:
   # index and acquire them, so `:latest` and `:main` never exist in a half-pushed state.
   merge-base:
     needs: build-base
+    # Only where build-base pushed (env.PUBLISH; a job's `if` cannot read env). The jobs after it
+    # need it, and are skipped with it.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -790,7 +802,7 @@ jobs:
           platforms: ${{ steps.plat.outputs.platforms }}
           context: ./container/sidecar
           file: ./container/sidecar/Dockerfile
-          push: true
+          push: ${{ env.PUBLISH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: ${{ steps.cache.outputs.from }}
@@ -906,7 +918,7 @@ jobs:
           # Repo root context so pyproject + src are available for `pip install .`.
           context: .
           file: ./container/controller/Dockerfile
-          push: true
+          push: ${{ env.PUBLISH == 'true' }}
           # So the deployed service can say which revision it is running. A tag cannot
           # answer that (`latest` moves) and the package version cannot either.
           build-args: |

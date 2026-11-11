@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
+import AppBar from '@mui/material/AppBar'
 import Box from '@mui/material/Box'
+import IconButton from '@mui/material/IconButton'
+import Toolbar from '@mui/material/Toolbar'
+import Typography from '@mui/material/Typography'
+import MenuRoundedIcon from '@mui/icons-material/MenuRounded'
 import RocketLaunchRoundedIcon from '@mui/icons-material/RocketLaunchRounded'
 import InsightsRoundedIcon from '@mui/icons-material/InsightsRounded'
 import SettingsRoundedIcon from '@mui/icons-material/SettingsRounded'
 import { Sidebar, type NavTopic } from '@/components/Sidebar'
+import { BrandMark } from '@/components/BrandMark'
+import { useCompact } from '@/lib/compact'
 import {
   ConfigIcon,
   DataBrowserIcon,
@@ -87,8 +94,32 @@ const DEFAULT_NAV: Nav = {
 
 const readNav = () => navFromHash(window.location.hash, TOPICS, DEFAULT_NAV)
 
+// The compact app bar's height, in px: the dense toolbar's.
+const APP_BAR_PX = 48
+
+// The height a page may fill, as the CSS variable `--page-height` on <main>: what is left of the
+// screen once the shell's own chrome is taken off. One definition, so a page that fills the screen
+// (the run view, the Explorer, Config) does not have to know which shell it is in.
+//
+// Desktop: the screen less main's padding. Compact: the *dynamic* viewport (a phone's browser bars
+// come and go, and `vh` is the height without them), less the app bar, the padding and the notch
+// and home indicator an installed app draws under.
+const PAGE_HEIGHT_DESKTOP = 'calc(100vh - 48px)'
+const PAGE_HEIGHT_COMPACT =
+  `calc(100dvh - ${APP_BAR_PX}px - 16px - env(safe-area-inset-top) - env(safe-area-inset-bottom))`
+
+/** What the compact app bar names: the page, and for Results the view within it. */
+function pageTitle(nav: Nav): string {
+  const topic = TOPICS.find((t) => t.id === nav.topicId)
+  if (!topic) return ''
+  const view = topic.views?.find((v) => v.id === nav.viewId)
+  return view ? `${topic.label} · ${view.label}` : topic.label
+}
+
 export function App() {
   const [nav, setNav] = useState<Nav>(readNav)
+  const { compact } = useCompact()
+  const [navOpen, setNavOpen] = useState(false)
 
   // Follow back/forward (and any external hash change). The campaign list's order is spelled
   // only in the campaign view's own address, so a hash for any other page says nothing about it
@@ -105,6 +136,7 @@ export function App() {
   }, [])
 
   const select = (topicId: string, viewId?: string) => {
+    setNavOpen(false)
     const next = nextNav(nav, TOPICS, topicId, viewId)
     setNav(next)
     window.location.hash = hashFor(next)
@@ -157,17 +189,58 @@ export function App() {
   }
 
   return (
-    <Box sx={{ display: 'flex', minHeight: '100vh' }}>
+    <Box sx={{ display: 'flex', flexDirection: compact ? 'column' : 'row', minHeight: '100vh' }}>
+      {/* On a compact screen the rail is not beside the page but behind this bar's menu button:
+          a phone has no width to give it, and every page then gets the whole width. */}
+      {compact ? (
+        <AppBar
+          position="sticky"
+          color="inherit"
+          elevation={0}
+          sx={{
+            bgcolor: 'background.default',
+            borderBottom: 1,
+            borderColor: 'divider',
+            pt: 'env(safe-area-inset-top)',
+          }}
+        >
+          <Toolbar variant="dense" disableGutters sx={{ minHeight: APP_BAR_PX, px: 0.5, gap: 1 }}>
+            <IconButton aria-label="open navigation" onClick={() => setNavOpen(true)}>
+              <MenuRoundedIcon />
+            </IconButton>
+            <BrandMark sx={{ color: 'primary.main', fontSize: 22 }} />
+            <Typography variant="subtitle1" noWrap sx={{ fontWeight: 700, minWidth: 0 }}>
+              {pageTitle(nav)}
+            </Typography>
+          </Toolbar>
+        </AppBar>
+      ) : null}
       <Sidebar
         topics={TOPICS}
         activeTopic={nav.topicId}
         activeView={nav.viewId}
         onSelect={select}
+        overlay={compact ? { open: navOpen, onClose: () => setNavOpen(false) } : undefined}
       />
       {/* Each view is kept alive (mounted-but-hidden) once visited, so its state persists across
           navigation instead of resetting on unmount. That also means a view that throws stays
           mounted and keeps throwing — hence a boundary per view, inside lazyView. */}
-      <Box component="main" sx={{ flexGrow: 1, minWidth: 0, p: 3, position: 'relative' }}>
+      <Box
+        component="main"
+        sx={{
+          flexGrow: 1,
+          minWidth: 0,
+          p: compact ? 1 : 3,
+          // Clear of the notch's sides and the home indicator, where an installed app draws.
+          ...(compact ? {
+            pl: 'max(8px, env(safe-area-inset-left))',
+            pr: 'max(8px, env(safe-area-inset-right))',
+            pb: 'max(8px, env(safe-area-inset-bottom))',
+          } : {}),
+          position: 'relative',
+          '--page-height': compact ? PAGE_HEIGHT_COMPACT : PAGE_HEIGHT_DESKTOP,
+        }}
+      >
         {/* Above every view rather than inside one: it is asked of the browser, not of the page
             you happen to be on, and the campaign that prompts it can be started from anywhere. */}
         <NotificationAsk />

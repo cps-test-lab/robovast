@@ -63,6 +63,7 @@ from robovast.common.campaign_data import (LaunchImages, campaign_has_runs,
                                            read_campaign_results_bytes)
 from robovast.common.errors import InsufficientStorageError
 from robovast.common.store import read_campaign_created_at, read_campaign_description
+from robovast.execution.jobs import declared_runs_per_job, job_count
 from robovast.execution.control_server import (STOP_RUNS,
                                                ControllerState, Phase, Status, failure_detail,
                                                is_terminal, stop_checker)
@@ -4981,6 +4982,8 @@ class ServiceBase(RobovastInterface):
         truncated = bool(max_configs) and len(configs) > max_configs
         return PreviewResponse(configs=len(configs), runs_per_config=runs,
                                total_trials=len(configs) * runs,
+                               jobs=job_count(len(configs), runs, declared_runs_per_job(
+                                   campaign_data.get("execution") or {})),
                                configurations=items, truncated=truncated,
                                aux_containers=aux_containers,
                                # The config view is declared in the same file this expanded, and
