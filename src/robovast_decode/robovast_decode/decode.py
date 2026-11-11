@@ -26,6 +26,9 @@ read up to its last complete record; nothing about it is an error.
 
 A metadata record (a named string map, which roqsim's recording uses for its provenance and
 its entity roster) goes to every handler's :meth:`Handler.metadata` as it is met.
+
+A run's simulator must not be reset once it records. A simulator recording that was reset fails
+every table built from it (:class:`SimulatorReset`).
 """
 
 from __future__ import annotations
@@ -34,13 +37,16 @@ import glob
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 from .definitions import SIDECAR_NAME, TypeCatalog
 from .framing import Channel, McapTail, Message, Metadata, Schema
-from .handlers import Handler
+from .handlers import Handler, HandlerError, SimClock
+from .registry import ROQSIM_BAG
 
 _SEGMENT_INDEX = re.compile(r"_(\d+)\.mcap$")
+#: A simulator recording's next file, ``<stem>-N.mcap``, which a reset starts.
+_NEXT_FILE = re.compile(r"^(?P<stem>.+)-\d+\.mcap$")
 
 
 def segments(bag_dir: str) -> List[str]:
@@ -113,12 +119,51 @@ def undecodable_tables(handlers: Iterable[Handler], undecodable: Dict[str, str],
     return {table: "; ".join(reasons) for table, reasons in out.items()}
 
 
+class SimulatorReset:
+    """Says why a simulator recording was reset while it recorded its run.
+
+    After a reset the recorder either starts ``<stem>-N.mcap`` beside ``<stem>.mcap``
+    or stays in its file with its sim time going back; an equal stamp has not gone back. Every
+    other recording of a run passes: a ROS bag's ``_N`` segments are one recording split by size.
+    """
+
+    def __init__(self, bag_dir: str):
+        self._applies = os.path.basename(os.path.normpath(bag_dir)) == ROQSIM_BAG
+        self._last_stamp: Dict[str, int] = {}
+
+    def files(self, paths: Iterable[str]) -> Optional[str]:
+        """Why the recording files *paths* show a reset, or ``None``."""
+        if not self._applies:
+            return None
+        names = {os.path.basename(p) for p in paths}
+        matches = (_NEXT_FILE.match(name) for name in names)
+        if not any(m and f"{m.group('stem')}.mcap" in names for m in matches):
+            return None
+        listed = ", ".join(sorted(names, key=lambda name: (len(name), name)))
+        return (f"a run's simulator must not be reset once it records, and this recording is "
+                f"several files: {listed}")
+
+    def stamp(self, path: str, topic: str, log_time: int) -> Optional[str]:
+        """Why a message of *topic* in the file *path*, stamped *log_time*, follows a reset,
+        or ``None``. The stamps of the clock channel are the sim time, in nanoseconds."""
+        if not self._applies or topic != SimClock.TOPIC:
+            return None
+        last = self._last_stamp.get(path)
+        self._last_stamp[path] = log_time
+        if last is None or log_time >= last:
+            return None
+        return (f"a run's simulator must not be reset once it records, and sim time in "
+                f"{os.path.basename(path)} goes back, "
+                f"from {last / 1e9:g} s to {log_time / 1e9:g} s")
+
+
 def decode_bag(bag_dir: str, handlers: Iterable[Handler]) -> BagReport:
     """Read every segment of *bag_dir* once and feed *handlers*; return what was read.
 
     A handler that raises is dropped for the rest of the pass and named in
     ``report.failed``; the others carry on. :class:`HandlerError` from ``end`` is how a
     handler says its table would not be truthful (a required TF frame that never resolved).
+    A simulator recording that was reset fails every handler (:class:`SimulatorReset`).
     """
     handlers = list(handlers)
     report = BagReport(bag_dir)
@@ -132,6 +177,7 @@ def decode_bag(bag_dir: str, handlers: Iterable[Handler]) -> BagReport:
             wanted.setdefault(topic, []).append(handler)
 
     report.segments = segments(bag_dir)
+    resets = SimulatorReset(bag_dir)
     recorded: Dict[str, str] = {}
     active = list(handlers)
 
@@ -143,6 +189,12 @@ def decode_bag(bag_dir: str, handlers: Iterable[Handler]) -> BagReport:
                 if handler in topic_handlers:
                     topic_handlers.remove(handler)
 
+    def reset(reason):
+        if reason:
+            for handler in list(active):
+                fail(handler, HandlerError(reason))
+
+    reset(resets.files(report.segments))
     for path in report.segments:
         # Schema and channel ids are per file: each segment is read with fresh maps, and
         # rosbag2 writes a segment's own schema and channel records into it.
@@ -171,6 +223,7 @@ def decode_bag(bag_dir: str, handlers: Iterable[Handler]) -> BagReport:
             stats = report.topics[channel.topic]
             stats.messages += 1
             stats.bytes += len(record.data)
+            reset(resets.stamp(path, channel.topic, record.log_time))
             readers = wanted.get(channel.topic)
             if not readers or stats.undecodable:
                 continue
@@ -198,5 +251,5 @@ def decode_bag(bag_dir: str, handlers: Iterable[Handler]) -> BagReport:
     return report
 
 
-__all__ = ["BagReport", "SIDECAR_NAME", "TopicStats", "channel_type", "decode_bag", "segments",
-           "undecodable_tables"]
+__all__ = ["BagReport", "SIDECAR_NAME", "SimulatorReset", "TopicStats", "channel_type",
+           "decode_bag", "segments", "undecodable_tables"]
