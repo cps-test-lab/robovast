@@ -28,6 +28,8 @@ from importlib.resources import files
 from pathlib import Path
 from pprint import pformat
 
+from typing import NamedTuple, Optional
+
 import yaml
 
 from robovast.client.safe_path import UnsafePathError, check_segment, is_inside, safe_join
@@ -41,6 +43,7 @@ from robovast.client.safe_path import UnsafePathError, check_segment, is_inside,
 # pylint: disable=unused-import  # the re-export below is the documented import site
 from robovast.execution.data.collect_sysinfo import node_label  # noqa: F401
 from robovast.execution.campaign_archive import JOB_DOCUMENT_SUFFIXES
+from robovast.execution.jobs import build_jobs, declared_runs_per_job, pod_statements
 
 from .common import convert_dataclasses_to_dict, get_scenario_parameters
 from .config import (SIMULATION_CONTAINER, Ros2RecordingConfig, recording_config,
@@ -50,7 +53,7 @@ from .config_identifier import (compute_config_identifier, hash_file_content, ha
 from .sut_channel import SUT_CONFIG_FILE
 from .sut_channel import source_paths as sut_source_paths
 from .errors import CampaignConfigError, missing_input_error
-from .simulators import (SIM_CONFIG_FILE, SIM_OVERRIDES_MOUNT, backend_name,
+from .simulators import (SIM_CONFIG_FILE, SIM_OVERRIDES_MOUNT, backend_name, sim_job_overlay, simulator_image,
                          declares_on_demand_streams, scenario_use_sim_time)
 
 # The host <-> container protocol: what host scripts assume about an image's entrypoint,
@@ -2064,14 +2067,90 @@ def prepare_campaign_configs(out_dir, campaign_data, cluster=False,
                     yaml.dump(wrapped_config_data, f, default_flow_style=False, sort_keys=False)
 
 
-def build_job_parameter_documents(job, scenario_name):
-    """Build the scenario-parameter override documents for a job: one per run.
+#: Why a configuration that stages a file of its own keeps a pod nobody shares: its copies
+#: are at ``/config/<deploy path>``, where another configuration's run would read them.
+STAGES_OWN_FILE = "stages a file of its own"
 
-    Each document overrides ``scenario_name``'s parameters for the job's configuration and
+
+class PodKey(NamedTuple):
+    """What a configuration's pod is made of, and why that is nobody else's when it is."""
+    key: str
+    own_reason: Optional[str]
+
+
+def pod_key(execution: dict, config: dict, base_dir: str = "") -> PodKey:
+    """The pod a configuration's run would get, as a key: equal keys may share a job.
+
+    Made of everything a job's manifest reads off its configuration -- the resolved simulator
+    overlay (command, environment, overrides document), the simulator image, the recorder's
+    per-configuration environment -- and the configuration's own staged files. A
+    configuration that stages a file keys on its name as well, so it shares with nobody:
+    its copies are the cell's view of ``/config`` and no other cell's run may see them.
+    """
+    execution = execution or {}
+    overlay = sim_job_overlay(execution, config.get("sim") or {}, base_dir)
+    files = sorted(str(rel) for rel, _src in (config.get("_config_files") or []))
+    made_of = {
+        "image": simulator_image(execution),
+        "command": overlay["command"],
+        "env": overlay["env"],
+        "document": overlay["document"],
+        "recording": recording_env(execution, config, base_dir),
+        "files": files,
+    }
+    if files:
+        made_of["name"] = config.get("name", "")
+    return PodKey(json.dumps(made_of, sort_keys=True, default=str),
+                  STAGES_OWN_FILE if files else None)
+
+
+def pod_keys(execution: dict, configs: list, base_dir: str = "") -> dict:
+    """Configuration name -> :class:`PodKey`, for every configuration."""
+    return {config.get("name", ""): pod_key(execution, config, base_dir) for config in configs}
+
+
+def plan_keys(execution: dict, configs: list, base_dir: str = "") -> Optional[dict]:
+    """The keys :func:`~robovast.execution.jobs.build_jobs` groups by: ``None`` at one run
+    per job, where nothing shares and no backend is asked, else name -> key."""
+    if declared_runs_per_job(execution) == 1:
+        return None
+    return {name: pod.key for name, pod in pod_keys(execution, configs, base_dir).items()}
+
+
+def planned_jobs(execution: dict, configs: list, runs: int, base_dir: str = "") -> list:
+    """The campaign's jobs as the backend creates them, from the composed configurations."""
+    return build_jobs(configs, runs, declared_runs_per_job(execution),
+                      plan_keys(execution, configs, base_dir))
+
+
+def planned_job_count(execution: dict, configs: list, runs: int, base_dir: str = "") -> int:
+    """What a validation or a preview reports as ``jobs``: the plan's length."""
+    return len(planned_jobs(execution, configs, runs, base_dir))
+
+
+def planned_pod_statements(execution: dict, configs: list, runs: int,
+                           base_dir: str = "") -> list:
+    """The per-group statements a report carries beside ``jobs``: who shares a pod, and why
+    a configuration keeps its own. Empty at one run per job."""
+    runs_per_job = declared_runs_per_job(execution)
+    if runs_per_job == 1:
+        return []
+    keys = pod_keys(execution, configs, base_dir)
+    return pod_statements(configs, runs, runs_per_job,
+                          {name: pod.key for name, pod in keys.items()},
+                          {name: pod.own_reason for name, pod in keys.items() if pod.own_reason})
+
+
+def build_job_parameter_documents(job, scenario_name):
+    """Build the scenario-parameter override documents for a job: one per item.
+
+    Each document overrides ``scenario_name``'s parameters for its item's configuration and
     sets the special ``_output_dir`` key to ``<config-name>/<run_number>`` so
     scenario_execution writes that run's results into robovast's per-config/run layout. A
-    job of several runs is a parameter file of several documents, which scenario_execution
-    runs one after another in one process, resetting the simulator between them.
+    job of several items is a parameter file of several documents, which scenario_execution
+    runs one after another in one process, resetting the simulator between them; the
+    documents are in the items' order, so a job of several configurations changes
+    configuration where its items do.
 
     A file-valued parameter is carried **as the campaign wrote it**. It needs no
     rewriting: a scenario resolves a file parameter against its own directory, which is
@@ -2084,16 +2163,15 @@ def build_job_parameter_documents(job, scenario_name):
             the single-config ``scenario.config`` wrapping).
 
     Returns:
-        list[dict]: The override documents, in the runs' order, ready to dump as the
+        list[dict]: The override documents, in the items' order, ready to dump as the
         multi-document YAML ``--scenario-parameter-file`` reads.
     """
-    config = job.config.get("config") or {}
     documents = []
-    for run in job.runs:
-        config_dict = convert_dataclasses_to_dict(copy.deepcopy(config))
+    for item in job.items:
+        config_dict = convert_dataclasses_to_dict(copy.deepcopy(item.config.get("config") or {}))
         # _output_dir is consumed by scenario_execution to place this run's
         # results; relative paths resolve under -o/--output-dir.
-        config_dict["_output_dir"] = f"{job.config_name}/{run}"
+        config_dict["_output_dir"] = item.key
         documents.append({scenario_name: config_dict})
     return documents
 
@@ -2151,7 +2229,7 @@ def build_job_links(jobs, job_prefix="") -> dict:
     and the job-level artifacts (sysinfo, logs, resource monitor) live in
     ``_jobs[/<prefix>]/job-N``. This returns a ``{link: target}``
     mapping where the link is ``C/R/job`` and the target is that dir relative to the
-    link's directory, so a user can ``cd C/R/job`` to reach the job's artifacts. The runs
+    link's directory, so a user can ``cd C/R/job`` to reach the job's artifacts. The items
     of a job of several share its target: they ran on one host, in one process.
 
     Args:
@@ -2166,9 +2244,8 @@ def build_job_links(jobs, job_prefix="") -> dict:
     """
     links = {}
     for job in jobs:
-        for run in job.runs:
-            links[f"{job.config_name}/{run}/job"] = \
-                f"../../_jobs/{job_artifact_rel(job.index, job_prefix)}"
+        for item in job.items:
+            links[f"{item.key}/job"] = f"../../_jobs/{job_artifact_rel(job.index, job_prefix)}"
     return links
 
 

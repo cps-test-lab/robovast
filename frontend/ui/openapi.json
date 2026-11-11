@@ -2893,6 +2893,13 @@
             "title": "Jobs",
             "type": "integer"
           },
+          "pods": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Pods",
+            "type": "array"
+          },
           "progress": {
             "anyOf": [
               {
@@ -2936,6 +2943,7 @@
           "configurations",
           "error",
           "jobs",
+          "pods",
           "progress",
           "runs_per_config",
           "state",
@@ -4788,6 +4796,13 @@
             "title": "Jobs",
             "type": "integer"
           },
+          "pods": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Pods",
+            "type": "array"
+          },
           "problems": {
             "items": {
               "$ref": "#/components/schemas/ValidationProblem"
@@ -4836,6 +4851,7 @@
         "required": [
           "configs",
           "jobs",
+          "pods",
           "problems",
           "runs_per_config",
           "scenario_checked",

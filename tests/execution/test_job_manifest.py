@@ -792,7 +792,7 @@ def test_a_stepped_cells_own_world_reaches_the_container_that_runs_it(monkeypatc
         assert [c["name"] for c in spec["containers"]][1:] == [
             pod_upload.UPLOADER_CONTAINER, pod_upload.AGENT_CONTAINER]
         env = _env_dict(_main_of(manifest))
-        worlds[job.config_name] = env["ROQSIM_WORLD"]
+        worlds[job.first.config_name] = env["ROQSIM_WORLD"]
 
     assert worlds == {"depot": "/config/worlds/depot.yaml",
                       "warehouse": "/config/worlds/warehouse.yaml"}

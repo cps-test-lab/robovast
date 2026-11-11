@@ -52,6 +52,12 @@ def _in_jobs(trials: int, jobs: int) -> str:
     return f" in {jobs} job(s)" if jobs and jobs != trials else ""
 
 
+def _echo_pods(pods) -> None:
+    """The per-group statements, one indented line each, as the report carries them."""
+    for line in pods or ():
+        click.echo(f"  {line}")
+
+
 def configure_logging(ctx, param, value):
     """Callback to configure logging based on --log-level option."""
     if value is not None:
@@ -608,6 +614,7 @@ def workspace_validate(workspace, vast_path, no_world_check,  # pylint: disable=
                 f"✓ valid: {report.configs} configuration(s) × "
                 f"{report.runs_per_config} run(s) = {report.total_trials} trial(s)"
                 + _in_jobs(report.total_trials, report.jobs))
+            _echo_pods(report.pods)
     # pylint: disable-next=try-except-raise
     except (click.UsageError, click.ClickException):
         raise
@@ -643,6 +650,7 @@ def workspace_preview(workspace, vast_path, max_configs):  # pylint: disable=red
                        f"{preview.runs_per_config} run(s) = "
                        f"{preview.total_trials} trial(s)"
                        + _in_jobs(preview.total_trials, preview.jobs))
+            _echo_pods(preview.pods)
     # pylint: disable-next=try-except-raise
     except (click.UsageError, click.ClickException):
         raise

@@ -26,6 +26,7 @@ import click
 import yaml
 
 from robovast.client.errors import handle_cli_exception
+from robovast.common.execution import planned_job_count, planned_pod_statements
 from robovast.common import (convert_dataclasses_to_dict, filter_configs,
                              generate_scenario_variations, get_scenario_parameters,
                              prepare_campaign_configs)
@@ -75,6 +76,15 @@ def list_cmd(vast, debug):
         handle_cli_exception(e)
 
 
+def _echo_jobs(jobs: int, total_runs: int, pods) -> None:
+    """What the runs dispatch as, when it is not one job per run: the job count and the
+    per-group statements the report carries, one indented line each."""
+    if jobs and jobs != total_runs:
+        click.echo(f"Jobs: {jobs}")
+    for line in pods or ():
+        click.echo(f"  {line}")
+
+
 @configuration.command(name='info')
 @click.argument('vast', type=click.Path(exists=True, dir_okay=False), metavar='VAST')
 def info(vast):
@@ -88,14 +98,18 @@ def info(vast):
             output_dir=None
         )
         configs = campaign_data["configs"]
-        runs_per_config = campaign_data.get("execution", {}).get("runs", 1)
+        execution = campaign_data.get("execution", {}) or {}
+        runs_per_config = execution.get("runs", 1)
         total_runs = len(configs) * runs_per_config
+        vast_dir = os.path.dirname(os.path.abspath(config))
 
         click.echo("Configuration Overview")
         click.echo("======================")
         click.echo(f"Configurations: {len(configs)}")
         click.echo(f"Runs per configuration: {runs_per_config}")
         click.echo(f"Total runs: {total_runs}")
+        _echo_jobs(planned_job_count(execution, configs, runs_per_config, vast_dir), total_runs,
+                   planned_pod_statements(execution, configs, runs_per_config, vast_dir))
         click.echo(f"Scenario file: {campaign_data.get('scenario_file', 'N/A')}")
         click.echo(f"VAST file: {campaign_data.get('vast', 'N/A')}")
         if "metadata" in campaign_data:
@@ -126,6 +140,7 @@ def validate(vast):
         click.echo(f"Configurations: {report.get('configs', 0)}")
         click.echo(f"Runs per configuration: {report.get('runs_per_config', 0)}")
         click.echo(f"Total runs: {report.get('total_trials', 0)}")
+        _echo_jobs(report.get("jobs", 0), report.get("total_trials", 0), report.get("pods", []))
         return
 
     click.echo(click.style(f"✗ {len(problems)} problem(s) found:", fg="red"))

@@ -11,6 +11,7 @@ import Paper from '@mui/material/Paper'
 import Stack from '@mui/material/Stack'
 import Typography from '@mui/material/Typography'
 import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded'
+import { PodLines } from './ConfigEditorPane'
 import { type ConfigEditor } from './useConfigEditor'
 
 export function ConfigListPane({ editor }: { editor: ConfigEditor }) {
@@ -33,6 +34,7 @@ export function ConfigListPane({ editor }: { editor: ConfigEditor }) {
           {preview.jobs !== preview.total_trials ? ` · ${preview.jobs} jobs` : ''}
         </Typography>
       ) : null}
+      {preview && preview.pods.length > 0 ? <PodLines pods={preview.pods} /> : null}
       {previewErr ? (
         // pre-wrap: a plugin that broke reports the frames it broke in, one per line.
         <Alert severity="error" sx={{ whiteSpace: 'pre-wrap' }}>

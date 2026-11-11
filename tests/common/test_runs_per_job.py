@@ -1,4 +1,4 @@
-"""``execution.runs_per_job``: a configuration's runs in one job, stepped shape only."""
+"""``execution.runs_per_job``: several runs in one job, stepped shape only."""
 import pytest
 from pydantic import ValidationError
 
@@ -35,7 +35,8 @@ def test_less_than_one_run_per_job_is_refused():
 
 
 def test_the_validation_report_says_what_the_trials_dispatch_as(tmp_path):
-    """A reader sees the job count beside the trial count before anything is dispatched."""
+    """A reader sees the job count beside the trial count before anything is dispatched: two
+    configurations whose pod is the same pack together, ten runs at two per job being five."""
     from robovast.common.config_validation import validate_project_file
     (tmp_path / "scenario.osc").write_text("import osc.helpers\n\nscenario trial:\n"
                                            "    do serial:\n        wait elapsed(1s)\n")
@@ -46,7 +47,8 @@ def test_the_validation_report_says_what_the_trials_dispatch_as(tmp_path):
         "  mode: base\n  runs: 5\n  runs_per_job: 2\n")
     report = validate_project_file(str(vast))
     assert (report["configs"], report["runs_per_config"], report["total_trials"]) == (2, 5, 10)
-    assert report["jobs"] == 6
+    assert report["jobs"] == 5
+    assert report["pods"] == ["a, b share a pod (5 job(s) of up to 2 runs)"]
 
 
 def test_the_deadline_is_the_runs_budget_times_the_jobs_runs():
@@ -55,3 +57,19 @@ def test_the_deadline_is_the_runs_budget_times_the_jobs_runs():
     assert job_deadline_seconds({"timeout": 30}) == 30
     assert job_deadline_seconds({"timeout": 30}, runs=4) == 120
     assert job_deadline_seconds({}, runs=3) == 3 * DEFAULT_RUN_DEADLINE_SECONDS
+
+
+def test_vast_config_validate_says_what_the_trials_dispatch_as(tmp_path):
+    """The config CLI shows the same job count and the same per-group lines the report carries."""
+    from click.testing import CliRunner
+    from robovast.configuration.configuration_utils.cli import configuration
+    (tmp_path / "scenario.osc").write_text("import osc.helpers\n\nscenario trial:\n"
+                                           "    do serial:\n        wait elapsed(1s)\n")
+    vast = tmp_path / "c.vast"
+    vast.write_text(
+        "version: 7\nmetadata: {name: packed}\nconfiguration:\n- name: a\n- name: b\n"
+        "execution:\n  containers: {scenario: {}}\n  scenario_file: scenario.osc\n"
+        "  mode: base\n  runs: 5\n  runs_per_job: 2\n")
+    result = CliRunner().invoke(configuration, ["validate", str(vast)])
+    assert result.exit_code == 0, result.output
+    assert "Total runs: 10\nJobs: 5\n  a, b share a pod (5 job(s) of up to 2 runs)\n" in result.output

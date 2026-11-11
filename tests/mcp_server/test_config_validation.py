@@ -156,6 +156,7 @@ def test_valid_project_reports_counts(tmp_path):
     assert report["problems"] == []
     assert report["configs"] == 3
     assert report["total_trials"] == report["configs"] * report["runs_per_config"]
+    assert report["jobs"] == report["total_trials"] and report["pods"] == []
 
 
 def test_scene3d_without_a_state_recording_simulator_is_refused():
