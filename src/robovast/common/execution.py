@@ -2171,10 +2171,11 @@ def build_job_parameter_documents(job, scenario_name, run_reset=None):
     configuration where its items do.
 
     *run_reset* maps an item's configuration to the ``_reset`` mapping its document carries
-    (:func:`run_reset_arguments`), or to ``None``. It is asked only for a job of several
-    configurations: there the simulator must be told each run's world by its document,
-    since the process was started with the first item's; a job of one configuration carries
-    no ``_reset``, so it runs on an image whose runner knows nothing of the key.
+    (:func:`run_reset_arguments`), or to ``None``. The documents carry it only when the job's
+    items differ in it: then the simulator must be told each run's world by its document,
+    since the process was started with the first item's. A job whose items agree -- one
+    configuration, or several differing only in their parameters -- carries no ``_reset``,
+    so it runs on any image and with any adapter, whose ``reset()`` need not know the key.
 
     A file-valued parameter is carried **as the campaign wrote it**. It needs no
     rewriting: a scenario resolves a file parameter against its own directory, which is
@@ -2190,14 +2191,17 @@ def build_job_parameter_documents(job, scenario_name, run_reset=None):
         list[dict]: The override documents, in the items' order, ready to dump as the
         multi-document YAML ``--scenario-parameter-file`` reads.
     """
-    mixed = len(job.config_names) > 1
+    resets = [None] * len(job.items)
+    if run_reset is not None and len(job.config_names) > 1:
+        resets = [run_reset(item.config) for item in job.items]
+        if all(reset == resets[0] for reset in resets):
+            resets = [None] * len(job.items)
     documents = []
-    for item in job.items:
+    for item, reset in zip(job.items, resets):
         config_dict = convert_dataclasses_to_dict(copy.deepcopy(item.config.get("config") or {}))
         # _output_dir is consumed by scenario_execution to place this run's
         # results; relative paths resolve under -o/--output-dir.
         config_dict["_output_dir"] = item.key
-        reset = run_reset(item.config) if mixed and run_reset is not None else None
         if reset:
             config_dict["_reset"] = convert_dataclasses_to_dict(copy.deepcopy(reset))
         documents.append({scenario_name: config_dict})

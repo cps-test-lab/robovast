@@ -115,7 +115,6 @@ def test_the_documents_of_a_mixed_world_job_carry_each_runs_world():
         {"world": "/config/worlds/a.yaml", "world_overrides": {}},
         {"world": "/config/worlds/a.yaml", "world_overrides": {}},
         {"world": "/config/worlds/b.yaml", "world_overrides": {"components": {"floor": {"k": 1}}}}]
-    assert all("_reset" not in d["trial"]["speed"].__class__.__name__ for d in documents)
 
 
 def test_a_job_of_one_configuration_carries_no_reset():
@@ -125,6 +124,30 @@ def test_a_job_of_one_configuration_carries_no_reset():
         for job in planned_jobs(execution, [_config("a")], 2):
             documents = build_job_parameter_documents(job, "trial", run_reset=_reset_of(execution))
             assert all("_reset" not in d["trial"] for d in documents)
+
+
+def test_a_job_of_one_world_carries_no_reset():
+    """Configurations differing only in their parameters share a job without ``_reset``, so a
+    campaign's own adapter, whose ``reset()`` need not know the key, runs them as before."""
+    a, b = _config("a"), _config("b")
+    b["config"] = {"speed": 2.0}
+    job = planned_jobs(_EXECUTION, [a, b], 2)[0]
+    assert job.config_names == ("a", "b")
+    documents = build_job_parameter_documents(job, "trial", run_reset=_reset_of(_EXECUTION))
+    assert all("_reset" not in d["trial"] for d in documents)
+
+
+def test_a_campaigns_own_adapter_keeps_the_world_the_pods():
+    """Only roqsim's own adapter is known to take the world at ``reset()``: under another one
+    the world stays the process's, so two worlds never share a job."""
+    own = {"adapter": "my_experiment.adapter:Sim"}
+    a = _config("a")
+    b = _config("b", world="worlds/b.yaml")
+    a["sim"].update(own)
+    b["sim"].update(own)
+    assert run_reset_arguments(_EXECUTION, a) is None
+    assert pod_key(_EXECUTION, a).key != pod_key(_EXECUTION, b).key
+    assert [j.config_names for j in planned_jobs(_EXECUTION, [a, b], 2)] == [("a",), ("b",)]
 
 
 def test_the_links_of_a_mixed_job_point_at_its_directory():

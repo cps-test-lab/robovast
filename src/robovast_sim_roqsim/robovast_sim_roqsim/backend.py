@@ -198,8 +198,13 @@ class RoqsimBackend(SimulatorBackend):
         overrides go as the mapping itself rather than a file: the adapter compares mappings
         to decide whether to rebuild, and an empty one is "no overrides" to it, so a
         configuration without overrides neither inherits the process default nor rebuilds.
+
+        Only roqsim's own adapter is known to take these two by name. A campaign's own adapter
+        gets ``None``: its world stays the process's, so a job never holds two of its worlds.
         """
         if shape_for(execution.get("mode", "auto")) != SHAPE_STEPPED:
+            return None
+        if (cfg.adapter or ADAPTER) != ADAPTER:
             return None
         return RunReset(
             arguments={"world": _config_in_container(cfg.config),

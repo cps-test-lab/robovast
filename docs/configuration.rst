@@ -1153,22 +1153,24 @@ simulator is built once per job rather than once per run.
 
 - A job holds runs of configurations **whose pod would be the same**: the same resolved
   simulator command and environment, the same image, the same recorder settings, and no file
-  staged by the configuration itself. Configurations that differ in their scenario parameters,
-  their world or their world overrides therefore share: the simulator is told each run's world
+  staged by the configuration itself. Configurations that differ in their scenario parameters
+  therefore share, and under roqsim's own adapter so do those that differ in their world or
+  their world overrides: the simulator is told each run's world
   by the run's own parameter document (its ``_reset`` mapping, which scenario-execution passes
   to the simulation's ``reset()``), and rebuilds where the world changes. A group's runs are
   laid out configuration after configuration and cut into jobs of ``N``, so a job changes
   configuration -- and the simulator rebuilds -- as rarely as the cut allows: two such
   configurations at ``runs: 50`` and ``runs_per_job: 20`` dispatch five jobs, the third
   holding the last ten runs of the first configuration and the first ten of the second.
-- A job of several configurations needs an image whose scenario-execution knows the
+- A job whose runs differ in their world needs an image whose scenario-execution knows the
   ``_reset`` key and whose simulator takes its world from it. An older scenario-execution
   refuses such a parameter file at the document, before any run, rather than running every
-  run against the first configuration's world; a job of one configuration carries no
-  ``_reset`` and runs on either.
+  run against the first configuration's world; a job whose runs share one world carries no
+  ``_reset`` and runs on either, with any adapter.
 - A configuration that **stages a file of its own** -- a variation writing a per-cell file to
   ``/config/<deploy path>`` -- keeps jobs of its own, since no run may see another cell's file.
-  So does one whose simulator backend states nothing per run and whose world differs.
+  So does one whose world differs where the simulator is not told the world per run: in the
+  ROS shape, or under a campaign's own adapter.
 - **Refused with any mode but** ``base`` when the configuration is validated: under ``ros2``
   the simulator is another container, started once with one world and told nothing per run, so
   it cannot be reset per run or told where each run writes; ``auto``, the default, is resolved

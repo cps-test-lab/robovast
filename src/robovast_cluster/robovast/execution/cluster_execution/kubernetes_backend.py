@@ -1293,9 +1293,9 @@ class BatchJobRunner:
     def _sim_overlay(self, job) -> dict:
         """This job's resolved simulator command, environment and overrides document.
 
-        Asked of the backend with the job's first configuration's block -- every item's
-        resolves to the same, see :meth:`_assert_one_pod` -- which is why the world differs
-        per job while the image, the resources and the container set do not.
+        Asked of the backend with the job's first configuration's block: every item's pod is
+        the same (:meth:`_assert_one_pod`), and what differs per run -- the world, where the
+        backend states it per run -- reaches the simulator through each run's ``_reset``.
         """
         return sim_job_overlay(self.campaign_data.get("execution") or {},
                                job.first.config.get("sim") or {}, self._vast_dir())
