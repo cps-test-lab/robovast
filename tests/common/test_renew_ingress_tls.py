@@ -4,8 +4,10 @@
 
 import datetime
 import importlib.util
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -64,3 +66,23 @@ def test_the_expiry_is_read_from_the_certificate(tool, tmp_path):
 def test_what_is_no_certificate_is_refused(tool):
     with pytest.raises(SystemExit, match="could not read"):
         tool.not_after("not a certificate")
+
+
+def test_staging_keeps_a_certificate_of_its_own(tool, tmp_path):
+    """certbot refuses to replace a trusted certificate with a staging one, so a staging run names its own."""
+    real = tool.certbot_command("robovast.example.org", "ops@example.org", tmp_path, False, "1000:1000")
+    staged = tool.certbot_command("robovast.example.org", "ops@example.org", tmp_path, True, "1000:1000")
+    assert real[real.index("--cert-name") + 1] == "robovast.example.org" and "--staging" not in real
+    assert staged[staged.index("--cert-name") + 1] == "robovast.example.org-staging" and "--staging" in staged
+    for cmd in (real, staged):
+        assert cmd[cmd.index("-d") + 1] == "robovast.example.org"
+        assert cmd[cmd.index("--user") + 1] == "1000:1000" and f"{tmp_path}:/le" in cmd
+
+
+@pytest.mark.parametrize("extra", [["--staging"], ["--email", "ops@example.org"], ["--dir", "/tmp/le"]])
+def test_check_refuses_what_only_a_renewal_uses(extra):
+    """`--check` reports and returns, so an option it would not use is refused rather than ignored."""
+    result = subprocess.run([sys.executable, str(SCRIPT), "--check", *extra], capture_output=True, text=True,
+                            check=False, env={**os.environ, "KUBECONFIG": "/nonexistent"})
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert "--check only reports" in result.stderr

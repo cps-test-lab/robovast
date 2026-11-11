@@ -60,7 +60,7 @@ CERTBOT_IMAGE = "certbot/certbot:v3.0.1"
 #: Annotations by which cert-manager manages an Ingress's certificate itself.
 CERT_MANAGER_ANNOTATIONS = ("cert-manager.io/issuer", "cert-manager.io/cluster-issuer")
 
-#: Days of validity left below which `--check` exits 1; Let's Encrypt renews at 30.
+#: Days of validity left below which `--check` exits 1; certbot's own renewal window.
 RENEW_WITHIN_DAYS = 30
 
 
@@ -107,19 +107,30 @@ def _served(host):
     return expiry, f"valid until {expiry:%Y-%m-%d %H:%M} UTC ({state})"
 
 
-def _certbot(host, email, state_dir, staging):
-    """Request a certificate for `host` by DNS-01, certbot asking the person in the terminal."""
-    state_dir.mkdir(parents=True, exist_ok=True)
-    cmd = ["docker", "run", "--rm", "-it", "--user", f"{os.getuid()}:{os.getgid()}",
+def cert_name(host, staging):
+    """certbot's name for the certificate: staging keeps its own, since certbot refuses to replace a
+    trusted certificate with a staging one."""
+    return f"{host}-staging" if staging else host
+
+
+def certbot_command(host, email, state_dir, staging, user):
+    """The `docker run` that has certbot request a certificate for `host` by DNS-01 as `user` (uid:gid),
+    keeping its account and certificates in `state_dir`."""
+    cmd = ["docker", "run", "--rm", "-it", "--user", user,
            "-v", f"{state_dir}:/le", CERTBOT_IMAGE, "certonly",
            "--manual", "--preferred-challenges", "dns",
            "--config-dir", "/le/config", "--work-dir", "/le/work", "--logs-dir", "/le/logs",
-           "--cert-name", host, "-d", host, "--email", email]
-    if staging:
-        cmd.append("--staging")
+           "--cert-name", cert_name(host, staging), "-d", host, "--email", email]
+    return cmd + (["--staging"] if staging else [])
+
+
+def _certbot(host, email, state_dir, staging):
+    """Request a certificate for `host`, certbot asking the person in the terminal; its PEM and key."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    cmd = certbot_command(host, email, state_dir, staging, f"{os.getuid()}:{os.getgid()}")
     if subprocess.run(cmd, check=False).returncode:  # noqa: S603
         raise SystemExit("certbot did not issue a certificate; the secret is unchanged.")
-    live = state_dir / "config" / "live" / host
+    live = state_dir / "config" / "live" / cert_name(host, staging)
     return (live / "fullchain.pem").read_text(), (live / "privkey.pem").read_text()
 
 
@@ -146,12 +157,10 @@ def main():
                         help="kubeconfig context (ROBOVAST_KUBE_CONTEXT)")
     parser.add_argument("--namespace", default=os.environ.get("ROBOVAST_NAMESPACE", "default"),
                         help="namespace the service runs in (ROBOVAST_NAMESPACE)")
-    parser.add_argument("--email", default=os.environ.get("ROBOVAST_TLS_EMAIL", ""),
-                        help="Let's Encrypt account address (ROBOVAST_TLS_EMAIL)")
+    parser.add_argument("--email", help="Let's Encrypt account address (ROBOVAST_TLS_EMAIL)")
     parser.add_argument("--dir", type=Path,
-                        default=Path(os.environ.get("ROBOVAST_TLS_DIR",
-                                                    "~/.config/robovast/letsencrypt")),
-                        help="certbot's account and certificates (ROBOVAST_TLS_DIR)")
+                        help="certbot's account and certificates (ROBOVAST_TLS_DIR, else "
+                             "~/.config/robovast/letsencrypt)")
     parser.add_argument("--staging", action="store_true",
                         help="Let's Encrypt's staging service: an untrusted certificate, never "
                              "written into the secret; to try the DNS record")
@@ -159,6 +168,11 @@ def main():
                         help=f"only report the served certificate; exit 1 within "
                              f"{RENEW_WITHIN_DAYS} days of its expiry")
     args = parser.parse_args()
+    if args.check and (args.staging or args.email is not None or args.dir is not None):
+        parser.error("--check only reports the served certificate; --staging, --email and --dir "
+                     "are for a renewal")
+    args.email = args.email or os.environ.get("ROBOVAST_TLS_EMAIL", "")
+    args.dir = args.dir or Path(os.environ.get("ROBOVAST_TLS_DIR", "~/.config/robovast/letsencrypt"))
 
     from kubernetes import client
     load_kube_config(context=args.context)
@@ -195,6 +209,9 @@ def main():
           f"  dig +short TXT _acme-challenge.{host} @1.1.1.1\n")
     cert, key = _certbot(host, email, args.dir.expanduser(), args.staging)
     issued = not_after(cert)
+    if not args.staging and issued == expiry:
+        print("\ncertbot kept the certificate already served; the secret is unchanged.")
+        return
     print(f"\nIssued:   valid until {issued:%Y-%m-%d %H:%M} UTC")
     if args.staging:
         print("A staging certificate is not trusted by any client; the secret is unchanged.")
@@ -208,8 +225,9 @@ def main():
             print(f"Serving:  {served}")
             return
         time.sleep(5)
-    print(f"Serving:  {served} -- the ingress controller has not picked up the new secret yet; "
-          f"check again with `make renew-tls CHECK=1`.")
+    raise SystemExit(f"Serving:  {served} -- the secret holds the new certificate, but the ingress "
+                     f"controller has not served it within a minute; check again with "
+                     f"`make renew-tls CHECK=1`.")
 
 
 if __name__ == "__main__":
