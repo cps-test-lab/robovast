@@ -86,3 +86,10 @@ def test_check_refuses_what_only_a_renewal_uses(extra):
                             check=False, env={**os.environ, "KUBECONFIG": "/nonexistent"})
     assert result.returncode == 2, result.stdout + result.stderr
     assert "--check only reports" in result.stderr
+
+
+def test_a_relative_state_directory_is_mounted_by_its_absolute_path(tool, tmp_path, monkeypatch):
+    """docker takes `-v le:/le` for a named volume, so certbot's files would land where the tool never reads."""
+    monkeypatch.chdir(tmp_path)
+    cmd = tool.certbot_command("robovast.example.org", "ops@example.org", "le", False, "1000:1000")
+    assert cmd[cmd.index("-v") + 1] == f"{tmp_path.resolve()}/le:/le"
