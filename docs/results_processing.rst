@@ -461,19 +461,18 @@ The ``state`` channel, the raw simulator state roqsim itself reads back, is not 
 so in ``_recording``. The recording is closed once its writer wrote the footer -- a killed run's
 file ends where its last chunk did, and is decoded to there.
 
-.. _results-one-episode:
+.. _results-simulator-reset:
 
-**A run is one episode**, one stretch of simulation between resets, because every lookup by sim
-time assumes its time runs one way. A scenario that needs several trials gets several runs, and a
-scenario must not reset the simulation after it has started recording. A simulator recording that
-holds more than one episode -- several files (``roqsim.mcap`` beside ``roqsim-2.mcap``), or a file
-whose sim time goes back -- gives none of the tables above for that run. Each is listed under
+**A run's simulator is not reset once it records**, because every lookup by sim time assumes its
+time runs one way. A scenario that needs several trials gets several runs. A simulator recording
+that was reset -- several files (``roqsim.mcap`` beside ``roqsim-2.mcap``), or a file whose sim
+time goes back -- gives none of the tables above for that run. Each is listed under
 ``failed`` with a reason that names what was found, like any table a build could not make
 truthfully (:ref:`results-table-cache`); a build and a session following the run record the same,
 a session keeping the rows from before the reset until the run ends. The run's scene, screenshots
 and ``_recording`` rows stay, and so do the campaign's other runs. A reset before the first sample
-writes no second file and is no second episode, and the runs of one packed job each have their
-own directory and recording.
+writes no second file and fails nothing, and the runs of one packed job each have their own
+directory and recording.
 
 **Authored files.** A run's own data file is a table with no registration: a scenario's metrics
 file, a simulator's pose stream, a postprocessing step's output, scenario-execution's

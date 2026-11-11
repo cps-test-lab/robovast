@@ -1192,11 +1192,10 @@ A run that crashes the job's simulator process ends the job: the runs after it i
 not run. A packed job that is interrupted after some of its runs landed is created again whole
 when the campaign is re-entered; the runs it had produced are produced again.
 
-**A run is one episode**, one stretch of simulation between resets, in every shape: ROS or
-stepped, alone in its job or packed. A scenario that needs several trials gets several runs
-(``runs``, and ``runs_per_job`` for a stepped one). A scenario must not reset the simulation after
-it has started recording: a run whose simulator recording holds more than one episode has no
-simulator tables, and the build says why (:ref:`a run is one episode <results-one-episode>`).
+**A scenario must not reset the simulation once it records.** A scenario that needs several
+trials gets several runs (``runs``, and ``runs_per_job`` for a stepped one). A run whose simulator
+recording was reset has no simulator tables, and the build says why
+(:ref:`a reset fails the simulator tables <results-simulator-reset>`).
 
 ``validate_project``, ``preview_configurations``, ``vast workspace validate`` and
 ``vast workspace preview`` report the job count beside the trial count (``jobs``), so what a

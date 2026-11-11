@@ -27,7 +27,7 @@ Where recordings live, relative to the campaign directory:
   that restarted left several ``rosbag2*`` directories);
 * a run's simulator recording: ``<config>/<run>/roqsim_bag/``, the one mcap roqsim writes,
   beside the scenario recording or -- for a stepped run with no ROS at all -- instead of it,
-  one episode, since a run is one (:class:`~robovast_decode.decode.OneEpisode`);
+  never reset while it records (:class:`~robovast_decode.decode.SimulatorReset`);
 * a job's wall-time infrastructure recording: ``_jobs/.../job-N/logs/rosout_bag/``, the job
   found through ``_transient/job_links.yaml``, which is written before a job starts (the
   ``job`` symlink beside a run appears only once it ends). A job of one run gives its rows

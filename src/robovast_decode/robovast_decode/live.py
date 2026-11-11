@@ -64,7 +64,7 @@ from .authored import with_yaw
 from .build import (BAG_METADATA, Run, derived_sources, find_runs, plugin_groups,
                     recorded_topics, recording_closed, recordings_closed, roqsim_recording,
                     scenario_recording, source_size)
-from .decode import SIDECAR_NAME, OneEpisode, channel_type, segments, undecodable_tables
+from .decode import SIDECAR_NAME, SimulatorReset, channel_type, segments, undecodable_tables
 from .definitions import TypeCatalog
 from .derived import DERIVED, INPUTS, RUN_LOG, JobRun, derive_job
 from .frames import FrameRef, FrameTap
@@ -162,7 +162,7 @@ class Session:
         #: ``{topic: tap}`` of the image topics followed frame by frame.
         self.taps: Dict[str, FrameTap] = {t: FrameTap(self.bag_dir, t) for t in (frames or ())}
         self._tails: Dict[str, McapTail] = {}
-        self._episodes = OneEpisode(self.bag_dir)
+        self._resets = SimulatorReset(self.bag_dir)
         self._undecodable: Dict[str, str] = {}
         #: Set by :meth:`finish`: nothing more will come from this session.
         self.finished = False
@@ -248,7 +248,7 @@ class Session:
 
     def _read(self) -> None:
         files = segments(self.bag_dir)
-        self._not_one_episode(self._episodes.files(files))
+        self._reset(self._resets.files(files))
         for path in files:
             tail = self._tails.get(path)
             if tail is None:
@@ -287,7 +287,7 @@ class Session:
             if channel is None:
                 continue
             topic = channel.topic
-            self._not_one_episode(self._episodes.stamp(tail.path, topic, record.log_time))
+            self._reset(self._resets.stamp(tail.path, topic, record.log_time))
             tap = self.taps.get(topic)
             if tap is not None:
                 tap.record(FrameRef(record.log_time / 1e9, tail.path, record_offset, index),
@@ -344,7 +344,7 @@ class Session:
             if handler in readers:
                 readers.remove(handler)
 
-    def _not_one_episode(self, reason: Optional[str]) -> None:
+    def _reset(self, reason: Optional[str]) -> None:
         if reason:
             for handler in list(self._active):
                 self._fail(handler, HandlerError(reason))

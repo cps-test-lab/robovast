@@ -1,7 +1,7 @@
 # Copyright (C) 2026 Frederik Pasch
 # SPDX-License-Identifier: Apache-2.0
-"""A robovast run is one episode: a simulator recording of several fails the run's tables built
-from it, whole or followed live, and leaves everything else as it was.
+"""A run's simulator must not be reset once it records: a simulator recording that was reset
+fails the run's tables built from it, whole or followed live, and leaves everything else as it was.
 """
 
 import json
@@ -18,8 +18,8 @@ from .conftest import (ROQSIM_BODIES, ROQSIM_SAMPLES, make_campaign, make_roqsim
 
 TABLES = ["sim_poses", "joint_states", "clock_map", "sim_recording", "sim_entities"]
 ONE_RUN_ROWS = ROQSIM_SAMPLES * len(ROQSIM_BODIES)
-#: A file holding two episodes: its sim time goes back at the fourth sample.
-TWO_EPISODES = [0.0, 0.02, 0.04, 0.0, 0.02, 0.04]
+#: A file reset once: its sim time goes back at the fourth sample.
+RESET_ONCE = [0.0, 0.02, 0.04, 0.0, 0.02, 0.04]
 TWO_RUNS = (("cfg", 0), ("cfg", 1))
 
 
@@ -36,7 +36,7 @@ def _second_file(campaign, run_id=0):
 
 
 def _sim_time_goes_back(campaign, run_id=0):
-    write_roqsim_mcap(_bag(campaign, run_id) / "roqsim.mcap", times=TWO_EPISODES)
+    write_roqsim_mcap(_bag(campaign, run_id) / "roqsim.mcap", times=RESET_ONCE)
 
 
 def _assert_failed(report, campaign, says, run="cfg/0"):
@@ -44,7 +44,7 @@ def _assert_failed(report, campaign, says, run="cfg/0"):
     tables = available_tables(str(campaign))
     for table in TABLES:
         reason = report.failed[table][run]
-        assert "a robovast run is one episode" in reason and says in reason, table
+        assert "a run's simulator must not be reset once it records" in reason and says in reason, table
         assert tables[table]["failed"][run] == reason, table
         entry = _manifest(campaign)["tables"][table]["runs"][run]
         assert entry["rows"] == 0 and entry["files"] == [] and entry["reason"] == reason, table
@@ -69,7 +69,7 @@ def test_a_file_whose_sim_time_goes_back_fails_its_simulator_tables(tmp_path):
     _assert_failed(report, campaign, "sim time in roqsim.mcap goes back, from 0.04 s to 0 s")
 
 
-def test_a_whole_build_replaces_what_the_first_episode_gave_with_the_failure(tmp_path):
+def test_a_whole_build_replaces_what_the_run_gave_before_the_reset_with_the_failure(tmp_path):
     campaign = make_roqsim_campaign(tmp_path / "stepped", verdict=False)
     assert build(str(campaign)).built["sim_poses"] == ["cfg/0"]
     _second_file(campaign)
