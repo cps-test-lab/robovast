@@ -123,6 +123,17 @@ Setup prints the access token once, and waits for the pod to be Ready before
 reporting success — so an image that cannot be pulled is reported *here*, with the
 pod's own reason, rather than as a connection failure from the next command.
 
+**A certificate held in a TLS secret** (``--tls-secret``) is renewed by nobody in the
+cluster, and one from Let's Encrypt lasts 90 days. ``make renew-tls`` renews it by DNS-01:
+it reads the host and the secret from the service's Ingress, runs certbot in a container,
+which shows the value for the ``_acme-challenge`` TXT record and waits until you have set it
+at your DNS provider, and writes the new certificate into the secret once you confirm; the
+ingress controller serves it without a restart. ``make renew-tls CHECK=1`` only reports the
+served certificate and exits 1 within 30 days of its expiry, for a reminder. It needs
+``docker`` and ``openssl``, takes ``CONTEXT=`` or ``ROBOVAST_KUBE_CONTEXT``, and reads
+``ROBOVAST_TLS_EMAIL`` and ``ROBOVAST_TLS_DIR`` (``.env.example``). A service published with
+``--issuer`` is renewed by cert-manager, and the target refuses it.
+
 To read it back later, ``vast service token`` prints the URL, the token and the
 three ways to connect (``-q`` for the token alone). Each cluster mints its own token, so
 the URL it names is the only one that token opens.

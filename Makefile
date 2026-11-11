@@ -154,6 +154,10 @@ refresh-build-pins: ## Re-resolve base-image digests and the dated apt archives 
 release-images-update-versions: ## Move the commits release-images bakes (roqsim, scenario-execution) onto their branch heads (asks first; WRITE=1 to skip the question)
 	@python3 tools/refresh_source_pins.py $(if $(WRITE),--write,--ask) $(foreach b,$(BRANCH),--branch $(b))
 
+.PHONY: renew-tls
+renew-tls: venv/.robovast_installed ## Renew the Let's Encrypt certificate a published service serves from a TLS secret (interactive, DNS-01; CHECK=1 only reports it)
+	@. venv/bin/activate && python tools/renew_ingress_tls.py $(if $(CHECK),--check) $(if $(CONTEXT),--context $(CONTEXT))
+
 .PHONY: new-config-migration
 new-config-migration: ## Scaffold a .vast config migration step (see migrations/README.md)
 	@python3 tools/new_config_migration.py
