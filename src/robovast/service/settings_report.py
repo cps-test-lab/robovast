@@ -137,7 +137,7 @@ KNOWN: dict[str, Known] = {
     # -- cluster --------------------------------------------------------------
     # No defaults: these are read in `robovast-cluster`, which this distribution does not
     # import. Stating a literal here would be the restatement this module exists to avoid.
-    "ROBOVAST_NAMESPACE": Known(
+    "ROBOVAST_KUBE_NAMESPACE": Known(
         _CLUSTER, "Kubernetes namespace this service and its campaign Jobs run in."),
     "ROBOVAST_KUBE_CONTEXT": Known(
         _CLUSTER, "Kubeconfig context recorded at deploy, for per-cluster resource lists."),

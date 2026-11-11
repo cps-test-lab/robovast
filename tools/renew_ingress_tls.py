@@ -29,7 +29,7 @@ here.
 
 Settings, each read from the environment, the project ``.env`` or the user's env file:
 
-* ``ROBOVAST_KUBE_CONTEXT`` / ``ROBOVAST_NAMESPACE`` -- where the service runs
+* ``ROBOVAST_KUBE_CONTEXT`` / ``ROBOVAST_KUBE_NAMESPACE`` -- where the service runs
   (``--context`` / ``--namespace``);
 * ``ROBOVAST_TLS_EMAIL`` -- the Let's Encrypt account address (``--email``; asked when unset);
 * ``ROBOVAST_TLS_DIR`` -- certbot's account and certificates (``--dir``; default
@@ -154,11 +154,14 @@ def main():
         load_env_file()
     except ValueError as err:
         raise SystemExit(str(err)) from err
+    if "ROBOVAST_NAMESPACE" in os.environ:
+        raise SystemExit("ROBOVAST_NAMESPACE is set, but the namespace setting is "
+                         "ROBOVAST_KUBE_NAMESPACE: rename it")
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--context", default=os.environ.get("ROBOVAST_KUBE_CONTEXT"),
                         help="kubeconfig context (ROBOVAST_KUBE_CONTEXT)")
-    parser.add_argument("--namespace", default=os.environ.get("ROBOVAST_NAMESPACE", "default"),
-                        help="namespace the service runs in (ROBOVAST_NAMESPACE)")
+    parser.add_argument("--namespace", default=os.environ.get("ROBOVAST_KUBE_NAMESPACE", "default"),
+                        help="namespace the service runs in (ROBOVAST_KUBE_NAMESPACE)")
     parser.add_argument("--email", help="Let's Encrypt account address (ROBOVAST_TLS_EMAIL)")
     parser.add_argument("--dir", type=Path,
                         help="certbot's account and certificates (ROBOVAST_TLS_DIR, else "
