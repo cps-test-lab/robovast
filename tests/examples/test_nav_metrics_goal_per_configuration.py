@@ -89,3 +89,19 @@ def test_the_plugin_refuses_rather_than_measures_against_a_default(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="c0"):
         module.NavMetrics()(str(campaign), str(tmp_path))
+
+
+def test_a_goal_given_as_a_plugin_parameter_is_refused_by_name(tmp_path):
+    """A ``.vast`` that still states ``goal_x`` would otherwise be scored against its
+    configurations' goals with nothing saying the parameter it states is ignored."""
+    from robovast.results_processing.postprocessing import execute_postprocessing_plugin
+
+    module = example_module("nav_metrics")
+    campaign = _campaign(tmp_path, {"near": (1.0, 1.0)})
+
+    ok, message, _ = execute_postprocessing_plugin(
+        "NavMetrics", module.NavMetrics(), {"goal_x": 2.5, "goal_y": 0.0},
+        str(campaign), str(tmp_path), provenance_file=str(tmp_path / "prov.json"), debug=True)
+
+    assert not ok
+    assert "goal_x" in message
