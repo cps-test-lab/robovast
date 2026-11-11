@@ -9,6 +9,8 @@
 // campaign lifecycle already reaches a phone from the server via ntfy
 // (robovast.execution.notify), once per campaign rather than once per open tab.
 
+import { shellRegistration } from './appInstall'
+
 // Three states, one key: absent means nobody has been asked yet, '1' means on, '0' means off.
 // The absent state is what `shouldAsk` reads, and it is why declining is stored rather than
 // simply not-stored -- a decline that left no trace would be re-asked on every visit.
@@ -80,6 +82,8 @@ export interface BrowserNote {
   body?: string
   /** Replaces an earlier note with the same tag instead of stacking one beside it. */
   tag?: string
+  /** What a tap on the note opens: a link into this app, such as a campaign's card. */
+  url?: string
 }
 
 /**
@@ -90,14 +94,35 @@ export interface BrowserNote {
  * toast, and an OS popup on top of it says the same thing twice. Putting that test inside `post`
  * is what stops the next caller forgetting it.
  */
-export function post(note: BrowserNote): void {
+export function post(
+  note: BrowserNote,
+  registration: Pick<ServiceWorkerRegistration, 'showNotification'> | null = shellRegistration(),
+): void {
   if (!supported() || !optedIn()) return
   if (Notification.permission !== 'granted') return
   if (typeof document !== 'undefined' && document.visibilityState !== 'hidden') return
+  // Through the app's service worker where one is active: Chrome on Android has no `Notification`
+  // constructor at all (it throws), and a worker's note is also the one a tap can open the app from,
+  // since the worker outlives the tab that posted it. The constructor where there is no worker.
+  //
+  // Best-effort either way, but not silent: a notification that cannot be shown must never break
+  // the page that asked for it, and the console says why it did not appear.
+  if (registration) {
+    registration
+      .showNotification(note.title, { body: note.body, tag: note.tag, data: { url: note.url } })
+      .catch((err: unknown) => console.warn('could not show a browser notification', err))
+    return
+  }
   try {
-    new Notification(note.title, { body: note.body, tag: note.tag })
-  } catch {
-    // Some platforms require a service worker and throw on the constructor. Best-effort: a
-    // notification that cannot be shown must never break the page that asked for it.
+    const shown = new Notification(note.title, { body: note.body, tag: note.tag })
+    if (note.url) {
+      const url = note.url
+      shown.onclick = () => {
+        window.focus()
+        window.location.href = url
+      }
+    }
+  } catch (err) {
+    console.warn('could not show a browser notification', err)
   }
 }

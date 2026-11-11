@@ -27,7 +27,7 @@ scenario nav:
 #: from that field's default -- a field that silently fell back to its default would
 #: otherwise pass by coincidence.
 #:
-#: Adding a field to the model without adding it here (or to
+#: Adding a field to the model without adding it here (or to :data:`_DECLARED_STEPPED`, or to
 #: ``COMPOSITION_ONLY_EXECUTION_KEYS``) fails
 #: :func:`test_every_execution_field_is_carried_or_says_why`, which is the point: the choice
 #: of whether the backend sees a field should be made when the field is added, not
@@ -57,20 +57,33 @@ _DECLARED = {
     "post_command": "/config/files/post.sh",
 }
 
+#: The fields a ROS-shape project cannot declare with a distinguishable value: composed from
+#: a second project of the stepped shape, under the same rule as :data:`_DECLARED`.
+_DECLARED_STEPPED = {
+    "mode": "base",
+    "runs": 4,
+    # Read by the cluster runner to chunk a configuration's runs into jobs; refused in the ROS
+    # shape, which is why it is declared here. It must arrive, or a packed campaign would
+    # silently dispatch a job per run.
+    "runs_per_job": 2,
+}
+
 #: Carried, but not an ``ExecutionConfig`` field -- ``containers`` is rewritten by
 #: ``apply_backend`` before it is handed on, so it is asserted structurally below rather
 #: than compared to a literal.
 _CONTAINERS = ("sut", "scenario")
 
 
-def _project(tmp_path):
-    """A ``.vast`` declaring every field in :data:`_DECLARED`, rendered from that mapping.
+def _project(tmp_path, fields=None):
+    """A ``.vast`` declaring every field in *fields* (:data:`_DECLARED` by default), rendered
+    from that mapping.
 
     Rendered rather than written out, so the file and the expectations cannot drift: a
-    field added to ``_DECLARED`` is declared by the project automatically.
+    field added to the mapping is declared by the project automatically.
     """
     (tmp_path / "scenario.osc").write_text(_SCENARIO)
-    declared = yaml.safe_dump(_DECLARED, default_flow_style=False, sort_keys=True)
+    declared = yaml.safe_dump(_DECLARED if fields is None else fields,
+                              default_flow_style=False, sort_keys=True)
     vast = tmp_path / "campaign.vast"
     vast.write_text(textwrap.dedent("""\
         version: 7
@@ -103,6 +116,15 @@ def test_every_declared_execution_key_survives_composition(tmp_path):
     assert set(execution.get("containers") or {}) >= set(_CONTAINERS)
 
 
+def test_every_stepped_shape_key_survives_composition(tmp_path):
+    """The keys only a stepped-shape project can declare reach ``campaign_data["execution"]``."""
+    execution = _compose(_project(tmp_path, _DECLARED_STEPPED), tmp_path)["execution"]
+    missing = {k: v for k, v in _DECLARED_STEPPED.items() if execution.get(k) != v}
+    assert not missing, (
+        f"composition dropped {sorted(missing)}; the backend reads campaign_data['execution'] "
+        f"and nothing else, so these declarations never take effect")
+
+
 def test_every_execution_field_is_carried_or_says_why(tmp_path):
     """Every ``ExecutionConfig`` field is either carried or named as composition-only.
 
@@ -111,8 +133,8 @@ def test_every_execution_field_is_carried_or_says_why(tmp_path):
     from robovast.common.config_generation import COMPOSITION_ONLY_EXECUTION_KEYS
 
     unexplained = (set(ExecutionConfig.model_fields)
-                   - set(_DECLARED) - set(COMPOSITION_ONLY_EXECUTION_KEYS)
-                   - {"containers"})
+                   - set(_DECLARED) - set(_DECLARED_STEPPED)
+                   - set(COMPOSITION_ONLY_EXECUTION_KEYS) - {"containers"})
     assert not unexplained, (
         f"{sorted(unexplained)} are ExecutionConfig fields this test says nothing about. "
         f"Either give the field a distinguishable value in _DECLARED, so the seam is proven "

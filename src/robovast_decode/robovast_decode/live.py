@@ -64,12 +64,12 @@ from .authored import with_yaw
 from .build import (BAG_METADATA, Run, derived_sources, find_runs, plugin_groups,
                     recorded_topics, recording_closed, recordings_closed, roqsim_recording,
                     scenario_recording, source_size)
-from .decode import SIDECAR_NAME, channel_type, segments, undecodable_tables
+from .decode import SIDECAR_NAME, SimulatorReset, channel_type, segments, undecodable_tables
 from .definitions import TypeCatalog
 from .derived import DERIVED, INPUTS, RUN_LOG, JobRun, derive_job
 from .frames import FrameRef, FrameTap
 from .framing import Channel, McapTail, Message, Metadata, Schema
-from .handlers import Handler, Videos
+from .handlers import Handler, HandlerError, Videos
 from .layout import decoder_config
 from .registry import INFRA_BAG, ROQSIM_BAG, SCENARIO_BAG, narrow, plan_for
 from .tables import (LIVE_STALE_S, cache_root, manifest_lock, read_manifest, record_run_absent,
@@ -162,6 +162,7 @@ class Session:
         #: ``{topic: tap}`` of the image topics followed frame by frame.
         self.taps: Dict[str, FrameTap] = {t: FrameTap(self.bag_dir, t) for t in (frames or ())}
         self._tails: Dict[str, McapTail] = {}
+        self._resets = SimulatorReset(self.bag_dir)
         self._undecodable: Dict[str, str] = {}
         #: Set by :meth:`finish`: nothing more will come from this session.
         self.finished = False
@@ -246,7 +247,9 @@ class Session:
         return batches
 
     def _read(self) -> None:
-        for path in segments(self.bag_dir):
+        files = segments(self.bag_dir)
+        self._reset(self._resets.files(files))
+        for path in files:
             tail = self._tails.get(path)
             if tail is None:
                 # Schema and channel ids are per file: every segment has its own maps, and
@@ -284,6 +287,7 @@ class Session:
             if channel is None:
                 continue
             topic = channel.topic
+            self._reset(self._resets.stamp(tail.path, topic, record.log_time))
             tap = self.taps.get(topic)
             if tap is not None:
                 tap.record(FrameRef(record.log_time / 1e9, tail.path, record_offset, index),
@@ -340,6 +344,11 @@ class Session:
             if handler in readers:
                 readers.remove(handler)
 
+    def _reset(self, reason: Optional[str]) -> None:
+        if reason:
+            for handler in list(self._active):
+                self._fail(handler, HandlerError(reason))
+
     def _flush(self) -> List[Batch]:
         batches = []
         for handler in self._active:
@@ -353,7 +362,8 @@ class PartWriter:
     """Batches of one run's tables into parquet parts the manifest names, then one file.
 
     The rows are filed under the run's key, whichever of its recordings gave them -- its
-    job's infrastructure recording included, since a job runs one run. While parts are
+    job's infrastructure recording included, which is decoded for a run only when its job
+    ran it alone. While parts are
     written the entry is ``live``-stamped and owned by this writer: a write finds the entry's
     files are its own parts and appends, or replaces them when something else wrote the entry
     in between.
@@ -821,7 +831,9 @@ class Watcher:
                 continue
             if writer is not None and now - following.last_write >= self.part_s:
                 try:
-                    following.writer.write(session.sources(), incomplete=session.incomplete)
+                    # A failed table's parts stay until the session ends, with its reason.
+                    following.writer.write(session.sources(),
+                                           incomplete={**session.incomplete, **session.failed})
                 except LostOwnership as exc:
                     # The stamp went stale long enough for a build to take the table: the
                     # rows are decoded again from the recording's start, into fresh parts.

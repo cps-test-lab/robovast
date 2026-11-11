@@ -31,11 +31,24 @@ export function useCanvasClock(
   }, [clock])
 
   // HiDPI sizing: back the canvas with device pixels, keep its CSS box at the container size.
+  //
+  // Checked after every render rather than once at mount, because the container is not always there
+  // at mount: a panel that renders a loading state first attaches its canvas a render or more
+  // later, and an observer set up only at mount would never size it -- the canvas stays 0 x 0 and
+  // nothing it draws is seen. Re-observing only when the element changes keeps this to a comparison.
+  const observed = useRef<{ container: HTMLDivElement | null; ro: ResizeObserver | null }>({
+    container: null,
+    ro: null,
+  })
   useEffect(() => {
     const container = containerRef.current
-    const canvas = canvasRef.current
-    if (!container || !canvas) return
+    if (container === observed.current.container) return
+    observed.current.ro?.disconnect()
+    observed.current = { container, ro: null }
+    if (!container) return
     const ro = new ResizeObserver(() => {
+      const canvas = canvasRef.current
+      if (!canvas) return
       const dpr = window.devicePixelRatio || 1
       const cw = container.clientWidth
       const ch = container.clientHeight
@@ -47,8 +60,9 @@ export function useCanvasClock(
       requestDraw()
     })
     ro.observe(container)
-    return () => ro.disconnect()
-  }, [requestDraw])
+    observed.current.ro = ro
+  })
+  useEffect(() => () => observed.current.ro?.disconnect(), [])
 
   // Follow the clock: coalesced redraw on every change (and once on mount).
   useEffect(() => {

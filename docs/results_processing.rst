@@ -317,8 +317,10 @@ Job Directory
 ^^^^^^^^^^^^^
 
 ``_jobs/job-N/`` holds the artifacts of one *job* — the unit of dispatch (one
-Kubernetes Job, or one local ``docker compose`` run). There is one job per run,
-and each run links to its job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``).
+Kubernetes Job, or one local ``docker compose`` run). A job is one run unless the campaign
+packs runs into it (:ref:`config-runs-per-job`), and each run links to its
+job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``); the runs of a packed job share the
+link's target, having run on one host in one process.
 
 .. code-block:: text
 
@@ -458,6 +460,19 @@ run has:
 The ``state`` channel, the raw simulator state roqsim itself reads back, is not a table and says
 so in ``_recording``. The recording is closed once its writer wrote the footer -- a killed run's
 file ends where its last chunk did, and is decoded to there.
+
+.. _results-simulator-reset:
+
+**A run's simulator is not reset once it records**, because every lookup by sim time assumes its
+time runs one way. A scenario that needs several trials gets several runs. A simulator recording
+that was reset -- several files (``roqsim.mcap`` beside ``roqsim-2.mcap``), or a file whose sim
+time goes back -- gives none of the tables above for that run. Each is listed under
+``failed`` with a reason that names what was found, like any table a build could not make
+truthfully (:ref:`results-table-cache`); a build and a session following the run record the same,
+a session keeping the rows from before the reset until the run ends. The run's scene, screenshots
+and ``_recording`` rows stay, and so do the campaign's other runs. A reset before the first sample
+writes no second file and fails nothing, and the runs of one packed job each have their own
+directory and recording.
 
 **Authored files.** A run's own data file is a table with no registration: a scenario's metrics
 file, a simulator's pose stream, a postprocessing step's output, scenario-execution's
@@ -747,11 +762,17 @@ Derived tables
 ^^^^^^^^^^^^^^
 
 A job's container logs, its resource samples and its infrastructure recording are written once
-per job, and a job runs one run. The derived tables are built from them for that run, on its
-clock and marked against its trial window. They are built for every run of every campaign; no
-configuration asks for them. A campaign whose job-link manifest points several runs at one job
-is refused rather than read: which of them a job's row belongs to cannot be read off the
-records.
+per job. The derived tables are built from them for each of the job's runs, on its clock and
+against its trial window: a job of one run keeps every row and marks it ``in_window``, so the
+bring-up around the trial stays readable. A run whose job held several runs one after another
+(:ref:`config-runs-per-job`) takes the rows from its window's start up to the next run's start:
+its verdict, logged just after its window, and the reset after it are its own, marked
+``in_window`` 0; the job's last run keeps the job's teardown; the bring-up before the first run
+is no run's. A run with no ``test.xml`` (a crash ended the job during it or before it) takes
+nothing, and what it logged goes to the run before it, outside that run's window. The job's
+infrastructure
+recording is no one run's either, so a shared run's ``run_log`` has no ``/rosout`` lines. They
+are built for every run of every campaign; no configuration asks for them.
 
 .. _merged-run-log:
 
@@ -929,8 +950,8 @@ succeeded.``, or the failure line ``add_result`` logs). The recognition lives in
 queries this table instead of matching the log text again, which is what keeps the web UI,
 ``search_run_logs`` and the playback clock from disagreeing about where a run ended.
 
-"The first verdict in the log" is the right answer because a job runs one run, so the
-``run_log`` rows are that run's own.
+"The first verdict in the log" is the right answer because the ``run_log`` rows are that
+run's own: a job of one run gives it the whole log, a job of several gives it its window.
 
 **Both clocks, because they answer different questions.** ``timestamp`` is what the playback
 timeline is measured in. ``wall_ts`` is what ``run_log`` is *ordered* by, and it is the one the

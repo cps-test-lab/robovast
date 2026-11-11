@@ -1112,14 +1112,14 @@ timeout
 
 **Required:** No
 
-Maximum wall-clock time (in seconds) allowed for a single **run**. Every run is dispatched
-as its own job, one Kubernetes Job. The number is used exactly as declared.
+Maximum wall-clock time (in seconds) allowed for a single **run**. A job is one run unless
+``runs_per_job`` packs several, and a Job's deadline is this number times the runs it holds.
 
 The declaration sets ``activeDeadlineSeconds`` on the Job spec, so Kubernetes
 force-terminates the Job (marking it ``DeadlineExceeded``) when the deadline expires.
 
 If omitted (or ``null``), a run falls back to a **backstop of 1 hour**
-(``activeDeadlineSeconds = 3600``) so a hung Job is always eventually killed rather than
+(``activeDeadlineSeconds = 3600`` per run) so a hung Job is always eventually killed rather than
 hanging the campaign indefinitely. The backstop only enforces: ``stalled`` is judged against
 a declared ``timeout`` alone, and with none it is ``null``.
 
@@ -1128,7 +1128,94 @@ A Job hard-killed on its deadline is logged with ``HARD-KILLED by activeDeadline
 .. code-block:: yaml
 
    execution:
-     timeout: 3600   # 1 hour for the job
+     timeout: 3600   # 1 hour for the run
+
+.. _config-runs-per-job:
+
+runs_per_job
+^^^^^^^^^^^^
+
+**Type:** Integer
+
+**Required:** No (default: ``1``)
+
+How many runs one job holds. A **run** is one configuration executed at one run number (one
+scenario execution); a **job** is one unit of dispatch -- one Kubernetes Job, with its own pod,
+its own simulator process and its own ``/config``.
+
+**Leave it at 1.** That is the right value for nearly every campaign: each run is a job of
+its own, and a job's bring-up is a small part of a run that drives a robot stack for minutes.
+The exception is narrow: a stepped in-process simulator (``mode: base``) whose runs are
+cheap beside the job's bring-up -- physics trials of a few seconds, hundreds of them -- where
+a job per run would spend most of the campaign scheduling pods. There, ``runs_per_job: N``
+runs up to ``N`` runs one after another in one simulator process, reset between them, so the
+simulator is built once per job rather than once per run.
+
+- A job holds runs of configurations **whose pod would be the same**: the same resolved
+  simulator block (world, command, environment, overrides document), the same image, the same
+  recorder settings, and no file staged by the configuration itself. Configurations that
+  differ only in their scenario parameters therefore share. A group's runs are laid out
+  configuration after configuration and cut into jobs of ``N``, so a job changes configuration
+  as rarely as the cut allows: two such configurations at ``runs: 50`` and ``runs_per_job: 20``
+  dispatch five jobs, the third holding the last ten runs of the first configuration and the
+  first ten of the second.
+- A configuration that **stages a file of its own** -- a variation writing a per-cell file to
+  ``/config/<deploy path>`` -- keeps jobs of its own, since no run may see another cell's file.
+  So does a configuration whose world or overrides differ from every other's.
+- **Refused with any mode but** ``base`` when the configuration is validated: under ``ros2``
+  the simulator is another container, started once with one world and told nothing per run, so
+  it cannot be reset per run or told where each run writes; ``auto``, the default, is resolved
+  inside the container, to ``ros2`` wherever ROS 2 is installed.
+- **No scenario bag.** The ROS bag the entrypoint records of a run (``<run>/rosbag2``,
+  :ref:`recording-config`) is recorded only by a job of one run; a job of several records none,
+  and says so in its log. A world whose runs publish ROS topics worth keeping -- a simulator
+  with its ROS bridge on -- leaves ``runs_per_job`` at 1.
+- ``timeout`` stays the budget of one run; the Job's deadline is the budget times the runs it
+  holds.
+- **It needs an image that gives each run its own directory:** a scenario-execution that
+  hands the simulation's ``reset()`` each scenario's ``output_dir``, and a simulation whose
+  ``reset()`` takes it. A job of several runs on any other image fails at its start, saying
+  so, rather than putting every run's recording into the job's directory.
+
+Every other per-run artifact is written per run by the process that owns it -- ``test.xml``,
+the behaviour log, the simulator's recording -- so results are keyed by configuration name and
+run number whatever the packing, and a run's recording is its own. What a job writes once for
+the pod -- its container log, its resource samples, its host record -- is shared by its runs:
+the derived tables give each run its own share, from the start of its trial window up to the
+start of the run after it (:ref:`results-derived-tables`), and the ``job`` table has one row
+the runs point at.
+
+**Packing changes what the runs are.** The runs of one job run one after another in one
+simulator process, not as independent starts:
+
+- A simulator that draws its seed per process draws it once per job. The job's runs report the
+  same seed, a run's noise depends on its position in the job, and the same campaign with
+  another ``runs_per_job`` draws other samples.
+- A simulator given a fixed seed gives identical runs at ``runs_per_job: 1``, and runs that
+  differ by their position in the job when packed.
+- A run cannot be replayed from its seed alone; the simulator's own recording says where in its
+  job it ran.
+
+A run that crashes the job's simulator process ends the job: the runs after it in that job do
+not run. A packed job that is interrupted after some of its runs landed is created again whole
+when the campaign is re-entered; the runs it had produced are produced again.
+
+**A scenario must not reset the simulation once it records.** A scenario that needs several
+trials gets several runs (``runs``, and ``runs_per_job`` for a stepped one). A run whose simulator
+recording was reset has no simulator tables, and the build says why
+(:ref:`a reset fails the simulator tables <results-simulator-reset>`).
+
+``validate_project``, ``preview_configurations``, ``vast config info``, ``vast config
+validate``, ``vast workspace validate`` and ``vast workspace preview`` report the job count
+beside the trial count (``jobs``) and, when runs are packed, one line per pod group
+(``pods``): which configurations share a pod, and for one that keeps its own, why. What a
+campaign dispatches as is known before it starts.
+
+.. code-block:: yaml
+
+   execution:
+     mode: base
+     runs_per_job: 50   # fifty short trials per job, one simulator build
 
 scenario_file
 ^^^^^^^^^^^^^

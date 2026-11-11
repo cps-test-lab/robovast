@@ -177,6 +177,8 @@ export const CHART_LABEL = ACTIVE.text.muted
 export const GRID_CENTER = ACTIVE.scene.gridCenter
 export const GRID = ACTIVE.scene.grid
 export const MARKER_DEFAULT = ACTIVE.scene.marker
+/** The 3D viewport's colours (lib/scene3d/viewport.ts takes them rather than reading this file). */
+export const SCENE_VIEWPORT = { background: CANVAS, gridColor: GRID, gridCenterColor: GRID_CENTER }
 export const MARK = ACTIVE.scene.mark
 
 // ── Helpers ───────────────────────────────────────────────────────────────────────────────────
