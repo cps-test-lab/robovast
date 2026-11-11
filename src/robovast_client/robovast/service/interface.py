@@ -1982,6 +1982,13 @@ class ValidationReport(BaseModel):
     configs: int = 0
     runs_per_config: int = 0
     total_trials: int = 0
+    #: The jobs the trials are dispatched as: one per trial, unless ``execution.runs_per_job``
+    #: packs runs into one.
+    jobs: int = 0
+    #: One sentence per pod group when ``execution.runs_per_job`` packs: which configurations
+    #: share a pod, and why one keeps its own. Empty at one run per job. Every client shows
+    #: these lines as they are, so the three surfaces say the same thing.
+    pods: list[str] = Field(default_factory=list)
 
 
 class RetriggerAxis(BaseModel):
@@ -2111,6 +2118,13 @@ class PreviewResponse(BaseModel):
     configs: int = 0
     runs_per_config: int = 0
     total_trials: int = 0
+    #: The jobs the trials are dispatched as: one per trial, unless ``execution.runs_per_job``
+    #: packs runs into one.
+    jobs: int = 0
+    #: One sentence per pod group when ``execution.runs_per_job`` packs: which configurations
+    #: share a pod, and why one keeps its own. Empty at one run per job. Every client shows
+    #: these lines as they are, so the three surfaces say the same thing.
+    pods: list[str] = Field(default_factory=list)
     configurations: list[PreviewConfiguration] = Field(default_factory=list)
     truncated: bool = False
     #: Auxiliary containers this expansion actually ran — a variation's helper image, by

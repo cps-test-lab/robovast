@@ -223,8 +223,12 @@ class NavMetrics(BasePostprocessingPlugin):
 
     def __call__(self, results_dir: str, config_dir: str,
                  poses: str = 'ground_truth_poses', file: str = 'nav_metrics.csv',
-                 force: bool = False, **kwargs) -> Tuple[bool, str]:
+                 force: bool = False, provenance_file: str | None = None,
+                 debug: bool = False) -> Tuple[bool, str]:
+        # No **kwargs: a parameter this plugin does not take fails by name instead of being
+        # ignored. The goal is the configuration's, so a goal_x/goal_y stated here is refused.
         del config_dir  # every input is per-run or per-configuration: nothing is campaign-wide
+        del provenance_file, debug  # passed by postprocessing to every plugin; unused here
         written = skipped = missing = no_clearance = 0
         goals: dict[str, Tuple[float, float]] = {}
         runs = Campaign(results_dir).runs

@@ -2,7 +2,9 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- `viewport-fit=cover` lets the page reach under a notch and a home indicator, where the
+         shell pads itself by `env(safe-area-inset-*)` rather than leaving a letterbox. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>RoboVAST</title>
     <!-- Served from public/, so it lands at the dist root that robovast-service mounts. The same
          mark and geometry the sidebar draws inline, on a transparent ground so the tab strip's

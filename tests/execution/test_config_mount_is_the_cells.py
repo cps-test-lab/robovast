@@ -6,8 +6,8 @@
 A configuration's own copy of a file is staged where the campaign's copy would have been,
 so a path a scenario writes relative to itself -- ``get_scenario_file_directory() +
 '/files/nav2_params.yaml'`` -- names the file belonging to the cell. These pin that, and
-the two things that make it unambiguous: one file per path, and one
-configuration per job.
+the two things that make it unambiguous: one file per path, and a configuration that stages
+a file keeps a job of its own.
 """
 
 from kubernetes import client
@@ -21,11 +21,11 @@ DEPLOY_REL = "files/nav2_params.yaml"
 
 
 def _job(name, run=0, files=(DEPLOY_REL,)):
-    return Job(
-        config={"name": name,
-                "config": {"params_file": DEPLOY_REL},
-                "_config_files": [(rel, f"/gen/{name}/{rel}") for rel in files]},
-        run_number=run)
+    return Job.of_runs(
+        {"name": name,
+         "config": {"params_file": DEPLOY_REL},
+         "_config_files": [(rel, f"/gen/{name}/{rel}") for rel in files]},
+        [run])
 
 
 # -- the job parameter documents -------------------------------------------------------

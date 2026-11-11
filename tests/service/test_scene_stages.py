@@ -103,7 +103,7 @@ def test_the_ui_names_every_stage_and_no_others():
     said ``compiling``.
     """
     source = (Path(__file__).parents[2]
-              / "frontend/ui/src/lib/scene3d/useSceneGeometry.ts").read_text(encoding="utf-8")
+              / "frontend/ui/src/lib/useSceneGeometry.ts").read_text(encoding="utf-8")
     block = re.search(r"export const STAGE_TEXT[^{]*\{(.*?)\n\}", source, re.S)
     assert block, "STAGE_TEXT is not declared in useSceneGeometry.ts"
     named = set(re.findall(r"^\s*(\w+):", block.group(1), re.M))

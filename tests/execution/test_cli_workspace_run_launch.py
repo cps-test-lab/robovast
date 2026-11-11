@@ -238,10 +238,10 @@ def checking(monkeypatch):
     return holder
 
 
-def _report(valid, problems=()):
+def _report(valid, problems=(), **counts):
     from robovast.service.interface import ValidationProblem, ValidationReport
     return ValidationReport(
-        valid=valid, configs=2, runs_per_config=3, total_trials=6,
+        valid=valid, **{"configs": 2, "runs_per_config": 3, "total_trials": 6, **counts},
         problems=[ValidationProblem(**p) for p in problems])
 
 
@@ -269,6 +269,19 @@ def test_validate_reports_the_trial_count_when_it_passes(checking):
     assert checking["service"].asked["path"] == "a.vast"
 
 
+def test_validate_says_who_shares_a_pod_when_runs_are_packed(checking):
+    """The report's per-group statements are shown as they are, one line each, so the CLI
+    says what the MCP tool and the web UI say."""
+    checking["service"] = _CheckingClient(report=_report(
+        True, jobs=3, pods=["hall-1, hall-2 share a pod (2 job(s) of up to 4 runs)",
+                            "hall-3 keeps its own pod: stages a file of its own"]))
+    result = CliRunner().invoke(root_cli.workspace, ['validate', 'my-experiment'])
+    assert result.exit_code == 0, result.output
+    assert "6 trial(s) in 3 job(s)" in result.output
+    assert "  hall-1, hall-2 share a pod (2 job(s) of up to 4 runs)\n" in result.output
+    assert "  hall-3 keeps its own pod: stages a file of its own\n" in result.output
+
+
 def test_no_world_check_is_forwarded(checking):
     checking["service"] = _CheckingClient(report=_report(True))
     CliRunner().invoke(root_cli.workspace,
@@ -286,6 +299,18 @@ def test_preview_lists_the_configurations_and_the_trial_count(checking):
     assert result.exit_code == 0, result.output
     assert "hall-1" in result.output and "hall-2" in result.output
     assert "10 trial(s)" in result.output
+
+
+def test_preview_says_who_shares_a_pod_when_runs_are_packed(checking):
+    from robovast.service.interface import PreviewConfiguration, PreviewResponse
+    checking["service"] = _CheckingClient(preview=PreviewResponse(
+        configs=2, runs_per_config=5, total_trials=10, jobs=5,
+        pods=["hall-1, hall-2 share a pod (5 job(s) of up to 2 runs)"],
+        configurations=[PreviewConfiguration(name="hall-1"),
+                        PreviewConfiguration(name="hall-2")]))
+    result = CliRunner().invoke(root_cli.workspace, ['preview', 'my-experiment'])
+    assert result.exit_code == 0, result.output
+    assert "10 trial(s) in 5 job(s)\n  hall-1, hall-2 share a pod" in result.output
 
 
 def test_preview_says_when_it_truncated(checking):

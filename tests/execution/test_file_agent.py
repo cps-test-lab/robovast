@@ -8,6 +8,7 @@ against the data plane served by uvicorn on a loopback port.
 """
 
 import ast
+import errno
 import io
 import os
 import signal
@@ -401,6 +402,20 @@ def test_inotify_wait_times_out_and_wakes(tmp_path):
         assert ino.wait(10) == set()
 
 
+@pytest.mark.parametrize("err, limit", [(errno.EMFILE, "fs.inotify.max_user_instances"),
+                                        (errno.ENOSPC, "fs.inotify.max_user_watches")])
+def test_a_used_up_inotify_limit_is_named_with_the_host_setting(err, limit):
+    exc = file_agent._inotify_error("inotify_init1", err)  # pylint: disable=protected-access
+    assert exc.errno == err
+    assert limit in str(exc) and "raise it on the host" in str(exc)
+
+
+def test_any_other_inotify_failure_is_its_strerror_alone():
+    exc = file_agent._inotify_error(  # pylint: disable=protected-access
+        "inotify_add_watch /x", errno.EACCES)
+    assert str(exc) == f"[Errno {errno.EACCES}] inotify_add_watch /x: {os.strerror(errno.EACCES)}"
+
+
 # -- the pod's transport and the whole script -------------------------------------------------
 
 @pytest.fixture
@@ -524,3 +539,8 @@ def test_the_agent_command_names_the_sidecars_it_waits_for():
     assert pod_upload.AGENT_GRACE_SECONDS < pod_upload.UPLOAD_GRACE_SECONDS
     with pytest.raises(ValueError):
         pod_upload.agent_command(["a b"])
+
+
+def test_a_used_up_instance_limit_also_names_the_process_open_file_limit():
+    exc = file_agent._inotify_error("inotify_init1", errno.EMFILE)  # pylint: disable=protected-access
+    assert "ulimit -n" in str(exc)
