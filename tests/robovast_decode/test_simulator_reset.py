@@ -44,7 +44,8 @@ def _assert_failed(report, campaign, says, run="cfg/0"):
     tables = available_tables(str(campaign))
     for table in TABLES:
         reason = report.failed[table][run]
-        assert "a run's simulator must not be reset once it records" in reason and says in reason, table
+        assert "a run's simulator must not be reset once it records" in reason, table
+        assert says in reason, table
         assert tables[table]["failed"][run] == reason, table
         entry = _manifest(campaign)["tables"][table]["runs"][run]
         assert entry["rows"] == 0 and entry["files"] == [] and entry["reason"] == reason, table

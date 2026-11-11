@@ -140,7 +140,8 @@ class SimulatorReset:
         if not any(m and f"{m.group('stem')}.mcap" in names for m in matches):
             return None
         listed = ", ".join(sorted(names, key=lambda name: (len(name), name)))
-        return f"a run's simulator must not be reset once it records, and this recording is several files: {listed}"
+        return (f"a run's simulator must not be reset once it records, and this recording is "
+                f"several files: {listed}")
 
     def stamp(self, path: str, topic: str, log_time: int) -> Optional[str]:
         """Why a message of *topic* in the file *path*, stamped *log_time*, follows a reset,
@@ -151,8 +152,8 @@ class SimulatorReset:
         self._last_stamp[path] = log_time
         if last is None or log_time >= last:
             return None
-        return (f"a run's simulator must not be reset once it records, and sim time in {os.path.basename(path)} goes "
-                f"back, from {last / 1e9:g} s to {log_time / 1e9:g} s")
+        return (f"a run's simulator must not be reset once it records, and sim time in "
+                f"{os.path.basename(path)} goes back, from {last / 1e9:g} s to {log_time / 1e9:g} s")
 
 
 def decode_bag(bag_dir: str, handlers: Iterable[Handler]) -> BagReport:
