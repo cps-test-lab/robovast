@@ -318,7 +318,7 @@ Job Directory
 
 ``_jobs/job-N/`` holds the artifacts of one *job* — the unit of dispatch (one
 Kubernetes Job, or one local ``docker compose`` run). A job is one run unless the campaign
-packs a configuration's runs into it (:ref:`config-runs-per-job`), and each run links to its
+packs runs into it (:ref:`config-runs-per-job`), and each run links to its
 job via ``<run>/job`` (e.g. ``<run>/job/sysinfo.yaml``); the runs of a packed job share the
 link's target, having run on one host in one process.
 
