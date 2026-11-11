@@ -115,7 +115,9 @@ def cert_name(host, staging):
 
 def certbot_command(host, email, state_dir, staging, user):
     """The `docker run` that has certbot request a certificate for `host` by DNS-01 as `user` (uid:gid),
-    keeping its account and certificates in `state_dir`."""
+    keeping its account and certificates in `state_dir` -- an absolute path, or docker takes it for a
+    volume name."""
+    state_dir = Path(state_dir).expanduser().resolve()
     cmd = ["docker", "run", "--rm", "-it", "--user", user,
            "-v", f"{state_dir}:/le", CERTBOT_IMAGE, "certonly",
            "--manual", "--preferred-challenges", "dns",
@@ -172,7 +174,8 @@ def main():
         parser.error("--check only reports the served certificate; --staging, --email and --dir "
                      "are for a renewal")
     args.email = args.email or os.environ.get("ROBOVAST_TLS_EMAIL", "")
-    args.dir = args.dir or Path(os.environ.get("ROBOVAST_TLS_DIR", "~/.config/robovast/letsencrypt"))
+    args.dir = (args.dir or Path(os.environ.get("ROBOVAST_TLS_DIR", "~/.config/robovast/letsencrypt"))
+                ).expanduser().resolve()
 
     from kubernetes import client
     load_kube_config(context=args.context)
@@ -207,7 +210,7 @@ def main():
           "provider, replacing any value left from an earlier request, and press Enter in certbot "
           "once a public resolver returns it:\n"
           f"  dig +short TXT _acme-challenge.{host} @1.1.1.1\n")
-    cert, key = _certbot(host, email, args.dir.expanduser(), args.staging)
+    cert, key = _certbot(host, email, args.dir, args.staging)
     issued = not_after(cert)
     if not args.staging and issued == expiry:
         print("\ncertbot kept the certificate already served; the secret is unchanged.")
