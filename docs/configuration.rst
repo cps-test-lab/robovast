@@ -1177,16 +1177,16 @@ the derived tables give each run its own share, from the start of its trial wind
 start of the run after it (:ref:`results-derived-tables`), and the ``job`` table has one row
 the runs point at.
 
-**Packing changes what the runs are.** The runs of one job are successive episodes of one
-simulator process, not independent starts:
+**Packing changes what the runs are.** The runs of one job run one after another in one
+simulator process, not as independent starts:
 
 - A simulator that draws its seed per process draws it once per job. The job's runs report the
   same seed, a run's noise depends on its position in the job, and the same campaign with
   another ``runs_per_job`` draws other samples.
 - A simulator given a fixed seed gives identical runs at ``runs_per_job: 1``, and runs that
-  differ by episode when packed.
-- A run cannot be replayed from its seed alone; the simulator's own recording says which
-  episode it was.
+  differ by their position in the job when packed.
+- A run cannot be replayed from its seed alone; the simulator's own recording says where in its
+  job it ran.
 
 A run that crashes the job's simulator process ends the job: the runs after it in that job do
 not run. A packed job that is interrupted after some of its runs landed is created again whole
