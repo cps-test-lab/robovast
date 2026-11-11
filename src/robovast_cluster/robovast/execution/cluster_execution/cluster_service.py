@@ -221,7 +221,10 @@ class ClusterService(ServiceBase):
         # outlive a container, and the deployment mounts the directory it names (see
         # serve_backend / service_deploy).
         super().__init__(store=store, results_dir=results_dir)
-        self.namespace = namespace or os.environ.get("ROBOVAST_NAMESPACE", "default")
+        if "ROBOVAST_NAMESPACE" in os.environ:
+            raise ValueError("ROBOVAST_NAMESPACE is set, but the namespace setting is "
+                             "ROBOVAST_KUBE_NAMESPACE: rename it")
+        self.namespace = namespace or os.environ.get("ROBOVAST_KUBE_NAMESPACE", "default")
         # Which kubeconfig context to dispatch into. The in-cluster config is what the
         # API client uses, but the context *name* still resolves per-cluster resource
         # lists -- deploy stamps it into ROBOVAST_KUBE_CONTEXT for the in-pod driver.
