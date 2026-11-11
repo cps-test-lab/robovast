@@ -155,8 +155,8 @@ release-images-update-versions: ## Move the commits release-images bakes (roqsim
 	@python3 tools/refresh_source_pins.py $(if $(WRITE),--write,--ask) $(foreach b,$(BRANCH),--branch $(b))
 
 .PHONY: renew-tls
-renew-tls: venv/.robovast_installed ## Renew the Let's Encrypt certificate a published service serves from a TLS secret (interactive, DNS-01; CHECK=1 only reports it)
-	@. venv/bin/activate && python tools/renew_ingress_tls.py $(if $(CHECK),--check) $(if $(CONTEXT),--context $(CONTEXT))
+renew-tls: venv/.robovast_installed ## Renew the Let's Encrypt certificate a published service serves from a TLS secret (interactive, DNS-01; CONTEXT=, NAMESPACE=; CHECK=1 only reports it)
+	@. venv/bin/activate && python tools/renew_ingress_tls.py $(if $(CHECK),--check) $(if $(CONTEXT),--context $(CONTEXT)) $(if $(NAMESPACE),--namespace $(NAMESPACE))
 
 .PHONY: new-config-migration
 new-config-migration: ## Scaffold a .vast config migration step (see migrations/README.md)
