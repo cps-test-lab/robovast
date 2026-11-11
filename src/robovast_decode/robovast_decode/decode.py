@@ -153,7 +153,8 @@ class SimulatorReset:
         if last is None or log_time >= last:
             return None
         return (f"a run's simulator must not be reset once it records, and sim time in "
-                f"{os.path.basename(path)} goes back, from {last / 1e9:g} s to {log_time / 1e9:g} s")
+                f"{os.path.basename(path)} goes back, "
+                f"from {last / 1e9:g} s to {log_time / 1e9:g} s")
 
 
 def decode_bag(bag_dir: str, handlers: Iterable[Handler]) -> BagReport:
