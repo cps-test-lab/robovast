@@ -92,14 +92,16 @@ def roqsim_wall_time(t: float, span: float) -> float:
 
 
 def write_roqsim_mcap(path: Path, samples: int = ROQSIM_SAMPLES, chunk_size: int = 2048,
-                      finish: bool = True, meta: dict | None = None) -> Path:
+                      finish: bool = True, meta: dict | None = None,
+                      times: list | None = None) -> Path:
     """A recording in roqsim's shape: its four channels, chunked zstd, its metadata at start
     and again at close, the entity roster changing halfway.
 
     *chunk_size* is small so the file is many chunks and a reader following it sees the rows
     arrive in batches. With *finish* false the writer is dropped without its footer, as a
     killed run leaves it. *meta* overrides fields of the provenance record (``world``,
-    ``overrides``, ``format_version``), in both the opening and the closing copy.
+    ``overrides``, ``format_version``), in both the opening and the closing copy. *times* gives
+    each sample's sim time, in place of the capture rate's.
     """
     import struct
 
@@ -120,8 +122,8 @@ def write_roqsim_mcap(path: Path, samples: int = ROQSIM_SAMPLES, chunk_size: int
         for name in ("poses", "joints", "clock"):
             sid = writer.register_schema(f"roqsim.{name}", "jsonschema", b'{"type": "object"}')
             channels[name] = writer.register_channel(name, "json", sid)
-        for i in range(samples):
-            t = i * den / num
+        for i in range(samples if times is None else len(times)):
+            t = i * den / num if times is None else times[i]
             w = roqsim_wall_time(t, samples * den / num)
             log, pub = int(round(t * 1e9)), int(round(w * 1e9))
             if i == samples // 2:
