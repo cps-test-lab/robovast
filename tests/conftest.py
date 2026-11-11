@@ -17,8 +17,8 @@ reported as broken code, sending the reader to the wrong file entirely.
 skip only where robovast really is standing alone.
 """
 
-import shutil
 import os
+import shutil
 from importlib.metadata import entry_points
 
 import pytest

@@ -9,8 +9,9 @@ are two different walks of the same tree, so a rule that holds in one and not th
 bar somewhere other than 100% at the end. These tests pin them to each other.
 """
 
-import pytest
 import os
+
+import pytest
 
 from robovast.execution import campaign_archive
 
