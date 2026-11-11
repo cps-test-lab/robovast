@@ -103,30 +103,6 @@ class Job:
     def config_names(self) -> tuple[str, ...]:
         return tuple(dict.fromkeys(item.config_name for item in self.items))
 
-    @property
-    def shared_config_name(self) -> Optional[str]:
-        """The one configuration's name when every item is its run, else ``None``."""
-        names = self.config_names
-        return names[0] if len(names) == 1 else None
-
-    @property
-    def config(self) -> dict:
-        """The one configuration every item is a run of.
-
-        Raises when the job holds runs of several: a reader that wants *the* configuration of
-        a mixed job is asking a question with no answer, and must read the items instead.
-        """
-        names = self.config_names
-        if len(names) != 1:
-            raise ValueError(
-                f"job {self.index} holds runs of {len(names)} configurations "
-                f"({', '.join(names)}); read its items")
-        return self.first.config
-
-    @property
-    def config_name(self) -> str:
-        return self.config.get("name", "")
-
 
 def declared_runs_per_job(execution_params: dict) -> int:
     """``execution.runs_per_job`` as declared, 1 when it is not."""
