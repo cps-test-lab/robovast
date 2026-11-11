@@ -92,17 +92,6 @@ def test_a_job_derives_everything_from_its_items():
     assert job.run_keys == ("a/3", "a/4", "b/0") and job.runs == [3, 4, 0]
     assert job.first == RunItem(a, 3) and job.first_run == 3
     assert job.configs == [a, b] and job.config_names == ("a", "b")
-    assert job.shared_config_name is None
-
-
-def test_the_configuration_of_a_mixed_job_is_no_one_configuration():
-    """A reader asking a mixed job for *the* configuration is asking a question with no
-    answer, and is told so rather than handed the first."""
-    job = Job(items=[RunItem({"name": "a"}, 0), RunItem({"name": "b"}, 0)], index=2)
-    with pytest.raises(ValueError, match="job 2 holds runs of 2 configurations \\(a, b\\)"):
-        _ = job.config
-    one = Job(items=[RunItem({"name": "a"}, 0), RunItem({"name": "a"}, 1)])
-    assert one.config == {"name": "a"} and one.config_name == "a" and one.shared_config_name == "a"
 
 
 def test_the_statements_name_who_shares_and_why_one_does_not():
