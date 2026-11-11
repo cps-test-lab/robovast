@@ -33,6 +33,14 @@ see. The simulator knows the real geometry at 200 Hz, so ``clearance_monitor`` m
 there and the trial records ``/clearance``. What is left here is arithmetic over recorded
 signals.
 
+**The duration is the navigation's, not the recording's.** It runs from the first
+behaviour-tree transition -- nav2 accepting the goal -- to the last, both on the tree log's own
+clock, and ``nav_start_s`` and ``nav_end_s`` say where on that clock they fell. The recording
+starts with the simulator and holds the stack's bring-up before any goal is sent; the trial's
+timeout counts from the scenario's start on the same clock, so the extractor reads its time
+margin off ``nav_end_s``. A run without a transition has no measured navigation and its
+duration, start and end are left empty.
+
 **The goal is each configuration's own.** Arrival is measured against the ``goal_pose`` the
 configuration's resolved scenario parameters (``_config/scenario.config``) carry, so a campaign
 that varies the goal scores every run against the goal it navigated to. A configuration whose
@@ -166,17 +174,38 @@ def _metrics_for_run(run_dir: Path, poses_table: str, goal) -> dict | None:
     collided = any(_true(r.get('data')) for r in tables.rows(collision))
 
     # Optional, unlike the two above: a run that needed no recovery behaviour records no
-    # transitions, and `recovery_count` is a QD measure rather than part of the verdict. So
-    # an absent table means zero recoveries -- which is what happened -- and not a defect.
+    # recovery transitions, and `recovery_count` is a QD measure rather than part of the
+    # verdict. So an absent table means zero recoveries -- which is what happened -- and not
+    # a defect.
+    behaviours = tables.rows(tables.first(_BEHAVIOR_TABLES))
     recoveries = sum(
-        1 for r in tables.rows(tables.first(_BEHAVIOR_TABLES))
+        1 for r in behaviours
         if any(k in str(r.get('behavior_name') or '').lower()
                for k in ('spin', 'backup', 'wait', 'clear'))
         and str(r.get('status_name') or '').upper().startswith('RUNNING'))
 
+    # The navigation's duration is the behaviour tree's: from its first transition, nav2
+    # accepting the goal, to its last, the tree finishing or the trial ending it. Both ends on
+    # one clock, the tree log's own. The recording starts with the simulator, so the pose
+    # track's first sample is bring-up -- the stack launching, the initial pose being set --
+    # which the trial's own timeout does not count; and the pose track is not the tree's
+    # clock, so its last sample is no end for a span that starts in the tree log. A run with
+    # no transition has no measured navigation: its duration is left empty rather than
+    # measured from the wrong moments, and the extractor drops that margin and says so. The
+    # baseline rows the tree plugin writes for nodes that never ran carry INVALID and are not
+    # transitions.
+    transitions = _floats(
+        [r for r in behaviours if str(r.get('status_name') or '').upper() != 'INVALID'],
+        'timestamp')
+
     return {
         'min_clearance': round(min(clearances), 4) if clearances else '',
-        'duration_s': round(max(times) - min(times), 3) if times else 0.0,
+        'duration_s': round(max(transitions) - min(transitions), 3) if transitions else '',
+        # Where on the recording's clock the navigation began and ended: the trial's own
+        # timeout runs on that clock from the scenario's start, so the time margin is read
+        # off `nav_end_s`, not off the span.
+        'nav_start_s': round(min(transitions), 3) if transitions else '',
+        'nav_end_s': round(max(transitions), 3) if transitions else '',
         'final_distance_to_goal': round(math.hypot(last[0] - goal[0], last[1] - goal[1]), 4),
         'collided': int(collided),
         'recovery_count': recoveries,

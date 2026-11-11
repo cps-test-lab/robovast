@@ -44,11 +44,13 @@ def _run(config_dir, index, *, clearance, duration, to_goal, collided, passed=Tr
     with open(run_dir / "nav_metrics.csv", "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=[
             "min_clearance", "duration_s", "final_distance_to_goal", "collided",
-            "recovery_count"])
+            "recovery_count", "nav_start_s", "nav_end_s"])
         writer.writeheader()
+        # The navigation starts at second 0 of the recording here, so its end is its span.
         writer.writerow({"min_clearance": clearance, "duration_s": duration,
                          "final_distance_to_goal": to_goal,
-                         "collided": 1 if collided else 0, "recovery_count": 0})
+                         "collided": 1 if collided else 0, "recovery_count": 0,
+                         "nav_start_s": 0.0, "nav_end_s": duration})
     verdict = "" if passed else '<failure message="x"/>'
     (run_dir / "test.xml").write_text(
         '<?xml version="1.0"?>\n'
@@ -167,7 +169,9 @@ def test_contact_does_not_flatten_runs_onto_one_value(tmp_path):
 
 
 def test_the_worst_margin_is_the_one_reported(tmp_path):
-    """A run that crossed cleanly but timed out is scored by its time, not its clearance."""
-    score = _score(tmp_path, "slow", clearance=5.0, duration=120.0, to_goal=0.0,
+    """A run that crossed cleanly but ran 10 s past the timeout is scored by its time, not
+    by its clearance (a roomy +49.5) and not by its arrival (the verdict's bound puts a run
+    that did not arrive just beyond the radius, a margin of about -0.00002)."""
+    score = _score(tmp_path, "slow", clearance=5.0, duration=130.0, to_goal=0.0,
                    collided=False, passed=False)
-    assert score == pytest.approx(0.0, abs=1e-6)
+    assert score == pytest.approx(-10.0 / 120.0, abs=1e-6)

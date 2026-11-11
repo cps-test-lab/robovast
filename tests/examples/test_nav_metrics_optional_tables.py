@@ -7,9 +7,10 @@
 ``NavMetrics`` reads three recorded tables and treats them differently on purpose: the
 collision oracle is refused when absent (a fabricated ``collided = 0`` is the single most
 misleading value this plugin could write), clearance degrades to an empty cell so the
-extractor drops that margin, and the behaviour transitions are simply optional -- a run that
-needed no recovery records none, and ``recovery_count`` is a QD measure rather than part of
-the verdict.
+extractor drops that margin, and the behaviour transitions are optional -- a run that needed
+no recovery records none, and ``recovery_count`` is a QD measure rather than part of the
+verdict. The transitions also mark the navigation's start, so a run without any has no
+duration, in the same way a run without clearance has none: an empty cell, not a number.
 
 The third was written as a guard inside a generator expression::
 
@@ -64,11 +65,12 @@ def _run_dir(tmp_path, *, clearance=True, collision=True, behaviours=False):
         (run / "rosbag2_clearance.csv").write_text("data\n0.42\n", encoding="utf-8")
     if behaviours:
         with open(run / "nav2_behaviors.csv", "w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(handle, fieldnames=["behavior_name", "status_name"])
+            writer = csv.DictWriter(handle, fieldnames=["timestamp", "behavior_name",
+                                                        "status_name"])
             writer.writeheader()
-            writer.writerow({"behavior_name": "spin", "status_name": "RUNNING"})
-            writer.writerow({"behavior_name": "backup", "status_name": "RUNNING"})
-            writer.writerow({"behavior_name": "spin", "status_name": "SUCCEEDED"})
+            writer.writerow({"timestamp": 2.0, "behavior_name": "spin", "status_name": "RUNNING"})
+            writer.writerow({"timestamp": 4.0, "behavior_name": "backup", "status_name": "RUNNING"})
+            writer.writerow({"timestamp": 5.0, "behavior_name": "spin", "status_name": "SUCCEEDED"})
     return run
 
 
@@ -81,7 +83,9 @@ def test_a_run_without_a_behaviours_table_is_measured_with_no_recoveries(tmp_pat
     assert metrics is not None
     assert metrics["recovery_count"] == 0
     assert metrics["min_clearance"] == 0.42
-    assert metrics["duration_s"] == 9.0
+    # The transitions are also where the navigation's start is read from, so without them
+    # the run has clearance and arrival but no duration.
+    assert metrics["duration_s"] == ""
 
 
 def test_a_behaviours_table_is_still_counted_when_present(tmp_path):
@@ -91,6 +95,7 @@ def test_a_behaviours_table_is_still_counted_when_present(tmp_path):
     metrics = module._metrics_for_run(run, "ground_truth_poses", (2.5, 0.0))
 
     assert metrics["recovery_count"] == 2      # the two RUNNING transitions, not the third
+    assert metrics["duration_s"] == 3.0        # from the first transition to the last
 
 
 def test_the_plugin_writes_a_metrics_row_for_such_a_run(tmp_path):
