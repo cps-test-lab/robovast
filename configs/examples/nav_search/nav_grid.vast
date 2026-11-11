@@ -46,7 +46,7 @@ configuration:
   # the patrol's phase, so this is the encounter timing -- the factor that makes the
   # failure region a band rather than a threshold.
   - ParameterVariationList:
-      sim: components.pedestrian.dwell
+      sim: components.pedestrian.walk.dwell
       values: [0.0, 2.0, 4.0, 6.0]
 
 visualization:

@@ -130,9 +130,13 @@ blind.
 - **`clearance_monitor`** publishes `/clearance` — how close the robot came, measured
   against real geometry in the simulator. It is the **gradient**, and it never ends a trial.
   The two `ignore:` lists must agree, or one reads zero forever while the other reads clean.
-- **The walker** patrols across the route and does not yield (`avoidance: false`). The robot
-  is the system under test, so the robot does the avoiding. Its `dwell` shifts the patrol's
+- **The walker** patrols across the route and does not yield (its navigator's
+  `avoidance: {steer: none}`). The robot is the system under test, so the robot does the
+  avoiding. Where the walker goes is its nested `navigator`'s, named `walk`, so a campaign
+  addresses the patrol as `components.pedestrian.walk.<key>`; its `dwell` shifts the patrol's
   phase, which is how a campaign controls *when* the encounter happens.
+- **No `sim.seed`.** Each run draws its own noise, so a cell's repetitions differ, which is what
+  `aggregate: worst` across them reads. A stated seed would make every repetition the same draw.
 
 ## Budgets
 
