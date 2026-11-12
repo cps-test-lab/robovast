@@ -1640,8 +1640,9 @@ def _image_not_built_report(exc, *, jobs=False):
     """The report for a composition whose simulator is asked in an image not available here.
 
     The simulator runs in the image the campaign builds (``config_generation.
-    _resolve_built_spec``), and nothing here has it: a validation through a service builds it
-    first, so this is a composition no service arranged. The file is not composed without the
+    _resolve_built_spec``), and it is not available here: a validation through a service has
+    started its build and not waited for it, or no service arranged the composition at all.
+    The message says which, and what to do. The file is not composed without the
     simulator's answers, since which streams a world renders only on demand and which files it
     is made of are part of what the configurations are; it is reported unchecked, naming where
     the check runs.
