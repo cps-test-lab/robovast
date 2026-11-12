@@ -2536,7 +2536,13 @@ by workspace, path and ``max_configs``, and each call answers ``composing`` (wit
 ``failed`` at once. A landed result is given once, unless the ``.vast``'s mtime has moved
 since, and the next call composes again: what it was composed from reaches past the
 ``.vast``, and the composition cache, which keys on all of it, decides what to recompute. The
-launcher therefore asks only when the file's content changes, not on every window focus. Both it and a campaign's ``variation`` phase read their step
+launcher therefore asks only when the file's content changes, not on every window focus. A
+search ``.vast`` previews one sample in it, marked ``search``.
+``robovast.client.preview.await_preview`` polls it for ``vast workspace preview`` and the MCP
+``preview_configurations`` tool, so both say what a preview waits on; the tool stops after
+``_PREVIEW_WAIT_S`` and answers ``composing`` with the call to repeat, and the repeated call
+takes the preview that landed in between. Both it and
+a campaign's ``variation`` phase read their step
 counter from the composition progress line through ``config_generation.parse_composition_step``,
 which a campaign publishes as ``Status.variation``. The launcher checks its filter against the names with
 ``frontend/ui/src/lib/configFilter.ts``, which matches as ``filter_configs_by_name`` does.

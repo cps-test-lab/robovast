@@ -286,6 +286,10 @@ def validate_project(address: str, check_world: bool = True,
                               "severity": "error", "message": str(e)}]}
 
 
+#: How long the tool waits for a preview before answering with what it waits on.
+_PREVIEW_WAIT_S = 50.0
+
+
 def preview_configurations(address: str, limit: int = 0) -> dict:
     """What would this ``.vast`` actually run? The resolved cells, without running them.
 
@@ -306,7 +310,9 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
 
     Returns:
         ``{configs, runs_per_config, total_trials, jobs, pods, configurations, truncated,
-        aux_containers, source}``, each configuration ``{name, parameters}``; or ``{error}``.
+        aux_containers, search, source}``, each configuration ``{name, parameters}``
+        (``search``: a sample's names, which no filter selects); or ``{error}``; or, still
+        composing, ``{state: "composing", stage, progress, next_step}``.
         ``pods`` is one sentence per pod group when ``execution.runs_per_job`` packs.
     """
     from robovast.common.common import load_config
@@ -318,7 +324,8 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
         # A search .vast expands per sampled ParamSet, not from a `configuration:`
         # block; composing a sample is the only preview that reflects what it runs.
         aux: list = []
-        if (load_config(address) or {}).get("search"):
+        search = bool((load_config(address) or {}).get("search"))
+        if search:
             from robovast.search.compose import preview_search_sample
             sample = preview_search_sample(address)
             configs = sample["configs"]
@@ -345,12 +352,20 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
             "configurations": items[:limit] if truncated else items,
             "truncated": truncated,
             "aux_containers": aux,
+            "search": search,
             "source": "local file",
         }
+    from robovast.client.preview import await_preview
     client = service_access.require_service()
     workspace_id, rel_path = target
-    resp = client.preview_configurations(
-        _resolve_workspace_id(client, workspace_id), limit, rel_path)
+    # Polled and bounded: a preview that first builds the campaign's image can take longer
+    # than a tool call may, so it answers with what it waits on and the call to repeat.
+    resp = await_preview(client, _resolve_workspace_id(client, workspace_id), limit, rel_path,
+                         deadline_s=_PREVIEW_WAIT_S)
+    if resp.state == "composing":
+        return {"state": "composing", "stage": resp.stage,
+                "progress": resp.progress.model_dump() if resp.progress else None,
+                "next_step": "call preview_configurations again with the same address"}
     # ``previews`` carries the web UI's Module-Federation asset refs for rendering a
     # variation; they are useless to an MCP caller and would be the bulk of the reply.
     return {
@@ -363,6 +378,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
                            for c in resp.configurations],
         "truncated": resp.truncated,
         "aux_containers": list(resp.aux_containers),
+        "search": resp.search,
         "source": "workspace",
     }
 

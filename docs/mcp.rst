@@ -258,7 +258,12 @@ remember and map onto their situation:
 * A world that only the campaign's own **built** image can describe -- its simulator
   container adds packages -- is asked there. ``preview_configurations`` builds that image
   first when it is not built yet, the same content-addressed build ``start_campaign`` runs and
-  then reuses, and waits for it; a failed build is its answer, naming the build's log.
+  then reuses; a failed build is its answer, naming the build's log. The tool waits a bounded
+  time: a preview still composing then answers ``{state: "composing", stage, progress,
+  next_step}`` -- ``stage`` naming the build it waits on, ``progress`` the variation steps
+  done, or ``null`` before the first is counted -- and calling it again picks the same
+  preview up. A search ``.vast`` previews one sample, marked ``search: true``: its names are
+  not ones a ``config_filter`` selects.
   ``validate_project`` starts that build, or joins the running one, and does not wait: the
   simulator's checks come back ``unchecked``, naming the build and ``get_image_build_log``. Composed with no service (an address on the
   MCP-server host), there is no such image, and the reply says the simulator was **not**

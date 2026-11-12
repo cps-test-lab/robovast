@@ -74,9 +74,9 @@ class _FakeAuthoringClient:
         return ValidationReport(valid=True, configs=3, runs_per_config=2,
                                 total_trials=6)
 
-    def preview_configurations(self, workspace_id, max_configs=0, path=""):
+    def preview_configurations(self, workspace_id, max_configs=0, path="", wait=True):
         from robovast.service.interface import PreviewConfiguration, PreviewResponse
-        self.calls.append(("preview_configurations", workspace_id, max_configs, path))
+        self.calls.append(("preview_configurations", workspace_id, max_configs, path, wait))
         return PreviewResponse(
             configs=1, runs_per_config=2, total_trials=2,
             configurations=[PreviewConfiguration(
@@ -127,7 +127,8 @@ def test_preview_strips_web_previews_and_reports_the_source(authoring_service):
     assert result["source"] == "workspace"
     assert result["configurations"] == [{"name": "cell-0",
                                          "parameters": {"growth_rate": 0.1}}]
-    assert ("preview_configurations", "ws-ab12", 5, "demo.vast") \
+    # Polled, never a waited call: a preview that builds the image must not hold the tool.
+    assert ("preview_configurations", "ws-ab12", 5, "demo.vast", False) \
         in authoring_service.calls
 
 
