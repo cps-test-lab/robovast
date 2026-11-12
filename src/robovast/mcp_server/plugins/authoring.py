@@ -310,8 +310,9 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
 
     Returns:
         ``{configs, runs_per_config, total_trials, jobs, pods, configurations, truncated,
-        aux_containers, source}``, each configuration ``{name, parameters}``; or ``{error}``;
-        or, still composing, ``{state: "composing", stage, progress, next_step}``.
+        aux_containers, search, source}``, each configuration ``{name, parameters}``
+        (``search``: a sample's names, which no filter selects); or ``{error}``; or, still
+        composing, ``{state: "composing", stage, progress, next_step}``.
         ``pods`` is one sentence per pod group when ``execution.runs_per_job`` packs.
     """
     from robovast.common.common import load_config
@@ -323,7 +324,8 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
         # A search .vast expands per sampled ParamSet, not from a `configuration:`
         # block; composing a sample is the only preview that reflects what it runs.
         aux: list = []
-        if (load_config(address) or {}).get("search"):
+        search = bool((load_config(address) or {}).get("search"))
+        if search:
             from robovast.search.compose import preview_search_sample
             sample = preview_search_sample(address)
             configs = sample["configs"]
@@ -350,6 +352,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
             "configurations": items[:limit] if truncated else items,
             "truncated": truncated,
             "aux_containers": aux,
+            "search": search,
             "source": "local file",
         }
     from robovast.client.preview import await_preview
@@ -375,6 +378,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
                            for c in resp.configurations],
         "truncated": resp.truncated,
         "aux_containers": list(resp.aux_containers),
+        "search": resp.search,
         "source": "workspace",
     }
 

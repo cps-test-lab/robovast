@@ -656,6 +656,9 @@ def workspace_preview(workspace, vast_path, max_configs):  # pylint: disable=red
                        f"{preview.total_trials} trial(s)"
                        + _in_jobs(preview.total_trials, preview.jobs))
             _echo_pods(preview.pods)
+            if preview.search:
+                click.echo("A search draws its configurations while it runs: these are one "
+                           "sample, and --filter does not apply to it.")
     # pylint: disable-next=try-except-raise
     except (click.UsageError, click.ClickException):
         raise

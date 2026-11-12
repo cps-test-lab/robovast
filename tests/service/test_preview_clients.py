@@ -82,6 +82,21 @@ def test_the_cli_says_the_image_is_building_then_prints_the_preview(cli_service,
     assert "1 configuration(s)" in result.output
 
 
+def test_a_search_preview_says_its_names_are_a_sample(cli_service, monkeypatch):
+    from robovast.mcp_server import service_access
+    from robovast.mcp_server.plugins import authoring
+
+    sample = READY.model_copy(update={"search": True})
+    monkeypatch.setattr("robovast.client.preview.time.sleep", lambda _s: None)
+    cli_service(_Service(sample))
+    result = CliRunner().invoke(root_cli.workspace, ["preview", "ws-1"])
+    assert result.exit_code == 0, result.output
+    assert "--filter does not apply" in result.output
+
+    monkeypatch.setattr(service_access, "service_client", lambda: _Service(sample))
+    assert authoring.preview_configurations("/sources/ws-1/campaign.vast")["search"] is True
+
+
 def test_the_cli_reports_a_failed_preview(cli_service, monkeypatch):
     monkeypatch.setattr("robovast.client.preview.time.sleep", lambda _s: None)
     cli_service(_Service(PreviewResponse(state="failed", error="did not build")))
