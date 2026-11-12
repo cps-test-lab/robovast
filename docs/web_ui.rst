@@ -1164,8 +1164,9 @@ after each edit — problems appear in the panel below the editor, and so does a
 valid project (listed under the pass, since it does not take it away). **Generate** expands
 the config and lists the resolved configurations with their parameters, without
 running anything. While it composes it says what it is doing: the variations done so far,
-or that the campaign's image is being built first, for a simulator that runs in it. Variation plugins declared in the ``.vast`` ``plugins:`` list are
-installed server-side automatically, so validation and preview resolve them.
+or that the campaign's image is being built first, for a simulator that runs in it. Variation
+plugins declared in the ``.vast`` ``plugins:`` list are installed server-side automatically,
+so validation and preview resolve them.
 
 .. _config-view:
 

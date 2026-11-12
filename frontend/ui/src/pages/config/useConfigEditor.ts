@@ -73,9 +73,10 @@ export function useConfigEditor(source: ConfigSource) {
     setPreviewErr(null)
     setPreviewStage(null)
     setSelectedCfg(0)
-    // A Generate still polling is about this project: leaving it stops that.
-    return () => generating.current?.abort()
   }, [sourceKey])
+
+  // A Generate still polling is about this project's selected .vast: leaving either stops it.
+  useEffect(() => () => generating.current?.abort(), [sourceKey, selected])
 
   const { content, saving, onChange, writable, loadError, saveError } = useEditableFile(source, selected, async () => {
     setValidation(await robovast.validateProject(source.id, selected))
