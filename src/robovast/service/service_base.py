@@ -5105,17 +5105,17 @@ class ServiceBase(RobovastInterface):
             held = self._previews.get(key)
             # A composition in flight is answered as it stands even if the file has moved on:
             # it cannot be stopped, and the first call after it lands composes again.
-            if held is not None and held[1].state == "failed":
-                # Answered once and dropped, so the next call composes again: what failed may
-                # be outside the .vast -- a build, a package source, a helper image -- and a
-                # held failure would outlive its fix. One of a file since edited is not
-                # answered at all.
+            if held is not None and held[1].state == "composing":
+                return held[1]
+            if held is not None:
+                # A landed answer -- ready or failed -- is given once and dropped, so the next
+                # call composes again: what it was composed from reaches past the .vast (the
+                # scenario, run files, a build, a package source), and the composition cache,
+                # which keys on all of it, is what decides whether anything changed. One of a
+                # .vast since edited is not given at all.
                 del self._previews[key]
                 if held[0] == mtime:
                     return held[1]
-                held = None
-            if held is not None and (held[1].state == "composing" or held[0] == mtime):
-                return held[1]
             started = PreviewResponse(state="composing")
             self._previews[key] = (mtime, started)
         threading.Thread(

@@ -140,6 +140,8 @@ export function LaunchBar() {
     queryFn: () => robovast.previewConfigurations(workspaceId, 0, configPath, false),
     enabled: active && !!workspaceId && !!configPath && configFile.isSuccess,
     refetchInterval: (q) => (q.state.data?.state === 'composing' ? 1000 : false),
+    // A landed preview is given once: asking again composes again, which only an edit calls for.
+    refetchOnWindowFocus: false,
   })
   const names =
     configNames.data?.state === 'ready' ? configNames.data.configurations.map((c) => c.name) : []
