@@ -129,6 +129,18 @@ def test_the_mcp_tool_answers_with_what_it_waits_on_and_the_call_to_repeat(monke
     assert "preview_configurations again" in reply["next_step"]
 
 
+def test_the_mcp_tool_reports_a_failed_preview_as_its_error(monkeypatch):
+    from robovast.mcp_server import service_access
+    from robovast.mcp_server.plugins import authoring
+
+    failed = PreviewResponse(state="failed", error="did not build")
+    monkeypatch.setattr(service_access, "service_client", lambda: _Service(failed))
+    monkeypatch.setattr("robovast.client.preview.time.sleep", lambda _s: None)
+
+    with pytest.raises(PreviewFailed, match="did not build"):
+        authoring.preview_configurations("/sources/ws-1/campaign.vast")
+
+
 def test_the_mcp_tool_returns_the_preview_once_it_is_ready(monkeypatch):
     from robovast.mcp_server import service_access
     from robovast.mcp_server.plugins import authoring

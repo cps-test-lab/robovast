@@ -198,7 +198,8 @@ export function LaunchBar() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['campaigns'] }),
   })
 
-  const canLaunch = !!workspaceId && !create.isPending && !noMatch
+  // A search refuses a config filter, so a launch with one would only fail.
+  const canLaunch = !!workspaceId && !create.isPending && !noMatch && !(search && configFilter)
 
   if (compact && !unfolded) {
     return (
