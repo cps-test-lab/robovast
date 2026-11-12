@@ -1928,7 +1928,7 @@ class ValidationProblem(BaseModel):
     ``stage`` is the check that failed (``file``/``parse``/``schema``/
     ``scenario``/``generation``/plugin-ref/…); ``config``/``field`` locate it.
 
-    ``severity`` states which of four answers this is, because a caller acts on them
+    ``severity`` states which of three answers this is, because a caller acts on them
     differently and the text alone cannot be branched on:
 
     - ``error`` — the campaign is wrong. It makes ``valid`` false.
@@ -1940,10 +1940,6 @@ class ValidationProblem(BaseModel):
       ``check_scenario``) could not run here, so *nothing* was learned about it either
       way. It makes ``valid`` false without being a defect in the file, and its message
       names what would settle it.
-    - ``warning`` — a check asked of the image the campaign builds, which is not built yet
-      (the world check, which streams the simulator renders only on demand). Not answered
-      from any other image: ``start_campaign`` builds it, asks again and refuses to start on
-      a failure. ``valid`` stays true; ``world_checked`` is false.
     """
 
     stage: str = ""
@@ -1965,9 +1961,7 @@ class ValidationReport(BaseModel):
     ``world_checked`` and ``scenario_checked`` are three-state answers for the two checks a
     caller *asks* for: ``True`` it ran and passed, ``False`` it was asked for and could not
     run, ``None`` it was not asked for (``check_world`` / ``check_scenario`` false, or --
-    for the scenario -- no scenario file to parse). A world described by the campaign's own
-    built image, before that is built, is ``False`` with a ``warning`` problem and leaves
-    ``valid`` true: ``start_campaign`` checks it in the image it builds.
+    for the scenario -- no scenario file to parse).
 
     They are not the only things here that need a container: composing the file runs an
     ``execution.generate`` generator and any variation declaring a helper image. Those carry
@@ -2116,10 +2110,14 @@ class PreviewResponse(BaseModel):
     the background (``progress`` then counts its steps once the first is counted), ``ready``
     once every other field holds, and ``failed`` when the expansion raised, with ``error``
     saying why; the counts and ``configurations`` are empty in every state but ``ready``.
+    ``stage`` says what a ``composing`` preview waits on before it can compose: the build of
+    the image the campaign's simulator runs in, which the preview builds when it is not built
+    yet.
     """
 
     state: Literal["composing", "ready", "failed"] = "ready"
     progress: Optional[StepProgress] = None
+    stage: str = ""
     error: str = ""
     configs: int = 0
     runs_per_config: int = 0
@@ -3984,6 +3982,10 @@ class RobovastInterface(ABC):
         Both containers are held, so a repeat validation of the same project pays an exec
         rather than a container start. Pass ``False`` while iterating on YAML to keep the
         call sub-second.
+
+        A simulator whose container adds packages runs in the image the campaign builds, and
+        is asked there: an image not built yet is built first, as :meth:`start_campaign`
+        builds it, and a failed build fails the validation with the build's id.
         """
 
     @abstractmethod
@@ -3996,8 +3998,14 @@ class RobovastInterface(ABC):
         nothing is executed or written. ``path`` selects which ``.vast`` (empty =
         the sole one); ``max_configs`` caps the returned list.
 
+        A simulator whose container adds packages runs in the image the campaign builds, and
+        is asked there: an image not built yet is built first, the same content-addressed
+        build :meth:`start_campaign` runs and then reuses, and a failed build fails the
+        preview with the build's id.
+
         With ``wait=False`` the call never waits on the expansion: the first call starts
-        it in the background and answers at once in state ``composing``; the caller polls
+        it in the background and answers at once in state ``composing``, with ``stage``
+        saying so while it builds; the caller polls
         the same call until it is ``ready`` or ``failed``. A landed answer is served until
         the ``.vast`` changes, and the next call after that composes again. That is how the
         launcher learns the names its filter selects from without blocking on a helper

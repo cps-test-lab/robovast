@@ -247,19 +247,21 @@ happened (it ran, it could not, it was not asked for); and the problem carries
 — is therefore never told a campaign is good to run because the most expensive thing about it
 was skipped, and it can still tell "could not check" from "is wrong" without matching on
 English. ``severity: "advice"`` is the other side of that line: a checked fact worth saying,
-and ``valid`` stays true. ``severity: "warning"`` is a world described by the image the campaign
-builds, before it is built: ``valid`` stays true, ``world_checked`` is false, and
-``start_campaign`` builds the image, checks the world in it and refuses to start on a failure.
-An *advisory* check — one the caller did not ask for, such as the world-key check — reports as advice whether it ran or not: it was never part of the verdict, so
+and ``valid`` stays true. An *advisory* check — one the caller did not ask for, such as the
+world-key check — reports as advice whether it ran or not: it was never part of the verdict, so
 the only wrong answer it could give is silence.
 
 The consequence is that each tier has something it structurally cannot settle, and the honest
 place to say so is **the problem it reports**, not a tool description the reader has to
 remember and map onto their situation:
 
-* A world that only the campaign's own **built** image could describe cannot be checked
-  before that image exists. ``validate_project`` then reports that it was **not** checked and
-  names ``build_experiment_image``, rather than letting a silent reply read as a clean world.
+* A world that only the campaign's own **built** image can describe -- its simulator
+  container adds packages -- is asked there. ``validate_project`` and
+  ``preview_configurations`` build that image first when it is not built yet, the same
+  content-addressed build ``start_campaign`` runs and then reuses, and wait for it; a failed
+  build is their answer, naming the build's log. Composed with no service (an address on the
+  MCP-server host), there is no such image, and the reply says the simulator was **not**
+  asked and that a preview through the service builds it.
 * A ``plugins:`` spec not yet installed for the project cannot be resolved by
   ``validate_project`` at all — declared specs are installed during config *generation*. A
   package already staged in ``.robovast_plugins/`` *is* resolved, by reading entry-point

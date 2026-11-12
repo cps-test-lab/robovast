@@ -892,7 +892,9 @@ def simulator_image(execution: dict, declared: Optional[dict] = None) -> str:
     ``ros_packages``) runs the image the campaign builds, so the answer is the symbolic
     ``build:<container>`` ref, which composition resolves to that image
     (``config_generation.set_built_images``). It outranks an authored ``image:``, which is then
-    only the base the build starts from.
+    only the base the build starts from -- except in a replay of a campaign whose source asked
+    its simulator in that base image, which asks it there again
+    (``config_generation.replays_base_image``).
 
     One place, and it has to be, because :func:`apply_backend` applies the same precedence to the
     *run* -- the author's ``image:`` on the block outranks a backend default -- and a second copy
@@ -922,9 +924,12 @@ def simulator_image(execution: dict, declared: Optional[dict] = None) -> str:
     if any(((containers.get(name) or {}).get(key))
            for name in authored
            for key in ("python_packages", "system_packages", "ros_packages")):
+        from robovast.common.config_generation import \
+            replays_base_image  # pylint: disable=import-outside-toplevel
         from robovast.common.execution import \
             BUILD_IMAGE_PREFIX  # pylint: disable=import-outside-toplevel
-        return f"{BUILD_IMAGE_PREFIX}{target}"
+        if not replays_base_image(target):
+            return f"{BUILD_IMAGE_PREFIX}{target}"
     for name in authored:
         image = ((containers.get(name) or {}).get("image") or "").strip()
         if image:

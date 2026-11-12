@@ -236,9 +236,7 @@ def _problem(message: str, config=None, field: str = "",
     ``severity`` carries the distinction this module exists to keep: ``error`` for a world
     that does not load, ``unchecked`` for a question nothing here could ask. Both are
     reported, neither is a pass, and a caller can tell them apart without reading English.
-    ``advice`` is the third answer: a finding about a world that does load. ``warning`` is the
-    fourth: a question asked of the campaign's own built image before it is built, which the
-    campaign's start asks again.
+    ``advice`` is the third answer: a finding about a world that does load.
     """
     return {"stage": "world", "config": config,
             "field": field or "execution.containers.simulation.config",
@@ -346,14 +344,6 @@ def _unchecked(reason, step: str = "") -> str:
             + (f" Next: {step}" if step else ""))
 
 
-def _not_built(exc, what: str) -> str:
-    """One sentence: what was not checked because the campaign's image is not built, and when."""
-    text = str(exc).rstrip().rstrip(".")
-    step = getattr(exc, "next_step", "")
-    return (f"this campaign's world was not checked ({what}): {text}."
-            + (f" Next: {step}" if step else ""))
-
-
 def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: str,
                    vast_dir: str, parameters: dict) -> list:
     """Does this campaign's world load, compile and reset, and does its image know its keys?
@@ -379,7 +369,7 @@ def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: s
     from robovast.common.config_generation import (WorldQueryUnavailable,
                                                    describe_world_payload,
                                                    set_container_runner_factory)
-    from robovast.common.errors import ActionableError, ExecPathUnavailable, ImageNotBuilt
+    from robovast.common.errors import ActionableError, ExecPathUnavailable
 
     from robovast.service.world_keys import unknown_key_advice
 
@@ -412,17 +402,6 @@ def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: s
         try:
             payload, image = describe_world_payload(
                 execution, block, vast_dir, entities=True)
-        except ImageNotBuilt as exc:
-            # The world is described by the image the campaign builds, and that is not built
-            # yet. Neither a verdict nor a check that cannot run: the campaign's start asks the
-            # same questions in the image it built and refuses to start on a failure. So it is
-            # a warning, for the world and for the recording, which is asked of the same image.
-            problems += [
-                _problem(_not_built(exc, "whether it loads, compiles and resets"),
-                         config=config_name, severity="warning"),
-                _problem(_not_built(exc, "which streams the simulator renders only on demand"),
-                         config=config_name, field=_RECORDING_FIELD, severity="warning")]
-            continue
         except ExecPathUnavailable as exc:
             # Before the arms below, and its own answer: they name the image or the backend as
             # what would settle it, and neither is what is wrong. Unchecked rather than an
@@ -518,8 +497,8 @@ def _recording_problems(exec_call, *, workspace_id: str, config_path: str, vast_
     try:
         streams = query_on_demand_streams(execution, block, vast_dir)
     except ImageNotBuilt as exc:
-        return [_problem(_not_built(exc, "which streams the simulator renders only on demand"),
-                         config=config, field=_RECORDING_FIELD, severity="warning")]
+        return [_problem(_unchecked(exc, exc.next_step), config=config, field=_RECORDING_FIELD,
+                         severity="unchecked")]
     except ExecPathUnavailable as exc:
         return [_problem(_unchecked(exc), config=config, field=_RECORDING_FIELD,
                          severity="unchecked")]

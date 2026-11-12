@@ -164,7 +164,7 @@ export function LaunchBar() {
       : composing
         ? progress
           ? `composing: ${progress.done} of ${progress.total} variations done`
-          : 'composing configurations…'
+          : configNames.data?.stage || 'composing configurations…'
         : matched
           ? noMatch
             ? `matches none of the ${names.length} configurations`

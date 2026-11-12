@@ -248,9 +248,17 @@ covers ran and passed — including the two that need a container: the world che
 the scenario in the image that would run it (the only check that sees an ``import
 osc.<library>`` that image lacks). So a service that cannot start one is reported as ``unchecked``
 rather than counted as a pass; ``--no-world-check`` / ``--no-scenario-check`` ask for the
-narrower verdict on the file alone. A world described by the image the campaign builds, before
-it is built, is a ``warning``: ``validate`` still passes, and ``run`` builds the image, checks the
-world in it and refuses to start on a failure.
+narrower verdict on the file alone.
+
+A campaign whose simulator container adds packages has its simulator asked in the image the
+campaign builds, since a world its own package ships exists only there. ``validate`` and
+``preview`` build that image first when it is not built yet -- the same build ``run`` starts,
+which ``run`` then finds and reuses -- and answer once it is built; a failed build fails them,
+naming the build (``vast image log <build>``). The web UI's launch bar says the image is being
+built while it waits. The local ``vast configuration`` commands (``list``, ``info``,
+``generate``, ``validate``, ``variation-points``) compose without a service, so for such a
+campaign they refuse, naming ``vast workspace preview`` as the command that builds the image
+and asks there.
 
 Omit the path when the workspace holds exactly one ``.vast`` and the service will resolve
 it, naming the candidates if there are several. ``--push DIR`` does the push and the launch

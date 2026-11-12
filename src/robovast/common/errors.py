@@ -162,8 +162,12 @@ class ActionableError(Exception):
 class ImageNotBuilt(ActionableError):
     """Raised when a container's ``build:`` image is not in the deployment's own image store.
 
-    Never built implicitly: a diagnostic exec that quietly became a multi-minute image
-    build would answer a question nobody asked. What separates this from a dead end is the
+    An exec or a world description never builds implicitly: a diagnostic that quietly became a
+    multi-minute image build would answer a question nobody asked. (A validation or a preview
+    of a campaign whose simulator runs in its built image does build it, since the
+    configurations it reports are composed from the simulator's answers in that image.) Raised
+    as well where a composition asks the simulator in a built image that nothing registered
+    (``config_generation._resolve_built_spec``). What separates this from a dead end is the
     *state* — no build known, one running, one failed, or one that succeeded and whose
     image has since gone — and :func:`~robovast.service.image_build.not_built_message`
     turns each into a different :attr:`ActionableError.next_step`.

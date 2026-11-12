@@ -6,8 +6,8 @@
 A world shipped by the campaign's own package exists in that image and nowhere else, so which
 streams are on demand, which files a world is made of and what it provides are asked there --
 never in the backend's base image, whose answer would be about another campaign. A campaign's
-span registers the image it built; a validation before the first build says the questions wait
-for it, as a warning, and asks no other image.
+span registers the image it built; a composition no service arranged has no such image and
+refuses, naming a preview through a service, rather than asking another image.
 """
 
 import json
@@ -141,41 +141,30 @@ def test_a_campaign_span_without_its_built_image_does_not_start(tmp_path, asked,
     assert not asked, "no other image is asked in its place"
 
 
-def test_validation_before_the_build_warns_and_asks_no_other_image(tmp_path, asked,
-                                                                    registered):
+def test_validation_without_a_service_refuses_and_asks_no_other_image(tmp_path, asked):
     from robovast.common.config_validation import validate_project_file
 
-    registered({"simulation": None})
     report = validate_project_file(str(_project(tmp_path)))
 
-    warnings = [p for p in report["problems"] if p["severity"] == "warning"]
-    assert [p["stage"] for p in warnings] == ["generation"]
-    assert "not built" in warnings[0]["message"]
-    assert "start_campaign" in warnings[0]["message"]
-    assert report["valid"] is True, report["problems"]
-    assert report["configs"] == 1
+    assert report["valid"] is False
+    assert [p["severity"] for p in report["problems"]] == ["unchecked"]
+    message = report["problems"][0]["message"]
+    assert "only a RoboVAST service builds it" in message
+    assert "vast workspace preview" in message
     assert not asked, "the base image is never asked in place of the one the campaign builds"
 
 
-def test_the_world_check_before_the_build_warns_and_asks_no_other_image(tmp_path, registered):
-    import yaml
+def test_the_local_cli_refuses_naming_a_preview_through_a_service(tmp_path, asked):
+    from click.testing import CliRunner
 
-    from robovast.service.world_query import world_problems
+    from robovast.configuration.configuration_utils.cli import configuration
 
-    def _exec(_request):
-        raise AssertionError("no container is asked while the campaign's image is not built")
+    result = CliRunner().invoke(configuration, ["info", str(_project(tmp_path))])
 
-    def _resolve(_request):
-        raise AssertionError("no image is resolved while the campaign's image is not built")
-
-    vast = _project(tmp_path)
-    registered({"simulation": None})
-    problems = world_problems(_exec, resolve_call=_resolve, workspace_id="ws-1",
-                              config_path="campaign.vast", vast_dir=str(tmp_path),
-                              parameters=yaml.safe_load(vast.read_text()))
-
-    assert [p["severity"] for p in problems] == ["warning", "warning"]
-    assert all("start_campaign" in p["message"] for p in problems)
+    assert result.exit_code != 0
+    assert "only a RoboVAST service builds it" in result.output
+    assert "vast workspace preview" in result.output
+    assert not asked
 
 
 def test_a_rebuilt_image_is_asked_again_not_answered_from_the_cache(tmp_path, asked,

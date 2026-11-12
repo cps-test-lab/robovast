@@ -314,11 +314,16 @@ Four rules make those answers trustworthy:
   it answers the symbolic ``build:<container>``, and composition runs the query in the image the
   service registered for that container over the span
   (:func:`~robovast.common.config_generation.set_built_images`, installed by
-  ``ServiceBase._built_images_context``): the image a campaign pinned, or, for a validation, a
-  preview, an exec or a description, the one the service's store holds. One that is not built
-  yet raises :class:`~robovast.common.errors.ImageNotBuilt` and is never answered from another
-  image; the composition cache is keyed on the registered images' identities, so a rebuilt
-  image is asked again.
+  ``ServiceBase._built_images_context``): the image a campaign pinned; for a validation or a
+  preview, the one the service's store holds, built first when it is not
+  (``ServiceBase._build_for_composition``, through the same ``_start_build_images`` hook
+  ``start_campaign`` uses, so the campaign finds the image built); for an exec or a
+  description, the stored one or nothing. One that is not registered raises
+  :class:`~robovast.common.errors.ImageNotBuilt` and is never answered from another image --
+  in a process no service arranged, naming a preview through a service. A replay registers
+  the image its source asked the simulator in, by the auxiliary containers the source
+  recorded (``ServiceBase._replayed_built_images``). The composition cache is keyed on the
+  registered refs, so a rebuilt image is asked again.
 * **In the environment the run has.** Loading a world loads its plugins, and a ROS simulator's
   bridge is installed in the overlay a run's entrypoint sources. A runner enters a query's
   container without that entrypoint, so the query's command sets the environment up itself

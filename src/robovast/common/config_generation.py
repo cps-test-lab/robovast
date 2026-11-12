@@ -175,19 +175,24 @@ def aux_images_fixed() -> bool:
 # that adds packages as a symbolic ``build:<container>`` ref (:func:`~robovast.common.simulators.
 # simulator_image`), because a world shipped by the campaign's own package exists in that image
 # and nowhere else; the service that composes knows the concrete image and sets it here, scoped
-# like the factory above. A campaign's span maps every container it built; a validation or a
-# preview maps a container whose image is not built yet to ``None``.
+# like the factory above. ``None`` -- nothing registered -- is a composition no service arranged,
+# which has no built image to ask.
 _built_images: "contextvars.ContextVar" = contextvars.ContextVar(
     "robovast_built_images", default=None)
+
+#: A registered entry saying the simulator is asked in the image the replayed campaign's source
+#: asked it in, the base its build starts from, rather than in the built one
+#: (:func:`replays_base_image`).
+REPLAYED_BASE = {"replayed_base": True}
 
 
 def set_built_images(images):
     """Register ``{container name: {"ref", "identity"} or None}`` for this context.
 
     ``ref`` is the concrete image a container is started from; ``identity`` the registry-free
-    name of the same bytes, which is what a message or a cache key may carry. ``None`` for a
-    container means its image is not built yet. Returns the ``Token`` like
-    :func:`set_container_runner_factory`.
+    name of the same bytes, which is what a message may carry. ``None`` for a container means
+    its image is not built. :data:`REPLAYED_BASE` is a replay whose source asked the simulator
+    in the base image. Returns the ``Token`` like :func:`set_container_runner_factory`.
     """
     return _built_images.set(None if images is None else dict(images))
 
@@ -195,6 +200,16 @@ def set_built_images(images):
 def built_images():
     """The mapping :func:`set_built_images` registered here, or ``None``."""
     return _built_images.get()
+
+
+def replays_base_image(container: str) -> bool:
+    """Whether this context replays a campaign whose source asked *container*'s simulator in
+    the base image its build starts from, rather than in the built image.
+
+    A replay runs the images its source recorded, and a source composed before the simulator was
+    asked in the built image recorded the base image for its queries.
+    """
+    return (_built_images.get() or {}).get(container) == REPLAYED_BASE
 
 
 def _resolve_built_spec(spec):
@@ -214,13 +229,21 @@ def _resolve_built_spec(spec):
     if not is_build_image_ref(image):
         return spec, image
     name = build_image_tag(image)
-    found = (_built_images.get() or {}).get(name)
-    if not found:
+    registered = _built_images.get()
+    if registered is None:
         raise ImageNotBuilt(
-            f"not checked: the campaign's image for container {name!r} is not built, and the "
-            "simulator is asked in the image the campaign runs",
-            next_step="start_campaign builds it and checks again; build_experiment_image "
-                      "builds it now, so a validation can check it")
+            f"this campaign's simulator checks run in the image it builds for container "
+            f"{name!r}, and only a RoboVAST service builds it; composing here has no such "
+            "image to ask",
+            next_step="preview the campaign through a service -- `vast workspace preview "
+                      "<workspace>`, or the MCP tool preview_configurations -- which builds "
+                      "the image and asks the simulator in it")
+    found = registered.get(name)
+    if not found or not found.get("ref"):
+        raise ImageNotBuilt(
+            f"the campaign's image for container {name!r} is not built, and the simulator "
+            "is asked in the image the campaign runs",
+            next_step="preview_configurations or validate_project builds it and asks again")
     return replace(spec, image=found["ref"]), found["identity"]
 
 
@@ -1975,13 +1998,14 @@ def _build_generate_cache_key(
         key.add("image_pins", json.dumps(dict(image_pins), sort_keys=True))
 
     # The simulator's queries run in the campaign's built image (:func:`set_built_images`), so
-    # an entry composed against one build -- or against none, which a validation does before
-    # the first -- must never answer for another. By identity, which changes exactly when the
-    # image does. Added only where a service registered its images, so a CLI composition's key
-    # is what it is without them.
+    # an entry composed against one build must never answer for another. By the ref a container starts from, which
+    # changes exactly when the image does and is the same in a preview and in the campaign
+    # started after it. Added only where a service registered its images, so a CLI
+    # composition's key is what it is without them.
     if built_images is not None:
         key.add("built_images", json.dumps(
-            {name: (found or {}).get("identity") for name, found in built_images.items()},
+            {name: (found or {}).get("ref") or (found or {}).get("replayed_base")
+             for name, found in built_images.items()},
             sort_keys=True))
 
     return key

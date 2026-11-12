@@ -214,8 +214,8 @@ def validate_project(address: str, check_world: bool = True,
     not run makes it ``false`` and arrives as a problem with ``severity: "unchecked"``, so
     "not verified" never reads as "fine" — ``world_checked`` and ``scenario_checked``
     (true / false / null when not requested) say which happened to the two container
-    checks. ``advice`` and ``warning`` (its image is not built yet) leave ``valid`` true. It
-    does **not** mean a derived image will build; if a container adds packages, read
+    checks. ``advice`` problems leave ``valid`` true. It does **not** mean a derived image
+    will build; if a container adds packages, read
     ``search_docs("build fails schema cannot catch")`` first.
 
     **Two checks run a container**, each catching a failure otherwise met per trial, after
@@ -227,6 +227,8 @@ def validate_project(address: str, check_world: bool = True,
       all? The only check that sees an ``import osc.<library>`` the image lacks — which
       otherwise kills every trial at its first line while the campaign reports finished.
       ``scenario`` problems carry the parser's message and position.
+
+    A simulator adding packages is asked in the campaign's image, built first.
 
     **Each problem names what it could not settle and what would**: an uninstalled
     ``plugins:`` spec names ``preview_configurations(limit=1)`` (which composes, and so
@@ -240,8 +242,8 @@ def validate_project(address: str, check_world: bool = True,
         total_trials, jobs, pods, problems, source}`` -- ``jobs`` is what the trials dispatch
         as, one per trial unless ``execution.runs_per_job`` packs runs, and ``pods`` then says
         per group which configurations share a pod and why one keeps its own -- each
-        problem ``{stage, config, field, message, severity}`` with ``severity`` one of
-        ``error`` / ``advice`` / ``warning`` / ``unchecked``. A
+        problem ``{stage, config, field, message,
+        severity}`` with ``severity`` one of ``error`` / ``advice`` / ``unchecked``. A
         clean campaign returns no world or scenario entry.
     """
     from robovast.common.config_validation import validate_project_file

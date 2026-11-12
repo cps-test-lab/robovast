@@ -570,9 +570,13 @@ nowhere else -- described against a fixed base image, the ref does not resolve, 
 answers nothing, and the check silently passed for exactly those campaigns. The query therefore
 takes the image from the container the simulator runs in, with the same precedence the run uses:
 for a container that adds packages, the image the campaign builds. A campaign asks it there once
-the image is built, and does not start if the answer is a failure; a validation or a preview
-before the first build reports the check as a ``warning`` that names the build, and asks no other
-image in its place.
+the image is built, and does not start if the answer is a failure. A validation or a preview
+through the service builds the image first when it is not built yet -- the build the campaign
+then reuses -- and fails, naming the build, if it does not build. ``vast configuration
+generate`` and the other local commands have no such image and refuse the campaign, naming a
+preview through the service; no other image is asked in its place. A replay asks the
+simulator in the image its source recorded for the query, which may be the base image the
+build starts from.
 
 The same description is what a *caller* can ask for directly, before writing an override at all:
 :meth:`~robovast.service.interface.RobovastInterface.describe_world`, surfaced as ``vast
