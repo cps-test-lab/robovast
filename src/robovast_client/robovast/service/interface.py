@@ -3985,7 +3985,8 @@ class RobovastInterface(ABC):
 
         A simulator whose container adds packages runs in the image the campaign builds, and
         is asked there. An image not built yet is started building, as :meth:`start_campaign`
-        builds it, or its running build joined, and the call does not wait for it: the
+        builds it, or its running build joined -- whatever ``check_world`` says, since
+        composing the file asks the simulator too -- and the call does not wait for it: the
         simulator's checks are ``unchecked`` problems naming the build and how to follow its
         log, and a validation once it is built answers them.
         """
