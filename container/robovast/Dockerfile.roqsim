@@ -33,7 +33,7 @@
 # the remote, so a branch default serves the tree from the first build forever (see the caching
 # note below). build.sh and CI resolve their own ref to a sha and pass it, overriding this.
 ARG ROQSIM_REPO=https://github.com/cps-test-lab/roqsim.git
-ARG ROQSIM_REF=19a7e382ea1c529c3e1daea73bf2e00900d8ea94
+ARG ROQSIM_REF=585cd7297ab8957aeb1432f6e0763edae2fc9ebe
 
 # Up here with them, and not beside the FROM it feeds: an ARG referenced by a FROM must be
 # declared before the FIRST FROM in the file, or it is out of scope and the base name resolves
@@ -130,8 +130,12 @@ RUN cp -a /etc/apt/sources.list.d/ubuntu.sources /etc/apt/ubuntu.sources.canonic
 # needed by every roqsim run and not only by camera worlds. Both offscreen backends are
 # installed because which one works is a property of the *node*: egl needs a render
 # device, osmesa is the software fallback for a CPU-only one. roqsim chooses between
-# them at startup (roqsim.viewer.select_offscreen_gl) -- it is the only place that can, so
+# them at startup (roqsim.gl.select_offscreen_gl) -- it is the only place that can, so
 # no campaign has to guess.
+#
+# MuJoCo's Filament renderer (`sim.renderer: filament`) draws through Vulkan only. Its loader
+# and the CPU driver (lavapipe) are the base image's software-rendering packages; on an NVIDIA
+# GPU the `graphics` driver capability mounts the GPU's driver.
 # hadolint ignore=DL3008
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -257,9 +261,13 @@ sys.exit(1 if found else 0)'
 #
 # `roqsim[ipc]` for the control socket `roqsim sim` serves by default; without pyzmq it serves none.
 # The requirement is met by the base image's python3-zmq.
+#
+# MuJoCo in the range the roqsim packages that depend on it pin. `mujoco` installs both halves
+# of 4.0's split distribution, `mujoco-core` and `mujoco-studio`; the second carries the
+# Filament renderer.
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     pip install --break-system-packages \
-        "mujoco>=3.0" \
+        "mujoco>=4.0,<4.1" \
         "/opt/roqsim/roqsim[ipc]" \
         /opt/roqsim/roqsim_assets \
         /opt/roqsim/roqsim_sensors \
@@ -270,6 +278,7 @@ RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
         /opt/roqsim/roqsim_aerial \
         /opt/roqsim/roqsim_scenes \
         /opt/roqsim/roqsim_nav \
+        /opt/roqsim/roqsim_motion \
         /opt/roqsim/roqsim_walker \
         /opt/roqsim/scenario_execution_roqsim
 
