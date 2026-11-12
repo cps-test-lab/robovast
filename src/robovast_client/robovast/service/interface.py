@@ -4011,12 +4011,12 @@ class RobovastInterface(ABC):
         With ``wait=False`` the call never waits on the expansion: the first call starts
         it in the background and answers at once in state ``composing``, with ``stage``
         saying so while it builds; the caller polls the same call until it is ``ready`` or
-        ``failed``. A ``ready`` answer is served until the ``.vast`` changes, and the next
-        call after that composes again; a ``failed`` one is answered once, and the call after
-        it composes again. That is how the launcher learns the names its filter selects from
-        without blocking on a helper container, and how the CLI and the MCP tool wait while
-        saying what they wait on. A search ``.vast`` previews a sample of what it draws,
-        marked ``search``, in either mode.
+        ``failed``. A landed answer is given once, and the call after it composes again,
+        through the composition cache; one of a ``.vast`` edited since is not given. That is
+        how the launcher learns the names its filter selects from without blocking on a
+        helper container, and how the CLI and the MCP tool wait while saying what they wait
+        on. A search ``.vast`` previews a sample of what it draws, marked ``search``, in
+        either mode.
         """
 
     @abstractmethod

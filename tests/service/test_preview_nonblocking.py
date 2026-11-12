@@ -3,8 +3,7 @@
 """``preview_configurations(wait=False)`` answers at once and composes in the background.
 
 The launcher polls it for the filter's dropdown, so a call never waits on composition: it
-starts one, reports it as ``composing``, and serves the landed preview until the ``.vast``
-changes.
+starts one, reports it as ``composing``, and gives the landed preview once.
 """
 
 import contextlib
@@ -73,6 +72,17 @@ def test_an_edited_vast_is_composed_again(tmp_path):
     os.utime(vast, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
     assert impl.preview_configurations("ws", wait=False).state == "composing"
     assert [c.name for c in _settled(impl).configurations] == ["cell0", "cell1"]
+
+
+def test_a_ready_preview_is_given_once_and_composed_again(tmp_path):
+    """What it was composed from reaches past the .vast -- the scenario, the run files -- so a
+    landed preview is not served again: the next call composes, through the composition
+    cache, and sees an edit of any of them."""
+    impl, _vast = _impl(tmp_path, ["cell0"])
+    assert _settled(impl).state == "ready"
+    (tmp_path / "scenario.osc").write_text(_SCENARIO.replace("1.0m", "2.0m"))
+    assert impl.preview_configurations("ws", wait=False).state == "composing"
+    assert _settled(impl).state == "ready"
 
 
 def test_a_failed_composition_says_why(tmp_path):

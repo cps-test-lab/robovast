@@ -140,6 +140,8 @@ export function LaunchBar() {
     queryFn: () => robovast.previewConfigurations(workspaceId, 0, configPath, false),
     enabled: active && !!workspaceId && !!configPath && configFile.isSuccess,
     refetchInterval: (q) => (q.state.data?.state === 'composing' ? 1000 : false),
+    // A landed preview is given once: asking again composes again, which only an edit calls for.
+    refetchOnWindowFocus: false,
   })
   // A search .vast's configurations are a sample of its draws: no filter selects from them.
   const search = configNames.data?.state === 'ready' && configNames.data.search
