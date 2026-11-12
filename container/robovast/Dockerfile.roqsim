@@ -262,8 +262,9 @@ sys.exit(1 if found else 0)'
 # `roqsim[ipc]` for the control socket `roqsim sim` serves by default; without pyzmq it serves none.
 # The requirement is met by the base image's python3-zmq.
 #
-# MuJoCo in the range every roqsim package pins. `mujoco` installs both halves of 4.0's split
-# distribution, `mujoco-core` and `mujoco-studio`; the second carries the Filament renderer.
+# MuJoCo in the range the roqsim packages that depend on it pin. `mujoco` installs both halves
+# of 4.0's split distribution, `mujoco-core` and `mujoco-studio`; the second carries the
+# Filament renderer.
 RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     pip install --break-system-packages \
         "mujoco>=4.0,<4.1" \
