@@ -261,8 +261,8 @@ remember and map onto their situation:
   then reuses; a failed build is its answer, naming the build's log. Before it starts or waits
   on one, it runs the checks ``validate_project`` runs before composing, and a file with a
   problem of its own fails at once with that problem, as ``validate_project`` reports it,
-  starting no build; so does a preview of an address on the MCP-server host. The tool waits a bounded
-  time: a preview still composing then answers ``{state: "composing", stage, progress,
+  starting no build; so does a preview of an address on the MCP-server host. The tool waits a
+  bounded time: a preview still composing then answers ``{state: "composing", stage, progress,
   next_step}`` -- ``stage`` naming the build it waits on, ``progress`` the variation steps
   done, or ``null`` before the first is counted -- and calling it again picks the same
   preview up. A search ``.vast`` previews one sample, marked ``search: true``: its names are
@@ -273,6 +273,9 @@ remember and map onto their situation:
   asked and that a preview through the service builds it.
 * A ``plugins:`` spec not yet installed for the project cannot be resolved by
   ``validate_project`` at all — declared specs are installed during config *generation*. A
+  variation, postprocessing command, search strategy, extractor or input generator it may
+  provide is reported ``unchecked``, naming ``preview_configurations``, which composes and so
+  installs them; it does not stop that preview. A
   package already staged in ``.robovast_plugins/`` *is* resolved, by reading entry-point
   **names** out of that directory: metadata, not an import, because
   ``config_plugins._prepend_sys_path`` is only safe in the isolated compose subprocess and

@@ -298,8 +298,8 @@ here by what they do:
   Once a ``.vast`` is selected the service composes it in the background, with a spinner and
   how many variation steps are done, and the config filter then offers its configuration
   names: pick one or several, or type a glob to narrow the list. A ``.vast`` with a problem
-  of its own -- one validation finds without a container -- is named under the filter at once,
-  and no image build starts for it. A filter that matches none of them keeps *Launch*
+  of its own -- one validation finds without a container -- has its first problem named under
+  the filter at once, and no image build starts for it. A filter that matches none of them keeps *Launch*
   disabled. While a launched campaign composes, its run bar counts the
   variation steps instead.
 * **Config** — a workspace-based ``.vast`` editor with live validation, a

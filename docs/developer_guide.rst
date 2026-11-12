@@ -2537,8 +2537,8 @@ by workspace, path and ``max_configs``, and each call answers ``composing`` (wit
 ``config_validation.check_before_composing`` -- the checks ``validate_project_file`` runs before
 its ``before_composing`` hook -- so a file with a problem of its own fails with
 ``ProjectFileInvalid``, one validation-worded line per problem, before any image build starts
-or is waited on; the MCP tool runs it too for an address on its own host. A landed result is given once, unless the ``.vast``'s mtime has moved
-since, and the next call composes again: what it was composed from reaches past the
+or is waited on; the MCP tool runs it too for an address on its own host. A landed result is
+given once, unless the ``.vast``'s mtime has moved since, and the next call composes again: what it was composed from reaches past the
 ``.vast``, and the composition cache, which keys on all of it, decides what to recompute. The
 launcher therefore asks only when the file's content changes, not on every window focus. A
 search ``.vast`` previews one sample in it, marked ``search``. The config editor's Generate

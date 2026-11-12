@@ -121,6 +121,78 @@ def test_an_uninstalled_declared_plugin_lets_the_preview_install_it(tmp_path):
     check_before_composing(path)
 
 
+_PLUGIN_REFS = """\
+version: 7
+metadata:
+  name: tiers
+{plugins}configuration:
+- name: cell
+execution:
+  containers:
+    scenario:
+      resources:
+        cpu: 1
+  runs: 1
+  scenario_file: scenario.osc
+  generate:
+  - made_up_generator:
+      out: gen
+results_processing:
+  postprocessing:
+  - made_up_command
+"""
+
+
+def _plugin_refs_project(tmp_path, *, declare_plugins):
+    """A ``.vast`` naming a postprocessing command and an input generator nothing installs."""
+    (tmp_path / "scenario.osc").write_text(
+        "scenario test:\n    do serial:\n        wait elapsed(1s)\n")
+    vast = tmp_path / "refs.vast"
+    vast.write_text(_PLUGIN_REFS.format(
+        plugins="plugins:\n- myplug\n" if declare_plugins else ""))
+    return str(vast)
+
+
+def test_every_plugin_ref_a_declared_spec_may_provide_is_unchecked(tmp_path):
+    """Not only a variation: a postprocessing command and an input generator too resolve
+    only once composing installed the specs, so none of them stops the preview."""
+    from robovast.common.config_validation import check_before_composing
+    path = _plugin_refs_project(tmp_path, declare_plugins=True)
+
+    problems = {p["stage"]: p for p in _problems(path)["problems"]}
+    assert set(problems) == {"postprocessing", "generate"}, problems
+    for problem in problems.values():
+        assert problem["severity"] == "unchecked"
+        assert "preview_configurations" in problem["message"]
+    check_before_composing(path)
+
+
+def test_a_plugin_ref_a_staged_plugin_registers_is_no_problem(tmp_path):
+    from robovast.common.config_plugins import plugin_site_dir
+    dist = Path(plugin_site_dir(str(tmp_path))) / "myplug-0.1.0.dist-info"
+    dist.mkdir(parents=True)
+    (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: myplug\nVersion: 0.1.0\n")
+    (dist / "entry_points.txt").write_text(
+        "[robovast.postprocessing_commands]\nmade_up_command = myplug.post:Command\n"
+        "[robovast.input_generators]\nmade_up_generator = myplug.gen:Generator\n")
+    path = _plugin_refs_project(tmp_path, declare_plugins=True)
+
+    # Before composing; composing would import the staged plugin, which this one only names.
+    from robovast.common.config_validation import _problems_before_composing
+    assert _problems_before_composing(path)[1] == []
+
+
+def test_an_undeclared_plugin_ref_stops_the_preview_before_it_composes(tmp_path):
+    from robovast.common.config_validation import check_before_composing
+    from robovast.common.errors import ProjectFileInvalid
+    path = _plugin_refs_project(tmp_path, declare_plugins=False)
+
+    with pytest.raises(ProjectFileInvalid) as failed:
+        check_before_composing(path)
+    assert {p["stage"] for p in failed.value.problems} == {"postprocessing", "generate"}
+    assert "Unknown postprocessing plugin" in str(failed.value)
+
+
 def test_an_undeclared_variation_stops_the_preview_before_it_composes(tmp_path):
     from robovast.common.config_validation import check_before_composing
     from robovast.common.errors import ProjectFileInvalid
