@@ -318,8 +318,10 @@ Four rules make those answers trustworthy:
   the service's store holds, built and waited for when it is not
   (``ServiceBase._build_for_composition``, through the same ``_start_build_images`` hook
   ``start_campaign`` uses, so the campaign finds the image built); for a validation, the
-  stored one, or the build it starts or joins without waiting
-  (``ServiceBase._start_composition_builds``), which a query then refuses naming; for an exec
+  stored one, or the build it starts or joins without waiting once the checks that need no
+  image pass (``ServiceBase._start_composition_builds``, called through
+  ``validate_project_file``'s ``before_composing``), which a query then refuses naming -- or
+  why the build cannot start, which the query refuses with; for an exec
   or a description, the stored one or nothing. One that is not registered raises
   :class:`~robovast.common.errors.ImageNotBuilt` and is never answered from another image --
   in a process no service arranged, naming a preview through a service. A replay registers

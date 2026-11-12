@@ -2322,7 +2322,8 @@ class ServiceBase(RobovastInterface):
           (:meth:`_build_for_composition`; *on_stage* hears that it is building);
         * with *build* ``"start"`` (a validation), started or joined and not waited for, and
           mapped to the build, so a query naming it refuses saying it is being built and
-          where its log is;
+          where its log is -- or, where the build cannot start, mapped to why, so the query
+          refuses with that reason;
         * otherwise mapped to ``None``, so a query naming it refuses.
 
         No query is answered from another image.
@@ -2342,12 +2343,21 @@ class ServiceBase(RobovastInterface):
                 self._build_for_composition(vast_file, on_stage=on_stage)
                 images = self._stored_built_images(vast_file, campaign_id, required=True)
             elif missing and build == "start":
-                started = {b.tag: b.build_id for b in self._start_composition_builds(vast_file)}
-                # Read again: a build that was a cache hit, or just finished, is there now.
-                images = self._stored_built_images(vast_file, campaign_id)
-                for name in missing:
-                    if images.get(name) is None and started.get(name):
-                        images[name] = {"building": started[name]}
+                try:
+                    started = {b.tag: b.build_id
+                               for b in self._start_composition_builds(vast_file)}
+                except Exception as e:  # noqa: BLE001 - the query that needs it names it
+                    # No registry, the storage reserve: the validation reports it as the
+                    # simulator's unanswered question, beside the checks that need no image.
+                    for name in missing:
+                        images[name] = {"refused": str(e),
+                                        "next_step": getattr(e, "next_step", "") or ""}
+                else:
+                    # Read again: a build that was a cache hit, or just finished, is there now.
+                    images = self._stored_built_images(vast_file, campaign_id)
+                    for name in missing:
+                        if images.get(name) is None and started.get(name):
+                            images[name] = {"building": started[name]}
         token = set_built_images(images)
         try:
             yield images
@@ -4944,20 +4954,26 @@ class ServiceBase(RobovastInterface):
         tag with preview so the two reuse one warm container.
 
         A simulator that runs in the image the campaign builds is asked there. An image not
-        built yet is started building, or its running build joined, and not waited for: the
-        simulator's checks are then ``unchecked``, naming the build and its log, and the next
-        validation once it is built answers them.
+        built yet is started building, or its running build joined, once the checks that need
+        no image pass, and not waited for: the simulator's checks are then ``unchecked``,
+        naming the build and its log, and the next validation once it is built answers them.
+        A build that cannot start is the reason they are ``unchecked``.
         """
         from robovast.common.config_validation import validate_project_file
         with contextlib.ExitStack() as registered:
             try:
                 project = self._resolve_project(workspace_id, path)
-                # Around the world check too, so the build this starts is the one it names.
-                registered.enter_context(
-                    self._built_images_context(project.config_path, build="start"))
+
+                def start_builds():
+                    # Registered past the composition, so the world check asks the image, or
+                    # names the build, the composition did.
+                    registered.enter_context(
+                        self._built_images_context(project.config_path, build="start"))
+
                 with self._aux_runner_context(_preview_tag(workspace_id, path), project,
                                               hold=True):
-                    result = validate_project_file(project.config_path)
+                    result = validate_project_file(project.config_path,
+                                                   before_composing=start_builds)
             except Exception as e:  # noqa: BLE001 - editor sends in-progress YAML; never 500
                 return ValidationReport(
                     valid=False, world_checked=False if check_world else None,

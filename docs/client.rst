@@ -257,9 +257,10 @@ and reuses -- and answers once it is built; a failed build fails it, naming the 
 image log <build>``). ``vast workspace preview`` prints, on stderr, that the image is being
 built while it waits, as the web UI's launch bar shows it. For a search ``.vast`` it previews
 one sample and says that ``--filter`` does not apply to it.
-``validate`` does not wait: it starts the build, or joins the one running, and reports the
-simulator's checks as ``unchecked``, naming the build and ``vast image log <build>``; validating
-again once it is built answers them. A preview that failed is shown once, and the next one
+``validate`` does not wait: once the checks that need no image pass, it starts the build, or
+joins the one running, and reports the simulator's checks as ``unchecked``, naming the build and
+``vast image log <build>``, or why the build cannot start; validating again once it is built
+answers them. A preview that failed is shown once, and the next one
 composes again. The local ``vast configuration`` commands (``list``, ``info``,
 ``generate``, ``validate``, ``variation-points``) compose without a service, so for such a
 campaign they refuse, naming ``vast workspace preview`` as the command that builds the image
