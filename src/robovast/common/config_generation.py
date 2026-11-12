@@ -189,8 +189,9 @@ REPLAYED_BASE = {"replayed_base": True}
 def set_built_images(images):
     """Register ``{container name: {"ref", "identity"} or None}`` for this context.
 
-    ``ref`` is the concrete image a container is started from; ``identity`` the registry-free
-    name of the same bytes, which is what a message may carry. ``None`` for a container means
+    ``ref`` is the concrete image a container is started from; ``identity`` the name a message
+    carries: the store's registry-free identity outside a campaign, and in a campaign the ref
+    it pinned, which its records already name. ``None`` for a container means
     its image is not built. :data:`REPLAYED_BASE` is a replay whose source asked the simulator
     in the base image. Returns the ``Token`` like :func:`set_container_runner_factory`.
     """
@@ -1909,7 +1910,10 @@ COMPOSITION_ONLY_EXECUTION_KEYS = frozenset({"scenario_file", "run_files", "gene
 # (``_read_files``), both part of its identity; an entry from 12 carries neither.
 # 14: each configuration carries the simulator streams its recording leaves out
 # (``recording.ros2.left_out``); an entry from 13 has none, and its jobs would be refused.
-_CACHE_FORMAT_VERSION = 14
+# 15: a simulator whose container adds packages is asked in the campaign's built image; an
+# entry from 14 asked it in the base image, and composed without a service it answers a
+# campaign that is otherwise refused.
+_CACHE_FORMAT_VERSION = 15
 
 
 def _build_generate_cache_key(
@@ -1998,10 +2002,10 @@ def _build_generate_cache_key(
         key.add("image_pins", json.dumps(dict(image_pins), sort_keys=True))
 
     # The simulator's queries run in the campaign's built image (:func:`set_built_images`), so
-    # an entry composed against one build must never answer for another. By the ref a container starts from, which
-    # changes exactly when the image does and is the same in a preview and in the campaign
-    # started after it. Added only where a service registered its images, so a CLI
-    # composition's key is what it is without them.
+    # an entry composed against one build must never answer for another. By the ref a
+    # container starts from, which changes exactly when the image does and is the same in a
+    # preview and in the campaign started after it. Added only where a service registered its
+    # images, so a CLI composition's key is what it is without them.
     if built_images is not None:
         key.add("built_images", json.dumps(
             {name: (found or {}).get("ref") or (found or {}).get("replayed_base")
