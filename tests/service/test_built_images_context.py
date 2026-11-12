@@ -140,6 +140,34 @@ def test_an_exec_registers_an_unbuilt_image_as_not_built_and_builds_nothing(buil
     assert service.started == []
 
 
+def test_only_the_simulators_container_is_resolved(tmp_path, monkeypatch):
+    """An archived campaign's other containers may not resolve at all -- a role recorded by
+    tag only -- and nothing asks them: an exec into one must not fail over it."""
+    service = serving(tmp_path / "results", tmp_path / "workspaces")
+    (tmp_path / "scenario.osc").write_text("scenario nav:\n    do serial:\n        wait elapsed(1s)\n")
+    vast = tmp_path / "campaign.vast"
+    vast.write_text(textwrap.dedent("""\
+        version: 7
+        metadata: {name: built-image}
+        configuration:
+        - name: depot
+        execution:
+          mode: ros2
+          containers:
+            scenario: {python_packages: [example-scenario-package==1.0]}
+            simulation: {backend: roqsim, config: roqsim_scenes:depot}
+          runs: 1
+          scenario_file: scenario.osc
+        """))
+
+    def _unresolvable(*_args, **_kwargs):
+        raise ValueError("the campaign recorded only a tag for this role")
+
+    monkeypatch.setattr(service, "_resolve_exec_image", _unresolvable)
+    with service._built_images_context(str(vast), campaign_id="c-1") as images:
+        assert images == {}
+
+
 def test_a_preview_builds_an_unbuilt_image_and_says_so(building):
     service, vast = building()
     stages = []

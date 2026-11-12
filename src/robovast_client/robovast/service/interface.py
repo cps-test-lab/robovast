@@ -3985,7 +3985,8 @@ class RobovastInterface(ABC):
 
         A simulator whose container adds packages runs in the image the campaign builds, and
         is asked there: an image not built yet is built first, as :meth:`start_campaign`
-        builds it, and a failed build fails the validation with the build's id.
+        builds it, whatever ``check_world`` says, so the first validation of such a campaign
+        waits for that build; a failed build fails the validation with the build's id.
         """
 
     @abstractmethod

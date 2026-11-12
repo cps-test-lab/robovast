@@ -2423,11 +2423,17 @@ class ServiceBase(RobovastInterface):
                     f"or `vast image log {build.build_id}`")
 
     def _built_container_names(self, vast_file: str, campaign_id: str = "") -> list:
-        """The containers *vast_file*'s campaign builds an image for, as a run plans them."""
+        """The container whose built image *vast_file*'s simulator is asked in, if any.
+
+        Only the simulator's: that is the one a composition-time query names
+        (:func:`~robovast.common.simulators.simulator_image`), and resolving another
+        container's image -- an archived campaign's may not be resolvable at all -- would fail
+        an exec or a preview over a container nothing asks.
+        """
         from robovast.common.common import load_config
         from robovast.common.config import validate_config
-        from robovast.common.containers import plan_containers
-        from robovast.common.simulators import apply_backend
+        from robovast.common.execution import build_image_tag, is_build_image_ref
+        from robovast.common.simulators import simulator_image
         # Lenient for an archived campaign, strict for a workspace, as _resolve_exec_image is.
         # A file that does not validate builds nothing yet: validation reports it in its own
         # terms, and nothing composes far enough to ask its simulator.
@@ -2437,9 +2443,8 @@ class ServiceBase(RobovastInterface):
                                if campaign_id else validate_config(load_config(vast_file)))
         except Exception:  # noqa: BLE001 - reported by the check that reads the file
             return []
-        execution = apply_backend(campaign_config.execution.model_dump(),
-                                  os.path.dirname(os.path.abspath(vast_file)))
-        return [c.name for c in plan_containers(execution).containers if c.builds]
+        image = simulator_image(campaign_config.execution.model_dump())
+        return [build_image_tag(image)] if is_build_image_ref(image) else []
 
     @abstractmethod
     def _aux_runner_context(self, tag: str, project, *, hold: bool = False,
