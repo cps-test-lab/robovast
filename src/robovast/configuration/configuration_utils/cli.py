@@ -129,8 +129,8 @@ def validate(vast):
     strategy/extractor — whether installed or local ``./path.py:Class`` refs.
     Exits non-zero if any problem is found.
     """
-    from robovast.common.config_validation import \
-        validate_project_file  # pylint: disable=import-outside-toplevel
+    from robovast.common.config_validation import (  # pylint: disable=import-outside-toplevel
+        problem_line, validate_project_file)
 
     report = validate_project_file(vast)
 
@@ -145,13 +145,7 @@ def validate(vast):
 
     click.echo(click.style(f"✗ {len(problems)} problem(s) found:", fg="red"))
     for p in problems:
-        location = " ".join(filter(None, [
-            f"[{p['stage']}]" if p.get("stage") else None,
-            f"config={p['config']}" if p.get("config") else None,
-            f"field={p['field']}" if p.get("field") else None,
-        ]))
-        click.echo(f"  - {location}: {p.get('message', '')}" if location
-                   else f"  - {p.get('message', '')}")
+        click.echo(f"  - {problem_line(p)}")
     sys.exit(1)
 
 

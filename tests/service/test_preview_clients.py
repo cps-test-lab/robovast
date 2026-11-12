@@ -162,3 +162,67 @@ def test_the_mcp_tool_returns_the_preview_once_it_is_ready(monkeypatch):
 
     assert reply["configs"] == 1
     assert [c["name"] for c in reply["configurations"]] == ["depot"]
+
+
+# -- a file with a problem of its own is told at once, on every surface --------------------
+
+_NO_SCENARIO = """\
+version: 7
+metadata: {name: no-scenario}
+configuration:
+- name: depot
+execution:
+  runs: 1
+  scenario_file: missing.osc
+"""
+
+
+@pytest.fixture
+def no_scenario(tmp_path):
+    """A service over a ``.vast`` whose scenario file is missing, which builds nothing."""
+    from robovast.service.service_base import WorkspaceTarget
+    from tests.service.null_service import serving
+
+    vast = tmp_path / "campaign.vast"
+    vast.write_text(_NO_SCENARIO)
+    service = serving(tmp_path / "results", tmp_path / "workspaces")
+    service._resolve_project = (  # noqa: SLF001
+        lambda workspace_id, path: WorkspaceTarget(config_path=str(vast)))
+    service._built_images_context = lambda *a, **k: pytest.fail(  # noqa: SLF001
+        "a file with a problem of its own starts no build")
+    return service, str(vast)
+
+
+def test_the_cli_shows_a_files_own_problem(no_scenario, cli_service, monkeypatch):
+    service, _vast = no_scenario
+    monkeypatch.setattr("robovast.client.preview.time.sleep", lambda _s: None)
+    cli_service(service)
+    result = CliRunner().invoke(root_cli.workspace, ["preview", "ws-1"])
+    assert result.exit_code != 0
+    assert "[scenario_file] field=execution.scenario_file" in result.output
+    assert "missing.osc" in result.output
+
+
+def test_the_mcp_tool_shows_a_files_own_problem(no_scenario, monkeypatch):
+    from robovast.mcp_server import service_access
+    from robovast.mcp_server.plugins import authoring
+
+    service, _vast = no_scenario
+    monkeypatch.setattr(service_access, "service_client", lambda: service)
+    monkeypatch.setattr("robovast.client.preview.time.sleep", lambda _s: None)
+
+    with pytest.raises(PreviewFailed, match="missing.osc"):
+        authoring.preview_configurations("/sources/ws-1/campaign.vast")
+
+
+def test_the_mcp_tool_checks_a_host_file_before_composing(no_scenario, monkeypatch):
+    from robovast.common import config_generation
+    from robovast.common.errors import ProjectFileInvalid
+    from robovast.mcp_server.plugins import authoring
+
+    _service, vast = no_scenario
+    monkeypatch.setattr(config_generation, "generate_scenario_variations",
+                        lambda *a, **k: pytest.fail("a file with a problem composes nothing"))
+
+    with pytest.raises(ProjectFileInvalid, match="missing.osc"):
+        authoring.preview_configurations(vast)

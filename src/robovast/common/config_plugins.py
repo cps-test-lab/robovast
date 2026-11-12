@@ -768,19 +768,31 @@ def _reclaim_pre_venv_layout(vast_dir: str) -> None:
                 pass
 
 
-def staged_variation_type_names(vast_dir: str) -> set:
-    """Variation-type names the workspace's installed plugins register, without importing.
+def staged_entry_point_names(vast_dir: str, group: str) -> set:
+    """Names the workspace's installed plugins register in entry-point *group*, without
+    importing them.
 
-    For the one caller that must answer "is this variation name real?" while forbidden
-    from finding out the usual way: validation cannot lead ``sys.path`` with the workspace
-    and load the entry points, and :func:`ensure_workspace_plugins` would pip-install
-    anything not yet there. Reads distribution metadata straight out of the directory ---
-    see :func:`_staged_entry_points`.
+    For the caller that must answer "is this plugin name real?" while forbidden from finding
+    out the usual way: validation cannot lead ``sys.path`` with the workspace and load the
+    entry points, and :func:`ensure_workspace_plugins` would pip-install anything not yet
+    there. Reads distribution metadata straight out of the directory --- see
+    :func:`_staged_entry_points`.
 
-    Returns an empty set when nothing is installed or nothing registers such a type.
+    Returns an empty set when nothing is installed or nothing registers in *group*.
     """
     return {ep.name for ep in _staged_entry_points(plugin_site_dir(vast_dir))
-            if ep.group == "robovast.variation_types"}
+            if ep.group == group}
+
+
+def stages_plugins(vast_dir: str) -> bool:
+    """Whether the workspace holds an installed plugin registering any ``robovast.*`` group,
+    which composing it once leaves there."""
+    return _registers_plugins(plugin_site_dir(vast_dir))
+
+
+def staged_variation_type_names(vast_dir: str) -> set:
+    """Variation-type names the workspace's installed plugins register, without importing."""
+    return staged_entry_point_names(vast_dir, "robovast.variation_types")
 
 
 def ensure_workspace_plugins(vast_dir: str, specs, force: bool = False,

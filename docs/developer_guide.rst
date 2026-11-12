@@ -2533,10 +2533,14 @@ a structured problem so the editor's live validation never 500s on in-progress Y
 preview without the wait: ``ServiceBase`` composes the ``.vast`` on a thread of its own, keyed
 by workspace, path and ``max_configs``, and each call answers ``composing`` (with a
 ``StepProgress``, or the image build it waits on in ``stage``), ``ready`` (the preview) or
-``failed`` at once. A landed result is given once, unless the ``.vast``'s mtime has moved
-since, and the next call composes again: what it was composed from reaches past the
-``.vast``, and the composition cache, which keys on all of it, decides what to recompute. The
-launcher therefore asks only when the file's content changes, not on every window focus. A
+``failed`` at once. Either way the preview first runs
+``config_validation.check_before_composing`` -- the checks ``validate_project_file`` runs before
+its ``before_composing`` hook -- so a file with a problem of its own fails with
+``ProjectFileInvalid``, one validation-worded line per problem, before any image build starts
+or is waited on; the MCP tool runs it too for an address on its own host. A landed result is
+given once, unless the ``.vast``'s mtime has moved since, and the next call composes again:
+what it was composed from reaches past the ``.vast``, and the composition cache, which keys on
+all of it, decides what to recompute. The launcher therefore asks only when the file's content changes, not on every window focus. A
 search ``.vast`` previews one sample in it, marked ``search``. The config editor's Generate
 polls it through ``frontend/ui/src/lib/awaitPreview.ts`` and shows the stage while it runs.
 ``robovast.client.preview.await_preview`` polls it for ``vast workspace preview`` and the MCP

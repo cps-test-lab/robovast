@@ -4008,7 +4008,10 @@ class RobovastInterface(ABC):
         A simulator whose container adds packages runs in the image the campaign builds, and
         is asked there: an image not built yet is built first, the same content-addressed
         build :meth:`start_campaign` runs and then reuses, and a failed build fails the
-        preview with the build's id.
+        preview with the build's id. First come the checks :meth:`validate_project` runs before
+        it composes, which need no container: a file with a problem of its own fails the
+        preview at once with those problems, one line each as validation words them, and
+        starts no build.
 
         With ``wait=False`` the call never waits on the expansion: the first call starts
         it in the background and answers at once in state ``composing``, with ``stage``
