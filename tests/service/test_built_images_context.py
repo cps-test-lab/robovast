@@ -18,7 +18,8 @@ import pytest
 
 from robovast.common import config_generation
 from robovast.common.config_generation import REPLAYED_BASE, built_images
-from robovast.common.errors import ImageBuildFailed
+from robovast.common.errors import (CampaignConfigError, ImageBuildFailed,
+                                    ImageStoreUnavailable, InsufficientStorageError)
 from robovast.execution.backends import RunOptions
 from robovast.service.image_store import ImageBuildStore, ImageRef
 from robovast.service.interface import ImageBuildError, ImageBuildRef, ImageBuildStatus
@@ -330,6 +331,81 @@ def test_a_validation_while_the_build_runs_joins_it(building, monkeypatch):
 
     assert service.started == ["b-simulation"], "joined, not started a second time"
     assert any("is being built (build b-simulation)" in p.message for p in report.problems)
+
+
+def _refuse_the_registry(service, monkeypatch):
+    def _no_registry(*_args, **_kwargs):
+        raise CampaignConfigError("no image registry is configured for builds")
+    monkeypatch.setattr(service, "_start_build_images", _no_registry)
+    return "cannot be looked up or built here: no image registry is configured for builds"
+
+
+def _refuse_the_storage(service, monkeypatch):
+    def _full(_action):
+        raise InsufficientStorageError("Cannot build an image. Free space is below the reserve.",
+                                       next_step="vast service cache --clear")
+    monkeypatch.setattr(service, "_admit_storage", _full)
+    return "Free space is below the reserve. Next: vast service cache --clear"
+
+
+def _refuse_the_lookup(service, monkeypatch):
+    def _unreachable(_ref):
+        raise ImageStoreUnavailable("the image registry did not answer")
+    monkeypatch.setattr(service._image_store, "present", _unreachable)  # noqa: SLF001
+    return "cannot be looked up or built here: the image registry did not answer"
+
+
+@pytest.mark.requires_simulator
+@pytest.mark.parametrize("refuse", [_refuse_the_registry, _refuse_the_storage,
+                                    _refuse_the_lookup])
+def test_a_build_that_cannot_start_is_the_simulators_unchecked_question(
+        building, monkeypatch, refuse):
+    service, _vast_file = building()
+    said = refuse(service, monkeypatch)
+
+    report, _took = _validated(service)
+
+    assert service.started == []
+    assert report.valid is False
+    assert report.world_checked is False
+    unchecked = [p for p in report.problems if p.severity == "unchecked"]
+    assert [p.stage for p in unchecked] == ["generation"], report.problems
+    assert said in unchecked[0].message
+    assert "image for container 'simulation'" in unchecked[0].message
+
+
+def test_a_defect_in_starting_the_build_is_not_reported_as_a_refusal(building, monkeypatch):
+    service, _vast_file = building()
+
+    def _defect(*_args, **_kwargs):
+        raise AttributeError("'NoneType' object has no attribute 'tag'")
+    monkeypatch.setattr(service, "_start_build_images", _defect)
+
+    report, _took = _validated(service)
+
+    assert report.valid is False
+    assert [p.stage for p in report.problems] == ["error"], report.problems
+    assert "has no attribute 'tag'" in report.problems[0].message
+    assert "cannot be looked up or built" not in report.problems[0].message
+
+
+def test_a_file_with_a_problem_of_its_own_reports_it_and_starts_no_build(
+        building, monkeypatch):
+    service, vast_file = building()
+    with open(vast_file, encoding="utf-8") as handle:
+        text = handle.read()
+    with open(vast_file, "w", encoding="utf-8") as handle:
+        handle.write(text.replace("scenario_file: scenario.osc", "scenario_file: missing.osc"))
+    _refuse_the_registry(service, monkeypatch)
+    monkeypatch.setattr(service, "_built_images_context", lambda *a, **k: pytest.fail(
+        "a file with a problem of its own composes nothing and starts no build"))
+
+    report, _took = _validated(service)
+
+    assert report.valid is False
+    assert report.world_checked is False
+    assert [p.stage for p in report.problems] == ["scenario_file"], report.problems
+    assert "missing.osc" in report.problems[0].message
 
 
 # -- a replay asks the simulator in the image its source asked it in ------------------------

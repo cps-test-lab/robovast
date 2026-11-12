@@ -2537,7 +2537,8 @@ by workspace, path and ``max_configs``, and each call answers ``composing`` (wit
 since, and the next call composes again: what it was composed from reaches past the
 ``.vast``, and the composition cache, which keys on all of it, decides what to recompute. The
 launcher therefore asks only when the file's content changes, not on every window focus. A
-search ``.vast`` previews one sample in it, marked ``search``.
+search ``.vast`` previews one sample in it, marked ``search``. The config editor's Generate
+polls it through ``frontend/ui/src/lib/awaitPreview.ts`` and shows the stage while it runs.
 ``robovast.client.preview.await_preview`` polls it for ``vast workspace preview`` and the MCP
 ``preview_configurations`` tool, so both say what a preview waits on; the tool stops after
 ``_PREVIEW_WAIT_S`` and answers ``composing`` with the call to repeat, and the repeated call

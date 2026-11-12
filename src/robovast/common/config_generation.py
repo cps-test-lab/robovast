@@ -193,7 +193,8 @@ def set_built_images(images):
     carries: the store's registry-free identity outside a campaign, and in a campaign the ref
     it pinned, which its records already name. ``None`` for a container means
     its image is not built, ``{"building": build_id}`` that it is being built, and
-    ``{"unresolved": reason}`` that a campaign's record does not resolve it.
+    ``{"unresolved": reason}`` that a campaign's record does not resolve it, and
+    ``{"refused": reason, "next_step": step}`` that it cannot be looked up or built here.
     :data:`REPLAYED_BASE` is a replay whose source asked the simulator
     in the base image. Returns the ``Token`` like :func:`set_container_runner_factory`.
     """
@@ -249,6 +250,11 @@ def _resolve_built_spec(spec):
             "and the simulator is asked in the image the campaign runs",
             next_step=f"follow it with get_image_build_log(build_id={build_id!r}) or `vast "
                       f"image log {build_id}`, and validate again once it is built")
+    if found and found.get("refused"):
+        raise ImageNotBuilt(
+            f"the campaign's image for container {name!r}, which the simulator is asked in, "
+            f"cannot be looked up or built here: {found['refused']}",
+            next_step=found.get("next_step") or "")
     if found and found.get("unresolved"):
         raise ValueError(
             f"the image this campaign ran container {name!r} in cannot be resolved from its "

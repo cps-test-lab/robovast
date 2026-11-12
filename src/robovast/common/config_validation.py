@@ -1548,11 +1548,14 @@ def _plugins_problems(raw, vast_dir):
     return problems
 
 
-def validate_project_file(config_path):
+def validate_project_file(config_path, *, before_composing=None):
     """Validate a ``.vast`` project file, collecting *all* problems at once.
 
     Args:
         config_path: Path to the ``.vast`` file.
+        before_composing: Called once the checks that need no container pass, before the
+            file is composed -- where a service starts the build of the image composition asks
+            the simulator in, so a file with a problem of its own starts none.
 
     Returns:
         ``{valid, problems, configs, runs_per_config, total_trials}`` where
@@ -1617,6 +1620,8 @@ def validate_project_file(config_path):
                 "configs": 0, "runs_per_config": 0, "total_trials": 0, "jobs": 0}
 
     # No problems — compute the same counts as ``vast config info``.
+    if before_composing is not None:
+        before_composing()
     if raw.get("search"):
         return _search_composition_report(config_path)
     return _batch_composition_report(config_path)
@@ -1641,7 +1646,8 @@ def _image_not_built_report(exc, *, jobs=False):
 
     The simulator runs in the image the campaign builds (``config_generation.
     _resolve_built_spec``), and it is not available here: a validation through a service has
-    started its build and not waited for it, or no service arranged the composition at all.
+    started its build and not waited for it, or could not start it, or no service arranged the
+    composition at all.
     The message says which, and what to do. The file is not composed without the
     simulator's answers, since which streams a world renders only on demand and which files it
     is made of are part of what the configurations are; it is reported unchecked, naming where

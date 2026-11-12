@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useActiveView } from '@/lib/activeView'
 import { robovast, type PreviewResponse, type ValidationReport } from '@/lib/robovastClient'
+import { awaitPreview, composingLabel } from '@/lib/awaitPreview'
 import {
   configDirUrl,
   configFilesKey,
@@ -30,6 +31,9 @@ export function useConfigEditor(source: ConfigSource) {
   const [validation, setValidation] = useState<ValidationReport | null>(null)
   const [preview, setPreview] = useState<PreviewResponse | null>(null)
   const [previewErr, setPreviewErr] = useState<string | null>(null)
+  // What a running Generate waits on, such as the build of the campaign's image.
+  const [previewStage, setPreviewStage] = useState<string | null>(null)
+  const generating = useRef<AbortController | null>(null)
   const [selectedCfg, setSelectedCfg] = useState(0)
   const active = useActiveView()
 
@@ -67,21 +71,44 @@ export function useConfigEditor(source: ConfigSource) {
     setValidation(null)
     setPreview(null)
     setPreviewErr(null)
+    setPreviewStage(null)
     setSelectedCfg(0)
   }, [sourceKey])
+
+  // A preview, and a Generate still polling, are about one .vast: selecting another drops the
+  // one and stops the other.
+  useEffect(() => {
+    setPreview(null)
+    setPreviewErr(null)
+    setSelectedCfg(0)
+    return () => generating.current?.abort()
+  }, [sourceKey, selected])
 
   const { content, saving, onChange, writable, loadError, saveError } = useEditableFile(source, selected, async () => {
     setValidation(await robovast.validateProject(source.id, selected))
   }, readOnly)
 
+  // Polled in the background, as the launch bar's preview is, so a preview that first builds the
+  // campaign's image says so while it runs.
   const generate = useMutation({
-    mutationFn: () => robovast.previewConfigurations(source.id, 0, selected),
+    mutationFn: () => {
+      const controller = new AbortController()
+      generating.current = controller
+      setPreviewStage(null)
+      return awaitPreview(robovast.previewConfigurations, source.id, selected, {
+        signal: controller.signal,
+        onComposing: (answer) => setPreviewStage(composingLabel(answer)),
+      })
+    },
     onSuccess: (p) => {
       setPreview(p)
       setPreviewErr(null)
       setSelectedCfg(0)
     },
-    onError: (e) => setPreviewErr((e as Error).message),
+    onError: (e) => {
+      if ((e as Error).name !== 'AbortError') setPreviewErr((e as Error).message)
+    },
+    onSettled: () => setPreviewStage(null),
   })
 
   const allNames = useMemo(() => files.data?.entries ?? [], [files.data])
@@ -106,6 +133,7 @@ export function useConfigEditor(source: ConfigSource) {
     generate,
     preview,
     previewErr,
+    previewStage,
     selectedCfg,
     setSelectedCfg,
     readOnly,
