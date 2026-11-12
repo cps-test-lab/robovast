@@ -127,6 +127,19 @@ To read it back later, ``vast service token`` prints the URL, the token and the
 three ways to connect (``-q`` for the token alone). Each cluster mints its own token, so
 the URL it names is the only one that token opens.
 
+**A certificate held in a TLS secret** (``--tls-secret``) is renewed by nobody in the
+cluster, and one from Let's Encrypt lasts 90 days. ``make renew-tls`` renews it by DNS-01:
+it reads the host and the secret from the service's Ingress, runs certbot in a container,
+which shows the value for the ``_acme-challenge`` TXT record and waits until you have set it
+at your DNS provider, and writes the new certificate into the secret once you confirm; the
+ingress controller serves it without a restart. ``make renew-tls CHECK=1`` only reports the
+served certificate and exits 1 within 30 days of its expiry, for a reminder. It needs
+``docker`` and ``openssl``. The kubeconfig context and the Kubernetes namespace of the
+service are ``CONTEXT=`` and ``NAMESPACE=``, or ``ROBOVAST_KUBE_CONTEXT`` and
+``ROBOVAST_KUBE_NAMESPACE`` (unset: the active context, and ``default``); it reads
+``ROBOVAST_TLS_EMAIL`` and ``ROBOVAST_TLS_DIR`` too (``.env.example``). A service published
+with ``--issuer`` is renewed by cert-manager, and the target refuses it.
+
 Setup also stamps the **timezone of the host it ran on** into the service pod's ``TZ``,
 read from ``/etc/localtime``'s symlink target (or ``/etc/timezone``) and validated against
 that host's tz database first. Campaign ids are minted from wall-clock time in the process

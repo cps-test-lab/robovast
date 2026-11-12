@@ -1841,7 +1841,7 @@ def _cluster_env(namespace, config_name, config_kwargs, kube_context=None,
     in-cluster there is no kubeconfig context to fall back on.
     """
     import json
-    env = [{"name": "ROBOVAST_NAMESPACE", "value": namespace}]
+    env = [{"name": "ROBOVAST_KUBE_NAMESPACE", "value": namespace}]
     if config_name:
         env.append({"name": "ROBOVAST_CLUSTER_CONFIG_NAME", "value": config_name})
         env.append({"name": "ROBOVAST_CLUSTER_CONFIG_KWARGS",

@@ -26,7 +26,8 @@ Where recordings live, relative to the campaign directory:
 * a run's scenario recording: ``<config>/<run>/rosbag2/`` (the last attempt, when a recorder
   that restarted left several ``rosbag2*`` directories);
 * a run's simulator recording: ``<config>/<run>/roqsim_bag/``, the one mcap roqsim writes,
-  beside the scenario recording or -- for a stepped run with no ROS at all -- instead of it;
+  beside the scenario recording or -- for a stepped run with no ROS at all -- instead of it,
+  never reset while it records (:class:`~robovast_decode.decode.SimulatorReset`);
 * a job's wall-time infrastructure recording: ``_jobs/.../job-N/logs/rosout_bag/``, the job
   found through ``_transient/job_links.yaml``, which is written before a job starts (the
   ``job`` symlink beside a run appears only once it ends). A job of one run gives its rows
@@ -411,8 +412,11 @@ def _build_run(campaign_dir: str, campaign_id: str, run: Run, groups: Dict[str, 
     file_tables = _build_files(campaign_dir, campaign_id, run, wanted_tables, force,
                                report, known_tables,
                                reserved=run_bag_tables | DERIVED_TABLES, catalog=catalog)
-    if wanted_tables is not None:
-        _record_absent(campaign_dir, run, wanted_tables, report, sizes, bag_sources,
+    # A whole build names no table, and what failed still replaces what an earlier build wrote.
+    absent = (wanted_tables if wanted_tables is not None
+              else [t for t, failed in report.failed.items() if run_key in failed])
+    if absent:
+        _record_absent(campaign_dir, run, absent, report, sizes, bag_sources,
                        known=run_bag_tables | file_tables | {RECORDING_TABLE},
                        catalog=catalog)
 

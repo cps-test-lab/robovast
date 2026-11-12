@@ -32,6 +32,7 @@ import pathlib
 
 import pytest
 
+from tests.examples.nav_search_fixtures import write_scenario_config
 from tests.robovast_data.conftest import write_store
 
 EXAMPLE = pathlib.Path(__file__).resolve().parents[2] / "configs" / "examples" / "nav_search"
@@ -52,6 +53,7 @@ def _run_dir(tmp_path, *, clearance=True, collision=True, behaviours=False):
     run = campaign / "c0" / "0"
     run.mkdir(parents=True)
     write_store(campaign, {"c0": {"runs": {0: "passed"}}})
+    write_scenario_config(campaign / "c0", goal=(2.5, 0.0))
     (run / "poses.csv").write_text(
         "timestamp,frame,position.x,position.y\n"
         "0.0,base_link_gt,-2.5,0.0\n"

@@ -598,7 +598,7 @@ export function fixtureService({ loginHtml }) {
         how_to_change: 'Set the variable in the service environment and restart it.',
         settings: [
           make('ServiceSetting', { key: 'ROBOVAST_BACKEND', group: 'execution', value: 'kubernetes', default: 'local', is_set: true, description: 'Where runs execute.' }),
-          make('ServiceSetting', { key: 'ROBOVAST_NAMESPACE', group: 'execution', value: 'default', default: 'default', is_set: false, description: 'The namespace runs are scheduled in.' }),
+          make('ServiceSetting', { key: 'ROBOVAST_KUBE_NAMESPACE', group: 'execution', value: 'default', default: 'default', is_set: false, description: 'The namespace runs are scheduled in.' }),
           make('ServiceSetting', { key: 'ROBOVAST_RESULTS_DIR', group: 'storage', value: '/data/results', default: '/data/results', is_set: false, description: 'Where campaign results live.' }),
         ],
       }))

@@ -381,6 +381,9 @@ def preview_search_sample(vast_file: str, sample_size: int = 0, *,
         "configs": campaign_data.get("configs", []),
         "runs_per_config": campaign_data.get("execution", {}).get("runs", 1),
         "runs_per_job": declared_runs_per_job(campaign_data.get("execution", {})),
+        # The plan a preview reports is computed from the composed configurations and the
+        # execution block they were composed under, as the backend computes it.
+        "execution": campaign_data.get("execution", {}),
         # Carried so the search arm of the pre-flight report can say which derived inputs
         # went unproduced, exactly as the batch arm reads it off the composition. Without
         # it a fix to one arm silently misses the other.

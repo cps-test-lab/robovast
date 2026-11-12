@@ -6,7 +6,7 @@
 ``env`` parameter is the WHOLE environment, not an addition to it -- ``service_manifests``
 builds the standard set only when ``env is None``. Adding the job node pool by passing a
 one-element list therefore *replaced* ``ROBOVAST_CLUSTER_CONFIG_NAME``,
-``ROBOVAST_CLUSTER_CONFIG_KWARGS``, ``ROBOVAST_KUBE_CONTEXT`` and ``ROBOVAST_NAMESPACE``.
+``ROBOVAST_CLUSTER_CONFIG_KWARGS``, ``ROBOVAST_KUBE_CONTEXT`` and ``ROBOVAST_KUBE_NAMESPACE``.
 
 Setup still reported success. The service came up, answered ``get_service_info``, and failed
 every campaign and every ``exec_in_container`` with "cluster config not configured
@@ -16,12 +16,15 @@ a message pointing at the operator's procedure rather than at the deploy that ca
 So these tests assert the *whole* environment rather than only the variable being added.
 """
 
+import pytest
+
+from robovast.execution.cluster_execution.cluster_service import ClusterService
 from robovast.execution.cluster_execution.node_placement import JOB_NODE_POOL_ENV
 from robovast.execution.cluster_execution.service_deploy import _cluster_env
 
 #: What an in-cluster service cannot work without. ROBOVAST_CLUSTER_CONFIG_NAME is the one
 #: that failed loudly; the others fail in narrower ways and are no less required.
-REQUIRED = ("ROBOVAST_NAMESPACE", "ROBOVAST_CLUSTER_CONFIG_NAME",
+REQUIRED = ("ROBOVAST_KUBE_NAMESPACE", "ROBOVAST_CLUSTER_CONFIG_NAME",
             "ROBOVAST_CLUSTER_CONFIG_KWARGS", "ROBOVAST_KUBE_CONTEXT")
 
 
@@ -75,8 +78,6 @@ def test_the_headroom_is_carried_from_the_operator_and_checked_at_deploy(monkeyp
     """The per-node reserve is read by the service from its own environment, so it has to be
     put there: from the operator's `.env`, like the bootstrap, and stated even when unnamed.
     A value the service could not parse refuses the deploy rather than every admission."""
-    import pytest
-
     from robovast.execution.cluster_execution.cluster_capacity import (HEADROOM_CPU_ENV,
                                                                        HEADROOM_MEMORY_ENV)
 
@@ -109,7 +110,7 @@ def test_a_deploy_that_names_no_config_still_carries_the_rest():
     and it must not be confused with the failure above -- there the name was DROPPED."""
     env = {e["name"]: e["value"] for e in _cluster_env("default", None, {}, "local")}
     assert "ROBOVAST_CLUSTER_CONFIG_NAME" not in env
-    assert env["ROBOVAST_NAMESPACE"] == "default"
+    assert env["ROBOVAST_KUBE_NAMESPACE"] == "default"
     assert env["ROBOVAST_KUBE_CONTEXT"] == "local"
 
 
@@ -121,3 +122,10 @@ def test_an_unset_pool_is_stated_as_empty_rather_than_left_unstated(monkeypatch)
     monkeypatch.delenv(JOB_NODE_POOL_ENV, raising=False)
     assert job_node_pool() == {}
     assert _env(job_node_labels={})[JOB_NODE_POOL_ENV] == ""
+
+
+def test_the_namespace_under_its_former_name_is_refused(monkeypatch):
+    """A namespace set as ROBOVAST_NAMESPACE would otherwise be passed over for `default`."""
+    monkeypatch.setenv("ROBOVAST_NAMESPACE", "robovast")
+    with pytest.raises(ValueError, match="ROBOVAST_KUBE_NAMESPACE"):
+        ClusterService(reap_on_start=False)

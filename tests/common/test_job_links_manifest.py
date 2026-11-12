@@ -39,7 +39,7 @@ def _count_manifest_reads(monkeypatch) -> list:
 def test_the_runs_of_a_packed_job_share_its_target(tmp_path):
     """Several runs in one job ran on one host in one process: one job directory, linked
     from each run, which is what a reader of ``<run>/job/sysinfo.yaml`` should find."""
-    jobs = build_jobs([{"name": "cfg"}], 3, runs_per_job=2)
+    jobs = build_jobs([{"name": "cfg"}], 3, runs_per_job=2, keys={"cfg": "pod"})
     write_job_links_manifest(str(tmp_path / "_transient"), jobs, "batch-0")
     links = read_job_links(str(tmp_path))
     assert links == {"cfg/0/job": "../../_jobs/batch-0/job-0",

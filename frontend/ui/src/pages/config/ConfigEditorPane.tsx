@@ -157,6 +157,19 @@ export function ConfigEditorPane({ editor }: { editor: ConfigEditor }) {
   )
 }
 
+/** The report's per-group statements, one line each, as the service wrote them: which
+ * configurations share a pod and why one keeps its own. The CLI and the MCP tools show the
+ * same lines. */
+export function PodLines({ pods }: { pods: string[] }) {
+  return (
+    <Typography variant="caption" color="text.secondary" component="div">
+      {pods.map((line) => (
+        <div key={line}>{line}</div>
+      ))}
+    </Typography>
+  )
+}
+
 function ValidationPanel({ report, readOnly }: { report: ValidationReport | null; readOnly?: boolean }) {
   if (!report) {
     // Nothing at all when read-only: there is no edit to validate, and a line explaining the
@@ -180,6 +193,7 @@ function ValidationPanel({ report, readOnly }: { report: ValidationReport | null
           {report.total_trials} trials
           {report.jobs !== report.total_trials ? ` · ${report.jobs} jobs` : ''}
         </Alert>
+        {report.pods.length > 0 && <PodLines pods={report.pods} />}
         {report.problems.length > 0 && <ProblemList problems={report.problems} />}
       </Stack>
     )

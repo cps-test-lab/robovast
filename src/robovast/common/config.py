@@ -1132,14 +1132,14 @@ class ExecutionConfig(BaseModel):
     # Maximum wall-clock time in seconds for one run. The cluster enforces it on the job
     # (a Job's activeDeadlineSeconds), as this many times the runs the job holds.
     timeout: Optional[int] = None
-    # How many of a configuration's runs one job holds, executed one after another in one
-    # simulator process that is reset between them. 1, the default, is the right value for
-    # nearly every campaign: a job is one run, with its own pod, process and bring-up.
-    # Raise it only for a stepped in-process simulator (`mode: base`) whose run is cheap
-    # beside a job's bring-up -- MuJoCo trials of a few seconds. Refused with any other mode:
-    # under `ros2` the simulator is another container, which cannot be reset per run or told
-    # where each run writes, and `auto` becomes `ros2` inside any image that has ros2. A job
-    # never holds more than one configuration.
+    # How many runs one job holds, executed one after another in one simulator process that
+    # is reset between them. 1, the default, is the right value for nearly every campaign: a
+    # job is one run, with its own pod, process and bring-up. Raise it only for a stepped
+    # in-process simulator (`mode: base`) whose run is cheap beside a job's bring-up -- MuJoCo
+    # trials of a few seconds. Refused with any other mode: under `ros2` the simulator is
+    # another container, which cannot be reset per run or told where each run writes, and
+    # `auto` becomes `ros2` inside any image that has ros2. A job holds runs of configurations
+    # whose pod would be the same; one that stages a file of its own keeps jobs of its own.
     runs_per_job: int = 1
     # Simulation backend passed to scenario_execution as ``--simulation <module:Class>``.
     # Required by scenarios using wait_for_simulation_end() (e.g. MagBotSim).
@@ -2307,9 +2307,9 @@ class RepetitionsConfig(BaseModel):
             #   - a simulator override document is written per CONFIG, so every repetition of a
             #     cell would read one seed and stop varying -- worse than an unseeded run,
             #     which draws its own;
-            #   - the simulator's own episode counter cannot stand in for it: a job's runs
+            #   - the simulator's own run counter cannot stand in for it: a job's runs
             #     share one simulator process and the next job starts a new one, so the
-            #     episode counts within a job and "episode i" is not "repetition i".
+            #     counter counts within a job and "the job's run i" is not "repetition i".
             #
             # What it needs is a per-run seed on the execution backend. Without one, saying
             # 'paired' would claim a comparison the data cannot support.

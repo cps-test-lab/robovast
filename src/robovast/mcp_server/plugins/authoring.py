@@ -21,6 +21,7 @@ these tools create one, put files in it (through the address space), check the `
 they wrote, and see what configurations it would expand to. Nothing here starts work.
 """
 
+import os
 import json
 import logging
 
@@ -236,10 +237,11 @@ def validate_project(address: str, check_world: bool = True,
 
     Returns:
         ``{valid, world_checked, scenario_checked, configs, runs_per_config,
-        total_trials, jobs, problems, source}`` -- ``jobs`` is what the trials dispatch as,
-        one per trial unless ``execution.runs_per_job`` packs a configuration's runs -- each
-        problem ``{stage, config, field, message, severity}`` with ``severity`` one of ``error`` /
-        ``advice`` / ``warning`` / ``unchecked``. A
+        total_trials, jobs, pods, problems, source}`` -- ``jobs`` is what the trials dispatch
+        as, one per trial unless ``execution.runs_per_job`` packs runs, and ``pods`` then says
+        per group which configurations share a pod and why one keeps its own -- each
+        problem ``{stage, config, field, message, severity}`` with ``severity`` one of
+        ``error`` / ``advice`` / ``warning`` / ``unchecked``. A
         clean campaign returns no world or scenario entry.
     """
     from robovast.common.config_validation import validate_project_file
@@ -301,12 +303,13 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
             gives. ``truncated`` marks a shortened list.
 
     Returns:
-        ``{configs, runs_per_config, total_trials, jobs, configurations, truncated,
+        ``{configs, runs_per_config, total_trials, jobs, pods, configurations, truncated,
         aux_containers, source}``, each configuration ``{name, parameters}``; or ``{error}``.
+        ``pods`` is one sentence per pod group when ``execution.runs_per_job`` packs.
     """
     from robovast.common.common import load_config
     from robovast.common.config_generation import generate_scenario_variations
-    from robovast.execution.jobs import declared_runs_per_job, job_count
+    from robovast.common.execution import planned_job_count, planned_pod_statements
     from robovast.service.project_push import _resolve_workspace_id
     target = _address_route(address)
     if target is None:
@@ -318,13 +321,13 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
             sample = preview_search_sample(address)
             configs = sample["configs"]
             runs = sample["runs_per_config"]
-            packing = sample["runs_per_job"]
+            execution = sample["execution"]
         else:
             campaign_data = generate_scenario_variations(
                 variation_file=address, output_dir=None)
             configs = campaign_data["configs"]
-            runs = campaign_data.get("execution", {}).get("runs", 1)
-            packing = declared_runs_per_job(campaign_data.get("execution", {}))
+            execution = campaign_data.get("execution", {})
+            runs = execution.get("runs", 1)
             aux = list(campaign_data.get("aux_containers") or [])
         items = [{"name": c["name"], "parameters": c.get("config", {})}
                  for c in configs]
@@ -333,7 +336,10 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
             "configs": len(configs),
             "runs_per_config": runs,
             "total_trials": len(configs) * runs,
-            "jobs": job_count(len(configs), runs, packing),
+            "jobs": planned_job_count(execution, configs, runs,
+                                      os.path.dirname(os.path.abspath(address))),
+            "pods": planned_pod_statements(execution, configs, runs,
+                                           os.path.dirname(os.path.abspath(address))),
             "configurations": items[:limit] if truncated else items,
             "truncated": truncated,
             "aux_containers": aux,
@@ -350,6 +356,7 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
         "runs_per_config": resp.runs_per_config,
         "total_trials": resp.total_trials,
         "jobs": resp.jobs,
+        "pods": resp.pods,
         "configurations": [{"name": c.name, "parameters": c.parameters}
                            for c in resp.configurations],
         "truncated": resp.truncated,

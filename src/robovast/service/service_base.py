@@ -63,7 +63,6 @@ from robovast.common.campaign_data import (LaunchImages, campaign_has_runs,
                                            read_campaign_results_bytes)
 from robovast.common.errors import InsufficientStorageError
 from robovast.common.store import read_campaign_created_at, read_campaign_description
-from robovast.execution.jobs import declared_runs_per_job, job_count
 from robovast.execution.control_server import (STOP_RUNS,
                                                ControllerState, Phase, Status, failure_detail,
                                                is_terminal, stop_checker)
@@ -5002,6 +5001,7 @@ class ServiceBase(RobovastInterface):
         progress lines."""
         from robovast.common.common import load_config
         from robovast.common.config_generation import generate_scenario_variations
+        from robovast.common.execution import planned_job_count, planned_pod_statements
         aux_containers: list = []
         # Both branches compose, so both need whatever the service uses to reach a variation's
         # helper image -- and a search .vast reaches it through the same variation loop.
@@ -5020,6 +5020,7 @@ class ServiceBase(RobovastInterface):
                     raise ValueError(str(e)) from e
                 configs = sample["configs"]
                 runs = sample["runs_per_config"]
+                execution = sample["execution"]
             else:
                 try:
                     campaign_data = generate_scenario_variations(
@@ -5028,7 +5029,8 @@ class ServiceBase(RobovastInterface):
                 except Exception as e:  # noqa: BLE001 - surface resolution errors as 400
                     raise ValueError(str(e)) from e
                 configs = campaign_data["configs"]
-                runs = campaign_data.get("execution", {}).get("runs", 1)
+                execution = campaign_data.get("execution") or {}
+                runs = execution.get("runs", 1)
                 aux_containers = list(campaign_data.get("aux_containers") or [])
         from robovast.common.common import convert_dataclasses_to_dict
         remotes = _variation_remotes()
@@ -5051,8 +5053,8 @@ class ServiceBase(RobovastInterface):
         truncated = bool(max_configs) and len(configs) > max_configs
         return PreviewResponse(configs=len(configs), runs_per_config=runs,
                                total_trials=len(configs) * runs,
-                               jobs=job_count(len(configs), runs, declared_runs_per_job(
-                                   campaign_data.get("execution") or {})),
+                               jobs=planned_job_count(execution, configs, runs, vast_dir),
+                               pods=planned_pod_statements(execution, configs, runs, vast_dir),
                                configurations=items, truncated=truncated,
                                aux_containers=aux_containers,
                                # The config view is declared in the same file this expanded, and

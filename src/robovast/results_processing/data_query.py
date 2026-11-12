@@ -445,7 +445,7 @@ _TABLE_DESCRIPTIONS = {
         "no row here was produced by a step that recorded no provenance."),
     ("campaign", "job"): (
         "One row per execution job holding that job's host record; a job is one run unless "
-        "execution.runs_per_job packed a configuration's runs into it, which then share the row. "
+        "execution.runs_per_job packed several into it, which then share the row. "
         "sysinfo_json is TEXT holding JSON: sysinfo_json::JSON ->> 'cpu_name', ->> "
         "'available_cpus', ->> 'platform'. ->> yields TEXT, so cast before comparing a number: "
         "CAST(sysinfo_json::JSON ->> 'available_cpus' AS DOUBLE). job_dir is campaign-relative. "
