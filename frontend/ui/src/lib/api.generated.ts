@@ -3940,7 +3940,8 @@ export interface components {
          *     saying why; the counts and ``configurations`` are empty in every state but ``ready``.
          *     ``stage`` says what a ``composing`` preview waits on before it can compose: the build of
          *     the image the campaign's simulator runs in, which the preview builds when it is not built
-         *     yet.
+         *     yet. ``search`` marks a search ``.vast``, whose configurations are one sample of what it
+         *     draws while it runs: their names are not ones a config filter can select.
          */
         PreviewResponse: {
             /** Aux Containers */
@@ -3974,6 +3975,11 @@ export interface components {
              * @default 0
              */
             runs_per_config: number;
+            /**
+             * Search
+             * @default false
+             */
+            search: boolean;
             /**
              * Stage
              * @default

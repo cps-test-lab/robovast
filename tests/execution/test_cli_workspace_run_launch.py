@@ -220,9 +220,9 @@ class _CheckingClient(_Client):
                       "check_world": check_world}
         return self.report
 
-    def preview_configurations(self, workspace_id, max_configs=0, path=""):
+    def preview_configurations(self, workspace_id, max_configs=0, path="", wait=True):
         self.asked = {"workspace_id": workspace_id, "max_configs": max_configs,
-                      "path": path}
+                      "path": path, "wait": wait}
         return self.preview
 
 

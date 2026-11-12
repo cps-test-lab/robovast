@@ -2534,7 +2534,11 @@ preview without the wait: ``ServiceBase`` composes the ``.vast`` on a thread of 
 by workspace, path and ``max_configs``, and each call answers ``composing`` (with a
 ``StepProgress``, or the image build it waits on in ``stage``), ``ready`` (the preview) or
 ``failed`` at once; a ``ready`` result is served until the ``.vast``'s mtime moves, and a
-``failed`` one once, so the next call composes again. Both it and a campaign's ``variation`` phase read their step
+``failed`` one once, so the next call composes again. A search ``.vast`` previews one sample
+in it, marked ``search``. ``robovast.client.preview.await_preview`` polls it for ``vast
+workspace preview`` and the MCP ``preview_configurations`` tool, so both say what a preview
+waits on; the tool stops after ``_PREVIEW_WAIT_S`` and answers ``composing`` with the call to
+repeat. Both it and a campaign's ``variation`` phase read their step
 counter from the composition progress line through ``config_generation.parse_composition_step``,
 which a campaign publishes as ``Status.variation``. The launcher checks its filter against the names with
 ``frontend/ui/src/lib/configFilter.ts``, which matches as ``filter_configs_by_name`` does.

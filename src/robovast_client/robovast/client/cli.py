@@ -632,16 +632,21 @@ def workspace_preview(workspace, vast_path, max_configs):  # pylint: disable=red
 
     The answer to "how many configurations will this be" — asked before a launch rather
     than discovered from a campaign that turned out to be ten times the intended size.
+    When the campaign's simulator runs in the image it builds and that is not built yet,
+    the preview builds it first, and says so while it waits.
     """
     try:
+        from robovast.client.preview import \
+            await_preview  # pylint: disable=import-outside-toplevel
         from robovast.service.project_push import \
             _resolve_workspace_id  # pylint: disable=import-outside-toplevel
 
         with service_client() as (client, target):
             _echo_target(target)
             workspace_id = _resolve_workspace_id(client, workspace)
-            preview = client.preview_configurations(
-                workspace_id, max_configs=max_configs, path=vast_path)
+            preview = await_preview(
+                client, workspace_id, max_configs=max_configs, path=vast_path,
+                on_stage=lambda stage: click.echo(stage, err=True))
             for configuration in preview.configurations:
                 click.echo(f"  {configuration.name}")
             if preview.truncated:

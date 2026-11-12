@@ -141,8 +141,12 @@ export function LaunchBar() {
     enabled: active && !!workspaceId && !!configPath && configFile.isSuccess,
     refetchInterval: (q) => (q.state.data?.state === 'composing' ? 1000 : false),
   })
+  // A search .vast's configurations are a sample of its draws: no filter selects from them.
+  const search = configNames.data?.state === 'ready' && configNames.data.search
   const names =
-    configNames.data?.state === 'ready' ? configNames.data.configurations.map((c) => c.name) : []
+    configNames.data?.state === 'ready' && !search
+      ? configNames.data.configurations.map((c) => c.name)
+      : []
   const composing = configNames.isLoading || configNames.data?.state === 'composing'
 
   // A filter picked for one .vast means nothing for the next.
@@ -152,7 +156,8 @@ export function LaunchBar() {
   }, [workspaceId, configPath])
 
   const configFilter = [...filterTokens, filterInput.trim()].filter(Boolean).join(',')
-  const matched = configNames.data?.state === 'ready' ? matchConfigs(names, configFilter) : null
+  const matched =
+    configNames.data?.state === 'ready' && !search ? matchConfigs(names, configFilter) : null
   // Launching this would only produce a campaign that fails composing its configurations.
   const noMatch = !!configFilter && matched?.length === 0
 
@@ -161,17 +166,19 @@ export function LaunchBar() {
     ? (configNames.error as Error).message
     : configNames.data?.state === 'failed'
       ? `could not list configurations: ${configNames.data.error.split('\n')[0]}`
-      : composing
-        ? progress
-          ? `composing: ${progress.done} of ${progress.total} variations done`
-          : configNames.data?.stage || 'composing configurations…'
-        : matched
-          ? noMatch
-            ? `matches none of the ${names.length} configurations`
-            : configFilter
-              ? `${matched.length} of ${names.length} configurations`
-              : `${names.length} configurations`
-          : undefined
+      : search
+        ? 'a search draws its configurations while it runs; a filter does not apply to it'
+        : composing
+          ? progress
+            ? `composing: ${progress.done} of ${progress.total} variations done`
+            : configNames.data?.stage || 'composing configurations…'
+          : matched
+            ? noMatch
+              ? `matches none of the ${names.length} configurations`
+              : configFilter
+                ? `${matched.length} of ${names.length} configurations`
+                : `${names.length} configurations`
+            : undefined
 
   const create = useMutation({
     mutationFn: () =>

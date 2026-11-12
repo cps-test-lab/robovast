@@ -12,8 +12,6 @@ import os
 import time
 from types import SimpleNamespace
 
-import pytest
-
 from robovast.execution.cluster_execution.cluster_service import ClusterService
 
 _SCENARIO = """\
@@ -112,8 +110,17 @@ def test_a_failure_of_a_file_since_edited_is_not_answered(tmp_path):
     assert _settled(impl).state == "ready"
 
 
-def test_a_search_vast_is_refused(tmp_path):
-    impl, vast = _impl(tmp_path, ["cell0"])
-    vast.write_text(vast.read_text() + "search: {}\n")
-    with pytest.raises(ValueError, match="search"):
-        impl.preview_configurations("ws", wait=False)
+def test_a_search_vast_previews_a_sample_marked_as_one(tmp_path):
+    """The CLI and the MCP tool poll this mode for every .vast, so a search previews in it too,
+    and says so: its names are one sample's, which no config filter selects from."""
+    from tests.common.test_search_preflight import _search_project
+
+    impl, _vast = _impl(tmp_path, ["cell0"])
+    (tmp_path / "search").mkdir()
+    search_vast = _search_project(tmp_path / "search", low=0.0, high=0.4)
+    impl._resolve_project = (  # pylint: disable=protected-access
+        lambda workspace_id, path: SimpleNamespace(config_path=str(search_vast)))
+    result = _settled(impl)
+    assert result.state == "ready", result.error
+    assert result.search is True
+    assert result.configs == 4

@@ -286,6 +286,10 @@ def validate_project(address: str, check_world: bool = True,
                               "severity": "error", "message": str(e)}]}
 
 
+#: How long the tool waits for a preview before answering with what it waits on.
+_PREVIEW_WAIT_S = 50.0
+
+
 def preview_configurations(address: str, limit: int = 0) -> dict:
     """What would this ``.vast`` actually run? The resolved cells, without running them.
 
@@ -306,7 +310,8 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
 
     Returns:
         ``{configs, runs_per_config, total_trials, jobs, pods, configurations, truncated,
-        aux_containers, source}``, each configuration ``{name, parameters}``; or ``{error}``.
+        aux_containers, source}``, each configuration ``{name, parameters}``; or ``{error}``;
+        or, while it builds the campaign's image, ``{state: "composing", stage, next_step}``.
         ``pods`` is one sentence per pod group when ``execution.runs_per_job`` packs.
     """
     from robovast.common.common import load_config
@@ -347,10 +352,16 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
             "aux_containers": aux,
             "source": "local file",
         }
+    from robovast.client.preview import await_preview
     client = service_access.require_service()
     workspace_id, rel_path = target
-    resp = client.preview_configurations(
-        _resolve_workspace_id(client, workspace_id), limit, rel_path)
+    # Polled and bounded: a preview that first builds the campaign's image can take longer
+    # than a tool call may, so it answers with what it waits on and the call to repeat.
+    resp = await_preview(client, _resolve_workspace_id(client, workspace_id), limit, rel_path,
+                         deadline_s=_PREVIEW_WAIT_S)
+    if resp.state == "composing":
+        return {"state": "composing", "stage": resp.stage,
+                "next_step": "call preview_configurations again with the same address"}
     # ``previews`` carries the web UI's Module-Federation asset refs for rendering a
     # variation; they are useless to an MCP caller and would be the bulk of the reply.
     return {

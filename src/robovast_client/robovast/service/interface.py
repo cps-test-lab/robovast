@@ -2112,7 +2112,8 @@ class PreviewResponse(BaseModel):
     saying why; the counts and ``configurations`` are empty in every state but ``ready``.
     ``stage`` says what a ``composing`` preview waits on before it can compose: the build of
     the image the campaign's simulator runs in, which the preview builds when it is not built
-    yet.
+    yet. ``search`` marks a search ``.vast``, whose configurations are one sample of what it
+    draws while it runs: their names are not ones a config filter can select.
     """
 
     state: Literal["composing", "ready", "failed"] = "ready"
@@ -2136,6 +2137,7 @@ class PreviewResponse(BaseModel):
     #: generator to produce what it varies, and then the answer cost a container. Empty is
     #: the common case, and means nothing but this process expanded the file.
     aux_containers: list[str] = Field(default_factory=list)
+    search: bool = False
     #: The Config tab's third column, from ``visualization.config.panels`` of the same file —
     #: flattened, with a Module-Federation ``remote`` attached to a package-provided panel.
     config_panels: list[dict] = Field(default_factory=list)
@@ -4012,8 +4014,8 @@ class RobovastInterface(ABC):
         the ``.vast`` changes, and the next call after that composes again; a ``failed`` one is
         answered once, and the call after it composes again. That is how the
         launcher learns the names its filter selects from without blocking on a helper
-        container. A search ``.vast`` draws its configurations while it runs, so it is
-        refused in that mode (``ValueError``); waiting for it previews a sample as before.
+        container, and how the CLI and the MCP tool wait while saying what they wait on. A search ``.vast`` previews a sample of what it draws, marked ``search``,
+        in either mode.
         """
 
     @abstractmethod

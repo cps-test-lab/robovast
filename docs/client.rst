@@ -254,7 +254,8 @@ A campaign whose simulator container adds packages has its simulator asked in th
 campaign builds, since a world its own package ships exists only there. When that image is
 not built yet, ``preview`` builds it -- the same build ``run`` starts, which ``run`` then finds
 and reuses -- and answers once it is built; a failed build fails it, naming the build (``vast
-image log <build>``). The web UI's launch bar says the image is being built while it waits.
+image log <build>``). ``vast workspace preview`` prints, on stderr, that the image is being
+built while it waits, as the web UI's launch bar shows it.
 ``validate`` does not wait: it starts the build, or joins the one running, and reports the
 simulator's checks as ``unchecked``, naming the build and ``vast image log <build>``; validating
 again once it is built answers them. A preview that failed is shown once, and the next one

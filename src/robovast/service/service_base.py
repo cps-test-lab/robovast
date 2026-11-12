@@ -5085,12 +5085,7 @@ class ServiceBase(RobovastInterface):
         project = self._resolve_project(workspace_id, path)
         if wait:
             return self._compose_preview(workspace_id, path, project, max_configs)
-        from robovast.common.common import load_config
         vast = project.config_path
-        if (load_config(vast) or {}).get("search"):
-            raise ValueError(
-                "a search .vast draws its configurations while it runs, so there are no names "
-                "to list ahead of it, and a config filter does not apply to it")
         mtime = os.stat(vast).st_mtime_ns
         key = (workspace_id, vast, max_configs)
         with self._previews_lock:
@@ -5155,6 +5150,7 @@ class ServiceBase(RobovastInterface):
         from robovast.common.config_generation import generate_scenario_variations
         from robovast.common.execution import planned_job_count, planned_pod_statements
         aux_containers: list = []
+        search = False
         # Both branches compose, so both need whatever the service uses to reach a variation's
         # helper image -- and a search .vast reaches it through the same variation loop.
         # Held rather than span-scoped: this is the authoring loop, previewed repeatedly.
@@ -5173,6 +5169,7 @@ class ServiceBase(RobovastInterface):
                 configs = sample["configs"]
                 runs = sample["runs_per_config"]
                 execution = sample["execution"]
+                search = True
             else:
                 try:
                     campaign_data = generate_scenario_variations(
@@ -5208,7 +5205,7 @@ class ServiceBase(RobovastInterface):
                                jobs=planned_job_count(execution, configs, runs, vast_dir),
                                pods=planned_pod_statements(execution, configs, runs, vast_dir),
                                configurations=items, truncated=truncated,
-                               aux_containers=aux_containers,
+                               aux_containers=aux_containers, search=search,
                                # The config view is declared in the same file this expanded, and
                                # is wanted at exactly the same moment, so it rides along rather
                                # than costing a second round trip.
