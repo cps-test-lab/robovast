@@ -2329,7 +2329,7 @@ class ServiceBase(RobovastInterface):
         No query is answered from another image.
         """
         from robovast.common.config_generation import set_built_images
-        from robovast.common.errors import ImageStoreUnavailable
+        from robovast.common.errors import CampaignConfigError, ImageStoreUnavailable
         if options is not None:
             pinned = dict(getattr(options, "images", None) or {})
             if getattr(options, "images_fixed", False):
@@ -2337,34 +2337,50 @@ class ServiceBase(RobovastInterface):
                     pinned, getattr(options, "aux_images", None) or {})
             else:
                 images = {name: {"ref": ref, "identity": ref} for name, ref in pinned.items()}
+        elif build == "start":
+            try:
+                images = self._start_missing_builds(vast_file, campaign_id)
+            except (CampaignConfigError, InsufficientStorageError, ImageStoreUnavailable) as e:
+                # Bad input or no registry, the storage reserve, an image store that cannot
+                # be asked: the validation reports it as the simulator's unanswered question,
+                # beside the checks that need no image.
+                images = {name: {"refused": str(e),
+                                 "next_step": getattr(e, "next_step", "") or ""}
+                          for name in self._built_container_names(vast_file, campaign_id)}
         else:
             images = self._stored_built_images(vast_file, campaign_id)
-            missing = [name for name, found in images.items() if found is None]
-            if missing and build == "wait":
-                self._build_for_composition(vast_file, on_stage=on_stage)
-                images = self._stored_built_images(vast_file, campaign_id, required=True)
-            elif missing and build == "start":
+            if build == "wait" and None in images.values():
                 try:
-                    started = {b.tag: b.build_id
-                               for b in self._start_composition_builds(vast_file)}
-                except (ValueError, InsufficientStorageError, ImageStoreUnavailable) as e:
-                    # No registry, the storage reserve, an image store that cannot be asked:
-                    # the validation reports it as the simulator's unanswered question,
-                    # beside the checks that need no image.
-                    for name in missing:
-                        images[name] = {"refused": str(e),
-                                        "next_step": getattr(e, "next_step", "") or ""}
-                else:
-                    # Read again: a build that was a cache hit, or just finished, is there now.
-                    images = self._stored_built_images(vast_file, campaign_id)
-                    for name in missing:
-                        if images.get(name) is None and started.get(name):
-                            images[name] = {"building": started[name]}
+                    self._build_for_composition(vast_file, on_stage=on_stage)
+                except CampaignConfigError as e:
+                    # Bad input or an unconfigured registry, answered to this request as such.
+                    raise ValueError(str(e)) from e
+                images = self._stored_built_images(vast_file, campaign_id, required=True)
         token = set_built_images(images)
         try:
             yield images
         finally:
             token.var.reset(token)
+
+    def _start_missing_builds(self, vast_file: str, campaign_id: str = "") -> dict:
+        """The stored images of *vast_file*'s campaign, with the build of each one not built
+        started or joined and registered as ``{"building": build_id}``.
+
+        Raises what refuses the build here -- ``CampaignConfigError``,
+        ``InsufficientStorageError`` -- and ``ImageStoreUnavailable`` when the store cannot say
+        what it holds.
+        """
+        images = self._stored_built_images(vast_file, campaign_id)
+        missing = [name for name, found in images.items() if found is None]
+        if not missing:
+            return images
+        started = {b.tag: b.build_id for b in self._start_composition_builds(vast_file)}
+        # Read again: a build that was a cache hit, or just finished, is there now.
+        images = self._stored_built_images(vast_file, campaign_id)
+        for name in missing:
+            if images.get(name) is None and started.get(name):
+                images[name] = {"building": started[name]}
+        return images
 
     def _stored_built_images(self, vast_file: str, campaign_id: str = "", *,
                              required: bool = False) -> dict:
@@ -2449,17 +2465,17 @@ class ServiceBase(RobovastInterface):
 
     def _start_composition_builds(self, vast_file: str) -> list:
         """Start or join the builds of *vast_file*'s campaign images, as ``start_campaign``
-        does (:meth:`_start_build_images`), and return their refs without waiting."""
+        does (:meth:`_start_build_images`), and return their refs without waiting.
+
+        Raises:
+            CampaignConfigError: bad input, or no registry to build into.
+            InsufficientStorageError: free space is below the reserve.
+        """
         from robovast.common.common import load_config
         from robovast.common.config import validate_config
-        from robovast.common.errors import CampaignConfigError
         self._admit_storage("build an image")
         target = WorkspaceTarget(config_path=vast_file)
-        try:
-            return self._start_build_images(target, validate_config(load_config(vast_file)))
-        except CampaignConfigError as e:
-            # Bad input or an unconfigured registry, answered to this request as such.
-            raise ValueError(str(e)) from e
+        return self._start_build_images(target, validate_config(load_config(vast_file)))
 
     def _built_container_names(self, vast_file: str, campaign_id: str = "") -> list:
         """The container whose built image *vast_file*'s simulator is asked in, if any.
