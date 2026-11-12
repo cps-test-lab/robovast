@@ -366,6 +366,21 @@ def test_a_build_that_cannot_start_is_the_simulators_unchecked_question(
     assert "container 'simulation' is not built" in unchecked[0].message
 
 
+def test_a_defect_in_starting_the_build_is_not_reported_as_a_refusal(building, monkeypatch):
+    service, _vast_file = building()
+
+    def _defect(*_args, **_kwargs):
+        raise AttributeError("'NoneType' object has no attribute 'tag'")
+    monkeypatch.setattr(service, "_start_build_images", _defect)
+
+    report, _took = _validated(service)
+
+    assert report.valid is False
+    assert [p.stage for p in report.problems] == ["error"], report.problems
+    assert "has no attribute 'tag'" in report.problems[0].message
+    assert "cannot start here" not in report.problems[0].message
+
+
 def test_a_file_with_a_problem_of_its_own_reports_it_and_starts_no_build(
         building, monkeypatch):
     service, vast_file = building()

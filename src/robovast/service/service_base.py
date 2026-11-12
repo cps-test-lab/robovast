@@ -2329,6 +2329,7 @@ class ServiceBase(RobovastInterface):
         No query is answered from another image.
         """
         from robovast.common.config_generation import set_built_images
+        from robovast.common.errors import ImageStoreUnavailable
         if options is not None:
             pinned = dict(getattr(options, "images", None) or {})
             if getattr(options, "images_fixed", False):
@@ -2346,9 +2347,10 @@ class ServiceBase(RobovastInterface):
                 try:
                     started = {b.tag: b.build_id
                                for b in self._start_composition_builds(vast_file)}
-                except Exception as e:  # noqa: BLE001 - the query that needs it names it
-                    # No registry, the storage reserve: the validation reports it as the
-                    # simulator's unanswered question, beside the checks that need no image.
+                except (ValueError, InsufficientStorageError, ImageStoreUnavailable) as e:
+                    # No registry, the storage reserve, an image store that cannot be asked:
+                    # the validation reports it as the simulator's unanswered question,
+                    # beside the checks that need no image.
                     for name in missing:
                         images[name] = {"refused": str(e),
                                         "next_step": getattr(e, "next_step", "") or ""}
