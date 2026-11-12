@@ -2854,7 +2854,7 @@
         "type": "object"
       },
       "PreviewResponse": {
-        "description": "Result of :meth:`RobovastInterface.preview_configurations`.\n\n``state`` is ``ready`` for a preview that waited for the expansion (the default). A\npreview asked for with ``wait=False`` answers ``composing`` while the expansion runs in\nthe background (``progress`` then counts its steps once the first is counted), ``ready``\nonce every other field holds, and ``failed`` when the expansion raised, with ``error``\nsaying why; the counts and ``configurations`` are empty in every state but ``ready``.",
+        "description": "Result of :meth:`RobovastInterface.preview_configurations`.\n\n``state`` is ``ready`` for a preview that waited for the expansion (the default). A\npreview asked for with ``wait=False`` answers ``composing`` while the expansion runs in\nthe background (``progress`` then counts its steps once the first is counted), ``ready``\nonce every other field holds, and ``failed`` when the expansion raised, with ``error``\nsaying why; the counts and ``configurations`` are empty in every state but ``ready``.\n``stage`` says what a ``composing`` preview waits on before it can compose: the build of\nthe image the campaign's simulator runs in, which the preview builds when it is not built\nyet.",
         "properties": {
           "aux_containers": {
             "items": {
@@ -2915,6 +2915,11 @@
             "title": "Runs Per Config",
             "type": "integer"
           },
+          "stage": {
+            "default": "",
+            "title": "Stage",
+            "type": "string"
+          },
           "state": {
             "default": "ready",
             "enum": [
@@ -2946,6 +2951,7 @@
           "pods",
           "progress",
           "runs_per_config",
+          "stage",
           "state",
           "total_trials",
           "truncated"

@@ -2274,13 +2274,15 @@ class ServiceBase(RobovastInterface):
         this service.
         """
 
+    @contextlib.contextmanager
     def _campaign_context(self, campaign_id: str, project, should_stop=None, options=None):
         """Per-campaign setup entered *inside* the worker thread.
 
         A context manager, so anything thread-scoped is established where the composition
-        that reads it runs, and torn down when the campaign ends. Today that is only the
-        aux-container runner, which is why this delegates: a campaign is one *span* over
-        which the implementation provides one, not the only span. Anything genuinely per-campaign
+        that reads it runs, and torn down when the campaign ends: the images the campaign
+        built (:meth:`_built_images_context`), so the simulator's queries run in them, and the
+        aux-container runner, which this delegates because a campaign is one *span* over which
+        the implementation provides one, not the only span. Anything genuinely per-campaign
         belongs here rather than in :meth:`_aux_runner_context`, which preview also enters.
 
         *should_stop* is the campaign's own stop flag as a predicate, for the waits inside
@@ -2292,8 +2294,184 @@ class ServiceBase(RobovastInterface):
         its auxiliary containers run are the campaign's, so they are fixed and recorded like
         every other image it runs. A preview has no campaign and passes none.
         """
-        return self._aux_runner_context(campaign_id, project, should_stop=should_stop,
-                                        options=options)
+        # In a campaign the images come from *options*; the project's file is not read.
+        with self._built_images_context(getattr(project, "config_path", ""), options=options), \
+                self._aux_runner_context(campaign_id, project, should_stop=should_stop,
+                                         options=options) as runner:
+            yield runner
+
+    @contextlib.contextmanager
+    def _built_images_context(self, vast_file: str, *, options=None, campaign_id: str = "",
+                              build: str = "", on_stage=None):
+        """Register, for the span, the image each container this campaign builds runs.
+
+        The simulator's composition-time queries -- which streams are on demand, which files a
+        world is made of, what it provides -- are asked of the image the campaign runs, and for
+        a container that adds packages that is the image the campaign builds: a world shipped
+        by the campaign's own package exists there and nowhere else
+        (``config_generation.set_built_images``).
+
+        In a campaign's span (*options* given) every built container maps to the image the
+        campaign pinned, and a container it did not pin is left out, so a query naming it stops
+        the start. A replay asks the simulator in the image its source asked it in
+        (:meth:`_replayed_built_images`). Elsewhere each maps to the image this service's store
+        holds for the project (or *campaign_id*'s, which ran). One that is not built is:
+
+        * with *build* ``"wait"`` (a preview), built and waited for -- the same build
+          ``start_campaign`` runs, which a later campaign of the same inputs then reuses
+          (:meth:`_build_for_composition`; *on_stage* hears that it is building);
+        * with *build* ``"start"`` (a validation), started or joined and not waited for, and
+          mapped to the build, so a query naming it refuses saying it is being built and
+          where its log is;
+        * otherwise mapped to ``None``, so a query naming it refuses.
+
+        No query is answered from another image.
+        """
+        from robovast.common.config_generation import set_built_images
+        if options is not None:
+            pinned = dict(getattr(options, "images", None) or {})
+            if getattr(options, "images_fixed", False):
+                images = self._replayed_built_images(
+                    pinned, getattr(options, "aux_images", None) or {})
+            else:
+                images = {name: {"ref": ref, "identity": ref} for name, ref in pinned.items()}
+        else:
+            images = self._stored_built_images(vast_file, campaign_id)
+            missing = [name for name, found in images.items() if found is None]
+            if missing and build == "wait":
+                self._build_for_composition(vast_file, on_stage=on_stage)
+                images = self._stored_built_images(vast_file, campaign_id, required=True)
+            elif missing and build == "start":
+                started = {b.tag: b.build_id for b in self._start_composition_builds(vast_file)}
+                # Read again: a build that was a cache hit, or just finished, is there now.
+                images = self._stored_built_images(vast_file, campaign_id)
+                for name in missing:
+                    if images.get(name) is None and started.get(name):
+                        images[name] = {"building": started[name]}
+        token = set_built_images(images)
+        try:
+            yield images
+        finally:
+            token.var.reset(token)
+
+    def _stored_built_images(self, vast_file: str, campaign_id: str = "", *,
+                             required: bool = False) -> dict:
+        """``{container: {"ref", "identity"} or None}`` for every container *vast_file*'s
+        campaign builds, as this service's store (or *campaign_id*'s record) holds it.
+
+        ``None`` is an image that is not built; *required* raises
+        :class:`~robovast.common.errors.ImageNotBuilt` for one instead. A campaign whose
+        record does not resolve the image maps it to ``{"unresolved": reason}``: an exec into
+        another of its containers asks nothing of it, and a query that does is refused with
+        the reason.
+        """
+        from robovast.common.errors import ImageNotBuilt
+        images = {}
+        for name in self._built_container_names(vast_file, campaign_id):
+            try:
+                found = self._resolve_exec_image(vast_file, name, campaign_id)
+            except ImageNotBuilt:
+                if required:
+                    raise
+                images[name] = None
+                continue
+            except (ValueError, FileNotFoundError) as e:
+                if not campaign_id:
+                    raise
+                images[name] = {"unresolved": str(e)}
+                continue
+            images[name] = {"ref": found.ref, "identity": found.identity}
+        return images
+
+    @staticmethod
+    def _replayed_built_images(pinned: dict, recorded_aux: dict) -> dict:
+        """What a replay registers for each container it pinned: the image its source asked the
+        simulator in.
+
+        A replay runs only recorded digests, and the source recorded the image every query ran
+        in among its auxiliary containers. A source that asked the simulator in the built image
+        recorded that image's container with the pinned digest, and the replay asks it there; any other asked it in
+        the base image the build starts from, and the replay asks that one
+        (``config_generation.REPLAYED_BASE``). Where the source recorded neither, the replay's
+        own pins refuse the query, naming it.
+        """
+        from robovast.common.config_generation import REPLAYED_BASE
+        from robovast.common.variation.container_runner import ContainerSpec
+        images = {}
+        for name, ref in pinned.items():
+            recorded = recorded_aux.get(ContainerSpec(image=ref).container_name()) or ""
+            if recorded and recorded.rsplit("@", 1)[-1] == ref.rsplit("@", 1)[-1]:
+                images[name] = {"ref": ref, "identity": ref}
+            else:
+                images[name] = dict(REPLAYED_BASE)
+        return images
+
+    def _build_for_composition(self, vast_file: str, *, on_stage=None) -> None:
+        """Build the images *vast_file*'s campaign runs, as ``start_campaign`` builds them.
+
+        The same hooks and the same inputs as the campaign's own build
+        (:meth:`_start_build_images`), so the image is the content-addressed one a later
+        ``start_campaign`` of the same project finds built and reuses, and a build already
+        running for it is joined rather than started twice. *on_stage* hears one sentence per
+        build that is not a cache hit, for the caller's status.
+
+        Raises:
+            ImageBuildFailed: a build failed, naming the build whose log says why.
+        """
+        from robovast.common.errors import ImageBuildFailed
+        for build in self._start_composition_builds(vast_file):
+            if not build.cached and on_stage is not None:
+                on_stage(f"building the campaign's image for container {build.tag!r} "
+                         f"(build {build.build_id}); the simulator is asked in it once it "
+                         "is built")
+            logger.info("Building image %s (build %s) to compose %s", build.tag,
+                        build.build_id, vast_file)
+            status = self._wait_for_build(build.build_id)
+            if status.phase not in IMAGE_BUILT_PHASES:
+                err = status.error
+                detail = f" ({err.message})" if err and err.message else ""
+                raise ImageBuildFailed(
+                    f"the campaign's image for container {build.tag!r} did not build"
+                    f"{detail}; its log: get_image_build_log(build_id={build.build_id!r}), "
+                    f"or `vast image log {build.build_id}`")
+
+    def _start_composition_builds(self, vast_file: str) -> list:
+        """Start or join the builds of *vast_file*'s campaign images, as ``start_campaign``
+        does (:meth:`_start_build_images`), and return their refs without waiting."""
+        from robovast.common.common import load_config
+        from robovast.common.config import validate_config
+        from robovast.common.errors import CampaignConfigError
+        self._admit_storage("build an image")
+        target = WorkspaceTarget(config_path=vast_file)
+        try:
+            return self._start_build_images(target, validate_config(load_config(vast_file)))
+        except CampaignConfigError as e:
+            # Bad input or an unconfigured registry, answered to this request as such.
+            raise ValueError(str(e)) from e
+
+    def _built_container_names(self, vast_file: str, campaign_id: str = "") -> list:
+        """The container whose built image *vast_file*'s simulator is asked in, if any.
+
+        Only the simulator's: that is the one a composition-time query names
+        (:func:`~robovast.common.simulators.simulator_image`), and resolving another
+        container's image -- an archived campaign's may not be resolvable at all -- would fail
+        an exec or a preview over a container nothing asks.
+        """
+        from robovast.common.common import load_config
+        from robovast.common.config import validate_config
+        from robovast.common.execution import build_image_tag, is_build_image_ref
+        from robovast.common.simulators import simulator_image
+        # Lenient for an archived campaign, strict for a workspace, as _resolve_exec_image is.
+        # A file that does not validate builds nothing yet: validation reports it in its own
+        # terms, and nothing composes far enough to ask its simulator.
+        try:
+            campaign_config = (validate_config(load_config(vast_file, upgrade=True),
+                                               strict=False)
+                               if campaign_id else validate_config(load_config(vast_file)))
+        except Exception:  # noqa: BLE001 - reported by the check that reads the file
+            return []
+        image = simulator_image(campaign_config.execution.model_dump())
+        return [build_image_tag(image)] if is_build_image_ref(image) else []
 
     @abstractmethod
     def _aux_runner_context(self, tag: str, project, *, hold: bool = False,
@@ -2935,11 +3113,10 @@ class ServiceBase(RobovastInterface):
         from robovast.execution.backends import CampaignStopped
         log_path = Path(campaign_root) / "_execution" / "build.log"
         offset = 0
-        first = True
-        while True:
-            status = self.get_image_build_status(build_id)
+
+        def on_poll(status, first):
+            nonlocal offset
             if first:
-                first = False
                 # The context size and cache ref go in the header because they are the
                 # two costs BuildKit's own output never names: a build whose every vertex
                 # says CACHED can still spend minutes on them.
@@ -2952,12 +3129,11 @@ class ServiceBase(RobovastInterface):
                     log_path,
                     f"waiting for image {status.tag or '?'} (build {build_id}){detail}\n")
             offset = self._tee_build_log(build_id, log_path, offset)
-            if status.done:
-                break
-            if state.stop_requested:
+            if not status.done and state.stop_requested:
                 raise CampaignStopped(
                     f"campaign stopped while waiting for image build {build_id}")
-            time.sleep(self._BUILD_POLL_SECONDS)
+
+        status = self._wait_for_build(build_id, on_poll=on_poll)
         if status.phase not in IMAGE_BUILT_PHASES:
             from robovast.common.errors import ImageBuildFailed
             err = status.error
@@ -2966,6 +3142,23 @@ class ServiceBase(RobovastInterface):
                 f"experiment image build '{status.tag or build_id}' failed{detail}; "
                 f"see the BUILD section of the campaign log "
                 f"(get_campaign_log with phase='build')")
+
+    def _wait_for_build(self, build_id: str, *, on_poll=None):
+        """Poll *build_id* until it is done and return its last status.
+
+        The one wait loop over ``get_image_build_status``, an interface operation, so the
+        in-cluster BuildKit Job is waited on the same way by every caller. *on_poll* is called
+        with ``(status, first)`` on every read, before the wait; it may raise to stop waiting.
+        """
+        first = True
+        while True:
+            status = self.get_image_build_status(build_id)
+            if on_poll is not None:
+                on_poll(status, first)
+            first = False
+            if status.done:
+                return status
+            time.sleep(self._BUILD_POLL_SECONDS)
 
     def _tee_build_log(self, build_id: str, log_path: Path, offset: int) -> int:
         """Append the build log's delta from *offset* into *log_path*; return the new
@@ -3060,7 +3253,9 @@ class ServiceBase(RobovastInterface):
         # keyed on the source as preview is: the same file previewed and then exec'd reuses
         # one warm container. A bare-image exec composes nothing, and so starts nothing.
         # The hook is given no project: a campaign source has none, only its ``_config/``.
-        with self._aux_runner_context(
+        built = (self._built_images_context(vast_file, campaign_id=request.campaign_id or "")
+                 if vast_file else contextlib.nullcontext())
+        with built, self._aux_runner_context(
                 _preview_tag(request.workspace_id or request.campaign_id,
                              request.config_path),
                 None, hold=True):
@@ -4747,18 +4942,33 @@ class ServiceBase(RobovastInterface):
         without one would refuse the campaign for a property of where it ran.
         Held rather than per-call because validating is an authoring loop, and it shares the
         tag with preview so the two reuse one warm container.
+
+        A simulator that runs in the image the campaign builds is asked there. An image not
+        built yet is started building, or its running build joined, and not waited for: the
+        simulator's checks are then ``unchecked``, naming the build and its log, and the next
+        validation once it is built answers them.
         """
         from robovast.common.config_validation import validate_project_file
-        try:
-            project = self._resolve_project(workspace_id, path)
-            with self._aux_runner_context(_preview_tag(workspace_id, path), project,
-                                          hold=True):
-                result = validate_project_file(project.config_path)
-        except Exception as e:  # noqa: BLE001 - editor sends in-progress YAML; never 500
-            return ValidationReport(
-                valid=False, world_checked=False if check_world else None,
-                scenario_checked=False if check_scenario else None,
-                problems=[ValidationProblem(stage="error", message=str(e))])
+        with contextlib.ExitStack() as registered:
+            try:
+                project = self._resolve_project(workspace_id, path)
+                # Around the world check too, so the build this starts is the one it names.
+                registered.enter_context(
+                    self._built_images_context(project.config_path, build="start"))
+                with self._aux_runner_context(_preview_tag(workspace_id, path), project,
+                                              hold=True):
+                    result = validate_project_file(project.config_path)
+            except Exception as e:  # noqa: BLE001 - editor sends in-progress YAML; never 500
+                return ValidationReport(
+                    valid=False, world_checked=False if check_world else None,
+                    scenario_checked=False if check_scenario else None,
+                    problems=[ValidationProblem(stage="error", message=str(e))])
+            return self._with_container_checks(workspace_id, path, project, result,
+                                               check_world, check_scenario)
+
+    def _with_container_checks(self, workspace_id: str, path: str, project, result: dict,
+                               check_world: bool, check_scenario: bool) -> ValidationReport:
+        """*result* with the world and scenario checks the caller asked for."""
         # Only once the cheap checks pass. Compiling a world for a file with a schema
         # error spends a container to report something already in the reply, and the world
         # a broken file names is not necessarily the one it will name when it is fixed.
@@ -4847,6 +5057,7 @@ class ServiceBase(RobovastInterface):
         from robovast.service.world_query import world_problems
         try:
             parameters = load_config(project.config_path) or {}
+            # Under the built images validate_project registered for the span.
             problems = world_problems(
                 self.exec_in_container,
                 resolve_call=self.resolve_image,
@@ -4894,8 +5105,17 @@ class ServiceBase(RobovastInterface):
             held = self._previews.get(key)
             # A composition in flight is answered as it stands even if the file has moved on:
             # it cannot be stopped, and the first call after it lands composes again.
-            if held is not None and (held[1].state == "composing" or held[0] == mtime):
+            if held is not None and held[1].state == "composing":
                 return held[1]
+            if held is not None:
+                # A landed answer -- ready or failed -- is given once and dropped, so the next
+                # call composes again: what it was composed from reaches past the .vast (the
+                # scenario, run files, a build, a package source), and the composition cache,
+                # which keys on all of it, is what decides whether anything changed. One of a
+                # .vast since edited is not given at all.
+                del self._previews[key]
+                if held[0] == mtime:
+                    return held[1]
             started = PreviewResponse(state="composing")
             self._previews[key] = (mtime, started)
         threading.Thread(
@@ -4921,16 +5141,24 @@ class ServiceBase(RobovastInterface):
                 publish(PreviewResponse(state="composing",
                                         progress=StepProgress(done=step[0], total=step[1])))
 
+        def on_stage(stage):
+            publish(PreviewResponse(state="composing", stage=stage))
+
         try:
-            publish(self._compose_preview(workspace_id, path, project, max_configs, on_line))
+            publish(self._compose_preview(workspace_id, path, project, max_configs, on_line,
+                                          on_stage))
         except Exception as e:  # noqa: BLE001 - the failure is the result the caller polls for
             logger.info("Previewing %s failed: %s", project.config_path, e)
             publish(PreviewResponse(state="failed", error=str(e)))
 
     def _compose_preview(self, workspace_id: str, path: str, project, max_configs: int,
-                         on_line=None) -> PreviewResponse:
+                         on_line=None, on_stage=None) -> PreviewResponse:
         """The preview of *project*'s ``.vast``, composed now; *on_line* hears the composition's
-        progress lines."""
+        progress lines, and *on_stage* that the campaign's image is being built first.
+
+        A simulator that runs in the image the campaign builds is asked there, so an image not
+        built yet is built first, as ``start_campaign`` builds it (:meth:`_built_images_context`).
+        """
         from robovast.common.common import load_config
         from robovast.common.config_generation import generate_scenario_variations
         from robovast.common.execution import planned_job_count, planned_pod_statements
@@ -4938,7 +5166,8 @@ class ServiceBase(RobovastInterface):
         # Both branches compose, so both need whatever the service uses to reach a variation's
         # helper image -- and a search .vast reaches it through the same variation loop.
         # Held rather than span-scoped: this is the authoring loop, previewed repeatedly.
-        with self._aux_runner_context(_preview_tag(workspace_id, path), project, hold=True):
+        with self._built_images_context(project.config_path, build="wait", on_stage=on_stage), \
+                self._aux_runner_context(_preview_tag(workspace_id, path), project, hold=True):
             # A search .vast has no `configuration:` to expand -- its variations live under
             # `search.variations` and are only realized per sampled ParamSet. Composing a
             # sample the way a real batch does is the only preview that means anything;
@@ -5023,9 +5252,10 @@ class ServiceBase(RobovastInterface):
             config_path=path)
         token = set_container_runner_factory(lambda _spec, _r=runner: _r)
         try:
-            payload, image = describe_world_payload(
-                execution, block, str(Path(project.config_path).parent),
-                entities=entities, targets=targets)
+            with self._built_images_context(project.config_path):
+                payload, image = describe_world_payload(
+                    execution, block, str(Path(project.config_path).parent),
+                    entities=entities, targets=targets)
         except ActionableError as exc:
             # Same 400 as the refusal below, and for the same reason -- the caller asked for
             # a description that cannot be given. Its own arm because ActionableError is not

@@ -228,10 +228,11 @@ def validate_project(address: str, check_world: bool = True,
       otherwise kills every trial at its first line while the campaign reports finished.
       ``scenario`` problems carry the parser's message and position.
 
+    A missing built simulator image starts building; its checks come back unchecked.
+
     **Each problem names what it could not settle and what would**: an uninstalled
     ``plugins:`` spec names ``preview_configurations(limit=1)`` (which composes, and so
-    *installs* them), as does a variation needing an aux container; a world only an unbuilt
-    image could describe names ``build_experiment_image``.
+    *installs* them), as does a variation needing an aux container.
 
     Args:
         address: ``/sources/<workspace_id>/<path>``, or a path on the MCP-server host.

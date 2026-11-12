@@ -3,8 +3,7 @@
 """``preview_configurations(wait=False)`` answers at once and composes in the background.
 
 The launcher polls it for the filter's dropdown, so a call never waits on composition: it
-starts one, reports it as ``composing``, and serves the landed preview until the ``.vast``
-changes.
+starts one, reports it as ``composing``, and gives the landed preview once.
 """
 
 import contextlib
@@ -77,11 +76,50 @@ def test_an_edited_vast_is_composed_again(tmp_path):
     assert [c.name for c in _settled(impl).configurations] == ["cell0", "cell1"]
 
 
+def test_a_ready_preview_is_given_once_and_composed_again(tmp_path):
+    """What it was composed from reaches past the .vast -- the scenario, the run files -- so a
+    landed preview is not served again: the next call composes, through the composition
+    cache, and sees an edit of any of them."""
+    impl, _vast = _impl(tmp_path, ["cell0"])
+    assert _settled(impl).state == "ready"
+    (tmp_path / "scenario.osc").write_text(_SCENARIO.replace("1.0m", "2.0m"))
+    assert impl.preview_configurations("ws", wait=False).state == "composing"
+    assert _settled(impl).state == "ready"
+
+
 def test_a_failed_composition_says_why(tmp_path):
     impl, vast = _impl(tmp_path, ["cell0"])
     vast.write_text(_VAST % "- name: cell0\n  variations:\n  - NoSuchVariation: {}")
     result = _settled(impl)
     assert result.state == "failed" and result.error and not result.configurations
+
+
+def test_a_failed_preview_is_answered_once_and_composed_again(tmp_path):
+    """What failed may lie outside the .vast -- a build, a package source -- so a held failure
+    is not served again: the call after it composes anew."""
+    impl, vast = _impl(tmp_path, ["cell0"])
+    vast.write_text(_VAST % "- name: cell0\n  variations:\n  - NoSuchVariation: {}")
+    assert _settled(impl).state == "failed"
+    assert impl.preview_configurations("ws", wait=False).state == "composing"
+    assert _settled(impl).state == "failed"
+
+
+def test_a_failure_of_a_file_since_edited_is_not_answered(tmp_path):
+    impl, vast = _impl(tmp_path, ["cell0"])
+    vast.write_text(_VAST % "- name: cell0\n  variations:\n  - NoSuchVariation: {}")
+    deadline = time.monotonic() + 60
+    # Let the failure land without reading it, as when nobody polls while the file is fixed.
+    impl.preview_configurations("ws", wait=False)
+    while time.monotonic() < deadline:
+        with impl._previews_lock:  # pylint: disable=protected-access
+            if any(h[1].state == "failed" for h in impl._previews.values()):  # noqa: SLF001
+                break
+        time.sleep(0.05)
+    vast.write_text(_VAST % "- name: cell0")
+    stat = vast.stat()
+    os.utime(vast, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert impl.preview_configurations("ws", wait=False).state == "composing"
+    assert _settled(impl).state == "ready"
 
 
 def test_a_search_vast_is_refused(tmp_path):

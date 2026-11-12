@@ -423,14 +423,8 @@ def world_problems(exec_call, *, resolve_call, workspace_id: str, config_path: s
                     f"{block.get('config') or 'this world'} does not load: {exc}",
                     config=config_name))
                 continue
-            # Genuinely unverifiable from here: no backend, no runner, an image that has to
-            # be built first. An advisory, naming what would settle it.
-            #
-            # One known over-refusal rides in here: describe_world_payload refuses a
-            # `build:` image outright, while the service resolves and would happily run an
-            # already-built one. It errs towards "not checked" rather than a wrong pass,
-            # so it is left as it is -- lifting it means teaching that function which
-            # images the service can reach.
+            # Genuinely unverifiable from here: no backend, no runner. An advisory, naming
+            # what would settle it.
             problems.append(_problem(
                 _unchecked(exc, getattr(exc, "next_step", "")),
                 config=config_name, severity="unchecked"))
@@ -494,7 +488,7 @@ def _recording_problems(exec_call, *, workspace_id: str, config_path: str, vast_
     from robovast.common.config_generation import (left_out_streams, query_on_demand_streams,
                                                    set_container_runner_factory)
     from robovast.common.config_validation import topic_is_recorded
-    from robovast.common.errors import ExecPathUnavailable
+    from robovast.common.errors import ExecPathUnavailable, ImageNotBuilt
 
     execution = parameters.get("execution", {}) or {}
     runner = ExecSlotContainerRunner(exec_call, workspace_id=workspace_id,
@@ -502,6 +496,9 @@ def _recording_problems(exec_call, *, workspace_id: str, config_path: str, vast_
     token = set_container_runner_factory(lambda _spec, _r=runner: _r)
     try:
         streams = query_on_demand_streams(execution, block, vast_dir)
+    except ImageNotBuilt as exc:
+        return [_problem(_unchecked(exc, exc.next_step), config=config, field=_RECORDING_FIELD,
+                         severity="unchecked")]
     except ExecPathUnavailable as exc:
         return [_problem(_unchecked(exc), config=config, field=_RECORDING_FIELD,
                          severity="unchecked")]

@@ -171,6 +171,97 @@ def aux_images_fixed() -> bool:
     return _aux_image_fixer.get() is not None
 
 
+# Which image each container a campaign builds runs here. A simulator query names a container
+# that adds packages as a symbolic ``build:<container>`` ref (:func:`~robovast.common.simulators.
+# simulator_image`), because a world shipped by the campaign's own package exists in that image
+# and nowhere else; the service that composes knows the concrete image and sets it here, scoped
+# like the factory above. ``None`` -- nothing registered -- is a composition no service arranged,
+# which has no built image to ask.
+_built_images: "contextvars.ContextVar" = contextvars.ContextVar(
+    "robovast_built_images", default=None)
+
+#: A registered entry saying the simulator is asked in the image the replayed campaign's source
+#: asked it in, the base its build starts from, rather than in the built one
+#: (:func:`replays_base_image`).
+REPLAYED_BASE = {"replayed_base": True}
+
+
+def set_built_images(images):
+    """Register ``{container name: {"ref", "identity"} or None}`` for this context.
+
+    ``ref`` is the concrete image a container is started from; ``identity`` the name a message
+    carries: the store's registry-free identity outside a campaign, and in a campaign the ref
+    it pinned, which its records already name. ``None`` for a container means
+    its image is not built, ``{"building": build_id}`` that it is being built, and
+    ``{"unresolved": reason}`` that a campaign's record does not resolve it.
+    :data:`REPLAYED_BASE` is a replay whose source asked the simulator
+    in the base image. Returns the ``Token`` like :func:`set_container_runner_factory`.
+    """
+    return _built_images.set(None if images is None else dict(images))
+
+
+def built_images():
+    """The mapping :func:`set_built_images` registered here, or ``None``."""
+    return _built_images.get()
+
+
+def replays_base_image(container: str) -> bool:
+    """Whether this context replays a campaign whose source asked *container*'s simulator in
+    the base image its build starts from, rather than in the built image.
+
+    A replay runs the images its source recorded, and a source composed before the simulator was
+    asked in the built image recorded the base image for its queries.
+    """
+    return (_built_images.get() or {}).get(container) == REPLAYED_BASE
+
+
+def _resolve_built_spec(spec):
+    """``(spec to run, image to name)``: a ``build:<container>`` image swapped for the built one.
+
+    Any other image is returned as it is. A ``build:`` ref with no built image registered here
+    raises :class:`~robovast.common.errors.ImageNotBuilt` rather than running the question in
+    some other image: the base image has neither the campaign's packages nor its worlds, so its
+    answer would be about a different campaign.
+    """
+    from dataclasses import replace  # pylint: disable=import-outside-toplevel
+
+    from robovast.common.errors import ImageNotBuilt  # pylint: disable=import-outside-toplevel
+    from robovast.common.execution import (  # pylint: disable=import-outside-toplevel
+        build_image_tag, is_build_image_ref)
+    image = getattr(spec, "image", "") or ""
+    if not is_build_image_ref(image):
+        return spec, image
+    name = build_image_tag(image)
+    registered = _built_images.get()
+    if registered is None:
+        raise ImageNotBuilt(
+            f"this campaign's simulator checks run in the image it builds for container "
+            f"{name!r}, and only a RoboVAST service builds it; composing here has no such "
+            "image to ask",
+            next_step="preview the campaign through a service -- `vast workspace preview "
+                      "<workspace>`, or the MCP tool preview_configurations -- which builds "
+                      "the image and asks the simulator in it")
+    found = registered.get(name)
+    if found and found.get("building"):
+        build_id = found["building"]
+        raise ImageNotBuilt(
+            f"the campaign's image for container {name!r} is being built (build {build_id}), "
+            "and the simulator is asked in the image the campaign runs",
+            next_step=f"follow it with get_image_build_log(build_id={build_id!r}) or `vast "
+                      f"image log {build_id}`, and validate again once it is built")
+    if found and found.get("unresolved"):
+        raise ValueError(
+            f"the image this campaign ran container {name!r} in cannot be resolved from its "
+            f"record, and the simulator is asked in that image: {found['unresolved']}")
+    if not found or not found.get("ref"):
+        raise ImageNotBuilt(
+            f"the campaign's image for container {name!r} is not built, and the simulator "
+            "is asked in the image the campaign runs",
+            next_step="preview_configurations builds it and asks again; validate_project "
+                      "starts the build")
+    return replace(spec, image=found["ref"]), found["identity"]
+
+
 def aux_image_digest(spec, runner=None, *, image_project=None, image_project_tag=None,
                      purpose="") -> str:
     """The ``sha256:…`` digest of the image *spec*'s container runs in here; raise if unreadable.
@@ -467,8 +558,12 @@ def _run_json_query(query, vast_dir, *, what, image_project=None, image_project_
     with the reason it does not.
 
     *digests* collects ``{container name: digest}`` of the image that answered.
+
+    A ``build:`` image runs in the campaign's built image (:func:`_resolve_built_spec`), and is
+    named by its identity, never by the registry ref it is started from.
     """
-    runner = _make_container_runner(_query_spec(query.spec), image_project=image_project,
+    spec, image = _resolve_built_spec(query.spec)
+    runner = _make_container_runner(_query_spec(spec), image_project=image_project,
                                     image_project_tag=image_project_tag,
                                     purpose=what)
     if runner is None:
@@ -484,7 +579,7 @@ def _run_json_query(query, vast_dir, *, what, image_project=None, image_project_
                 _stage_query_documents(runner, query, expose)
         runner.run(query.command, lines.append)
         if digests is not None:
-            digests[query.spec.container_name()] = aux_image_digest(query.spec, runner)
+            digests[spec.container_name()] = aux_image_digest(spec, runner)
     except subprocess.CalledProcessError as exc:
         # The container's own words, not the runner's exit status. ``CalledProcessError``
         # renders as "returned non-zero exit status N" and nothing else, and the failure this
@@ -495,7 +590,7 @@ def _run_json_query(query, vast_dir, *, what, image_project=None, image_project_
                  or _command_failure(str(exc.output or "").splitlines())
                  or _command_failure(lines))
         raise RuntimeError(
-            f"{what} failed in {getattr(query.spec, 'image', '') or 'its image'}: "
+            f"{what} failed in {image or 'its image'}: "
             f"{spoke or exc}") from exc
     finally:
         runner.close()
@@ -508,6 +603,17 @@ def _run_json_query(query, vast_dir, *, what, image_project=None, image_project_
             f"{what} printed no JSON; its output was: "
             + " | ".join(str(line) for line in lines[-3:]))
     return payload
+
+
+def _record_aux_image(aux_images, query) -> None:
+    """Record in *aux_images* the image *query*'s container runs, as the composition result
+    carries it: the built image for a ``build:`` ref (:func:`_resolve_built_spec`), since that
+    is the one a replay has to run again.
+    """
+    if aux_images is None or getattr(query, "spec", None) is None:
+        return
+    spec, _image = _resolve_built_spec(query.spec)
+    aux_images[spec.container_name()] = spec.image
 
 
 def _query_spec(spec):
@@ -834,16 +940,17 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
     the same traps: the override pre-check below, and the ``describe_world`` operation a caller
     uses to *write* an override in the first place. Raises
     :class:`WorldQueryUnavailable` when no answer is possible, naming which of the reasons it
-    is -- no backend, a backend that cannot describe, an image that has to be built first, no
-    container runner here, or a simulator that answered nothing.
+    is -- no backend, a backend that cannot describe, no container runner here, or a simulator
+    that answered nothing -- and :class:`~robovast.common.errors.ImageNotBuilt` when the world
+    is described by the campaign's own built image and that is not built yet
+    (:func:`_resolve_built_spec`). The image returned is the one the answer came from, named
+    by its identity.
 
     A **partial** answer is not one of those reasons: a simulator that exits non-zero having still
     printed a payload answered what it could, and that payload is returned with whatever it says in
     its own ``errors``. Every consumer here already treats an absent half as unverifiable rather
     than as wrong, so half an answer is strictly better than none.
     """
-    from robovast.common.execution import \
-        is_build_image_ref  # pylint: disable=import-outside-toplevel
     from robovast.common.simulators import backend_name  # pylint: disable=import-outside-toplevel
     from robovast.common.simulators import resolve_backend
 
@@ -856,12 +963,8 @@ def describe_world_payload(execution, block, vast_dir, *, entities: bool = False
                                    entities=entities, targets=targets)
     if query is None:
         raise WorldQueryUnavailable(f"the {name!r} backend cannot describe a world")
-    image = getattr(query.spec, "image", "") or ""
-    if is_build_image_ref(image):
-        raise WorldQueryUnavailable(
-            f"this campaign's world is described by its own built image ({image}), which does "
-            "not exist yet -- build the experiment image first")
-    runner = _make_container_runner(_query_spec(query.spec), purpose="the world description")
+    spec, image = _resolve_built_spec(query.spec)
+    runner = _make_container_runner(_query_spec(spec), purpose="the world description")
     if runner is None:
         raise WorldQueryUnavailable("no container runner is available here")
     lines = []
@@ -1273,9 +1376,8 @@ def _resolve_config_sim_blocks(configs, parameters, vast_dir, run_files,
         key = _query_key(query)
         if key in answers:
             return answers[key]
-        if aux_images is not None and getattr(query, "spec", None) is not None:
-            aux_images[query.spec.container_name()] = query.spec.image
         try:
+            _record_aux_image(aux_images, query)
             answers[key] = _run_input_files_query(
                 query, vast_dir, image_project=image_project,
                 image_project_tag=image_project_tag, digests=aux_digests)
@@ -1346,8 +1448,7 @@ def query_on_demand_streams(execution, block, vast_dir, *, image_project=None,
         key = _query_key(query)
         if answers is not None and key in answers:
             return answers[key]
-        if aux_images is not None and getattr(query, "spec", None) is not None:
-            aux_images[query.spec.container_name()] = query.spec.image
+        _record_aux_image(aux_images, query)
         reply = _run_json_query(query, vast_dir,
                                 what="the simulator backend's on-demand streams query",
                                 image_project=image_project, image_project_tag=image_project_tag,
@@ -1823,7 +1924,10 @@ COMPOSITION_ONLY_EXECUTION_KEYS = frozenset({"scenario_file", "run_files", "gene
 # (``_read_files``), both part of its identity; an entry from 12 carries neither.
 # 14: each configuration carries the simulator streams its recording leaves out
 # (``recording.ros2.left_out``); an entry from 13 has none, and its jobs would be refused.
-_CACHE_FORMAT_VERSION = 14
+# 15: a simulator whose container adds packages is asked in the campaign's built image; an
+# entry from 14 asked it in the base image, and composed without a service it answers a
+# campaign that is otherwise refused.
+_CACHE_FORMAT_VERSION = 15
 
 
 def _build_generate_cache_key(
@@ -1837,6 +1941,7 @@ def _build_generate_cache_key(
     image_project: str | None = None,
     image_project_tag: str | None = None,
     image_pins: dict | None = None,
+    built_images: dict | None = None,
 ) -> CacheKey:
     """Build a FileCache2 CacheKey covering every input that affects generate_scenario_variations.
 
@@ -1909,6 +2014,17 @@ def _build_generate_cache_key(
     # fresh launch's key is what it is without them.
     if image_pins is not None:
         key.add("image_pins", json.dumps(dict(image_pins), sort_keys=True))
+
+    # The simulator's queries run in the campaign's built image (:func:`set_built_images`), so
+    # an entry composed against one build must never answer for another. By the ref a
+    # container starts from, which changes exactly when the image does and is the same in a
+    # preview and in the campaign started after it. Added only where a service registered its
+    # images, so a CLI composition's key is what it is without them.
+    if built_images is not None:
+        key.add("built_images", json.dumps(
+            {name: (found or {}).get("ref") or (found or {}).get("replayed_base")
+             for name, found in built_images.items()},
+            sort_keys=True))
 
     return key
 
@@ -2072,6 +2188,9 @@ def _compose_isolated(variation_file, output_dir, use_cache, progress_update_cal
                 "image_project_tag": image_project_tag,
                 # A replay's recorded digests, for the same reason as the project above.
                 "image_pins": image_pins,
+                # The campaign's built images are a ContextVar like the factory, but plain
+                # data, so they travel in the job rather than over a socket.
+                "built_images": _built_images.get(),
                 "result_path": result_path,
             }, f)
 
@@ -2353,6 +2472,7 @@ def generate_scenario_variations(variation_file, progress_update_callback=None, 
             image_project=image_project,
             image_project_tag=image_project_tag,
             image_pins=image_pins,
+            built_images=_built_images.get(),
         )
         _cached = _cache_meta.get_json(_cache_key)
         # Checking a hit fixes the helper images it names, as a started helper's would be.

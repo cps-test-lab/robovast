@@ -1355,8 +1355,12 @@ their compressed forms. A recorder of every topic is such a
 subscriber, so recording them would make the simulator render each one every frame whether or not
 the stack under test reads it. Which streams those are is the simulator's to say
 (:ref:`on_demand_streams <simulators>`), for each configuration's world and overrides, and it is
-asked when the campaign is composed, in the campaign's own image; a campaign that cannot get the
-answer does not start. Every run of a configuration therefore records the same topic set, and
+asked when the campaign is composed, in the campaign's own image -- the one it builds, when its
+simulator container adds packages; a campaign that cannot get the answer does not start. A
+preview through the service builds that image first when it is not built yet, a validation
+starts that build and reports the question unchecked until it is done, and composing without a
+service refuses such a campaign rather than asking another image. Every
+run of a configuration therefore records the same topic set, and
 ``<config>/_config/recording.config`` lists what was left out and why. Sensor streams the
 simulator does not render, such as ``/scan``, ``/odom`` or ``/imu``, stay in the bag, as does
 everything that exists only in ROS: the stack's commands, plans, transforms and ``/clock``.

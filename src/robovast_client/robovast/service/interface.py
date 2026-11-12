@@ -2110,10 +2110,14 @@ class PreviewResponse(BaseModel):
     the background (``progress`` then counts its steps once the first is counted), ``ready``
     once every other field holds, and ``failed`` when the expansion raised, with ``error``
     saying why; the counts and ``configurations`` are empty in every state but ``ready``.
+    ``stage`` says what a ``composing`` preview waits on before it can compose: the build of
+    the image the campaign's simulator runs in, which the preview builds when it is not built
+    yet.
     """
 
     state: Literal["composing", "ready", "failed"] = "ready"
     progress: Optional[StepProgress] = None
+    stage: str = ""
     error: str = ""
     configs: int = 0
     runs_per_config: int = 0
@@ -3978,6 +3982,13 @@ class RobovastInterface(ABC):
         Both containers are held, so a repeat validation of the same project pays an exec
         rather than a container start. Pass ``False`` while iterating on YAML to keep the
         call sub-second.
+
+        A simulator whose container adds packages runs in the image the campaign builds, and
+        is asked there. An image not built yet is started building, as :meth:`start_campaign`
+        builds it, or its running build joined -- whatever ``check_world`` says, since
+        composing the file asks the simulator too -- and the call does not wait for it: the
+        simulator's checks are ``unchecked`` problems naming the build and how to follow its
+        log, and a validation once it is built answers them.
         """
 
     @abstractmethod
@@ -3990,10 +4001,17 @@ class RobovastInterface(ABC):
         nothing is executed or written. ``path`` selects which ``.vast`` (empty =
         the sole one); ``max_configs`` caps the returned list.
 
+        A simulator whose container adds packages runs in the image the campaign builds, and
+        is asked there: an image not built yet is built first, the same content-addressed
+        build :meth:`start_campaign` runs and then reuses, and a failed build fails the
+        preview with the build's id.
+
         With ``wait=False`` the call never waits on the expansion: the first call starts
-        it in the background and answers at once in state ``composing``; the caller polls
-        the same call until it is ``ready`` or ``failed``. A landed answer is served until
-        the ``.vast`` changes, and the next call after that composes again. That is how the
+        it in the background and answers at once in state ``composing``, with ``stage``
+        saying so while it builds; the caller polls
+        the same call until it is ``ready`` or ``failed``. A landed answer is given once, and
+        the call after it composes again, through the composition cache; one of a ``.vast``
+        edited since is not given. That is how the
         launcher learns the names its filter selects from without blocking on a helper
         container. A search ``.vast`` draws its configurations while it runs, so it is
         refused in that mode (``ValueError``); waiting for it previews a sample as before.

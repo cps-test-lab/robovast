@@ -3938,6 +3938,9 @@ export interface components {
          *     the background (``progress`` then counts its steps once the first is counted), ``ready``
          *     once every other field holds, and ``failed`` when the expansion raised, with ``error``
          *     saying why; the counts and ``configurations`` are empty in every state but ``ready``.
+         *     ``stage`` says what a ``composing`` preview waits on before it can compose: the build of
+         *     the image the campaign's simulator runs in, which the preview builds when it is not built
+         *     yet.
          */
         PreviewResponse: {
             /** Aux Containers */
@@ -3971,6 +3974,11 @@ export interface components {
              * @default 0
              */
             runs_per_config: number;
+            /**
+             * Stage
+             * @default
+             */
+            stage: string;
             /**
              * State
              * @default ready

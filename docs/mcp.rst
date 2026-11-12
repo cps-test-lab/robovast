@@ -255,9 +255,14 @@ The consequence is that each tier has something it structurally cannot settle, a
 place to say so is **the problem it reports**, not a tool description the reader has to
 remember and map onto their situation:
 
-* A world that only the campaign's own **built** image could describe cannot be checked
-  before that image exists. ``validate_project`` then reports that it was **not** checked and
-  names ``build_experiment_image``, rather than letting a silent reply read as a clean world.
+* A world that only the campaign's own **built** image can describe -- its simulator
+  container adds packages -- is asked there. ``preview_configurations`` builds that image
+  first when it is not built yet, the same content-addressed build ``start_campaign`` runs and
+  then reuses, and waits for it; a failed build is its answer, naming the build's log.
+  ``validate_project`` starts that build, or joins the running one, and does not wait: the
+  simulator's checks come back ``unchecked``, naming the build and ``get_image_build_log``. Composed with no service (an address on the
+  MCP-server host), there is no such image, and the reply says the simulator was **not**
+  asked and that a preview through the service builds it.
 * A ``plugins:`` spec not yet installed for the project cannot be resolved by
   ``validate_project`` at all — declared specs are installed during config *generation*. A
   package already staged in ``.robovast_plugins/`` *is* resolved, by reading entry-point

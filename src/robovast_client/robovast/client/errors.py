@@ -52,6 +52,10 @@ def describe_cli_exception(e: Exception) -> str:
     if isinstance(e, click.ClickException):
         return e.format_message()
     logging.debug("Full traceback:\n%s", traceback.format_exc())
+    # An error that knows the command that moves the caller forward carries it as
+    # ``next_step`` (``robovast.common.errors.ActionableError``); the line says it too.
+    step = getattr(e, "next_step", "")
+    step = f" Next: {step}" if step else ""
     if getattr(e, "include_traceback", True):
-        return f"{e.__class__.__name__}: {failure_detail(e)}"
-    return failure_detail(e)
+        return f"{e.__class__.__name__}: {failure_detail(e)}{step}"
+    return f"{failure_detail(e)}{step}"

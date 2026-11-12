@@ -310,14 +310,30 @@ Four rules make those answers trustworthy:
   for an experiment whose world ships in its own built image.
   :func:`~robovast.common.simulators.simulator_image` is the one place that decides, because
   :func:`~robovast.common.simulators.apply_backend` applies the same precedence to the *run* and
-  a second copy would be free to disagree with it.
+  a second copy would be free to disagree with it. For a simulator container that adds packages
+  it answers the symbolic ``build:<container>``, and composition runs the query in the image the
+  service registered for that container over the span
+  (:func:`~robovast.common.config_generation.set_built_images`, installed by
+  ``ServiceBase._built_images_context``): the image a campaign pinned; for a preview, the one
+  the service's store holds, built and waited for when it is not
+  (``ServiceBase._build_for_composition``, through the same ``_start_build_images`` hook
+  ``start_campaign`` uses, so the campaign finds the image built); for a validation, the
+  stored one, or the build it starts or joins without waiting
+  (``ServiceBase._start_composition_builds``), which a query then refuses naming; for an exec
+  or a description, the stored one or nothing. One that is not registered raises
+  :class:`~robovast.common.errors.ImageNotBuilt` and is never answered from another image --
+  in a process no service arranged, naming a preview through a service. A replay registers
+  the image its source asked the simulator in, by the auxiliary containers the source
+  recorded (``ServiceBase._replayed_built_images``). The composition cache is keyed on the
+  registered refs, so a rebuilt image is asked again.
 * **In the environment the run has.** Loading a world loads its plugins, and a ROS simulator's
   bridge is installed in the overlay a run's entrypoint sources. A runner enters a query's
   container without that entrypoint, so the query's command sets the environment up itself
   (:func:`~robovast.common.execution.run_env_prefix`, the same setup the entrypoint runs); asked
   without it, the world the query loads is not the one the run will.
 * **An unanswerable question says so.** ``WorldQueryUnavailable`` names which reason it is -- no
-  backend, an unbuilt ``build:<tag>``, no container runner here, a command that failed. A
+  backend, no container runner here, a command that failed -- and ``ImageNotBuilt`` names the
+  image the campaign has still to build, with the call that builds it. A
   pre-check that logged this at debug and carried on would be indistinguishable from a check
   that passed, and a misspelled plugin key would first surface in the container.
 * **Half an answer beats none.** A simulator that exits non-zero having still *printed* a payload

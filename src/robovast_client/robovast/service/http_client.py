@@ -656,9 +656,12 @@ class HTTPTransport(RobovastInterface):
     def preview_configurations(
         self, workspace_id: str, max_configs: int = 0, path: str = "", wait: bool = True
     ) -> PreviewResponse:
+        # Waiting, the reply arrives once the campaign's image is built, which the service
+        # does first when its simulator runs in it; ``wait=False`` answers at once.
         return PreviewResponse.model_validate(self._post(
             Routes.workspace_preview(workspace_id),
-            json={"max_configs": max_configs, "path": path, "wait": wait}))
+            json={"max_configs": max_configs, "path": path, "wait": wait},
+            timeout=self.IMAGE_BUILD_TIMEOUT if wait else None))
 
     def describe_world(self, workspace_id: str, path: str = "", targets: str = "",
                        entities: bool = False) -> WorldDescription:
@@ -683,6 +686,13 @@ class HTTPTransport(RobovastInterface):
     #: with a ReadTimeout indistinguishable from a broken service. The web UI never hit
     #: this because ``fetch`` sets no timeout at all.
     DATA_TIMEOUT = 900.0
+
+    #: A preview that waits builds the campaign's image inside the request when its simulator
+    #: runs in it and it is not built yet: as long as an image build may
+    #: take, so a client does not report a timeout while the build is still going. A bound,
+    #: not a promise: a build that outlasts it is still running, and polling the preview
+    #: with ``wait=False`` follows it without one.
+    IMAGE_BUILD_TIMEOUT = 3600.0
 
     #: A screenshot renders inside the request, and on a node that has never run this
     #: campaign's simulator the first thing it does is pull the image. Same reasoning as

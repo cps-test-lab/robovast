@@ -1636,6 +1636,26 @@ def _message_with_next_step(exc):
     return f"{message} Next: {step}" if step else message
 
 
+def _image_not_built_report(exc, *, jobs=False):
+    """The report for a composition whose simulator is asked in an image not available here.
+
+    The simulator runs in the image the campaign builds (``config_generation.
+    _resolve_built_spec``), and it is not available here: a validation through a service has
+    started its build and not waited for it, or no service arranged the composition at all.
+    The message says which, and what to do. The file is not composed without the
+    simulator's answers, since which streams a world renders only on demand and which files it
+    is made of are part of what the configurations are; it is reported unchecked, naming where
+    the check runs.
+    """
+    report = {"valid": False,
+              "problems": [_problem("generation", _message_with_next_step(exc),
+                                    severity="unchecked")],
+              "configs": 0, "runs_per_config": 0, "total_trials": 0}
+    if jobs:
+        report["jobs"] = 0
+    return report
+
+
 def _skipped_generator_problems(records):
     """One ``unchecked`` problem per ``execution.generate`` entry that did not run.
 
@@ -1668,14 +1688,16 @@ def _batch_composition_report(config_path):
     """
     from robovast.common.config_generation import \
         generate_scenario_variations  # pylint: disable=import-outside-toplevel
-    from robovast.common.errors import \
-        ExecPathUnavailable  # pylint: disable=import-outside-toplevel
+    from robovast.common.errors import (  # pylint: disable=import-outside-toplevel
+        ExecPathUnavailable, ImageNotBuilt)
     from robovast.common.variation.base_variation import \
         VariationInfeasibleError  # pylint: disable=import-outside-toplevel
     unchecked = []
     try:
         campaign_data = generate_scenario_variations(
             variation_file=config_path, output_dir=None)
+    except ImageNotBuilt as e:
+        return _image_not_built_report(e)
     except ExecPathUnavailable as e:
         # Composed again without the queries that need one, exactly as the world query is
         # asked again without its overrides: the cartesian expansion this report exists to
@@ -1742,13 +1764,15 @@ def _search_composition_report(config_path):
     space, and the campaign tolerates it (skipping that param set) rather than
     dying.
     """
-    from robovast.common.errors import \
-        ExecPathUnavailable  # pylint: disable=import-outside-toplevel
+    from robovast.common.errors import (  # pylint: disable=import-outside-toplevel
+        ExecPathUnavailable, ImageNotBuilt)
     from robovast.search.compose import \
         preview_search_sample  # pylint: disable=import-outside-toplevel
     unchecked = []
     try:
         sample = preview_search_sample(config_path)
+    except ImageNotBuilt as e:
+        return _image_not_built_report(e, jobs=True)
     except ExecPathUnavailable as e:
         # As the batch report: the draws this preview exists to compose need no container,
         # and a deployment that cannot exec should lose the run-file query rather than the
