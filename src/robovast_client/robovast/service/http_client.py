@@ -689,7 +689,9 @@ class HTTPTransport(RobovastInterface):
 
     #: A preview that waits builds the campaign's image inside the request when its simulator
     #: runs in it and it is not built yet: as long as an image build may
-    #: take, so a client does not report a timeout while the build is still going.
+    #: take, so a client does not report a timeout while the build is still going. A bound,
+    #: not a promise: a build that outlasts it is still running, and polling the preview
+    #: with ``wait=False`` follows it without one.
     IMAGE_BUILD_TIMEOUT = 3600.0
 
     #: A screenshot renders inside the request, and on a node that has never run this

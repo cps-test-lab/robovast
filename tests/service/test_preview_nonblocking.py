@@ -94,6 +94,24 @@ def test_a_failed_preview_is_answered_once_and_composed_again(tmp_path):
     assert _settled(impl).state == "failed"
 
 
+def test_a_failure_of_a_file_since_edited_is_not_answered(tmp_path):
+    impl, vast = _impl(tmp_path, ["cell0"])
+    vast.write_text(_VAST % "- name: cell0\n  variations:\n  - NoSuchVariation: {}")
+    deadline = time.monotonic() + 60
+    # Let the failure land without reading it, as when nobody polls while the file is fixed.
+    impl.preview_configurations("ws", wait=False)
+    while time.monotonic() < deadline:
+        with impl._previews_lock:  # pylint: disable=protected-access
+            if any(h[1].state == "failed" for h in impl._previews.values()):  # noqa: SLF001
+                break
+        time.sleep(0.05)
+    vast.write_text(_VAST % "- name: cell0")
+    stat = vast.stat()
+    os.utime(vast, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert impl.preview_configurations("ws", wait=False).state == "composing"
+    assert _settled(impl).state == "ready"
+
+
 def test_a_search_vast_is_refused(tmp_path):
     impl, vast = _impl(tmp_path, ["cell0"])
     vast.write_text(vast.read_text() + "search: {}\n")

@@ -336,6 +336,18 @@ def test_a_replay_whose_source_asked_the_base_image_asks_the_base_again(tmp_path
         assert config_generation.replays_base_image("simulation")
 
 
+def test_a_replay_whose_source_recorded_another_build_asks_the_base_again(tmp_path):
+    """Every built image shares a repository, so its auxiliary container name: only the pinned
+    digest says whether the source asked the simulator in this one."""
+    service = serving(tmp_path / "results", tmp_path / "workspaces")
+    pinned = "registry.example/robovast-builds@sha256:" + "1" * 64
+    options = RunOptions(images={"simulation": pinned}, images_fixed=True,
+                         aux_images={"aux-robovast-builds": "sha256:" + "3" * 64})
+
+    with service._built_images_context(_vast(tmp_path), options=options) as images:
+        assert images == {"simulation": REPLAYED_BASE}
+
+
 @pytest.mark.requires_simulator
 def test_a_replay_composes_in_the_image_its_source_recorded(tmp_path, monkeypatch):
     """End to end through composition: the query of a replay whose source asked the base image

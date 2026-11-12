@@ -2382,7 +2382,7 @@ class ServiceBase(RobovastInterface):
 
         A replay runs only recorded digests, and the source recorded the image every query ran
         in among its auxiliary containers. A source that asked the simulator in the built image
-        recorded that image's container, and the replay asks it there; any other asked it in
+        recorded that image's container with the pinned digest, and the replay asks it there; any other asked it in
         the base image the build starts from, and the replay asks that one
         (``config_generation.REPLAYED_BASE``). Where the source recorded neither, the replay's
         own pins refuse the query, naming it.
@@ -2391,7 +2391,8 @@ class ServiceBase(RobovastInterface):
         from robovast.common.variation.container_runner import ContainerSpec
         images = {}
         for name, ref in pinned.items():
-            if ContainerSpec(image=ref).container_name() in recorded_aux:
+            recorded = recorded_aux.get(ContainerSpec(image=ref).container_name()) or ""
+            if recorded and recorded.rsplit("@", 1)[-1] == ref.rsplit("@", 1)[-1]:
                 images[name] = {"ref": ref, "identity": ref}
             else:
                 images[name] = dict(REPLAYED_BASE)
@@ -5099,9 +5100,12 @@ class ServiceBase(RobovastInterface):
             if held is not None and held[1].state == "failed":
                 # Answered once and dropped, so the next call composes again: what failed may
                 # be outside the .vast -- a build, a package source, a helper image -- and a
-                # held failure would outlive its fix.
+                # held failure would outlive its fix. One of a file since edited is not
+                # answered at all.
                 del self._previews[key]
-                return held[1]
+                if held[0] == mtime:
+                    return held[1]
+                held = None
             if held is not None and (held[1].state == "composing" or held[0] == mtime):
                 return held[1]
             started = PreviewResponse(state="composing")
