@@ -694,6 +694,31 @@ def backend_name(execution: dict) -> Optional[str]:
     return (block or {}).get("backend") if isinstance(block, dict) else None
 
 
+def fold_stepped_simulation(execution: dict) -> dict:
+    """*execution* with a stepped simulator's container-level keys moved onto ``scenario``.
+
+    A stepped simulator IS the scenario container, so its two blocks collapse into one: the
+    keys of :data:`_CONTAINER_KEYS` (``image``, ``resources``, ...) move from ``simulation`` to
+    ``scenario`` wherever ``scenario`` does not set them itself, and ``simulation`` keeps only
+    ``backend`` and the backend's own keys, which is what marks it as folded. Anything else --
+    the ROS shape, or no backend named -- comes back with its blocks as they are.
+
+    :func:`apply_backend` folds through this before any backend default lands. It needs no
+    backend resolved, so a reader of a finished campaign's config (the sizing advice) learns
+    from it which reservation the single container ran with.
+    """
+    containers = {name_: dict(block or {})
+                  for name_, block in (execution.get("containers") or {}).items()}
+    if (backend_name(execution)
+            and shape_for(execution.get("mode", "auto")) == SHAPE_STEPPED):
+        sim_block = containers.get(SIMULATION_CONTAINER) or {}
+        scenario_block = containers.setdefault(SCENARIO_CONTAINER, {})
+        for key in _CONTAINER_KEYS:
+            if sim_block.get(key) is not None:
+                _set_if_unset(scenario_block, key, sim_block.pop(key))
+    return {**execution, "containers": containers}
+
+
 def apply_backend(execution: dict, base_dir: str = "") -> dict:
     """Return *execution* with its backend's contributions merged in.
 
@@ -720,24 +745,11 @@ def apply_backend(execution: dict, base_dir: str = "") -> dict:
             f"'{execution.get('mode')}' implies; it supports: "
             + ", ".join(sorted(backend.SUPPORTED_SHAPES)))
 
-    containers = {name_: dict(block or {})
-                  for name_, block in (execution.get("containers") or {}).items()}
+    # The author's keys move *first*, so a backend default cannot outrank an image set on the
+    # ``simulation`` block -- the block they would naturally reach for, since that is where
+    # they named the backend in the first place.
+    containers = fold_stepped_simulation(execution)["containers"]
     cfg = _validated_cfg(backend, containers.get(SIMULATION_CONTAINER) or {}, name)
-
-    if shape == SHAPE_STEPPED:
-        # A stepped simulator IS the scenario container -- so collapse the two blocks
-        # here, where the shape is known, rather than leaving the container planner to
-        # infer it. Container-level keys move to ``scenario``; ``simulation`` keeps only
-        # ``backend`` and the backend's own keys, which is what marks it as folded.
-        #
-        # The author's keys move *first*, so a backend default cannot outrank an image
-        # set on the ``simulation`` block -- the block they would naturally reach for,
-        # since that is where they named the backend in the first place.
-        sim_block = containers.get(SIMULATION_CONTAINER) or {}
-        scenario_block = containers.setdefault(SCENARIO_CONTAINER, {})
-        for key in _CONTAINER_KEYS:
-            if sim_block.get(key) is not None:
-                _set_if_unset(scenario_block, key, sim_block.pop(key))
 
     for target, defaults in backend.containers(cfg, execution).items():
         block = containers.setdefault(target, {})
@@ -1293,6 +1305,7 @@ __all__ = [
     "checked_streams",
     "declares_on_demand_streams",
     "flatten_sim_block",
+    "fold_stepped_simulation",
     "ground_truth_source",
     "merge_sim_block",
     "resolve_backend",

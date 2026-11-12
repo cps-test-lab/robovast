@@ -988,9 +988,22 @@ samples: a campaign of sub-second runs yields single digits of in-window ticks a
 run put together, and a p95 over seven points is the maximum wearing a percentile's name.
 
 The advice works on a campaign that declares no ``resources`` block at all — which is the
-campaign that most needs it, since nothing else says what to set. The container *names* are
-read from the config either way, so the measured main container (recorded under the role name
-``robovast``) still resolves to a name that appears in the reader's file.
+campaign that most needs it, since nothing else says what to set. Each measured container is
+compared with the reservation it ran with, which composition decides rather than a match by
+name: the main container, recorded under the role name ``robovast``, runs with the
+``scenario`` block's ``resources`` — or, when the simulator is stepped in-process, with the
+``simulation`` block's where ``scenario`` sets none, because the two blocks fold into that one
+container. It is named by the block the reservation was written on, the line the reader edits.
+
+A container held at its own CPU limit — throttled in as many of its periods as
+``run_validity_view.quota_bound`` takes for bound — is not compared with its reservation: what
+it was measured using is the limit read back. The advice says it was held at its declared
+figure and gives the suggestion as a floor (``cpu_limit_bound``).
+
+The advice an agent gets sizes memory on the kernel's own figure where ``system_usage``
+recorded one: ``anon + shmem + slab`` where every sample recorded all three, otherwise the
+cgroup's peak, which includes page cache; summed RSS only where neither was recorded. It says
+which one it used.
 
 **The same advice reaches an agent.** ``get_campaign_summary`` in the MCP server returns an
 ``advice`` list computed by :mod:`robovast.results_processing.advice`, which is the authority
