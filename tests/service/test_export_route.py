@@ -106,6 +106,7 @@ def _extract(payload: bytes, into):
 # -- the tables ---------------------------------------------------------------------------------
 
 
+@pytest.mark.needs_pigz
 def test_a_parquet_export_writes_every_table_and_the_records(client, transport):
     import pyarrow.parquet as pq
 
@@ -138,6 +139,7 @@ def test_a_parquet_export_writes_every_table_and_the_records(client, transport):
     assert not [n for n in members if n.startswith(f"{_CAMPAIGN}/") and "bag" in n]
 
 
+@pytest.mark.needs_pigz
 def test_a_csv_export_is_the_same_rows_as_text(client, transport):
     import csv
 
@@ -151,6 +153,7 @@ def test_a_csv_export_is_the_same_rows_as_text(client, transport):
     assert "tables/collision.csv" not in _members(payload)
 
 
+@pytest.mark.needs_pigz
 def test_runs_is_always_written(client, transport):
     _export_id, status = _create(client, transport, {"tables": []})
     assert list(status["tables"]) == ["runs"]
@@ -164,6 +167,7 @@ def test_a_table_the_catalog_lacks_is_refused_before_anything_is_built(client, c
     assert not (campaign / ".cache" / "exports").exists()
 
 
+@pytest.mark.needs_pigz
 def test_records_can_be_left_out(client, transport):
     export_id, _status = _create(client, transport, {"records": False})
     members = _members(_download(client, export_id))
@@ -192,6 +196,7 @@ def test_a_running_campaign_is_not_exported(client, transport, monkeypatch):
 # -- the bags -----------------------------------------------------------------------------------
 
 
+@pytest.mark.needs_pigz
 def test_mcap_bags_are_copied_as_recorded(client, transport, campaign):
     export_id, _status = _create(client, transport, {"bags": "mcap", "records": False})
     payload = _download(client, export_id)
@@ -203,6 +208,7 @@ def test_mcap_bags_are_copied_as_recorded(client, transport, campaign):
         (campaign / _BAG / "rosbag2_0.mcap").read_bytes()
 
 
+@pytest.mark.needs_pigz
 def test_sqlite3_bags_carry_every_message_and_topic(client, transport, campaign, tmp_path):
     from rosbags.rosbag2 import Reader
 
@@ -259,6 +265,7 @@ def test_a_channel_without_a_definition_is_refused_by_topic_and_type(client, tra
 # -- who may fetch it ---------------------------------------------------------------------------
 
 
+@pytest.mark.needs_pigz
 def test_a_token_scoped_to_the_campaign_downloads_its_export_and_nothing_else(
         client, transport):
     export_id, _status = _create(client, transport, {"tables": []})
@@ -277,6 +284,7 @@ def test_a_token_scoped_to_the_campaign_downloads_its_export_and_nothing_else(
 # -- across a restart ---------------------------------------------------------------------------
 
 
+@pytest.mark.needs_pigz
 def test_a_finished_export_answers_its_status_from_disk(client, transport, tmp_path, campaign):
     export_id, status = _create(client, transport, {"tables": []})
     assert (export_dir(campaign, export_id) / EXPORT_FILE).is_file()
@@ -302,6 +310,7 @@ def test_an_export_lost_to_a_restart_reads_as_failed(tmp_path, campaign):
             _CAMPAIGN, "0123456789ab")).status_code == 404
 
 
+@pytest.mark.needs_pigz
 def test_a_finished_export_is_kept_a_day_and_removed_when_the_next_one_starts(
         client, transport, campaign):
     from datetime import datetime, timedelta, timezone

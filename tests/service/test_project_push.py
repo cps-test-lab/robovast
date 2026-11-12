@@ -399,6 +399,7 @@ def test_list_workspaces_separates_running_from_still_preparing(client):
 # Pulling a workspace back out
 # ---------------------------------------------------------------------------
 
+@pytest.mark.needs_pigz
 def test_a_workspace_round_trips_through_a_directory(tmp_path):
     """Push a project, pull it back, and get the same files.
 
@@ -429,6 +430,7 @@ def test_a_workspace_round_trips_through_a_directory(tmp_path):
     assert (target / "files" / "params.yaml").read_text(encoding="utf-8") == "a: 1\n"
 
 
+@pytest.mark.needs_pigz
 def test_pulling_refuses_to_overwrite_local_files(tmp_path):
     """Pulling into a directory holding an edited copy of the same project is the likely mistake,
     and overwriting somebody's local edits is not recoverable -- so it is refused per file rather
@@ -455,6 +457,7 @@ def test_pulling_refuses_to_overwrite_local_files(tmp_path):
     assert (target / "campaign.vast").read_text(encoding="utf-8") == "version: 7\n"
 
 
+@pytest.mark.needs_pigz
 def test_the_executable_bit_survives_the_round_trip(tmp_path):
     """It is carried *out* by push_file, so a run script that came back non-executable would fail
     at the point of use rather than here -- where nothing would explain it."""
