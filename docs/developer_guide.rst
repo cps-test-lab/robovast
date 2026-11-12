@@ -2539,9 +2539,9 @@ since, and the next call composes again: what it was composed from reaches past 
 launcher therefore asks only when the file's content changes, not on every window focus. A
 search ``.vast`` previews one sample in it, marked ``search``.
 ``robovast.client.preview.await_preview`` polls it for ``vast workspace preview`` and the MCP
-``preview_configurations`` tool, so both say what a preview waits on; it passes over a landed
-answer on its first call, which another poller left and may predate an edit, and the tool
-stops after ``_PREVIEW_WAIT_S`` and answers ``composing`` with the call to repeat. Both it and
+``preview_configurations`` tool, so both say what a preview waits on; the tool stops after
+``_PREVIEW_WAIT_S`` and answers ``composing`` with the call to repeat, and the repeated call
+takes the preview that landed in between. Both it and
 a campaign's ``variation`` phase read their step
 counter from the composition progress line through ``config_generation.parse_composition_step``,
 which a campaign publishes as ``Status.variation``. The launcher checks its filter against the names with

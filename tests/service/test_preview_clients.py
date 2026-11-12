@@ -39,12 +39,22 @@ def _building():
     return PreviewResponse(state="composing", stage=BUILDING)
 
 
-def test_a_landed_answer_on_the_first_call_is_composed_again():
-    """It was composed before this call was asked, and may predate an edit."""
-    stale = READY.model_copy(update={"configs": 7})
-    service = _Service(stale, _building(), READY)
-    assert await_preview(service, "ws-1", poll_s=0) is READY
-    assert len(service.asked) == 3
+def test_a_repeated_mcp_call_picks_up_the_preview_its_first_call_left(monkeypatch):
+    """The handle the tool answers with is redeemed by calling again: the preview that landed
+    in between is the answer, not a reason to compose again."""
+    from robovast.mcp_server import service_access
+    from robovast.mcp_server.plugins import authoring
+
+    service = _Service(_building())
+    monkeypatch.setattr(service_access, "service_client", lambda: service)
+    monkeypatch.setattr(authoring, "_PREVIEW_WAIT_S", 0)
+    monkeypatch.setattr("robovast.client.preview.time.sleep", lambda _s: None)
+    assert authoring.preview_configurations("/sources/ws-1/campaign.vast")["state"] == "composing"
+
+    service.answers = [READY]
+    reply = authoring.preview_configurations("/sources/ws-1/campaign.vast")
+    assert reply["configs"] == 1
+    assert len(service.asked) == 2, "the landed preview is taken on the first poll"
 
 
 def test_each_stage_is_said_once_and_the_ready_preview_returned():

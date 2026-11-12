@@ -35,9 +35,9 @@ def await_preview(client, workspace_id: str, max_configs: int = 0, path: str = "
                   deadline_s: Optional[float] = None, poll_s: float = POLL_SECONDS):
     """Poll ``preview_configurations(wait=False)`` until it is ``ready``, and return it.
 
-    A landed answer on the first call was composed before this one was asked -- another
-    poller's, which it had not read -- and may predate an edit, so it is passed over and the
-    preview composed again; the composition cache makes that cheap when nothing changed.
+    A landed answer is given once, so the one this returns is the composition its own calls
+    started or resumed -- the MCP tool's repeated call picks up the preview its first call
+    left composing.
 
     *on_stage* hears each new ``stage`` -- what the preview waits on before it can compose,
     such as the build of the campaign's image -- once. With *deadline_s*, a preview still
@@ -50,14 +50,9 @@ def await_preview(client, workspace_id: str, max_configs: int = 0, path: str = "
     started = time.monotonic()
     said = ""
     pause = min(poll_s, FIRST_POLL_SECONDS)
-    first = True
     while True:
         answer = client.preview_configurations(workspace_id, max_configs=max_configs,
                                                path=path, wait=False)
-        if first and answer.state != "composing":
-            first = False
-            continue
-        first = False
         if answer.state == "failed":
             raise PreviewFailed(answer.error or "the preview failed")
         if answer.state != "composing":
