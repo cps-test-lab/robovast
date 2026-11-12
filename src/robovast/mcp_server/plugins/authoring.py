@@ -317,10 +317,13 @@ def preview_configurations(address: str, limit: int = 0) -> dict:
     """
     from robovast.common.common import load_config
     from robovast.common.config_generation import generate_scenario_variations
+    from robovast.common.config_validation import check_before_composing
     from robovast.common.execution import planned_job_count, planned_pod_statements
     from robovast.service.project_push import _resolve_workspace_id
     target = _address_route(address)
     if target is None:
+        # A file's own problem is told before anything composes it.
+        check_before_composing(address)
         # A search .vast expands per sampled ParamSet, not from a `configuration:`
         # block; composing a sample is the only preview that reflects what it runs.
         aux: list = []

@@ -6,7 +6,9 @@
 A campaign's span maps a container to the image the campaign pinned for it, and a replay to the
 image its source asked the simulator in. A preview or a validation maps it to the image the
 store holds, building it first -- through the build ``start_campaign`` runs, so the campaign
-then finds it built. An exec maps an unbuilt one to ``None``. Composition reads the map
+then finds it built -- once the checks a validation runs before composing pass, so a preview of
+a file with a problem of its own fails with it and builds nothing. An exec maps an unbuilt one
+to ``None``. Composition reads the map
 (``config_generation.set_built_images``) when it asks the simulator.
 """
 
@@ -18,8 +20,9 @@ import pytest
 
 from robovast.common import config_generation
 from robovast.common.config_generation import REPLAYED_BASE, built_images
-from robovast.common.errors import (CampaignConfigError, ImageBuildFailed,
-                                    ImageStoreUnavailable, InsufficientStorageError)
+from robovast.common.config_validation import problem_line
+from robovast.common.errors import (CampaignConfigError, ImageBuildFailed, ImageStoreUnavailable,
+                                    InsufficientStorageError, ProjectFileInvalid)
 from robovast.execution.backends import RunOptions
 from robovast.service.image_store import ImageBuildStore, ImageRef
 from robovast.service.interface import ImageBuildError, ImageBuildRef, ImageBuildStatus
@@ -241,13 +244,8 @@ def test_start_campaign_after_a_preview_reuses_its_image(building, monkeypatch):
     assert used == {"simulation": BUILT_REF}
 
 
-@pytest.mark.requires_simulator
-def test_a_background_preview_says_it_is_building_then_answers(building, monkeypatch):
-    """The launch bar's preview: ``composing`` with a ``stage`` naming the build while the
-    image builds, then the configurations, composed with the simulator asked in that image."""
-    service, _vast_file = building()
-    service.release = threading.Event()
-    monkeypatch.setattr(service, "_BUILD_POLL_SECONDS", 0.01)
+def _answer_in_any_image(monkeypatch):
+    """Answer the simulator's queries in whichever image they are asked; the images asked."""
     asked = []
 
     class _Runner:
@@ -269,21 +267,33 @@ def test_a_background_preview_says_it_is_building_then_answers(building, monkeyp
 
     monkeypatch.setattr(config_generation, "_make_container_runner",
                         lambda spec, **_kwargs: _Runner(spec.image))
+    return asked
 
-    def _poll(until):
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            answer = service.preview_configurations("ws", wait=False)
-            if until(answer):
-                return answer
-            time.sleep(0.01)
-        raise AssertionError("the preview never got there")
 
-    building_now = _poll(lambda a: a.stage)
+def _poll(service, until):
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        answer = service.preview_configurations("ws", wait=False)
+        if until(answer):
+            return answer
+        time.sleep(0.01)
+    raise AssertionError("the preview never got there")
+
+
+@pytest.mark.requires_simulator
+def test_a_background_preview_says_it_is_building_then_answers(building, monkeypatch):
+    """The launch bar's preview: ``composing`` with a ``stage`` naming the build while the
+    image builds, then the configurations, composed with the simulator asked in that image."""
+    service, _vast_file = building()
+    service.release = threading.Event()
+    monkeypatch.setattr(service, "_BUILD_POLL_SECONDS", 0.01)
+    asked = _answer_in_any_image(monkeypatch)
+
+    building_now = _poll(service, lambda a: a.stage)
     assert building_now.state == "composing"
     assert "building the campaign's image for container 'simulation'" in building_now.stage
     service.release.set()
-    ready = _poll(lambda a: a.state != "composing")
+    ready = _poll(service, lambda a: a.state != "composing")
     assert ready.state == "ready", ready.error
     assert ready.configs == 1
     assert asked and set(asked) == {BUILT_REF}, "the simulator is asked in the built image"
@@ -406,6 +416,63 @@ def test_a_file_with_a_problem_of_its_own_reports_it_and_starts_no_build(
     assert report.world_checked is False
     assert [p.stage for p in report.problems] == ["scenario_file"], report.problems
     assert "missing.osc" in report.problems[0].message
+
+
+# -- a preview runs validation's checks that need no container before it builds -------------
+
+def _break_the_scenario(vast_file):
+    with open(vast_file, encoding="utf-8") as handle:
+        text = handle.read()
+    with open(vast_file, "w", encoding="utf-8") as handle:
+        handle.write(text.replace("scenario_file: scenario.osc", "scenario_file: missing.osc"))
+
+
+def _no_build(service, monkeypatch):
+    monkeypatch.setattr(service, "_built_images_context", lambda *a, **k: pytest.fail(
+        "a file with a problem of its own starts no build and waits on none"))
+
+
+def test_a_preview_of_a_file_with_a_problem_of_its_own_fails_without_a_build(
+        building, monkeypatch):
+    service, vast_file = building()
+    _break_the_scenario(vast_file)
+    (validated,) = service.validate_project("ws", check_world=False,
+                                            check_scenario=False).problems
+    _no_build(service, monkeypatch)
+
+    with pytest.raises(ProjectFileInvalid) as failed:
+        service.preview_configurations("ws")
+
+    assert str(failed.value) == problem_line(validated.model_dump()), "validation's words"
+    assert "missing.osc" in str(failed.value)
+    assert [p["stage"] for p in failed.value.problems] == ["scenario_file"]
+    assert service.started == []
+
+
+def test_a_background_preview_reports_the_problem_as_its_result(building, monkeypatch):
+    service, vast_file = building()
+    _break_the_scenario(vast_file)
+    _no_build(service, monkeypatch)
+
+    failed = _poll(service, lambda a: a.state != "composing")
+
+    assert failed.state == "failed"
+    assert failed.error.startswith("[scenario_file] field=execution.scenario_file: ")
+    assert "missing.osc" in failed.error
+    assert service.started == []
+
+
+@pytest.mark.requires_simulator
+def test_a_preview_of_a_valid_file_still_builds_then_composes(building, monkeypatch):
+    service, _vast_file = building()
+    monkeypatch.setattr(service, "_BUILD_POLL_SECONDS", 0.01)
+    asked = _answer_in_any_image(monkeypatch)
+
+    ready = service.preview_configurations("ws")
+
+    assert service.started == ["b-simulation"]
+    assert ready.configs == 1
+    assert asked and set(asked) == {BUILT_REF}
 
 
 # -- a replay asks the simulator in the image its source asked it in ------------------------

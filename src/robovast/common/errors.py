@@ -138,6 +138,23 @@ class ImageBuildFailed(RuntimeError):
     include_traceback = False
 
 
+class ProjectFileInvalid(ValueError):
+    """A ``.vast`` file has problems of its own, found by the checks that need no container.
+
+    Raised where a composition would otherwise first start or wait on an image build
+    (``config_validation.check_before_composing``). The message is one line per problem, each
+    as a validation reports it, so the first line is the first problem; *problems* keeps them
+    in the validation's ``{stage, config, field, message, severity}`` shape. A
+    ``ValueError``: the request is bad input, answered as such.
+    """
+
+    include_traceback = False
+
+    def __init__(self, message: str, problems: list):
+        super().__init__(message)
+        self.problems = list(problems)
+
+
 class ActionableError(Exception):
     """An error that knows the one command that would move the caller forward.
 

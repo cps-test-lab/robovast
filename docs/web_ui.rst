@@ -297,8 +297,10 @@ here by what they do:
   default; the share destination comes from the service's ``.env``).
   Once a ``.vast`` is selected the service composes it in the background, with a spinner and
   how many variation steps are done, and the config filter then offers its configuration
-  names: pick one or several, or type a glob to narrow the list. A filter that matches none
-  of them keeps *Launch* disabled. While a launched campaign composes, its run bar counts the
+  names: pick one or several, or type a glob to narrow the list. A ``.vast`` with a problem
+  of its own -- one validation finds without a container -- has its first problem named under
+  the filter at once, and no image build starts for it. A filter that matches none of them
+  keeps *Launch* disabled. While a launched campaign composes, its run bar counts the
   variation steps instead.
 * **Config** — a workspace-based ``.vast`` editor with live validation, a
   generated-configuration preview, and a per-configuration view the ``.vast`` declares. It
