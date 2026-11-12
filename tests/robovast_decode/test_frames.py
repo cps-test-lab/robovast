@@ -144,9 +144,11 @@ def test_the_index_lists_every_frame_in_order_and_finds_the_nearest(tmp_path, ch
     assert index.typename == COMPRESSED and index.encoding == "cdr"
     assert index.times == [t / 1e9 for t in stamps]
     assert index.times == sorted(index.times)
-    assert len({(e.segment, e.offset, e.index) for e in index.entries}) == 5, "distinct places"
+    assert len({(e.segment, e.offset, e.index, e.inner) for e in index.entries}) == 5, \
+        "distinct places"
     if chunked:
-        assert any(e.index > 0 for e in index.entries), "messages of one chunk are told apart"
+        assert all(e.inner is not None for e in index.entries), "placed by the message index"
+        assert len({e.offset for e in index.entries}) < 5, "messages of one chunk told apart"
 
     assert index.nearest(stamps[2] / 1e9 + 0.5) is index.entries[2], "last at or before t"
     assert index.nearest(stamps[2] / 1e9) is index.entries[2], "at t counts"

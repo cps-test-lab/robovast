@@ -187,6 +187,15 @@ one pass over the finished recording gives. The derived tables are re-derived wh
 job's files grow, on the same period. What the recording holds, topic by topic, is the
 ``_recording`` table (:ref:`its section <results-recording-table>`).
 
+**Packed once closed.** When the campaign is postprocessed, every closed mcap file of a run is
+rewritten in place into zstd chunks with a message index per channel and a summary that
+indexes the chunks (:ref:`packed recordings <results-packed-recordings>`). A recording a
+backend writes that way itself -- zstd chunks its summary indexes, as roqsim writes its own --
+is left as written. A closed, packed file is read through its index: the message at one moment
+costs its one chunk. A file without the index -- still being written, or chunked without message indexes --
+is walked record by record, and a footer that names a summary which does not parse is an
+error rather than a walk.
+
 Level 4: now
 ------------
 
