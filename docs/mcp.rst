@@ -259,8 +259,9 @@ remember and map onto their situation:
   container adds packages -- is asked there. ``preview_configurations`` builds that image
   first when it is not built yet, the same content-addressed build ``start_campaign`` runs and
   then reuses; a failed build is its answer, naming the build's log. The tool waits a bounded
-  time: a build still running then answers ``{state: "composing", stage, next_step}``, the
-  stage naming the build, and calling it again picks the same preview up.
+  time: a preview still composing then answers ``{state: "composing", stage, progress,
+  next_step}`` -- ``stage`` naming the build it waits on, ``progress`` the variation steps
+  done -- and calling it again picks the same preview up.
   ``validate_project`` starts that build, or joins the running one, and does not wait: the
   simulator's checks come back ``unchecked``, naming the build and ``get_image_build_log``. Composed with no service (an address on the
   MCP-server host), there is no such image, and the reply says the simulator was **not**

@@ -17,6 +17,11 @@ from typing import Callable, Optional
 #: costs one small request.
 POLL_SECONDS = 1.0
 
+#: The first poll after the one that starts the preview: one that needs no build or helper
+#: container lands in a fraction of a second, and waiting a whole interval for it is a delay
+#: the waited call never had.
+FIRST_POLL_SECONDS = 0.1
+
 
 class PreviewFailed(RuntimeError):
     """The preview's composition, or the image build it waited on, failed."""
@@ -40,6 +45,7 @@ def await_preview(client, workspace_id: str, max_configs: int = 0, path: str = "
     """
     started = time.monotonic()
     said = ""
+    pause = min(poll_s, FIRST_POLL_SECONDS)
     while True:
         answer = client.preview_configurations(workspace_id, max_configs=max_configs,
                                                path=path, wait=False)
@@ -53,4 +59,5 @@ def await_preview(client, workspace_id: str, max_configs: int = 0, path: str = "
                 on_stage(answer.stage)
         if deadline_s is not None and time.monotonic() - started >= deadline_s:
             return answer
-        time.sleep(poll_s)
+        time.sleep(pause)
+        pause = poll_s
