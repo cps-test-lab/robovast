@@ -39,6 +39,14 @@ def _building():
     return PreviewResponse(state="composing", stage=BUILDING)
 
 
+def test_a_landed_answer_on_the_first_call_is_composed_again():
+    """It was composed before this call was asked, and may predate an edit."""
+    stale = READY.model_copy(update={"configs": 7})
+    service = _Service(stale, _building(), READY)
+    assert await_preview(service, "ws-1", poll_s=0) is READY
+    assert len(service.asked) == 3
+
+
 def test_each_stage_is_said_once_and_the_ready_preview_returned():
     service = _Service(_building(), _building(), PreviewResponse(state="composing"), READY)
     said = []
