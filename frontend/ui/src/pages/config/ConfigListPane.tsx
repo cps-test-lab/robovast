@@ -15,7 +15,8 @@ import { PodLines } from './ConfigEditorPane'
 import { type ConfigEditor } from './useConfigEditor'
 
 export function ConfigListPane({ editor }: { editor: ConfigEditor }) {
-  const { selected, generate, preview, previewErr, selectedCfg, setSelectedCfg } = editor
+  const { selected, generate, preview, previewErr, previewStage, selectedCfg, setSelectedCfg } =
+    editor
 
   return (
     <Stack spacing={1} sx={{ minWidth: 0, height: '100%' }}>
@@ -28,6 +29,11 @@ export function ConfigListPane({ editor }: { editor: ConfigEditor }) {
       >
         Generate
       </Button>
+      {generate.isPending ? (
+        <Typography variant="caption" color="text.secondary">
+          {previewStage || 'composing configurations…'}
+        </Typography>
+      ) : null}
       {preview ? (
         <Typography variant="caption" color="text.secondary">
           {preview.configs} configs · {preview.total_trials} trials

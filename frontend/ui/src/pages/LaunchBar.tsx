@@ -18,6 +18,7 @@ import { useActiveView } from '@/lib/activeView'
 import { useCompact } from '@/lib/compact'
 import { isGlob, matchConfigs, matchesPattern } from '@/lib/configFilter'
 import { DESCRIPTION_MAX_LEN, robovast } from '@/lib/robovastClient'
+import { composingLabel } from '@/lib/awaitPreview'
 import { ErrorText } from '@/components/StatusView'
 
 // Pull the `execution.runs` scalar out of a .vast (YAML) so the launcher can show "Runs per config"
@@ -163,7 +164,6 @@ export function LaunchBar() {
   // Launching this would only produce a campaign that fails composing its configurations.
   const noMatch = !!configFilter && matched?.length === 0
 
-  const progress = configNames.data?.progress
   const filterHelp = configNames.isError
     ? (configNames.error as Error).message
     : configNames.data?.state === 'failed'
@@ -171,9 +171,7 @@ export function LaunchBar() {
       : search
         ? 'a search draws its configurations while it runs; a filter does not apply to it'
         : composing
-          ? progress
-            ? `composing: ${progress.done} of ${progress.total} variations done`
-            : configNames.data?.stage || 'composing configurations…'
+          ? composingLabel(configNames.data)
           : matched
             ? noMatch
               ? `matches none of the ${names.length} configurations`
