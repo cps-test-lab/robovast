@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import re
 import shlex
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from robovast.common.config import (ALWAYS_ON_PANELS, SCENARIO_CONTAINER, SIMULATION_CONTAINER,
                                     RecordingConfig, recording_config,
@@ -95,6 +95,18 @@ def shape_for(mode: str) -> str:
     than being a second key an author has to keep consistent with the first.
     """
     return SHAPE_ROS if mode == "ros2" else SHAPE_STEPPED
+
+
+class RunReset(NamedTuple):
+    """What a run's parameter document tells the simulator at ``reset()``, in the stepped shape.
+
+    ``arguments`` is the document's ``_reset`` mapping -- the names scenario-execution passes to
+    the simulation's ``reset()`` for each one it declares; ``supersedes`` names the environment
+    variables of :meth:`SimulatorBackend.env` that carry the same facts for the process as a
+    whole, and which therefore no longer tell two configurations' pods apart.
+    """
+    arguments: dict
+    supersedes: tuple
 
 
 class SimulatorBackend:
@@ -154,6 +166,19 @@ class SimulatorBackend:
 
         ``None`` -- the default -- means this backend has no file form and everything it
         needs is already on argv; no file is written and nothing is mounted.
+        """
+        return None
+
+    def run_reset(self, cfg, execution: dict) -> Optional[RunReset]:
+        """What *cfg* tells the simulation per run through its document's ``_reset`` mapping.
+
+        In the stepped shape one scenario-execution process may run the runs of several
+        configurations one after another, and a configuration's world is then not the
+        process's but the run's: it travels in the run's parameter document and reaches the
+        simulation's ``reset()``, which rebuilds at a change. A backend that can be told its
+        world that way answers with the arguments and the environment names they supersede;
+        ``None`` -- the default, and the only answer in the ROS shape -- means the world is the
+        process's, so a job holds one.
         """
         return None
 
@@ -1187,7 +1212,7 @@ def declares_on_demand_streams(execution: dict, block: dict, base_dir: str = "")
 
 
 def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
-    """What one job's resolved ``sim`` block contributes: ``{command, env, document}``.
+    """What one job's resolved ``sim`` block contributes: ``{command, env, document, reset}``.
 
     :func:`apply_backend`'s per-job twin, and deliberately the *same* hooks: the command and
     the environment come from :meth:`~SimulatorBackend.containers` and
@@ -1195,12 +1220,13 @@ def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
     one thing at composition and another at dispatch.
 
     ``document`` is what the execution backend writes to :data:`SIM_OVERRIDES_MOUNT`, or ``None``.
+    ``reset`` is the backend's :meth:`~SimulatorBackend.run_reset` answer, or ``None``.
 
     The recording block is read from *execution*, the one :func:`apply_backend` read: the
     overlay's ``env`` is merged over the campaign-level contribution, so a job asked with a
     different block would silently rewrite what the run records.
     """
-    empty = {"command": None, "env": {}, "document": None}
+    empty = {"command": None, "env": {}, "document": None, "reset": None}
     name = backend_name(execution or {})
     if not name:
         return empty
@@ -1212,6 +1238,7 @@ def sim_job_overlay(execution: dict, block: dict, base_dir: str = "") -> dict:
         "command": sim_container.get("command"),
         "env": backend.env(cfg, execution, recording_config(execution.get("recording"))) or {},
         "document": backend.sim_document(cfg, execution),
+        "reset": backend.run_reset(cfg, execution),
     }
 
 
