@@ -2360,7 +2360,10 @@ class ServiceBase(RobovastInterface):
         campaign builds, as this service's store (or *campaign_id*'s record) holds it.
 
         ``None`` is an image that is not built; *required* raises
-        :class:`~robovast.common.errors.ImageNotBuilt` for one instead.
+        :class:`~robovast.common.errors.ImageNotBuilt` for one instead. A campaign whose
+        record does not resolve the image maps it to ``{"unresolved": reason}``: an exec into
+        another of its containers asks nothing of it, and a query that does is refused with
+        the reason.
         """
         from robovast.common.errors import ImageNotBuilt
         images = {}
@@ -2371,6 +2374,11 @@ class ServiceBase(RobovastInterface):
                 if required:
                     raise
                 images[name] = None
+                continue
+            except (ValueError, FileNotFoundError) as e:
+                if not campaign_id:
+                    raise
+                images[name] = {"unresolved": str(e)}
                 continue
             images[name] = {"ref": found.ref, "identity": found.identity}
         return images

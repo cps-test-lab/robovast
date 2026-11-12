@@ -169,6 +169,25 @@ def test_only_the_simulators_container_is_resolved(tmp_path, monkeypatch):
         assert images == {}
 
 
+def test_an_unresolvable_campaign_record_fails_only_a_query_that_asks(tmp_path, monkeypatch):
+    """An exec into an archived campaign whose record holds no digest for the simulator still
+    reaches its other containers; a query of the simulator is refused with the reason."""
+    from robovast.common.config_generation import _resolve_built_spec
+    from robovast.common.variation.container_runner import ContainerSpec
+
+    service = serving(tmp_path / "results", tmp_path / "workspaces")
+
+    def _unresolvable(*_args, **_kwargs):
+        raise ValueError("the campaign recorded only a tag for this role")
+
+    monkeypatch.setattr(service, "_resolve_exec_image", _unresolvable)
+    with service._built_images_context(_vast(tmp_path), campaign_id="c-1") as images:
+        assert images == {"simulation": {
+            "unresolved": "the campaign recorded only a tag for this role"}}
+        with pytest.raises(ValueError, match="recorded only a tag"):
+            _resolve_built_spec(ContainerSpec(image="build:simulation"))
+
+
 def test_a_preview_builds_an_unbuilt_image_and_says_so(building):
     service, vast = building()
     stages = []
