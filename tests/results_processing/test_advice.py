@@ -510,5 +510,167 @@ def test_the_sum_is_taken_inside_the_row_not_across_the_maxima():
     """anon, shmem and slab are independent gauges. Summing their separate maxima adds peaks
     that never coexisted, which is a reservation for a moment that did not happen."""
     sql = " ".join(A.SYSTEM_MEM_SQL.split())
-    assert "MAX(COALESCE(memory_anon, 0) + COALESCE(memory_shmem, 0)" in sql
+    assert "MAX(memory_anon + memory_shmem + memory_slab)" in sql
     assert "MAX(memory_anon)" not in sql
+
+
+def test_a_split_missing_a_part_is_not_read_as_zero():
+    """``slab`` has no cgroup v1 equivalent, and a sampler may not record it at all. A sum
+    short of it is biased downwards, so a table without it sizes from the plain peak -- and
+    still from the kernel's figure rather than failing over to summed RSS."""
+    sql = " ".join(A.system_mem_sql({"memory_peak", "memory_anon", "memory_shmem"}).split())
+    assert "memory_slab" not in sql
+    assert "0 AS samples_with_split" in sql
+
+
+# -- which reservation the measured container ran with --------------------------------------
+
+def _rows(execution):
+    """``config_view`` rows for an ``execution`` mapping, spelled as the view spells them."""
+    from robovast_data.record import config_tree  # pylint: disable=import-outside-toplevel
+    import json  # pylint: disable=import-outside-toplevel
+    import pyarrow as pa  # pylint: disable=import-outside-toplevel
+    table = config_tree(pa.table({"campaign_id": ["c"],
+                                  "config_json": [json.dumps({"execution": execution})]}))
+    return [{"fullkey": k, "value": v} for k, v in zip(table.column("fullkey").to_pylist(),
+                                                       table.column("value").to_pylist())]
+
+
+#: A simulator stepped in-process whose reservation is written on its ``simulation`` block --
+#: the pod has one container, measured as ``robovast``, while the ``.vast`` names two.
+_STEPPED = {"mode": "base", "shm_size": "512Mi", "containers": {
+    "simulation": {"backend": "roqsim", "config": "world/world.yaml",
+                   "resources": {"cpu": 1, "memory": "4Gi"}},
+    "scenario": {"image": "family:robovast-roqsim"}}}
+
+
+def test_a_stepped_simulators_reservation_is_the_one_its_single_container_ran_with():
+    reservations = A._reservations(A._declared(_rows(_STEPPED))[0])
+    assert reservations[A.MEASURED_MAIN_CONTAINER] == (
+        "simulation", {"cpu": "1", "memory": "4Gi"})
+
+
+def test_the_scenario_blocks_own_reservation_outranks_the_folded_one():
+    execution = {**_STEPPED, "containers": {
+        **_STEPPED["containers"], "scenario": {"resources": {"cpu": 2}}}}
+    label, resources = A._reservations(A._declared(_rows(execution))[0])["robovast"]
+    assert (label, resources) == ("scenario", {"cpu": "2"})
+
+
+def test_a_simulator_in_its_own_container_keeps_its_own_reservation():
+    """The ROS shape: the simulator is a sidecar measured under its own name, and the main
+    container has only what the scenario block reserves."""
+    execution = {**_STEPPED, "mode": "ros2"}
+    reservations = A._reservations(A._declared(_rows(execution))[0])
+    assert reservations["robovast"] == ("scenario", {})
+    assert reservations["simulation"] == ("simulation", {"cpu": "1", "memory": "4Gi"})
+
+
+def test_a_quoted_key_in_config_view_is_read_as_its_name():
+    """``config_view`` quotes a key that is not purely alphanumeric -- ``shm_size``, a
+    container called ``nav_stack`` -- so a match on the bare spelling finds nothing."""
+    execution = {"shm_size": "1Gi", "containers": {"nav_stack": {"resources": {"cpu": 3}}}}
+    declared, shm = A._declared(_rows(execution))
+    assert shm == 1024 ** 3
+    assert A._reservations(declared)["nav_stack"] == ("nav_stack", {"cpu": "3"})
+
+
+# -- one campaign end to end ---------------------------------------------------------------
+
+def _held_campaign(tmp_path):
+    """A stepped campaign reserving ``cpu: 1, memory: 4Gi`` on its ``simulation`` block, whose
+    one container sat at that core throttled in most periods, and whose sampler recorded the
+    cgroup peak and part of the split but no ``slab``."""
+    from tests.robovast_data.conftest import (  # pylint: disable=import-outside-toplevel
+        write_store)
+    from tests.robovast_decode.conftest import \
+        make_campaign  # pylint: disable=import-outside-toplevel
+    root = make_campaign(tmp_path / "held-2026-01-01-00000000")
+    write_store(root, {"cfg": {"runs": {0: "passed"}}}, config_json={"execution": _STEPPED})
+    ticks = range(60)
+    usage = ["timestamp,pid,name,cpu_percent,memory_rss_bytes,shm_used_bytes,shm_total_bytes"]
+    usage += [f"{1780000000 + t},1,python3,100.0,{700 * _MIB},{_MIB},{512 * _MIB}"
+              for t in ticks]
+    system = ["timestamp,nr_periods,nr_throttled,throttled_usec,memory_peak,memory_anon,"
+              "memory_shmem,memory_max"]
+    system += [f"{1780000000 + t},{10 * t},{9 * t},{1000 * t},{480 * _MIB},{360 * _MIB},"
+               f"{_MIB},{4 * _GIB}" for t in ticks]
+    job = root / "_jobs" / "job-0"
+    (job / "resource_usage_main.csv").write_text("\n".join(usage) + "\n")
+    (job / "system_usage_main.csv").write_text("\n".join(system) + "\n")
+    return root
+
+
+def test_a_campaign_held_at_its_folded_reservation_is_advised_against_it(tmp_path):
+    from robovast.results_processing.data_query import \
+        query_data_db  # pylint: disable=import-outside-toplevel
+    root = _held_campaign(tmp_path)
+    items = _by_kind(A.campaign_advice(lambda sql: query_data_db(root, sql)["rows"])["advice"])
+
+    assert "cpu_not_declared" not in items and "memory_not_declared" not in items
+    held = items["cpu_limit_bound"]
+    assert "held at its declared 1 core" in held["title"]
+    assert held["title"].endswith("the measurement is a floor")
+    assert held["evidence"]["held_at_limit"]["simulation"]["declared_limit"] == "1"
+    assert "cpu_under_reserved" not in items and "cpu_over_reserved" not in items
+
+    memory = items["memory_over_reserved"]
+    assert memory["evidence"]["declared_pod"] == "4Gi"
+    # 480Mi cgroup peak x 1.25 -> 640Mi, not the 700Mi summed RSS; plus the 512Mi tmpfs.
+    assert memory["evidence"]["suggested_per_container"] == {"simulation": "640Mi"}
+    assert memory["evidence"]["shm_size"] == "512Mi"
+    assert "INCLUDING page cache" in memory["detail"]
+    assert "no cgroup memory figures" not in memory["detail"]
+
+
+def test_a_scenario_block_that_sets_resources_to_nothing_keeps_the_fold_off_it():
+    """A ``resources`` block is set once it is there, its fields all null as a config dump
+    writes them: the fold moves a reservation only onto a block that has none."""
+    execution = {**_STEPPED, "containers": {
+        **_STEPPED["containers"], "scenario": {"resources": {"cpu": None, "memory": None}}}}
+    label, resources = A._reservations(A._declared(_rows(execution))[0])["robovast"]
+    assert label == "scenario"
+    assert A._cpu_limit(resources) is None
+
+
+def _throttled(container, fraction):
+    return {"container": container, "periods": 10000, "throttled": int(10000 * fraction),
+            "runs": 10, "runs_throttled": 10}
+
+
+def test_a_few_throttled_periods_are_not_a_container_held_at_its_limit():
+    """A container throttled in a fraction of a percent of its periods ran below its ceiling
+    almost all the time: its p95 is a measurement, and it is compared as usual."""
+    items = _by_kind(A.resource_advice(
+        [_usage("sut", cpu_p95=0.3), _usage("robovast", cpu_p95=0.2)],
+        _declared("sut", cpu=2) + _declared("scenario", cpu=8),
+        throttle_rows=[_throttled("sut", 0.006)]))
+    assert "cpu_limit_bound" not in items
+    assert "cpu_over_reserved" in items
+
+
+def test_a_held_container_leaves_the_others_compared_with_their_reservations():
+    items = _by_kind(A.resource_advice(
+        [_usage("sut", cpu_p95=2.0), _usage("robovast", cpu_p95=0.2)],
+        _declared("sut", cpu=2) + _declared("scenario", cpu=8),
+        throttle_rows=[_throttled("sut", 0.8)]))
+    held = items["cpu_limit_bound"]
+    assert held["title"].startswith("'sut' was held at its declared 2 cores")
+    assert held["severity"] == "warning"
+    assert "resources.cpu" in held["detail"]
+    over = items["cpu_over_reserved"]
+    assert over["title"].startswith("Reserves 8 cpu across 'scenario'")
+    assert over["evidence"]["excluded_held_at_limit"] == ["sut"]
+    assert "sut" not in over["evidence"]["suggested_per_container"]
+
+
+def test_under_calibrated_sizing_a_held_container_is_pointed_at_its_headroom():
+    """The ceiling IS the node's measurement there, so raising a declared figure changes
+    nothing -- the same remedy ``sut_throttled`` names."""
+    items = _by_kind(A.resource_advice(
+        [_usage("sut", cpu_p95=2.0)], _declared("sut", cpu=2),
+        throttle_rows=[_throttled("sut", 0.8)], sizing="calibrated"))
+    held = items["cpu_limit_bound"]
+    assert held["severity"] == "suggestion"
+    assert "calibration.headroom.cpu" in held["detail"]
+    assert "resources.cpu" not in held["detail"]

@@ -65,22 +65,15 @@ export const DETAILS_CPU_SQL =
  *  `available_cpus` is the Kubernetes downward API's report of it, which rounds a fractional
  *  request UP to the next whole core.
  *
- *  **Two kinds of row, and the first matters most when there is no second.** A `.vast` need not
- *  declare `resources` at all — and that campaign's author is the one who most needs this panel,
- *  since it is the only place telling them what to set. But the measured main container is
- *  recorded under the fixed role name `robovast`, so with no cpu rows to pair against there is
- *  nothing to translate it into a name that appears in their file. The container KEYS are in the
- *  config either way, so they are fetched too: the bare `$.execution.containers.<name>` object
- *  rows, isolated by excluding anything with a further dot (LIKE's `%` spans dots, so
- *  `NOT LIKE '….%.%'` is what makes the first pattern mean "one segment deep").
- *
- *  Each row's path is its `fullkey`, so one pattern over it selects the containers and their
- *  resources in a single pass. */
+ *  Every row under `execution.containers`, and `execution.mode`, not only the resource rows,
+ *  because which container a reservation lands on is decided by the blocks around it: a
+ *  simulator stepped in-process folds its `simulation` block into the scenario container, which
+ *  is measured under the fixed role name `robovast` (see `resolveDeclared`). The bare container
+ *  rows matter too when nothing is reserved: a `.vast` need not declare `resources` at all, and
+ *  that campaign's author is the one who most needs this panel. */
 export const DETAILS_DECLARED_CPU_SQL =
   "SELECT fullkey, value FROM config_view WHERE " +
-  "(fullkey LIKE '$.execution.containers.%' AND fullkey NOT LIKE '$.execution.containers.%.%') " +
-  "OR fullkey LIKE '$.execution.containers.%.resources.cpu' " +
-  "OR fullkey LIKE '$.execution.containers.%.resources.memory'"
+  "fullkey LIKE '$.execution.containers.%' OR fullkey = '$.execution.mode'"
 
 /** Which scenario action each run ended in, cross-tabulated with the run's verdict.
  *
@@ -314,72 +307,62 @@ export interface CpuSummary {
   cpuHours: number
 }
 
-/** Parse `$.execution.containers.<name>.resources.<field>` → `<name>`. */
-function containerOfKey(fullkey: string, field: 'cpu' | 'memory'): string | null {
-  const m = new RegExp(`^\\$\\.execution\\.containers\\.([^.]+)\\.resources\\.${field}$`).exec(
-    fullkey,
-  )
-  return m ? m[1] : null
-}
-
-/** Parse the bare `$.execution.containers.<name>` row → `<name>`. */
-function containerOfDeclarationKey(fullkey: string): string | null {
-  const m = /^\$\.execution\.containers\.([^.]+)$/.exec(fullkey)
-  return m ? m[1] : null
+/** The steps of a `config_view` `fullkey` — `.plain`, `."quoted"` (a key that is not purely
+ *  alphanumeric, such as `nav_stack`) or `[index]` — or null for one that does not parse. */
+function pathOf(fullkey: string): (string | number)[] | null {
+  if (!fullkey.startsWith('$')) return null
+  const step = /\.(?:"((?:[^"\\]|\\.)*)"|([^."[]+))|\[(\d+)\]/y
+  const steps: (string | number)[] = []
+  step.lastIndex = 1
+  while (step.lastIndex < fullkey.length) {
+    const m = step.exec(fullkey)
+    if (!m) return null
+    steps.push(m[3] !== undefined ? Number(m[3]) : m[2] ?? m[1].replace(/\\(.)/g, '$1'))
+  }
+  return steps
 }
 
 /** What `resource_usage` calls the main container, regardless of what the `.vast` named it.
  *  Mirrors `common/log_tail.MAIN_CONTAINER`. */
 export const MEASURED_MAIN_CONTAINER = 'robovast'
 
-/** Pair each measured container with the cpu its `.vast` declared.
+interface DeclaredBlock {
+  backend?: unknown
+  /** The block's `resources`, field by field; present once any field is declared. */
+  resources?: Record<string, unknown>
+}
+
+/** Pair each measured container with the reservation it ran with.
  *
- *  Not a plain name join: `resource_usage` records the MAIN container under the fixed role name
- *  `robovast` while the campaign declares it by its own name (`scenario`, in every campaign on
- *  this machine) — see `expected_container_files` in robovast_decode/resource_usage.py, which
- *  names the main file for its ROLE and every sidecar for its container. Secondaries do match
- *  exactly.
- *
- *  So: match by name first, then pair the measured `robovast` row with whatever single
- *  declaration went unclaimed. If the leftovers are ambiguous (a declared container that never
- *  produced samples, so more than one is unmatched), the main container reports no declaration
- *  rather than guessing — a wrong pairing would compare one container's use against another's
- *  reservation, which is worse than saying nothing.
- *
- *  Returned keyed by the DECLARED name where one is known, because that is the line the user
- *  will edit in the `.vast`; `robovast` is an internal role name they cannot act on. */
+ *  Mirrors `_reservations` in `robovast/results_processing/advice.py`, which is the authority.
+ *  `resource_usage` records the MAIN container under the fixed role name `robovast`, and that
+ *  container is the scenario container: it runs with the `scenario` block's `resources` — or,
+ *  when the simulator is stepped in-process (any `mode` but `ros2`, with a `backend` named on
+ *  `simulation`), with the `simulation` block's where `scenario` sets none, because composition
+ *  folds the two blocks into the one container (`fold_stepped_simulation` in
+ *  `robovast/common/simulators.py`). It is then named by the block the reservation was written
+ *  on, since that is the line the user will edit. Every other container is measured under its own
+ *  name and runs with its own block's `resources`. */
 function resolveDeclared(
-  measured: string[],
-  declared: Map<string, number>,
-  declaredMem: Map<string, number> = new Map(),
-  names: Set<string> = new Set(declared.keys()),
+  blocks: Map<string, DeclaredBlock>,
+  mode: unknown,
 ): Map<string, { label: string; cpu: number | null; memory: number | null }> {
-  const out = new Map<string, { label: string; cpu: number | null; memory: number | null }>()
-  // Pairing is done over the container NAMES, which the campaign always declares, rather than over
-  // the cpu map, which it need not: a `.vast` with no `resources` block at all must still relabel
-  // `robovast` to the container it actually is, because naming a container the reader cannot find
-  // in their file is worst precisely where the recommendation is the only thing on offer.
-  const unclaimed = new Set(names)
-  const entry = (label: string) => ({
+  const entry = (label: string, resources: Record<string, unknown> | undefined) => ({
     label,
-    cpu: declared.get(label) ?? null,
-    memory: declaredMem.get(label) ?? null,
+    cpu: parseCpuQuantity(resources?.cpu),
+    memory: parseMemQuantity(resources?.memory),
   })
-  for (const name of measured) {
-    if (unclaimed.has(name)) {
-      unclaimed.delete(name)
-      out.set(name, entry(name))
-    }
-  }
-  for (const name of measured) {
-    if (out.has(name)) continue
-    if (name === MEASURED_MAIN_CONTAINER && unclaimed.size === 1) {
-      const [label] = [...unclaimed]
-      out.set(name, entry(label))
-    } else {
-      out.set(name, { label: name, cpu: null, memory: null })
-    }
-  }
+  const out = new Map<string, { label: string; cpu: number | null; memory: number | null }>()
+  for (const [name, block] of blocks) out.set(name, entry(name, block.resources))
+  const scenario = blocks.get('scenario')?.resources
+  const simulation = blocks.get('simulation')
+  const folded = mode !== 'ros2' && simulation?.backend != null
+  out.set(
+    MEASURED_MAIN_CONTAINER,
+    scenario === undefined && folded && simulation?.resources !== undefined
+      ? entry('simulation', simulation.resources)
+      : entry('scenario', scenario),
+  )
   return out
 }
 
@@ -423,29 +406,28 @@ export function summariseCpu(
   cpuRows: CpuRow[],
   declaredRows: DeclaredCpuRow[] = [],
 ): CpuSummary | null {
-  const declared = new Map<string, number>()
-  const declaredMem = new Map<string, number>()
-  const names = new Set<string>()
+  const blocks = new Map<string, DeclaredBlock>()
+  let mode: unknown = undefined
   for (const row of declaredRows) {
-    if (typeof row.fullkey !== 'string') continue
-    const declaration = containerOfDeclarationKey(row.fullkey)
-    if (declaration) {
-      names.add(declaration)
+    const path = typeof row.fullkey === 'string' ? pathOf(row.fullkey) : null
+    if (!path || path[0] !== 'execution') continue
+    if (path.length === 2 && path[1] === 'mode') {
+      mode = row.value
       continue
     }
-    const key = containerOfKey(row.fullkey, 'cpu')
-    if (key) {
-      // A container that declares a cpu is a container, whether or not this row's value parsed.
-      names.add(key)
-      const cpu = parseCpuQuantity(row.value)
-      if (cpu !== null) declared.set(key, cpu)
-      continue
-    }
-    const memKey = containerOfKey(row.fullkey, 'memory')
-    if (memKey) {
-      names.add(memKey)
-      const bytes = parseMemQuantity(row.value)
-      if (bytes !== null) declaredMem.set(memKey, bytes)
+    if (path[1] !== 'containers' || typeof path[2] !== 'string') continue
+    const block = blocks.get(path[2]) ?? {}
+    blocks.set(path[2], block)
+    const value = row.value ?? null
+    if (path[3] === 'resources' && typeof path[4] === 'string') {
+      // A block with any field row sets `resources`, even with every field null, which keeps a
+      // stepped simulator's reservation from moving onto it. A non-scalar field counts too.
+      const resources = (block.resources ??= {})
+      if (value !== null || !(path[4] in resources)) {
+        resources[path[4]] = path.length === 5 ? value : null
+      }
+    } else if (path[3] === 'backend' && path.length === 4 && value !== null) {
+      block.backend = value
     }
   }
 
@@ -455,12 +437,7 @@ export function summariseCpu(
       Number.isFinite(Number(row.p95 ?? 0)) &&
       Number.isFinite(Number(row.peak ?? 0)),
   )
-  const resolved = resolveDeclared(
-    usable.map((row) => row.container as string),
-    declared,
-    declaredMem,
-    names,
-  )
+  const resolved = resolveDeclared(blocks, mode)
 
   const containers: ContainerCpu[] = []
   let coreSeconds = 0

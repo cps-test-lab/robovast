@@ -182,9 +182,9 @@ describe('summariseCpu', () => {
     expect(cpuHeadline(cpu)).toBe('3.25 cpu suggested')
   })
 
-  it('declines to pair the main container when the leftovers are ambiguous', () => {
-    // A declared container that produced no samples leaves two names unclaimed; guessing would
-    // compare one container's use against another's reservation.
+  it('pairs the main container with the scenario block whatever else is declared', () => {
+    // A simulator with no backend named is not folded: the main container runs with what
+    // `scenario` reserves, and `simulation`'s reservation is not its.
     const cpu = summariseCpu(
       [{ container: 'robovast', p95: 1, peak: 1, ticks: 400 }],
       [
@@ -192,8 +192,61 @@ describe('summariseCpu', () => {
         { fullkey: '$.execution.containers.simulation.resources.cpu', value: 8 },
       ],
     )
-    expect(cpu?.containers[0]).toMatchObject({ container: 'robovast', declared: null })
-    expect(cpu?.declaredPod).toBeNull()
+    expect(cpu?.containers[0]).toMatchObject({ container: 'scenario', declared: 4 })
+  })
+
+  // A simulator stepped in-process: the pod has one container, measured as `robovast`, and the
+  // reservation is written on the `simulation` block that folds into it.
+  const stepped = [
+    { fullkey: '$.execution.mode', value: 'base' },
+    { fullkey: '$.execution.containers.scenario', value: null },
+    { fullkey: '$.execution.containers.scenario.image', value: 'family:robovast-roqsim' },
+    { fullkey: '$.execution.containers.scenario.resources', value: null },
+    { fullkey: '$.execution.containers.simulation', value: null },
+    { fullkey: '$.execution.containers.simulation.backend', value: 'roqsim' },
+    { fullkey: '$.execution.containers.simulation.resources.cpu', value: '1' },
+    { fullkey: '$.execution.containers.simulation.resources.memory', value: '4Gi' },
+    { fullkey: '$.execution.containers.simulation.resources."cpu_limit"', value: null },
+  ]
+
+  it('reads a stepped simulator\'s reservation as the one its single container ran with', () => {
+    const cpu = summariseCpu([{ container: 'robovast', p95: 1.1, peak: 1.2, ticks: 400 }], stepped)
+    expect(cpu?.containers[0]).toMatchObject({ container: 'simulation', declared: 1 })
+    expect(cpu?.containers[0].mem.declared).toBe(4 * 1024 ** 3)
+    expect(cpu?.declaredPod).toBe(1)
+  })
+
+  it('keeps the fold off a scenario block that sets resources to nothing', () => {
+    const cpu = summariseCpu(
+      [{ container: 'robovast', p95: 1.1, peak: 1.2, ticks: 400 }],
+      [...stepped, { fullkey: '$.execution.containers.scenario.resources.cpu', value: null }],
+    )
+    expect(cpu?.containers[0]).toMatchObject({ container: 'scenario', declared: null })
+  })
+
+  it('keeps a simulator in its own container on its own reservation', () => {
+    const ros = stepped.map((row) =>
+      row.fullkey === '$.execution.mode' ? { ...row, value: 'ros2' } : row,
+    )
+    const cpu = summariseCpu(
+      [
+        { container: 'robovast', p95: 0.4, peak: 0.5, ticks: 400 },
+        { container: 'simulation', p95: 1.1, peak: 1.2, ticks: 400 },
+      ],
+      ros,
+    )
+    const byName = new Map(cpu?.containers.map((c) => [c.container, c.declared]))
+    expect(byName.get('scenario')).toBeNull()
+    expect(byName.get('simulation')).toBe(1)
+  })
+
+  it('reads a quoted container key as its name', () => {
+    // `config_view` quotes a key that is not purely alphanumeric.
+    const cpu = summariseCpu(
+      [{ container: 'nav_stack', p95: 1, peak: 1, ticks: 400 }],
+      [{ fullkey: '$.execution.containers."nav_stack".resources.cpu', value: 3 }],
+    )
+    expect(cpu?.containers[0]).toMatchObject({ container: 'nav_stack', declared: 3 })
   })
 
   it('returns null when the campaign was never postprocessed', () => {

@@ -44,9 +44,12 @@ The two rules differ, and the difference is not cosmetic:
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Optional
 
-from robovast.common.config import DEFAULT_SHM_SIZE
+from robovast.common.config import DEFAULT_SHM_SIZE, SCENARIO_CONTAINER, SIMULATION_CONTAINER
+from robovast.common.containers import plan_containers
+from robovast.common.simulators import fold_stepped_simulation
 # The fractions of a container's CPU periods throttled, and of a trial window stalled, above
 # which a run is reported: defined, with how each was set, beside the view that applies them.
 from robovast_data.views import STALL_WARN_RATIO, THROTTLE_WARN_RATIO
@@ -72,6 +75,15 @@ MEM_GRANULARITY_BYTES = 128 * 1024 * 1024
 #: a p95 over seven points is the maximum wearing a percentile's name.
 MIN_TICKS = 30
 
+
+#: Fraction of a container's CFS periods throttled from which it counts as HELD at its CPU limit,
+#: and its measured use as that limit read back rather than what its work needed.
+#:
+#: Not :data:`THROTTLE_WARN_RATIO`, which is a screen for a control loop missing deadlines and
+#: fires on a fraction of a percent. A container throttled in a few periods still ran below its
+#: ceiling almost all the time, so its p95 is a measurement. One throttled in most of them hit
+#: its quota in most 100 ms periods, so the cores it was measured using are the quota.
+HELD_AT_LIMIT_RATIO = 0.5
 
 #: How far from the suggestion a declaration has to be before it is worth saying anything.
 #: Reservations are guesses; flagging a 10% miss would train the reader to ignore the advice.
@@ -153,7 +165,9 @@ SHM_SQL = """
 #: every sweep.
 #:
 #: Absent for a campaign recorded before the probe existed -- a missing table or an empty
-#: result, both of which the caller falls back from rather than treating as zero.
+#: result, both of which the caller falls back from rather than treating as zero. A table that
+#: has the peak but not every column of the split is answered by :func:`system_mem_sql`, which
+#: the caller builds from the columns the campaign recorded.
 #:
 #: **Two figures, because the peak alone cannot be sized from.** ``memory.peak`` counts page
 #: cache, and a container that reads or writes a lot of data accumulates cache the kernel had
@@ -167,20 +181,44 @@ SHM_SQL = """
 #: are independent gauges, so summing their separate maxima adds peaks that never coexisted.
 #:
 #: ``samples`` and ``samples_with_split`` are what decide whether the second figure may be used
-#: at all. The split is unavailable on some kernels, so a container whose runs landed partly on
-#: such a node would have its "peak" taken over the covered samples only -- a number that looks
-#: like a peak and is a peak of a subset, biased downwards, on the one measurement whose
-#: under-estimate is an OOM kill. Full coverage or the plain peak; nothing in between.
-SYSTEM_MEM_SQL = """
+#: at all. A sample counts as split only where all three parts were recorded: the split is
+#: unavailable on some kernels, and ``slab`` has no cgroup v1 equivalent, so a missing part is
+#: missing, never zero. A container whose runs landed partly on such a node would otherwise have
+#: its "peak" taken over the covered samples only, or over a sum short of a part -- a number that
+#: looks like a peak and is biased downwards, on the one measurement whose under-estimate is an
+#: OOM kill. Full coverage or the plain peak; nothing in between.
+MEMORY_SPLIT_COLUMNS = ("memory_anon", "memory_shmem", "memory_slab")
+
+
+def system_mem_sql(columns) -> str:
+    """:data:`SYSTEM_MEM_SQL` over a ``system_usage`` holding *columns*.
+
+    The split's columns are named only where the campaign recorded them. A table without one
+    of them reads as no split recorded -- every sample uncovered, so the plain peak -- rather
+    than failing the whole statement, which would drop the cgroup figures that are there and
+    size the container from summed RSS instead.
+    """
+    if all(column in columns for column in MEMORY_SPLIT_COLUMNS):
+        split = " + ".join(MEMORY_SPLIT_COLUMNS)
+        unreclaimable, with_split = f"MAX({split})", f"COUNT({split})"
+    else:
+        unreclaimable, with_split = "CAST(NULL AS BIGINT)", "0"
+    return f"""
     SELECT container,
            MAX(memory_peak) AS mem_peak,
-           MAX(COALESCE(memory_anon, 0) + COALESCE(memory_shmem, 0)
-               + COALESCE(memory_slab, 0)) AS mem_unreclaimable,
+           {unreclaimable} AS mem_unreclaimable,
            COUNT(*) AS samples,
-           COUNT(memory_anon) AS samples_with_split
+           {with_split} AS samples_with_split
     FROM system_usage WHERE in_window = 1 AND memory_peak IS NOT NULL
     GROUP BY container
 """
+
+
+#: The full form, over a ``system_usage`` that recorded every column of the split.
+SYSTEM_MEM_SQL = system_mem_sql(MEMORY_SPLIT_COLUMNS)
+
+#: One row of ``system_usage``, whose keys are the columns :func:`system_mem_sql` is built for.
+SYSTEM_USAGE_COLUMNS_SQL = "SELECT * FROM system_usage LIMIT 1"
 
 #: How a container's memory figure was arrived at, keyed by what :func:`_cgroup_memory` chose.
 #: Stated in the advice rather than assumed, because the three differ by more than a rounding
@@ -191,9 +229,10 @@ MEM_SOURCES = {
         "under pressure (anon + shmem + slab) -- its peak also includes page cache, which a "
         "reservation does not have to cover"),
     "peak": (
-        "the kernel's own accounting for the container, INCLUDING page cache -- no anon/file "
-        "split was recorded for it, so the reclaimable part cannot be subtracted and this "
-        "figure is an over-estimate by however much the container cached"),
+        "the kernel's own accounting for the container, INCLUDING page cache -- its split "
+        "into anon, shmem and slab was not recorded for every sample, so the reclaimable "
+        "part cannot be subtracted and this figure is an over-estimate by however much the "
+        "container cached"),
     "rss": (
         "the sum of its processes' RSS, which over-reports shared pages -- no cgroup "
         "memory figures were recorded for this campaign"),
@@ -295,19 +334,26 @@ def contention_sql(with_node: bool = True) -> str:
 #: uses; this is the name to read.
 CONTENTION_SQL = contention_sql()
 
-#: The containers the campaign declared, and what it reserved for each. The bare container
-#: rows matter most when there is no reservation row: a ``.vast`` need not declare
-#: ``resources`` at all, and that is the campaign whose author most needs this -- but the
-#: measured main container is recorded under the role name ``robovast``, so without the
-#: declared names there is nothing to translate it into a name from their file.
+#: What the campaign declared of its containers and its shared memory, as ``config_view`` rows.
+#:
+#: Every row under ``execution.containers`` rather than only the resource rows, because which
+#: container a reservation lands on is decided by the blocks around it: a simulator stepped
+#: in-process folds its ``simulation`` block into the scenario container, and only ``mode``,
+#: the block's ``backend`` and its ``image``/``command`` say whether that happened (see
+#: :func:`_reservations`). The bare container rows matter too when nothing is reserved: a
+#: ``.vast`` need not declare ``resources`` at all, and that is the campaign whose author most
+#: needs this.
+#:
+#: ``shm_size`` is matched in both spellings of a ``fullkey``: ``config_view`` quotes a key that
+#: is not purely alphanumeric (``$.execution."shm_size"``), which :func:`_path` reads back.
 DECLARED_SQL = """
     SELECT fullkey, value FROM config_view
-    WHERE (fullkey LIKE '$.execution.containers.%'
-           AND fullkey NOT LIKE '$.execution.containers.%.%')
-       OR fullkey LIKE '$.execution.containers.%.resources.cpu'
-       OR fullkey LIKE '$.execution.containers.%.resources.memory'
-       OR fullkey = '$.execution.shm_size'
+    WHERE fullkey LIKE '$.execution.containers.%'
+       OR fullkey IN ('$.execution.mode', '$.execution.shm_size', '$.execution."shm_size"')
 """
+
+#: One step of a ``config_view`` ``fullkey``: ``.plain``, ``."quoted"`` or ``[index]``.
+_FULLKEY_STEP = re.compile(r'\.(?:"((?:[^"\\]|\\.)*)"|([^."\[]+))|\[(\d+)\]')
 
 
 def ceil_to(value: float, step: float) -> float:
@@ -331,79 +377,110 @@ def format_memory(num_bytes: float) -> str:
     return f"{round(num_bytes / 1024 ** 2)}Mi"
 
 
-def _container_of(fullkey: str, suffix: str = "") -> Optional[str]:
-    prefix = "$.execution.containers."
-    if not fullkey.startswith(prefix):
+def _path(fullkey) -> Optional[list]:
+    """The steps of a ``config_view`` ``fullkey`` -- keys unquoted, indices as ints -- or ``None``."""
+    if not isinstance(fullkey, str) or not fullkey.startswith("$"):
         return None
-    rest = fullkey[len(prefix):]
-    if suffix:
-        if not rest.endswith(suffix):
+    steps, pos = [], 1
+    while pos < len(fullkey):
+        match = _FULLKEY_STEP.match(fullkey, pos)
+        if not match:
             return None
-        rest = rest[: -len(suffix)]
-    return rest if rest and "." not in rest else None
+        quoted, plain, index = match.groups()
+        steps.append(int(index) if index is not None
+                     else plain if plain is not None else re.sub(r"\\(.)", r"\1", quoted))
+        pos = match.end()
+    return steps
 
 
-def _declared(rows: list[dict]) -> tuple[set, dict, dict, Optional[float]]:
-    """``(container names, cpu by name, memory-bytes by name, shm bytes)`` from the config.
+def _declared(rows: list[dict]) -> tuple[dict, Optional[float]]:
+    """``(execution, shm bytes)`` from :data:`DECLARED_SQL` rows.
+
+    *execution* is the config's ``execution`` mapping as far as sizing reads it -- ``mode``, and
+    per container its ``backend``, ``image``, whether it has a ``command``, and its
+    ``resources`` -- in the shape :func:`~robovast.common.simulators.fold_stepped_simulation`
+    and :func:`~robovast.common.containers.plan_containers` take, so the container a
+    reservation lands on is decided by the rule composition applies, not re-derived here.
 
     ``shm`` is ``execution.shm_size``, not a container's own reservation, because
     ``/dev/shm`` is one tmpfs shared by every container of the pod -- see
     :func:`resource_advice` for why a memory suggestion has to know about it.
     """
-    names, cpu, memory, shm = set(), {}, {}, None
+    execution: dict = {}
+    containers: dict = {}
+    shm = None
     for row in rows:
-        key = row.get("fullkey")
-        if not isinstance(key, str):
+        path = _path(row.get("fullkey"))
+        if not path or path[0] != "execution":
             continue
-        if key == "$.execution.shm_size":
-            shm = to_bytes(row.get("value"))
+        value = row.get("value")
+        if path == ["execution", "shm_size"]:
+            shm = to_bytes(value)
             continue
-        bare = _container_of(key)
-        if bare:
-            names.add(bare)
+        if path == ["execution", "mode"]:
+            if value is not None:
+                execution["mode"] = value
             continue
-        name = _container_of(key, ".resources.cpu")
-        if name:
-            names.add(name)
-            cores = to_cores(row.get("value"))
-            if cores is not None:
-                cpu[name] = cores
+        if len(path) < 3 or path[1] != "containers" or not isinstance(path[2], str):
             continue
-        name = _container_of(key, ".resources.memory")
-        if name:
-            names.add(name)
-            num_bytes = to_bytes(row.get("value"))
-            if num_bytes is not None:
-                memory[name] = num_bytes
-    return names, cpu, memory, shm
+        block = containers.setdefault(path[2], {})
+        rest = path[3:]
+        if rest and rest[0] == "resources" and len(rest) >= 2 and isinstance(rest[1], str):
+            # A block with any field row sets ``resources``, even one whose fields are all
+            # null: the block is then not None, which is what keeps a stepped simulator's
+            # reservation from moving onto it. A field in a form other than a scalar counts too.
+            resources = block.setdefault("resources", {})
+            if value is not None or rest[1] not in resources:
+                resources[rest[1]] = value if len(rest) == 2 else None
+            continue
+        if not rest or value is None:
+            continue
+        if rest[0] in ("backend", "image") and len(rest) == 1:
+            block[rest[0]] = value
+        elif rest[0] == "command":
+            # Whether it has one is what decides a separate container; what it runs is not.
+            block["command"] = True
+    if containers:
+        execution["containers"] = containers
+    return execution, shm
 
 
-def _resolve_names(measured: list[str], declared_names: set) -> dict:
-    """Measured container name -> the name the ``.vast`` calls it.
+def _reservations(execution: dict) -> dict:
+    """Measured container name -> ``(the name the .vast gives it, the resources it ran with)``.
 
     Not a plain join: ``resource_usage`` records the MAIN container under the fixed role name
-    ``robovast`` while the campaign declares it by its own name. Secondaries match exactly, so
-    the main one takes whatever single declaration went unclaimed -- and where the leftovers
-    are ambiguous it keeps its own name rather than guessing, since a wrong pairing compares
-    one container's use against another's reservation.
+    ``robovast``. Which reservation that container ran with is what composition gives it:
+    :func:`~robovast.common.simulators.fold_stepped_simulation` moves a stepped simulator's
+    ``resources`` onto the scenario container where the scenario block sets none, and
+    :func:`~robovast.common.containers.plan_containers` hands the main container the result.
+    A ``.vast`` that reserves on ``simulation`` for a simulator stepped in-process thus reads
+    as the reservation of the one container that ran, named by the block it was written on.
+
+    Every other container is measured under its own name and runs with its own block's
+    ``resources``.
     """
-    out, unclaimed = {}, set(declared_names)
-    for name in measured:
-        if name in unclaimed:
-            unclaimed.discard(name)
-            out[name] = name
-    for name in measured:
-        if name in out:
-            continue
-        if name == MEASURED_MAIN_CONTAINER and len(unclaimed) == 1:
-            out[name] = unclaimed.pop()
-        else:
-            out[name] = name
+    declared = execution.get("containers") or {}
+    folded = fold_stepped_simulation(execution)
+    main = plan_containers(folded).main
+    # Moved when the fold put a reservation on a scenario block that declared none.
+    moved = ((declared.get(SCENARIO_CONTAINER) or {}).get("resources") is None
+             and folded["containers"].get(SCENARIO_CONTAINER, {}).get("resources") is not None)
+    out = {name: (name, block.get("resources") or {}) for name, block in declared.items()}
+    out[MEASURED_MAIN_CONTAINER] = (SIMULATION_CONTAINER if moved else SCENARIO_CONTAINER,
+                                    dict(main.resources or {}))
     return out
 
 
+def _cpu_limit(resources: dict) -> Optional[float]:
+    """The CPU ceiling *resources* sets: ``cpu_limit``, else ``cpu``, which is then both."""
+    limit = to_cores(resources.get("cpu_limit"))
+    return limit if limit is not None else to_cores(resources.get("cpu"))
+
+
 def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
-                    system_mem_rows: "list[dict] | None" = None) -> list[dict]:
+                    system_mem_rows: "list[dict] | None" = None,
+                    throttle_rows: "list[dict] | None" = None,
+                    sizing: "str | None" = None) -> list[dict]:
     """Advice items for one campaign's reservations. Empty when there is nothing to say.
 
     Args:
@@ -415,12 +492,25 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
             which of the two kernel figures that is. Falling back rather than refusing keeps
             this useful on campaigns recorded before the probes existed, but none of the three
             are interchangeable and the advice says which one it used.
+        throttle_rows: rows of :data:`THROTTLE_SQL`, when the campaign recorded them. A
+            container throttled in at least :data:`HELD_AT_LIMIT_RATIO` of its periods was
+            held at its CPU limit, so its measured use is the limit read back: the cpu advice
+            says that and gives its suggestion as a floor (``cpu_limit_bound``), and compares
+            only the other containers with their reservations.
+        sizing: the campaign's ``execution.sizing``, which decides the remedy a held
+            container is pointed to.
     """
     usable = [r for r in usage_rows if r.get("container")]
     if not usable:
         return []
-    names, declared_cpu, declared_mem, declared_shm = _declared(declared_rows)
-    resolved = _resolve_names([r["container"] for r in usable], names)
+    declared_execution, declared_shm = _declared(declared_rows)
+    reservations = _reservations(declared_execution)
+    held = {}
+    for row in (throttle_rows or []):
+        periods = int(row.get("periods") or 0)
+        throttled = int(row.get("throttled") or 0)
+        if periods > 0 and throttled / periods >= HELD_AT_LIMIT_RATIO:
+            held[row["container"]] = throttled / periods
     system_mem = {}
     for row in (system_mem_rows or []):
         value, basis = _cgroup_memory(row)
@@ -429,7 +519,7 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
 
     containers, thin = [], []
     for row in usable:
-        label = resolved.get(row["container"], row["container"])
+        label, reserved = reservations.get(row["container"], (row["container"], {}))
         ticks = int(row.get("ticks") or 0)
         if ticks < MIN_TICKS:
             thin.append(label)
@@ -444,10 +534,12 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
             "cpu_p95": cpu_p95,
             "cpu_peak": float(row.get("cpu_peak") or 0.0),
             "cpu_suggested": ceil_to(cpu_p95 * CPU_HEADROOM, CPU_GRANULARITY),
-            "cpu_declared": declared_cpu.get(label),
+            "cpu_declared": to_cores(reserved.get("cpu")),
+            "cpu_limit": _cpu_limit(reserved),
+            "cpu_held": held.get(row["container"]),
             "mem_peak": mem_peak,
             "mem_suggested": ceil_to(mem_peak * MEM_HEADROOM, MEM_GRANULARITY_BYTES),
-            "mem_declared": declared_mem.get(label),
+            "mem_declared": to_bytes(reserved.get("memory")),
             "core_seconds": float(row.get("core_seconds") or 0.0),
             "ticks": ticks,
         })
@@ -476,7 +568,17 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
         ("cpu", "cpu_declared", "cpu_suggested", format_cores, "cpu"),
         ("memory", "mem_declared", "mem_suggested", format_memory, "memory"),
     ):
-        sized = list(containers)
+        # A container held at its own limit is reported on its own and left out of the
+        # comparison: what it used is its ceiling read back, not a size to compare with one.
+        bound = [c for c in containers if what == "cpu" and c["cpu_held"] is not None]
+        if bound:
+            advice.append(_held_at_limit(bound, sizing))
+        sized = [c for c in containers if c not in bound]
+        if not sized:
+            continue
+        scope = ("per pod" if not bound else
+                 "across " + ", ".join(f"'{c['container']}'" for c in sized))
+        excluded = {"excluded_held_at_limit": [c["container"] for c in bound]} if bound else {}
         pod_declared = (sum(c[declared_key] for c in sized)
                         if sized and all(c[declared_key] is not None for c in sized) else None)
         pod_suggested = sum(c[suggested_key] for c in sized)
@@ -500,13 +602,13 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
                 "kind": f"{what}_not_declared",
                 "severity": "suggestion",
                 "title": (f"No {unit} reservation declared; measured use suggests "
-                          f"{fmt(pod_suggested)} per pod"),
+                          f"{fmt(pod_suggested)} {scope}"),
                 "detail": (
                     f"Set execution.containers.<name>.resources.{unit} from what this campaign "
                     f"used: {', '.join(f'{k} {v}' for k, v in per_container.items())}. "
                     + _basis(what, mem_source if what == "memory" else "") + shm_note),
                 "evidence": {"suggested_pod": fmt(pod_suggested),
-                             "suggested_per_container": per_container,
+                             "suggested_per_container": per_container, **excluded,
                              **({"shm_size": format_memory(declared_shm)}
                                 if shm_note else {})},
             })
@@ -517,7 +619,7 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
             advice.append({
                 "kind": f"{what}_over_reserved",
                 "severity": "suggestion",
-                "title": (f"Reserves {fmt(pod_declared)} {unit} per pod and needs about "
+                "title": (f"Reserves {fmt(pod_declared)} {unit} {scope} and needs about "
                           f"{fmt(pod_suggested)}"),
                 "detail": (
                     f"Reducing it would fit {ratio:.1f}x as many jobs in the same quota, on "
@@ -527,7 +629,7 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
                 "evidence": {"declared_pod": fmt(pod_declared),
                              "suggested_pod": fmt(pod_suggested),
                              "suggested_per_container": per_container,
-                             "throughput_factor": round(ratio, 2),
+                             "throughput_factor": round(ratio, 2), **excluded,
                              **({"shm_size": format_memory(declared_shm)}
                                 if shm_note else {})},
             })
@@ -535,14 +637,14 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
             advice.append({
                 "kind": f"{what}_under_reserved",
                 "severity": "warning",
-                "title": (f"Reserves {fmt(pod_declared)} {unit} per pod but used up to "
+                "title": (f"Reserves {fmt(pod_declared)} {unit} {scope} but used up to "
                           f"{fmt(pod_suggested)}"),
                 "detail": (_UNDER_DETAIL[what] + " Per container: "
                            + ", ".join(f"{k} {v}" for k, v in per_container.items())
                            + shm_note),
                 "evidence": {"declared_pod": fmt(pod_declared),
                              "suggested_pod": fmt(pod_suggested),
-                             "suggested_per_container": per_container},
+                             "suggested_per_container": per_container, **excluded},
             })
 
     if thin:
@@ -565,6 +667,70 @@ _UNDER_DETAIL = {
     "memory": ("Exceeding a memory limit is an OOM kill, not throttling: a run that touches "
                "the limit dies and the campaign loses that cell."),
 }
+
+
+def _cores_phrase(cores: float) -> str:
+    """``1 core``, ``1.5 cores``."""
+    return f"{format_cores(cores)} core" + ("" if cores == 1 else "s")
+
+
+def _held_at_limit(bound: list[dict], sizing: "str | None") -> dict:
+    """The cpu item for the containers held at their own CPU limit.
+
+    Throttled that often, a container could not use more than its limit, so what it was
+    measured using is the limit read back and not what its work needed. Comparing that with
+    the reservation would call the container sized right, or report a reservation as missing
+    that it ran against; sizing from it would carry the same ceiling into the next campaign.
+    The suggestion is still the measurement plus headroom, given as the floor it is.
+
+    Under ``sizing: calibrated`` the ceiling is the node's own measurement, so a declared
+    figure is not what to raise -- the margin above the measurement is, as
+    :func:`throttle_advice` says for the system under test.
+    """
+    def held(c):
+        limit = c["cpu_limit"]
+        return (f"its declared {_cores_phrase(limit)}" if limit is not None
+                else "its CPU limit")
+
+    if len(bound) == 1:
+        (only,) = bound
+        title = (f"'{only['container']}' was held at {held(only)} in "
+                 f"{only['cpu_held'] * 100:.1f}% of enforcement periods; the measurement "
+                 "is a floor")
+    else:
+        title = ("Held at their CPU limits: "
+                 + ", ".join(f"'{c['container']}' at {held(c)} ({c['cpu_held'] * 100:.1f}% of "
+                             "periods)" for c in bound)
+                 + "; the measurements are floors")
+    floors = {c["container"]: format_cores(c["cpu_suggested"]) for c in bound}
+    target = bound[0]["container"] if len(bound) == 1 else "<name>"
+    remedy = (f"raise execution.containers.{target}.calibration.headroom.cpu -- under "
+              "calibrated sizing the limit is the node's own measurement, so the margin above "
+              "it is what has to grow"
+              if sizing == "calibrated" else
+              f"raise execution.containers.{target}.resources.cpu (or its cpu_limit, where "
+              "that is set apart) above it")
+    return {
+        "kind": "cpu_limit_bound",
+        "severity": "suggestion" if sizing == "calibrated" else "warning",
+        "title": title,
+        "detail": (
+            "Throttled in most of its CFS periods, a container could not use more than its "
+            "limit, so the use measured is the limit read back rather than what its work "
+            "needed, and sizing from it would carry the same ceiling forward: "
+            + ", ".join(f"{k} {v}" for k, v in floors.items())
+            + f" is a floor, not a size. To size it, {remedy}, and measure again. "
+            + _basis("cpu")),
+        "evidence": {
+            "held_at_limit": {
+                c["container"]: {
+                    "throttled_fraction": round(c["cpu_held"], 4),
+                    **({"declared_limit": format_cores(c["cpu_limit"])}
+                       if c["cpu_limit"] is not None else {})}
+                for c in bound},
+            "floor_per_container": floors,
+        },
+    }
 
 
 def _mem_source(bases) -> str:
@@ -628,7 +794,7 @@ def shm_advice(shm_rows: list[dict], declared_rows: list[dict]) -> list[dict]:
         return []
 
     limit = row.get("shm_limit")
-    _, _, _, declared = _declared(declared_rows)
+    _, declared = _declared(declared_rows)
     suggested = ceil_to(peak * SHM_HEADROOM, MEM_GRANULARITY_BYTES)
     evidence: dict[str, Any] = {"peak": format_memory(peak),
                                 "suggested": format_memory(suggested)}
@@ -761,12 +927,11 @@ def throttle_advice(throttle_rows: list[dict], declared_rows: list[dict],
             return []
         runs = int(row.get("runs") or 0)
         runs_throttled = int(row.get("runs_throttled") or 0)
-        # No name resolution here, unlike resource_advice: the SUT is measured under the same
-        # name it is declared with. Only the MAIN container has the mismatch that needs
-        # translating (declared as its own name, measured as the role name 'robovast').
-        _, declared_cpu, _, _ = _declared(declared_rows)
+        # The SUT is measured under the name it is declared with, and the ceiling it was held
+        # at is its limit: ``cpu_limit`` where that is set apart from the reservation.
         label = SUT_CONTAINER
-        reserved = declared_cpu.get(label)
+        reserved = _cpu_limit(_reservations(_declared(declared_rows)[0])
+                              .get(label, (label, {}))[1])
         return [{
             "kind": "sut_throttled",
             # Not a warning where it is the designed steady state: a container sized AT
@@ -859,8 +1024,8 @@ def contention_advice(contention_rows: list[dict], declared_rows: list[dict]) ->
         runs_stalled = int(row.get("runs_stalled") or 0)
         raw_node = row.get("node_stalled")
         node = None if raw_node is None else float(raw_node) / span
-        _, declared_cpu, _, _ = _declared(declared_rows)
-        reserved = declared_cpu.get(SUT_CONTAINER)
+        reserved = to_cores(_reservations(_declared(declared_rows)[0])
+                            .get(SUT_CONTAINER, (SUT_CONTAINER, {}))[1].get("cpu"))
         # Whose problem it is. The container's own request is too small when it was starved on
         # a machine that had room; the node is oversubscribed when everything on it was
         # waiting too. Same symptom, opposite remedies, and only the node's own pressure
@@ -982,11 +1147,14 @@ def campaign_advice(query_rows) -> dict[str, Any]:
     """
     measured = _measured(query_rows)
     declared = query_rows(DECLARED_SQL)
+    throttling = measured(THROTTLE_SQL)
+    sizing = _campaign_sizing(query_rows)
+    system_columns = set(next(iter(measured(SYSTEM_USAGE_COLUMNS_SQL)), {}))
     return {"advice": (governor_advice(measured(GOVERNOR_SQL))
-                       + throttle_advice(measured(THROTTLE_SQL), declared,
-                                         sizing=_campaign_sizing(query_rows))
+                       + throttle_advice(throttling, declared, sizing=sizing)
                        + resource_advice(measured(USAGE_SQL), declared,
-                                         measured(SYSTEM_MEM_SQL))
+                                         measured(system_mem_sql(system_columns)),
+                                         throttling, sizing=sizing)
                        + shm_advice(measured(SHM_SQL), declared))}
 
 
