@@ -5186,11 +5186,15 @@ class ServiceBase(RobovastInterface):
         progress lines, and *on_stage* that the campaign's image is being built first.
 
         A simulator that runs in the image the campaign builds is asked there, so an image not
-        built yet is built first, as ``start_campaign`` builds it (:meth:`_built_images_context`).
+        built yet is built first, as ``start_campaign`` builds it (:meth:`_built_images_context`)
+        -- once the checks a validation runs before it composes pass. A file with a problem of
+        its own fails at once with that problem (``ProjectFileInvalid``) and starts no build.
         """
         from robovast.common.common import load_config
         from robovast.common.config_generation import generate_scenario_variations
+        from robovast.common.config_validation import check_before_composing
         from robovast.common.execution import planned_job_count, planned_pod_statements
+        check_before_composing(project.config_path)
         aux_containers: list = []
         search = False
         # Both branches compose, so both need whatever the service uses to reach a variation's

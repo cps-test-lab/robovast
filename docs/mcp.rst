@@ -258,7 +258,10 @@ remember and map onto their situation:
 * A world that only the campaign's own **built** image can describe -- its simulator
   container adds packages -- is asked there. ``preview_configurations`` builds that image
   first when it is not built yet, the same content-addressed build ``start_campaign`` runs and
-  then reuses; a failed build is its answer, naming the build's log. The tool waits a bounded
+  then reuses; a failed build is its answer, naming the build's log. Before it starts or waits
+  on one, it runs the checks ``validate_project`` runs before composing, and a file with a
+  problem of its own fails at once with that problem, as ``validate_project`` reports it,
+  starting no build; so does a preview of an address on the MCP-server host. The tool waits a bounded
   time: a preview still composing then answers ``{state: "composing", stage, progress,
   next_step}`` -- ``stage`` naming the build it waits on, ``progress`` the variation steps
   done, or ``null`` before the first is counted -- and calling it again picks the same

@@ -255,8 +255,11 @@ campaign builds, since a world its own package ships exists only there. When tha
 not built yet, ``preview`` builds it -- the same build ``run`` starts, which ``run`` then finds
 and reuses -- and answers once it is built; a failed build fails it, naming the build (``vast
 image log <build>``). ``vast workspace preview`` prints, on stderr, that the image is being
-built while it waits, as the web UI's launch bar shows it. For a search ``.vast`` it previews
-one sample and says that ``--filter`` does not apply to it.
+built while it waits, as the web UI's launch bar shows it. It first runs the checks
+``validate`` runs before it composes, which need no image: a file with a problem of its own --
+a missing scenario file, a schema error, an unknown variation -- fails the preview at once with
+that problem, worded as ``validate`` words it, and starts no build. For a search ``.vast`` it
+previews one sample and says that ``--filter`` does not apply to it.
 ``validate`` does not wait: once the checks that need no image pass, it starts the build, or
 joins the one running, and reports the simulator's checks as ``unchecked``, naming the build and
 ``vast image log <build>``, or why the build cannot start; validating again once it is built

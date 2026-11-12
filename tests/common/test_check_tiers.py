@@ -110,6 +110,26 @@ def test_declared_but_uninstalled_plugin_is_not_told_to_declare_it(tmp_path):
     assert "generation" in message
 
 
+def test_an_uninstalled_declared_plugin_lets_the_preview_install_it(tmp_path):
+    """Composing is what installs it, so the checks a preview runs first must let it compose:
+    the problem is ``unchecked``, not an error in the file."""
+    from robovast.common.config_validation import check_before_composing
+    path = _project(tmp_path, declare_plugins=True)
+
+    (problem,) = [p for p in _problems(path)["problems"] if p["stage"] == "variation"]
+    assert problem["severity"] == "unchecked"
+    check_before_composing(path)
+
+
+def test_an_undeclared_variation_stops_the_preview_before_it_composes(tmp_path):
+    from robovast.common.config_validation import check_before_composing
+    from robovast.common.errors import ProjectFileInvalid
+    path = _project(tmp_path, declare_plugins=False)
+
+    with pytest.raises(ProjectFileInvalid, match=r"^\[variation\] config=cell field=variations: "):
+        check_before_composing(path)
+
+
 def test_a_typo_in_a_staged_project_is_reported_as_unknown(tmp_path):
     """A staged project has already composed, so "compose and it will resolve" is false.
 
@@ -245,6 +265,9 @@ def test_preview_configurations_keeps_an_actionable_refusals_next_step(monkeypat
 
     monkeypatch.setattr(authoring, "_address_route", lambda address: None)
     monkeypatch.setattr("robovast.common.common.load_config", lambda p: {})
+    # The file's own checks pass; what is under test is the composition's refusal.
+    monkeypatch.setattr("robovast.common.config_validation.check_before_composing",
+                        lambda path: None)
     monkeypatch.setattr("robovast.common.config_generation.generate_scenario_variations",
                         _refuse)
 
@@ -274,6 +297,8 @@ def test_preview_composes_inside_the_service_s_aux_runner_context(monkeypatch, t
     monkeypatch.setattr(NullService, "_resolve_project",
                         lambda self, ws, path: SimpleNamespace(config_path=str(tmp_path / "x.vast")))
     monkeypatch.setattr("robovast.common.common.load_config", lambda p: {})
+    monkeypatch.setattr("robovast.common.config_validation.check_before_composing",
+                        lambda path: None)
     monkeypatch.setattr(
         "robovast.common.config_generation.generate_scenario_variations",
         lambda **_kw: {"configs": [], "execution": {"runs": 1},

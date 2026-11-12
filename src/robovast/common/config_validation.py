@@ -1126,7 +1126,7 @@ def _unresolved_variation_problem(exc, vast_dir, declared_plugins, config_name):
             "preview_configurations(limit=1) composes, installing the specs into "
             ".robovast_plugins/ first, and then either expands the sweep or fails with the "
             "plugin's own reason. Seconds, and no compute.",
-            config=config_name, field="variations")
+            config=config_name, field="variations", severity="unchecked")
     return _problem("variation", str(exc), config=config_name, field="variations")
 
 
@@ -1562,10 +1562,53 @@ def validate_project_file(config_path, *, before_composing=None):
         ``problems`` is a list of ``{stage, config, field, message}``. When
         ``valid`` is True the counts mirror ``vast config info``.
     """
+    raw, problems = _problems_before_composing(config_path)
+    if problems:
+        return {"valid": False, "problems": problems,
+                "configs": 0, "runs_per_config": 0, "total_trials": 0, "jobs": 0}
+
+    # No problems — compute the same counts as ``vast config info``.
+    if before_composing is not None:
+        before_composing()
+    if raw.get("search"):
+        return _search_composition_report(config_path)
+    return _batch_composition_report(config_path)
+
+
+def check_before_composing(config_path):
+    """Raise :class:`~robovast.common.errors.ProjectFileInvalid` with the errors the checks
+    that need no container find in a ``.vast`` file; return when there are none.
+
+    These are what :func:`validate_project_file` reports before it composes, and why it
+    composes nothing: a caller about to start or wait on an image build to compose asks this
+    first, so a file with a problem of its own is told at once rather than after the build.
+    An ``unchecked`` problem is no error in the file but a check composing settles -- a
+    ``plugins:`` spec not installed yet, which composing installs -- so it does not stop one.
+    """
+    from robovast.common.errors import ProjectFileInvalid  # pylint: disable=import-outside-toplevel
+    problems = [p for p in _problems_before_composing(config_path)[1]
+                if p.get("severity", "error") == "error"]
+    if problems:
+        raise ProjectFileInvalid("\n".join(problem_line(p) for p in problems), problems)
+
+
+def problem_line(problem):
+    """One problem as one line: ``[stage] config=… field=…: message``."""
+    location = " ".join(filter(None, [
+        f"[{problem['stage']}]" if problem.get("stage") else None,
+        f"config={problem['config']}" if problem.get("config") else None,
+        f"field={problem['field']}" if problem.get("field") else None,
+    ]))
+    message = problem.get("message", "")
+    return f"{location}: {message}" if location else message
+
+
+def _problems_before_composing(config_path):
+    """``(raw, problems)``: the parsed file -- ``None`` when it does not parse -- and what the
+    checks that need no container find in it."""
     raw, parse_problem = _safe_load(config_path)
     if parse_problem is not None:
-        return {"valid": False, "problems": [parse_problem],
-                "configs": 0, "runs_per_config": 0, "total_trials": 0, "jobs": 0}
+        return None, [parse_problem]
 
     problems = _schema_problems(raw)
 
@@ -1614,17 +1657,7 @@ def validate_project_file(config_path, *, before_composing=None):
     # act on: a repository, a ref that pins, and no two repos landing in one src/ directory.
     problems.extend(_ros_packages_problems(raw))
     problems.extend(_plugins_problems(raw, vast_dir))
-
-    if problems:
-        return {"valid": False, "problems": problems,
-                "configs": 0, "runs_per_config": 0, "total_trials": 0, "jobs": 0}
-
-    # No problems — compute the same counts as ``vast config info``.
-    if before_composing is not None:
-        before_composing()
-    if raw.get("search"):
-        return _search_composition_report(config_path)
-    return _batch_composition_report(config_path)
+    return raw, problems
 
 
 def _message_with_next_step(exc):
