@@ -784,6 +784,12 @@ def staged_entry_point_names(vast_dir: str, group: str) -> set:
             if ep.group == group}
 
 
+def stages_plugins(vast_dir: str) -> bool:
+    """Whether the workspace holds an installed plugin registering any ``robovast.*`` group,
+    which composing it once leaves there."""
+    return _registers_plugins(plugin_site_dir(vast_dir))
+
+
 def staged_variation_type_names(vast_dir: str) -> set:
     """Variation-type names the workspace's installed plugins register, without importing."""
     return staged_entry_point_names(vast_dir, "robovast.variation_types")

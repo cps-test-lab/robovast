@@ -519,7 +519,7 @@ def _generator_problems(raw, vast_dir):
     Resolution is checked here rather than left to composition because the failure it
     catches — a generator that is not installed *in the process that composes* — is
     otherwise discovered after the user has already committed to a run. A name a declared
-    ``plugins:`` spec may provide is reported as :func:`_resolution_problem` says.
+    ``plugins:`` spec may provide is reported as :func:`_resolution_problems` says.
     """
     from robovast.common.input_generation import (  # pylint: disable=import-outside-toplevel
         INPUT_GENERATORS_GROUP, load_input_generators, parse_generate_entry,
@@ -556,11 +556,9 @@ def _generator_problems(raw, vast_dir):
         try:
             resolve_input_generator(name, vast_dir, plugins)
         except Exception as e:  # noqa: BLE001
-            problem = _resolution_problem(
+            problems.extend(_resolution_problems(
                 "generate", "Input generator", name, INPUT_GENERATORS_GROUP, e, vast_dir,
-                raw.get("plugins") or (), field=f"{field}.{name}")
-            if problem is not None:
-                problems.append(problem)
+                raw.get("plugins") or (), field=f"{field}.{name}"))
         _warn_escaping_inputs(params.get("inputs"), vast_dir, f"{field}.{name}")
     return problems
 
@@ -1115,15 +1113,14 @@ def _unresolved_plugin_problem(stage, what, name, group, message, vast_dir, decl
       staged project has already composed and the name really is unknown. It also lists what
       does exist, which is what a typo needs. Pass it through.
     """
-    from robovast.common.config_plugins import \
-        staged_entry_point_names  # pylint: disable=import-outside-toplevel
+    from robovast.common.config_plugins import (  # pylint: disable=import-outside-toplevel
+        stages_plugins, staged_entry_point_names)
 
-    staged = staged_entry_point_names(vast_dir, group)
-    if name and name in staged:
+    if name and name in staged_entry_point_names(vast_dir, group):
         return None
-    # Only while nothing is staged. A project that *has* a plugin dir has already composed,
-    # so "this resolves once you compose" would be false there.
-    if declared_plugins and not staged:
+    # Only while nothing is staged, in any group. A project that *has* a plugin dir has
+    # already composed, so "this resolves once you compose" would be false there.
+    if declared_plugins and not stages_plugins(vast_dir):
         return _problem(
             stage,
             f"{what} '{name}' did not resolve here. The .vast declares "
@@ -1131,14 +1128,14 @@ def _unresolved_plugin_problem(stage, what, name, group, message, vast_dir, decl
             "this check -- so this is expected until the project has composed once, and is "
             "not evidence that the declaration is wrong. What settles it: "
             "preview_configurations(limit=1) composes, installing the specs into "
-            ".robovast_plugins/ first, and then either expands the sweep or fails with the "
-            "plugin's own reason. Seconds, and no compute.",
+            ".robovast_plugins/ first; validating again after that resolves the name or "
+            "reports it unknown. Seconds, and no compute.",
             config=config, field=field, severity="unchecked")
     return _problem(stage, message, config=config, field=field)
 
 
-def _resolution_problem(stage, what, ref, group, exc, vast_dir, declared_plugins, *, field):
-    """The problem for a plugin *ref* a resolver refused with *exc*, or ``None``.
+def _resolution_problems(stage, what, ref, group, exc, vast_dir, declared_plugins, *, field):
+    """The problems -- none or one -- for a plugin *ref* a resolver refused with *exc*.
 
     An entry-point name is reported as :func:`_unresolved_plugin_problem` says, since a
     declared ``plugins:`` spec may provide it; a ``./path.py:Class`` file ref names no
@@ -1146,9 +1143,10 @@ def _resolution_problem(stage, what, ref, group, exc, vast_dir, declared_plugins
     """
     from robovast.common.plugin_ref import is_file_ref  # pylint: disable=import-outside-toplevel
     if is_file_ref(ref):
-        return _problem(stage, str(exc), field=field)
-    return _unresolved_plugin_problem(stage, what, ref, group, str(exc), vast_dir,
-                                      declared_plugins, field=field)
+        return [_problem(stage, str(exc), field=field)]
+    problem = _unresolved_plugin_problem(stage, what, ref, group, str(exc), vast_dir,
+                                         declared_plugins, field=field)
+    return [] if problem is None else [problem]
 
 
 def _config_block_problems(config, vast_dir, valid_param_names, declared_plugins=()):
@@ -1246,10 +1244,10 @@ def _postprocessing_problems(entries, vast_dir, field_prefix, declared_plugins=(
         try:
             resolve_postprocessing_plugin(name, vast_dir)
         except Exception as e:  # noqa: BLE001 - surface any resolution error
-            problems.append(_resolution_problem(
+            problems.extend(_resolution_problems(
                 "postprocessing", "Postprocessing command", name, POSTPROCESSING_GROUP, e,
                 vast_dir, declared_plugins, field=f"{field_prefix}[{i}]"))
-    return [p for p in problems if p is not None]
+    return problems
 
 
 def _search_problems(search, vast_dir, declared_plugins=()):
@@ -1257,7 +1255,7 @@ def _search_problems(search, vast_dir, declared_plugins=()):
 
     Both are referenced like every other plugin (entry-point name or local
     ``./path.py:Class`` file ref) and are otherwise only resolved when a search
-    actually runs; one that does not resolve is reported as :func:`_resolution_problem`
+    actually runs; one that does not resolve is reported as :func:`_resolution_problems`
     says. Collect-all: never raises.
     """
     from robovast.common.config import \
@@ -1284,7 +1282,7 @@ def _search_problems(search, vast_dir, declared_plugins=()):
         try:
             strategy_cls = load_ref(strategy, STRATEGY_GROUP, vast_dir)
         except Exception as e:  # noqa: BLE001 - surface any resolution error
-            problems.append(_resolution_problem(
+            problems.extend(_resolution_problems(
                 "search-strategy", "Search strategy", strategy, STRATEGY_GROUP, e, vast_dir,
                 declared_plugins, field="search.strategy"))
         else:
@@ -1313,7 +1311,7 @@ def _search_problems(search, vast_dir, declared_plugins=()):
             try:
                 extractor_cls = load_ref(plugin, EXTRACTOR_GROUP, vast_dir)
             except Exception as e:  # noqa: BLE001 - surface any resolution error
-                problems.append(_resolution_problem(
+                problems.extend(_resolution_problems(
                     "search-extractor", "Extractor", plugin, EXTRACTOR_GROUP, e, vast_dir,
                     declared_plugins, field="search.extract.plugin"))
             else:
@@ -1409,7 +1407,7 @@ def _plugin_ref_problems(raw, vast_dir):
             search.get("postprocessing"), vast_dir, "search.postprocessing", declared))
         problems.extend(_search_problems(search, vast_dir, declared))
 
-    return [p for p in problems if p is not None]
+    return problems
 
 
 def _python_packages_problems(raw, vast_dir):

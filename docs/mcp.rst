@@ -274,8 +274,9 @@ remember and map onto their situation:
 * A ``plugins:`` spec not yet installed for the project cannot be resolved by
   ``validate_project`` at all — declared specs are installed during config *generation*. A
   variation, postprocessing command, search strategy, extractor or input generator it may
-  provide is reported ``unchecked``, naming ``preview_configurations``, which composes and so
-  installs them; it does not stop that preview. A
+  provide is reported ``unchecked`` while nothing is staged, naming ``preview_configurations``,
+  which composes and so installs them; it does not stop that preview, and validating again
+  after it resolves the name or reports it unknown. A
   package already staged in ``.robovast_plugins/`` *is* resolved, by reading entry-point
   **names** out of that directory: metadata, not an import, because
   ``config_plugins._prepend_sys_path`` is only safe in the isolated compose subprocess and

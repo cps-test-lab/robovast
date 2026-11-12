@@ -182,6 +182,20 @@ def test_a_plugin_ref_a_staged_plugin_registers_is_no_problem(tmp_path):
     assert _problems_before_composing(path)[1] == []
 
 
+def test_a_plugin_ref_no_staged_plugin_registers_is_an_error_once_any_is_staged(tmp_path):
+    """A project that has composed has a plugin dir, whatever groups its plugins register: a
+    postprocessing command none of them provides is unknown, not waiting on a compose."""
+    from robovast.common.config_validation import check_before_composing
+    from robovast.common.errors import ProjectFileInvalid
+    _stage_plugin(tmp_path)                   # registers a variation type only
+    path = _plugin_refs_project(tmp_path, declare_plugins=True)
+
+    with pytest.raises(ProjectFileInvalid) as failed:
+        check_before_composing(path)
+    assert {p["stage"] for p in failed.value.problems} == {"postprocessing", "generate"}
+    assert "Unknown postprocessing plugin" in str(failed.value)
+
+
 def test_an_undeclared_plugin_ref_stops_the_preview_before_it_composes(tmp_path):
     from robovast.common.config_validation import check_before_composing
     from robovast.common.errors import ProjectFileInvalid
