@@ -3984,9 +3984,10 @@ class RobovastInterface(ABC):
         call sub-second.
 
         A simulator whose container adds packages runs in the image the campaign builds, and
-        is asked there: an image not built yet is built first, as :meth:`start_campaign`
-        builds it, whatever ``check_world`` says, so the first validation of such a campaign
-        waits for that build; a failed build fails the validation with the build's id.
+        is asked there. An image not built yet is started building, as :meth:`start_campaign`
+        builds it, or its running build joined, and the call does not wait for it: the
+        simulator's checks are ``unchecked`` problems naming the build and how to follow its
+        log, and a validation once it is built answers them.
         """
 
     @abstractmethod
@@ -4007,8 +4008,9 @@ class RobovastInterface(ABC):
         With ``wait=False`` the call never waits on the expansion: the first call starts
         it in the background and answers at once in state ``composing``, with ``stage``
         saying so while it builds; the caller polls
-        the same call until it is ``ready`` or ``failed``. A landed answer is served until
-        the ``.vast`` changes, and the next call after that composes again. That is how the
+        the same call until it is ``ready`` or ``failed``. A ``ready`` answer is served until
+        the ``.vast`` changes, and the next call after that composes again; a ``failed`` one is
+        answered once, and the call after it composes again. That is how the
         launcher learns the names its filter selects from without blocking on a helper
         container. A search ``.vast`` draws its configurations while it runs, so it is
         refused in that mode (``ValueError``); waiting for it previews a sample as before.

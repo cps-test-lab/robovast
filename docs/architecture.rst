@@ -314,11 +314,13 @@ Four rules make those answers trustworthy:
   it answers the symbolic ``build:<container>``, and composition runs the query in the image the
   service registered for that container over the span
   (:func:`~robovast.common.config_generation.set_built_images`, installed by
-  ``ServiceBase._built_images_context``): the image a campaign pinned; for a validation or a
-  preview, the one the service's store holds, built first when it is not
+  ``ServiceBase._built_images_context``): the image a campaign pinned; for a preview, the one
+  the service's store holds, built and waited for when it is not
   (``ServiceBase._build_for_composition``, through the same ``_start_build_images`` hook
-  ``start_campaign`` uses, so the campaign finds the image built); for an exec or a
-  description, the stored one or nothing. One that is not registered raises
+  ``start_campaign`` uses, so the campaign finds the image built); for a validation, the
+  stored one, or the build it starts or joins without waiting
+  (``ServiceBase._start_composition_builds``), which a query then refuses naming; for an exec
+  or a description, the stored one or nothing. One that is not registered raises
   :class:`~robovast.common.errors.ImageNotBuilt` and is never answered from another image --
   in a process no service arranged, naming a preview through a service. A replay registers
   the image its source asked the simulator in, by the auxiliary containers the source

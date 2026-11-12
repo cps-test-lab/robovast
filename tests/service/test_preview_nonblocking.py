@@ -84,6 +84,16 @@ def test_a_failed_composition_says_why(tmp_path):
     assert result.state == "failed" and result.error and not result.configurations
 
 
+def test_a_failed_preview_is_answered_once_and_composed_again(tmp_path):
+    """What failed may lie outside the .vast -- a build, a package source -- so a held failure
+    is not served again: the call after it composes anew."""
+    impl, vast = _impl(tmp_path, ["cell0"])
+    vast.write_text(_VAST % "- name: cell0\n  variations:\n  - NoSuchVariation: {}")
+    assert _settled(impl).state == "failed"
+    assert impl.preview_configurations("ws", wait=False).state == "composing"
+    assert _settled(impl).state == "failed"
+
+
 def test_a_search_vast_is_refused(tmp_path):
     impl, vast = _impl(tmp_path, ["cell0"])
     vast.write_text(vast.read_text() + "search: {}\n")

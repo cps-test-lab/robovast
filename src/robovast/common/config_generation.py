@@ -192,7 +192,8 @@ def set_built_images(images):
     ``ref`` is the concrete image a container is started from; ``identity`` the name a message
     carries: the store's registry-free identity outside a campaign, and in a campaign the ref
     it pinned, which its records already name. ``None`` for a container means
-    its image is not built. :data:`REPLAYED_BASE` is a replay whose source asked the simulator
+    its image is not built, and ``{"building": build_id}`` that it is being built.
+    :data:`REPLAYED_BASE` is a replay whose source asked the simulator
     in the base image. Returns the ``Token`` like :func:`set_container_runner_factory`.
     """
     return _built_images.set(None if images is None else dict(images))
@@ -240,6 +241,13 @@ def _resolve_built_spec(spec):
                       "<workspace>`, or the MCP tool preview_configurations -- which builds "
                       "the image and asks the simulator in it")
     found = registered.get(name)
+    if found and found.get("building"):
+        build_id = found["building"]
+        raise ImageNotBuilt(
+            f"the campaign's image for container {name!r} is being built (build {build_id}), "
+            "and the simulator is asked in the image the campaign runs",
+            next_step=f"follow it with get_image_build_log(build_id={build_id!r}) or `vast "
+                      f"image log {build_id}`, and validate again once it is built")
     if not found or not found.get("ref"):
         raise ImageNotBuilt(
             f"the campaign's image for container {name!r} is not built, and the simulator "

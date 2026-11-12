@@ -251,11 +251,14 @@ rather than counted as a pass; ``--no-world-check`` / ``--no-scenario-check`` as
 narrower verdict on the file alone.
 
 A campaign whose simulator container adds packages has its simulator asked in the image the
-campaign builds, since a world its own package ships exists only there. ``validate`` and
-``preview`` build that image first when it is not built yet -- the same build ``run`` starts,
-which ``run`` then finds and reuses -- and answer once it is built; a failed build fails them,
-naming the build (``vast image log <build>``). The web UI's launch bar says the image is being
-built while it waits. The local ``vast configuration`` commands (``list``, ``info``,
+campaign builds, since a world its own package ships exists only there. When that image is
+not built yet, ``preview`` builds it -- the same build ``run`` starts, which ``run`` then finds
+and reuses -- and answers once it is built; a failed build fails it, naming the build (``vast
+image log <build>``). The web UI's launch bar says the image is being built while it waits.
+``validate`` does not wait: it starts the build, or joins the one running, and reports the
+simulator's checks as ``unchecked``, naming the build and ``vast image log <build>``; validating
+again once it is built answers them. A preview that failed is shown once, and the next one
+composes again. The local ``vast configuration`` commands (``list``, ``info``,
 ``generate``, ``validate``, ``variation-points``) compose without a service, so for such a
 campaign they refuse, naming ``vast workspace preview`` as the command that builds the image
 and asks there.

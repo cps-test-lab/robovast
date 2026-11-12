@@ -642,14 +642,16 @@ class HTTPTransport(RobovastInterface):
     def validate_project(self, workspace_id: str, path: str = "",
                          check_world: bool = True,
                          check_scenario: bool = True) -> ValidationReport:
+        from robovast.service.interface import COMMAND_LIMIT_S
         return ValidationReport.model_validate(
             self._post(Routes.workspace_validate(workspace_id),
                        json={"path": path, "check_world": check_world,
                              "check_scenario": check_scenario},
-                       # The world and scenario checks run a container, and a simulator
-                       # that runs in the image the campaign builds is asked only once that
-                       # image is built, which the service does first.
-                       timeout=self.IMAGE_BUILD_TIMEOUT))
+                       # The world and scenario checks run a container: cold, that is
+                       # seconds on an idle cluster and well over ten on a busy one,
+                       # which the default read timeout would cut short
+                       # mid-check.
+                       timeout=COMMAND_LIMIT_S))
 
     def preview_configurations(
         self, workspace_id: str, max_configs: int = 0, path: str = "", wait: bool = True
@@ -685,8 +687,8 @@ class HTTPTransport(RobovastInterface):
     #: this because ``fetch`` sets no timeout at all.
     DATA_TIMEOUT = 900.0
 
-    #: A validation, and a preview that waits, build the campaign's image inside the request
-    #: when its simulator runs in it and it is not built yet: as long as an image build may
+    #: A preview that waits builds the campaign's image inside the request when its simulator
+    #: runs in it and it is not built yet: as long as an image build may
     #: take, so a client does not report a timeout while the build is still going.
     IMAGE_BUILD_TIMEOUT = 3600.0
 

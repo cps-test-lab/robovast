@@ -256,10 +256,11 @@ place to say so is **the problem it reports**, not a tool description the reader
 remember and map onto their situation:
 
 * A world that only the campaign's own **built** image can describe -- its simulator
-  container adds packages -- is asked there. ``validate_project`` and
-  ``preview_configurations`` build that image first when it is not built yet, the same
-  content-addressed build ``start_campaign`` runs and then reuses, and wait for it; a failed
-  build is their answer, naming the build's log. Composed with no service (an address on the
+  container adds packages -- is asked there. ``preview_configurations`` builds that image
+  first when it is not built yet, the same content-addressed build ``start_campaign`` runs and
+  then reuses, and waits for it; a failed build is its answer, naming the build's log.
+  ``validate_project`` starts that build, or joins the running one, and does not wait: the
+  simulator's checks come back ``unchecked``, naming the build and ``get_image_build_log``. Composed with no service (an address on the
   MCP-server host), there is no such image, and the reply says the simulator was **not**
   asked and that a preview through the service builds it.
 * A ``plugins:`` spec not yet installed for the project cannot be resolved by

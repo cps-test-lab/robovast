@@ -17,7 +17,6 @@ Two rules the tests below pin down, because both are easy to lose:
 """
 
 
-import contextlib
 import os
 import shutil
 import subprocess
@@ -631,9 +630,6 @@ class _Transport:
 
     def resolve_image(self, _request):
         raise AssertionError("the world query is patched out in these tests")
-
-    def _built_images_context(self, _vast_file, **_kwargs):
-        return contextlib.nullcontext({})
 
 
 def _checked(monkeypatch, tmp_path, problems=None, crash=None):

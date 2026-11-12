@@ -83,7 +83,8 @@ class _BuildingService(NullService):
         for spec in specs.values():
             found = self._images.ref_for(spec, project_dir)
             cached = self._images.present(found)
-            if not cached:
+            # A build already running for these inputs is joined, as the cluster's is.
+            if not cached and found.build_id not in self.started:
                 self.started.append(found.build_id)
             refs.append(ImageBuildRef(build_id=found.build_id, tag=spec.tag, cached=cached))
         return refs
@@ -171,7 +172,7 @@ def test_only_the_simulators_container_is_resolved(tmp_path, monkeypatch):
 def test_a_preview_builds_an_unbuilt_image_and_says_so(building):
     service, vast = building()
     stages = []
-    with service._built_images_context(vast, build=True, on_stage=stages.append) as images:
+    with service._built_images_context(vast, build="wait", on_stage=stages.append) as images:
         assert images == {"simulation": {"ref": BUILT_REF, "identity": "build:simulation@1"}}
     assert service.started == ["b-simulation"]
     assert len(stages) == 1
@@ -181,10 +182,10 @@ def test_a_preview_builds_an_unbuilt_image_and_says_so(building):
 
 def test_a_second_preview_reuses_the_image_without_a_build(building):
     service, vast = building()
-    with service._built_images_context(vast, build=True):
+    with service._built_images_context(vast, build="wait"):
         pass
     stages = []
-    with service._built_images_context(vast, build=True, on_stage=stages.append) as images:
+    with service._built_images_context(vast, build="wait", on_stage=stages.append) as images:
         assert images["simulation"]["ref"] == BUILT_REF
     assert service.started == ["b-simulation"], "built once"
     assert stages == [], "nothing is said to be building"
@@ -193,7 +194,7 @@ def test_a_second_preview_reuses_the_image_without_a_build(building):
 def test_a_failed_build_fails_loudly_naming_its_log(building):
     service, vast = building(fail=True)
     with pytest.raises(ImageBuildFailed) as failed:
-        with service._built_images_context(vast, build=True):
+        with service._built_images_context(vast, build="wait"):
             pass
     message = str(failed.value)
     assert "no matching distribution" in message
@@ -203,7 +204,7 @@ def test_a_failed_build_fails_loudly_naming_its_log(building):
 
 def test_start_campaign_after_a_preview_reuses_its_image(building, monkeypatch):
     service, vast = building()
-    with service._built_images_context(vast, build=True):
+    with service._built_images_context(vast, build="wait"):
         pass
     used = {}
     monkeypatch.setattr("robovast.execution.controller.run_batch_campaign",
@@ -267,6 +268,49 @@ def test_a_background_preview_says_it_is_building_then_answers(building, monkeyp
     assert ready.configs == 1
     assert asked and set(asked) == {BUILT_REF}, "the simulator is asked in the built image"
     assert service.started == ["b-simulation"]
+
+
+# -- a validation starts the build and does not wait for it ------------------------------
+
+def _validated(service):
+    started = time.monotonic()
+    report = service.validate_project("ws", check_world=True, check_scenario=False)
+    return report, time.monotonic() - started
+
+
+@pytest.mark.requires_simulator
+def test_a_validation_starts_the_build_and_reports_unchecked_without_waiting(
+        building, monkeypatch):
+    service, _vast_file = building()
+    service.release = threading.Event()             # the build never finishes here
+    monkeypatch.setattr(service, "_wait_for_build", lambda *a, **k: pytest.fail(
+        "a validation must not wait for the build"))
+
+    report, took = _validated(service)
+
+    assert service.started == ["b-simulation"], "the campaign's build is started"
+    assert took < 10
+    assert report.valid is False
+    assert report.world_checked is False
+    unchecked = [p for p in report.problems if p.severity == "unchecked"]
+    assert unchecked, report.problems
+    assert "is being built (build b-simulation)" in unchecked[0].message
+    assert "get_image_build_log(build_id='b-simulation')" in unchecked[0].message
+    assert "vast image log b-simulation" in unchecked[0].message
+
+
+@pytest.mark.requires_simulator
+def test_a_validation_while_the_build_runs_joins_it(building, monkeypatch):
+    service, _vast_file = building()
+    service.release = threading.Event()
+    service.started.append("b-simulation")          # a preview's build, still running
+    monkeypatch.setattr(service, "_wait_for_build", lambda *a, **k: pytest.fail(
+        "a validation must not wait for the build"))
+
+    report, _took = _validated(service)
+
+    assert service.started == ["b-simulation"], "joined, not started a second time"
+    assert any("is being built (build b-simulation)" in p.message for p in report.problems)
 
 
 # -- a replay asks the simulator in the image its source asked it in ------------------------

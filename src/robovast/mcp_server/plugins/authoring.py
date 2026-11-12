@@ -228,7 +228,7 @@ def validate_project(address: str, check_world: bool = True,
       otherwise kills every trial at its first line while the campaign reports finished.
       ``scenario`` problems carry the parser's message and position.
 
-    A simulator adding packages is asked in the campaign's image, built first.
+    A missing built simulator image starts building; its checks come back unchecked.
 
     **Each problem names what it could not settle and what would**: an uninstalled
     ``plugins:`` spec names ``preview_configurations(limit=1)`` (which composes, and so
