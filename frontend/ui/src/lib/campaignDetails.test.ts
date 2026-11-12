@@ -216,6 +216,14 @@ describe('summariseCpu', () => {
     expect(cpu?.declaredPod).toBe(1)
   })
 
+  it('keeps the fold off a scenario block that sets resources to nothing', () => {
+    const cpu = summariseCpu(
+      [{ container: 'robovast', p95: 1.1, peak: 1.2, ticks: 400 }],
+      [...stepped, { fullkey: '$.execution.containers.scenario.resources.cpu', value: null }],
+    )
+    expect(cpu?.containers[0]).toMatchObject({ container: 'scenario', declared: null })
+  })
+
   it('keeps a simulator in its own container on its own reservation', () => {
     const ros = stepped.map((row) =>
       row.fullkey === '$.execution.mode' ? { ...row, value: 'ros2' } : row,

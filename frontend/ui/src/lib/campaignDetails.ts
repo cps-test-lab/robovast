@@ -359,7 +359,7 @@ function resolveDeclared(
   const folded = mode !== 'ros2' && simulation?.backend != null
   out.set(
     MEASURED_MAIN_CONTAINER,
-    !scenario && folded && simulation?.resources
+    scenario === undefined && folded && simulation?.resources !== undefined
       ? entry('simulation', simulation.resources)
       : entry('scenario', scenario),
   )
@@ -418,12 +418,16 @@ export function summariseCpu(
     if (path[1] !== 'containers' || typeof path[2] !== 'string') continue
     const block = blocks.get(path[2]) ?? {}
     blocks.set(path[2], block)
-    const value = row.value
-    if (path.length < 4 || value === null || value === undefined) continue
-    if (path[3] === 'backend' && path.length === 4) block.backend = value
-    else if (path[3] === 'resources' && typeof path[4] === 'string') {
-      // A field written in a form other than a scalar still makes this a block that reserves.
-      block.resources = { ...block.resources, [path[4]]: path.length === 5 ? value : null }
+    const value = row.value ?? null
+    if (path[3] === 'resources' && typeof path[4] === 'string') {
+      // A block with any field row sets `resources`, even with every field null, which keeps a
+      // stepped simulator's reservation from moving onto it. A non-scalar field counts too.
+      const resources = (block.resources ??= {})
+      if (value !== null || !(path[4] in resources)) {
+        resources[path[4]] = path.length === 5 ? value : null
+      }
+    } else if (path[3] === 'backend' && path.length === 4 && value !== null) {
+      block.backend = value
     }
   }
 

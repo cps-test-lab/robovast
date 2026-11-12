@@ -995,10 +995,11 @@ name: the main container, recorded under the role name ``robovast``, runs with t
 ``simulation`` block's where ``scenario`` sets none, because the two blocks fold into that one
 container. It is named by the block the reservation was written on, the line the reader edits.
 
-A container held at its own CPU limit — throttled in as many of its periods as
-``run_validity_view.quota_bound`` takes for bound — is not compared with its reservation: what
-it was measured using is the limit read back. The advice says it was held at its declared
-figure and gives the suggestion as a floor (``cpu_limit_bound``).
+A container held at its own CPU limit — throttled in at least half of its CFS periods across
+the campaign — was measured using its limit, read back, so ``get_campaign_summary`` does not
+compare it with its reservation: it says the container was held at its declared figure and
+gives the suggestion as a floor (``cpu_limit_bound``), and compares the other containers alone.
+The panel here reads no throttling counters and compares every container.
 
 The advice an agent gets sizes memory on the kernel's own figure where ``system_usage``
 recorded one: ``anon + shmem + slab`` where every sample recorded all three, otherwise the

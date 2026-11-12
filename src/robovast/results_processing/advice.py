@@ -76,6 +76,15 @@ MEM_GRANULARITY_BYTES = 128 * 1024 * 1024
 MIN_TICKS = 30
 
 
+#: Fraction of a container's CFS periods throttled from which it counts as HELD at its CPU limit,
+#: and its measured use as that limit read back rather than what its work needed.
+#:
+#: Not :data:`THROTTLE_WARN_RATIO`, which is a screen for a control loop missing deadlines and
+#: fires on a fraction of a percent. A container throttled in a few periods still ran below its
+#: ceiling almost all the time, so its p95 is a measurement. One throttled in most of them hit
+#: its quota in most 100 ms periods, so the cores it was measured using are the quota.
+HELD_AT_LIMIT_RATIO = 0.5
+
 #: How far from the suggestion a declaration has to be before it is worth saying anything.
 #: Reservations are guesses; flagging a 10% miss would train the reader to ignore the advice.
 OVER_RESERVED_RATIO = 1.5
@@ -416,6 +425,14 @@ def _declared(rows: list[dict]) -> tuple[dict, Optional[float]]:
             continue
         block = containers.setdefault(path[2], {})
         rest = path[3:]
+        if rest and rest[0] == "resources" and len(rest) >= 2 and isinstance(rest[1], str):
+            # A block with any field row sets ``resources``, even one whose fields are all
+            # null: the block is then not None, which is what keeps a stepped simulator's
+            # reservation from moving onto it. A field in a form other than a scalar counts too.
+            resources = block.setdefault("resources", {})
+            if value is not None or rest[1] not in resources:
+                resources[rest[1]] = value if len(rest) == 2 else None
+            continue
         if not rest or value is None:
             continue
         if rest[0] in ("backend", "image") and len(rest) == 1:
@@ -423,10 +440,6 @@ def _declared(rows: list[dict]) -> tuple[dict, Optional[float]]:
         elif rest[0] == "command":
             # Whether it has one is what decides a separate container; what it runs is not.
             block["command"] = True
-        elif rest[0] == "resources" and len(rest) >= 2 and isinstance(rest[1], str):
-            # A field written in a form other than a scalar still counts as declared, so the
-            # block it sits in is a block that sets resources.
-            block.setdefault("resources", {})[rest[1]] = value if len(rest) == 2 else None
     if containers:
         execution["containers"] = containers
     return execution, shm
@@ -447,8 +460,11 @@ def _reservations(execution: dict) -> dict:
     ``resources``.
     """
     declared = execution.get("containers") or {}
-    main = plan_containers(fold_stepped_simulation(execution)).main
-    moved = bool(main.resources) and not (declared.get(SCENARIO_CONTAINER) or {}).get("resources")
+    folded = fold_stepped_simulation(execution)
+    main = plan_containers(folded).main
+    # Moved when the fold put a reservation on a scenario block that declared none.
+    moved = ((declared.get(SCENARIO_CONTAINER) or {}).get("resources") is None
+             and folded["containers"].get(SCENARIO_CONTAINER, {}).get("resources") is not None)
     out = {name: (name, block.get("resources") or {}) for name, block in declared.items()}
     out[MEASURED_MAIN_CONTAINER] = (SIMULATION_CONTAINER if moved else SCENARIO_CONTAINER,
                                     dict(main.resources or {}))
@@ -463,7 +479,8 @@ def _cpu_limit(resources: dict) -> Optional[float]:
 
 def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
                     system_mem_rows: "list[dict] | None" = None,
-                    throttle_rows: "list[dict] | None" = None) -> list[dict]:
+                    throttle_rows: "list[dict] | None" = None,
+                    sizing: "str | None" = None) -> list[dict]:
     """Advice items for one campaign's reservations. Empty when there is nothing to say.
 
     Args:
@@ -476,10 +493,12 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
             this useful on campaigns recorded before the probes existed, but none of the three
             are interchangeable and the advice says which one it used.
         throttle_rows: rows of :data:`THROTTLE_SQL`, when the campaign recorded them. A
-            container throttled in at least :data:`THROTTLE_WARN_RATIO` of its periods was
+            container throttled in at least :data:`HELD_AT_LIMIT_RATIO` of its periods was
             held at its CPU limit, so its measured use is the limit read back: the cpu advice
-            then says that and gives the suggestion as a floor, instead of comparing it with
-            the reservation as though it were what the container needed.
+            says that and gives its suggestion as a floor (``cpu_limit_bound``), and compares
+            only the other containers with their reservations.
+        sizing: the campaign's ``execution.sizing``, which decides the remedy a held
+            container is pointed to.
     """
     usable = [r for r in usage_rows if r.get("container")]
     if not usable:
@@ -490,7 +509,7 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
     for row in (throttle_rows or []):
         periods = int(row.get("periods") or 0)
         throttled = int(row.get("throttled") or 0)
-        if periods > 0 and throttled / periods >= THROTTLE_WARN_RATIO:
+        if periods > 0 and throttled / periods >= HELD_AT_LIMIT_RATIO:
             held[row["container"]] = throttled / periods
     system_mem = {}
     for row in (system_mem_rows or []):
@@ -549,7 +568,17 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
         ("cpu", "cpu_declared", "cpu_suggested", format_cores, "cpu"),
         ("memory", "mem_declared", "mem_suggested", format_memory, "memory"),
     ):
-        sized = list(containers)
+        # A container held at its own limit is reported on its own and left out of the
+        # comparison: what it used is its ceiling read back, not a size to compare with one.
+        bound = [c for c in containers if what == "cpu" and c["cpu_held"] is not None]
+        if bound:
+            advice.append(_held_at_limit(bound, sizing))
+        sized = [c for c in containers if c not in bound]
+        if not sized:
+            continue
+        scope = ("per pod" if not bound else
+                 "across " + ", ".join(f"'{c['container']}'" for c in sized))
+        excluded = {"excluded_held_at_limit": [c["container"] for c in bound]} if bound else {}
         pod_declared = (sum(c[declared_key] for c in sized)
                         if sized and all(c[declared_key] is not None for c in sized) else None)
         pod_suggested = sum(c[suggested_key] for c in sized)
@@ -568,23 +597,18 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
                 f"({format_memory(declared_shm)}) is a tmpfs charged to the pod, so the "
                 f"limits have to total {fmt(pod_suggested)} with it added on top.")
 
-        bound = [c for c in sized if what == "cpu" and c["cpu_held"] is not None]
-        if bound:
-            advice.append(_held_at_limit(bound, per_container, pod_declared, pod_suggested))
-            continue
-
         if pod_declared is None:
             advice.append({
                 "kind": f"{what}_not_declared",
                 "severity": "suggestion",
                 "title": (f"No {unit} reservation declared; measured use suggests "
-                          f"{fmt(pod_suggested)} per pod"),
+                          f"{fmt(pod_suggested)} {scope}"),
                 "detail": (
                     f"Set execution.containers.<name>.resources.{unit} from what this campaign "
                     f"used: {', '.join(f'{k} {v}' for k, v in per_container.items())}. "
                     + _basis(what, mem_source if what == "memory" else "") + shm_note),
                 "evidence": {"suggested_pod": fmt(pod_suggested),
-                             "suggested_per_container": per_container,
+                             "suggested_per_container": per_container, **excluded,
                              **({"shm_size": format_memory(declared_shm)}
                                 if shm_note else {})},
             })
@@ -595,7 +619,7 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
             advice.append({
                 "kind": f"{what}_over_reserved",
                 "severity": "suggestion",
-                "title": (f"Reserves {fmt(pod_declared)} {unit} per pod and needs about "
+                "title": (f"Reserves {fmt(pod_declared)} {unit} {scope} and needs about "
                           f"{fmt(pod_suggested)}"),
                 "detail": (
                     f"Reducing it would fit {ratio:.1f}x as many jobs in the same quota, on "
@@ -605,7 +629,7 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
                 "evidence": {"declared_pod": fmt(pod_declared),
                              "suggested_pod": fmt(pod_suggested),
                              "suggested_per_container": per_container,
-                             "throughput_factor": round(ratio, 2),
+                             "throughput_factor": round(ratio, 2), **excluded,
                              **({"shm_size": format_memory(declared_shm)}
                                 if shm_note else {})},
             })
@@ -613,14 +637,14 @@ def resource_advice(usage_rows: list[dict], declared_rows: list[dict],
             advice.append({
                 "kind": f"{what}_under_reserved",
                 "severity": "warning",
-                "title": (f"Reserves {fmt(pod_declared)} {unit} per pod but used up to "
+                "title": (f"Reserves {fmt(pod_declared)} {unit} {scope} but used up to "
                           f"{fmt(pod_suggested)}"),
                 "detail": (_UNDER_DETAIL[what] + " Per container: "
                            + ", ".join(f"{k} {v}" for k, v in per_container.items())
                            + shm_note),
                 "evidence": {"declared_pod": fmt(pod_declared),
                              "suggested_pod": fmt(pod_suggested),
-                             "suggested_per_container": per_container},
+                             "suggested_per_container": per_container, **excluded},
             })
 
     if thin:
@@ -650,44 +674,52 @@ def _cores_phrase(cores: float) -> str:
     return f"{format_cores(cores)} core" + ("" if cores == 1 else "s")
 
 
-def _held_at_limit(bound: list[dict], per_container: dict, pod_declared, pod_suggested) -> dict:
-    """The cpu item for a campaign in which a container was held at its own CPU limit.
+def _held_at_limit(bound: list[dict], sizing: "str | None") -> dict:
+    """The cpu item for the containers held at their own CPU limit.
 
     Throttled that often, a container could not use more than its limit, so what it was
     measured using is the limit read back and not what its work needed. Comparing that with
     the reservation would call the container sized right, or report a reservation as missing
     that it ran against; sizing from it would carry the same ceiling into the next campaign.
     The suggestion is still the measurement plus headroom, given as the floor it is.
+
+    Under ``sizing: calibrated`` the ceiling is the node's own measurement, so a declared
+    figure is not what to raise -- the margin above the measurement is, as
+    :func:`throttle_advice` says for the system under test.
     """
     def held(c):
         limit = c["cpu_limit"]
         return (f"its declared {_cores_phrase(limit)}" if limit is not None
                 else "its CPU limit")
 
-    names = [c["container"] for c in bound]
     if len(bound) == 1:
-        (c,) = bound
-        title = (f"'{c['container']}' was held at {held(c)} in {c['cpu_held'] * 100:.1f}% of "
-                 "enforcement periods; the measurement is a floor")
+        (only,) = bound
+        title = (f"'{only['container']}' was held at {held(only)} in "
+                 f"{only['cpu_held'] * 100:.1f}% of enforcement periods; the measurement "
+                 "is a floor")
     else:
         title = ("Held at their CPU limits: "
                  + ", ".join(f"'{c['container']}' at {held(c)} ({c['cpu_held'] * 100:.1f}% of "
                              "periods)" for c in bound)
                  + "; the measurements are floors")
-    floors = ", ".join(f"{c['container']} {per_container[c['container']]}" for c in bound)
-    target = names[0] if len(names) == 1 else "<name>"
+    floors = {c["container"]: format_cores(c["cpu_suggested"]) for c in bound}
+    target = bound[0]["container"] if len(bound) == 1 else "<name>"
+    remedy = (f"raise execution.containers.{target}.calibration.headroom.cpu -- under "
+              "calibrated sizing the limit is the node's own measurement, so the margin above "
+              "it is what has to grow"
+              if sizing == "calibrated" else
+              f"raise execution.containers.{target}.resources.cpu (or its cpu_limit, where "
+              "that is set apart) above it")
     return {
         "kind": "cpu_limit_bound",
-        "severity": "warning",
+        "severity": "suggestion" if sizing == "calibrated" else "warning",
         "title": title,
         "detail": (
-            "A container throttled in that many of its CFS periods could not use more than its "
+            "Throttled in most of its CFS periods, a container could not use more than its "
             "limit, so the use measured is the limit read back rather than what its work "
-            f"needed, and sizing from it would carry the same ceiling forward: {floors} is a "
-            f"floor, not a size. Raise execution.containers.{target}.resources.cpu (or its "
-            "cpu_limit, where that is set apart) above it and measure again before reading a "
-            "size off this campaign. Per container: "
-            + ", ".join(f"{k} {v}" for k, v in per_container.items()) + ". "
+            "needed, and sizing from it would carry the same ceiling forward: "
+            + ", ".join(f"{k} {v}" for k, v in floors.items())
+            + f" is a floor, not a size. To size it, {remedy}, and measure again. "
             + _basis("cpu")),
         "evidence": {
             "held_at_limit": {
@@ -696,12 +728,7 @@ def _held_at_limit(bound: list[dict], per_container: dict, pod_declared, pod_sug
                     **({"declared_limit": format_cores(c["cpu_limit"])}
                        if c["cpu_limit"] is not None else {})}
                 for c in bound},
-            "floor_per_container": {c["container"]: per_container[c["container"]]
-                                    for c in bound},
-            "suggested_per_container": per_container,
-            "suggested_pod_floor": format_cores(pod_suggested),
-            **({"declared_pod": format_cores(pod_declared)}
-               if pod_declared is not None else {}),
+            "floor_per_container": floors,
         },
     }
 
@@ -1121,13 +1148,13 @@ def campaign_advice(query_rows) -> dict[str, Any]:
     measured = _measured(query_rows)
     declared = query_rows(DECLARED_SQL)
     throttling = measured(THROTTLE_SQL)
+    sizing = _campaign_sizing(query_rows)
     system_columns = set(next(iter(measured(SYSTEM_USAGE_COLUMNS_SQL)), {}))
     return {"advice": (governor_advice(measured(GOVERNOR_SQL))
-                       + throttle_advice(throttling, declared,
-                                         sizing=_campaign_sizing(query_rows))
+                       + throttle_advice(throttling, declared, sizing=sizing)
                        + resource_advice(measured(USAGE_SQL), declared,
                                          measured(system_mem_sql(system_columns)),
-                                         throttling)
+                                         throttling, sizing=sizing)
                        + shm_advice(measured(SHM_SQL), declared))}
 
 

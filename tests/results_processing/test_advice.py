@@ -621,3 +621,56 @@ def test_a_campaign_held_at_its_folded_reservation_is_advised_against_it(tmp_pat
     assert memory["evidence"]["shm_size"] == "512Mi"
     assert "INCLUDING page cache" in memory["detail"]
     assert "no cgroup memory figures" not in memory["detail"]
+
+
+def test_a_scenario_block_that_sets_resources_to_nothing_keeps_the_fold_off_it():
+    """A ``resources`` block is set once it is there, its fields all null as a config dump
+    writes them: the fold moves a reservation only onto a block that has none."""
+    execution = {**_STEPPED, "containers": {
+        **_STEPPED["containers"], "scenario": {"resources": {"cpu": None, "memory": None}}}}
+    label, resources = A._reservations(A._declared(_rows(execution))[0])["robovast"]
+    assert label == "scenario"
+    assert A._cpu_limit(resources) is None
+
+
+def _throttled(container, fraction):
+    return {"container": container, "periods": 10000, "throttled": int(10000 * fraction),
+            "runs": 10, "runs_throttled": 10}
+
+
+def test_a_few_throttled_periods_are_not_a_container_held_at_its_limit():
+    """A container throttled in a fraction of a percent of its periods ran below its ceiling
+    almost all the time: its p95 is a measurement, and it is compared as usual."""
+    items = _by_kind(A.resource_advice(
+        [_usage("sut", cpu_p95=0.3), _usage("robovast", cpu_p95=0.2)],
+        _declared("sut", cpu=2) + _declared("scenario", cpu=8),
+        throttle_rows=[_throttled("sut", 0.006)]))
+    assert "cpu_limit_bound" not in items
+    assert "cpu_over_reserved" in items
+
+
+def test_a_held_container_leaves_the_others_compared_with_their_reservations():
+    items = _by_kind(A.resource_advice(
+        [_usage("sut", cpu_p95=2.0), _usage("robovast", cpu_p95=0.2)],
+        _declared("sut", cpu=2) + _declared("scenario", cpu=8),
+        throttle_rows=[_throttled("sut", 0.8)]))
+    held = items["cpu_limit_bound"]
+    assert held["title"].startswith("'sut' was held at its declared 2 cores")
+    assert held["severity"] == "warning"
+    assert "resources.cpu" in held["detail"]
+    over = items["cpu_over_reserved"]
+    assert over["title"].startswith("Reserves 8 cpu across 'scenario'")
+    assert over["evidence"]["excluded_held_at_limit"] == ["sut"]
+    assert "sut" not in over["evidence"]["suggested_per_container"]
+
+
+def test_under_calibrated_sizing_a_held_container_is_pointed_at_its_headroom():
+    """The ceiling IS the node's measurement there, so raising a declared figure changes
+    nothing -- the same remedy ``sut_throttled`` names."""
+    items = _by_kind(A.resource_advice(
+        [_usage("sut", cpu_p95=2.0)], _declared("sut", cpu=2),
+        throttle_rows=[_throttled("sut", 0.8)], sizing="calibrated"))
+    held = items["cpu_limit_bound"]
+    assert held["severity"] == "suggestion"
+    assert "calibration.headroom.cpu" in held["detail"]
+    assert "resources.cpu" not in held["detail"]
