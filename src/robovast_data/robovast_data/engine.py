@@ -571,6 +571,9 @@ class Engine:
                     and views.VALIDITY_COLUMNS <= columns.get("system_usage", set())):
                 con.execute("CREATE VIEW run_validity_view AS "
                             + views.run_validity_sql(columns["system_usage"]))
+            if ("run_rtf_view" in relations
+                    and views.RTF_COLUMNS <= columns.get("clock_map", set())):
+                con.execute("CREATE VIEW run_rtf_view AS " + views.run_rtf_sql())
             if "pose_track_view" in relations:
                 pose_track = views.pose_track_sql(columns)
                 if pose_track:

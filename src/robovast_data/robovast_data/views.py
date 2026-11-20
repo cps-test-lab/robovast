@@ -15,7 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """The views a query can name beside the tables: ``run_view``, ``run_validity_view``,
-``pose_track_view``.
+``pose_track_view``, ``run_rtf_view``.
 
 Each exists because the raw form is a trap every consumer would otherwise walk into on its own.
 
@@ -32,6 +32,9 @@ Each exists because the raw form is a trap every consumer would otherwise walk i
   clock (:func:`pose_clock`). A speed differenced on an arrival clock measures the transport,
   and a length summed across two campaigns joins their tracks with a jump across the map; the
   window partitions by the whole key so neither can happen.
+* ``run_rtf_view`` is the realtime factor per simulated second, from the run's ``clock_map``:
+  ``run_clock`` states one factor for the whole run, which hides the stretch of a trial that
+  ran slow.
 
 Every view here is SQL over the relations a query connection defines
 (:mod:`robovast_data.engine`); which tables each reads is declared beside it, so a query naming
@@ -86,11 +89,12 @@ STALL_WARN_RATIO = 0.01
 
 
 #: The measurement tables each view reads, beside the campaign record.
-VIEW_TABLES = {"run_view": (), "run_validity_view": ("system_usage",), "pose_track_view": ()}
+VIEW_TABLES = {"run_view": (), "run_validity_view": ("system_usage",), "pose_track_view": (),
+               "run_rtf_view": ("clock_map",)}
 
 #: Every view, in the order a catalog lists them.
 VIEWS = ("run_view", "config_view", "container_failure_view", "run_validity_view",
-         "pose_track_view")
+         "pose_track_view", "run_rtf_view")
 
 
 def run_view_sql(have: set, unit_columns: set) -> Optional[str]:
@@ -186,6 +190,44 @@ def run_validity_sql(columns: set) -> str:
                          AND NOT (periods > 0 AND {throttled} >= {THROTTLE_WARN_RATIO})
                     THEN 1 ELSE 0 END AS contended
         FROM per_run
+    """
+
+
+#: Simulated seconds per ``run_rtf_view`` row.
+RTF_WINDOW_S = 1.0
+
+#: The ``clock_map`` columns ``run_rtf_view`` reads.
+RTF_COLUMNS = frozenset({"wall_ts", "sim_ts"})
+
+
+def run_rtf_sql() -> str:
+    """``run_rtf_view`` over ``clock_map``: one row per window of :data:`RTF_WINDOW_S`
+    simulated seconds that holds two samples or more.
+
+    The factor is ``sim_span_s / wall_span_s`` between the window's own first and last sample
+    in wall order. A window with fewer than two samples, or no wall time between them, has no
+    row rather than a factor nobody measured.
+    """
+    return f"""
+        WITH sample AS (
+            SELECT campaign_id, config_name, run_id,
+                   CAST(wall_ts AS DOUBLE) AS wall, CAST(sim_ts AS DOUBLE) AS sim
+            FROM clock_map
+            WHERE wall_ts IS NOT NULL AND sim_ts IS NOT NULL),
+        per_window AS (
+            SELECT campaign_id, config_name, run_id,
+                   CAST(FLOOR(sim / {RTF_WINDOW_S}) AS BIGINT) AS idx,
+                   COUNT(*) AS samples,
+                   MAX(wall) - MIN(wall) AS wall_span_s,
+                   ARG_MAX(sim, wall) - ARG_MIN(sim, wall) AS sim_span_s
+            FROM sample
+            GROUP BY campaign_id, config_name, run_id, idx)
+        SELECT campaign_id, config_name, run_id,
+               CAST(idx * {RTF_WINDOW_S} AS DOUBLE) AS sim_start,
+               CAST((idx + 1) * {RTF_WINDOW_S} AS DOUBLE) AS sim_end,
+               wall_span_s, sim_span_s, sim_span_s / wall_span_s AS realtime_factor
+        FROM per_window
+        WHERE samples >= 2 AND wall_span_s > 0
     """
 
 

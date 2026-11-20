@@ -172,7 +172,8 @@ assuming.
 
 ``data.sql()`` takes one DuckDB ``SELECT`` and is scoped exactly as ``table()`` is. Besides
 the tables it sees the views ``run_view``, ``config_view``, ``pose_track_view`` (every
-recorded pose of every pose table), ``run_validity_view`` and ``container_failure_view``.
+recorded pose of every pose table), ``run_validity_view``, ``run_rtf_view`` (the realtime factor
+per simulated second) and ``container_failure_view``.
 ``PERCENTILE(value, p)`` takes ``p`` in 0..100 and ``REGEXP(pattern, value)`` is a search.
 
 A parameter that names a *file* — ``map_file``, ``mesh_file`` — holds a path relative to the
