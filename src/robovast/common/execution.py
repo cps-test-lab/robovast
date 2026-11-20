@@ -2088,15 +2088,26 @@ def pod_key(execution: dict, config: dict, base_dir: str = "") -> PodKey:
     per-configuration environment -- and the configuration's own staged files. A
     configuration that stages a file keys on its name as well, so it shares with nobody:
     its copies are the cell's view of ``/config`` and no other cell's run may see them.
+
+    What the backend states per run through the document's ``_reset`` mapping
+    (:meth:`~robovast.common.simulators.SimulatorBackend.run_reset`) is the run's, not the
+    pod's: the environment names it supersedes and the overrides document leave the key, so
+    two configurations differing only in their world get the same pod and the simulator is told
+    each run's world by its document.
     """
     execution = execution or {}
     overlay = sim_job_overlay(execution, config.get("sim") or {}, base_dir)
     files = sorted(str(rel) for rel, _src in (config.get("_config_files") or []))
+    env, document = dict(overlay["env"]), overlay["document"]
+    if overlay["reset"] is not None:
+        for name in overlay["reset"].supersedes:
+            env.pop(name, None)
+        document = None
     made_of = {
         "image": simulator_image(execution),
         "command": overlay["command"],
-        "env": overlay["env"],
-        "document": overlay["document"],
+        "env": env,
+        "document": document,
         "recording": recording_env(execution, config, base_dir),
         "files": files,
     }
@@ -2143,7 +2154,14 @@ def planned_pod_statements(execution: dict, configs: list, runs: int,
                           {name: pod.own_reason for name, pod in keys.items() if pod.own_reason})
 
 
-def build_job_parameter_documents(job, scenario_name):
+def run_reset_arguments(execution: dict, config: dict, base_dir: str = "") -> Optional[dict]:
+    """The ``_reset`` mapping a run of *config* carries, or ``None`` when its backend states
+    nothing per run (:meth:`~robovast.common.simulators.SimulatorBackend.run_reset`)."""
+    reset = sim_job_overlay(execution or {}, config.get("sim") or {}, base_dir)["reset"]
+    return dict(reset.arguments) if reset is not None else None
+
+
+def build_job_parameter_documents(job, scenario_name, run_reset=None):
     """Build the scenario-parameter override documents for a job: one per item.
 
     Each document overrides ``scenario_name``'s parameters for its item's configuration and
@@ -2153,6 +2171,13 @@ def build_job_parameter_documents(job, scenario_name):
     runs one after another in one process, resetting the simulator between them; the
     documents are in the items' order, so a job of several configurations changes
     configuration where its items do.
+
+    *run_reset* maps an item's configuration to the ``_reset`` mapping its document carries
+    (:func:`run_reset_arguments`), or to ``None``. The documents carry it only when the job's
+    items differ in it: then the simulator must be told each run's world by its document,
+    since the process was started with the first item's. A job whose items agree -- one
+    configuration, or several differing only in their parameters -- carries no ``_reset``,
+    so it runs on any image and with any adapter, whose ``reset()`` need not know the key.
 
     A file-valued parameter is carried **as the campaign wrote it**. It needs no
     rewriting: a scenario resolves a file parameter against its own directory, which is
@@ -2168,12 +2193,19 @@ def build_job_parameter_documents(job, scenario_name):
         list[dict]: The override documents, in the items' order, ready to dump as the
         multi-document YAML ``--scenario-parameter-file`` reads.
     """
+    resets = [None] * len(job.items)
+    if run_reset is not None and len(job.config_names) > 1:
+        resets = [run_reset(item.config) for item in job.items]
+        if all(reset == resets[0] for reset in resets):
+            resets = [None] * len(job.items)
     documents = []
-    for item in job.items:
+    for item, reset in zip(job.items, resets):
         config_dict = convert_dataclasses_to_dict(copy.deepcopy(item.config.get("config") or {}))
         # _output_dir is consumed by scenario_execution to place this run's
         # results; relative paths resolve under -o/--output-dir.
         config_dict["_output_dir"] = item.key
+        if reset:
+            config_dict["_reset"] = convert_dataclasses_to_dict(copy.deepcopy(reset))
         documents.append({scenario_name: config_dict})
     return documents
 

@@ -98,21 +98,52 @@ def test_a_configuration_staging_a_file_keeps_a_job_of_its_own(monkeypatch):
     assert "config_file=" not in _init_command(shared)
 
 
+def _leaves_out(config):
+    return {**config, "recording": {"ros2": {"left_out": [{"topic": "/scan", "type": "t"}]}}}
+
+
 def test_configurations_of_different_pods_never_share_a_job(monkeypatch):
-    r = _runner(monkeypatch, [_config("a"), _config("b", world="worlds/b.yaml")])
+    r = _runner(monkeypatch, [_config("a"), _leaves_out(_config("b"))])
     jobs = r._build_jobs()
     assert [j.run_keys for j in jobs] == [("a/0", "a/1"), ("b/0", "b/1")]
-    worlds = [_main_env(r.create_job_manifest(j, total_jobs=2))["ROQSIM_WORLD"] for j in jobs]
-    assert worlds == ["/config/worlds/a.yaml", "/config/worlds/b.yaml"]
+    left_out = [_main_env(r.create_job_manifest(j, total_jobs=2))["RECORD_LEFT_OUT"] for j in jobs]
+    assert left_out == ["", "/scan"]
 
 
 def test_a_job_whose_items_would_not_share_a_pod_is_refused(monkeypatch):
     """The manifest is read off the first item; a job that packed another pod's run would run
     it in a pod made for the first, so it is refused rather than rendered."""
-    r = _runner(monkeypatch, [_config("a"), _config("b", world="worlds/b.yaml")])
-    job = Job(items=[RunItem(_config("a"), 0), RunItem(_config("b", world="worlds/b.yaml"), 0)])
+    r = _runner(monkeypatch, [_config("a"), _leaves_out(_config("b"))])
+    job = Job(items=[RunItem(_config("a"), 0), RunItem(_leaves_out(_config("b")), 0)])
     with pytest.raises(CampaignConfigError, match="packs runs of b with a"):
         r.create_job_manifest(job, total_jobs=1)
+
+
+def test_runs_of_different_worlds_share_a_job_and_each_document_names_its_world(monkeypatch, tmp_path):
+    """The stepped simulator is told each run's world by its document, so two configurations
+    differing in their world get one pod; the process starts with the first item's world, and
+    the job-level document and environment say so."""
+    import yaml
+
+    a, b = _config("a"), _config("b", world="worlds/b.yaml")
+    b["sim"]["overrides"] = {"components": {"floor": {"k": 1}}}
+    r = _runner(monkeypatch, [a, b])
+    (jobs,) = [r._build_jobs()]
+    assert [j.run_keys for j in jobs] == [("a/0", "a/1", "b/0", "b/1")]
+    env = _main_env(r.create_job_manifest(jobs[0], total_jobs=1))
+    assert env["ROQSIM_WORLD"] == "/config/worlds/a.yaml"
+    assert "ROQSIM_WORLD_OVERRIDES" not in env, "the first item has no overrides document"
+    scenario = tmp_path / "scenario.osc"
+    scenario.write_text("scenario trial:\n    do serial:\n        wait elapsed(1s)\n")
+    r.campaign_data["scenario_file"] = str(scenario)
+    r._write_job_param_files(str(tmp_path / "out"))
+    (params,) = (tmp_path / "out" / "_transient").glob("*.params.yaml")
+    documents = list(yaml.safe_load_all(params.read_text()))
+    assert [d["trial"]["_reset"]["world"] for d in documents] == [
+        "/config/worlds/a.yaml", "/config/worlds/a.yaml", "/config/worlds/b.yaml", "/config/worlds/b.yaml"]
+    assert documents[3]["trial"]["_reset"]["world_overrides"] == {"components": {"floor": {"k": 1}}}
+    assert documents[0]["trial"]["_reset"]["world_overrides"] == {}
+    assert not list((tmp_path / "out" / "_transient").glob("*.sim.yaml")), "the first item has no document"
 
 
 def test_a_mixed_job_is_done_only_with_every_items_verdict(tmp_path):
