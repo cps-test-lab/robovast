@@ -38,6 +38,7 @@ def _members(tar_bytes):
         return {m.name: m for m in tf.getmembers()}
 
 
+@pytest.mark.needs_pigz
 def test_the_stream_includes_files_excludes_cache_keeps_symlink(tmp_path):
     root = tmp_path / "camp-2026-01-01-000000"
     _make_campaign(str(root))
@@ -53,6 +54,7 @@ def test_the_stream_includes_files_excludes_cache_keeps_symlink(tmp_path):
     assert not any(n.startswith(f"{cid}/config1/1/job/") for n in members)
 
 
+@pytest.mark.needs_pigz
 def test_campaign_tar_stream_cm_yields_readable(tmp_path):
     root = tmp_path / "camp-2026-01-01-000000"
     _make_campaign(str(root))
@@ -62,6 +64,7 @@ def test_campaign_tar_stream_cm_yields_readable(tmp_path):
     assert f"camp-2026-01-01-000000/campaign.db" in _members(data)
 
 
+@pytest.mark.needs_pigz
 def test_iter_tar_with_custom_add_members_injects_objects():
     """Object-store-style source: add_members writes members directly (no local dir)."""
     def add_members(tar):
@@ -108,6 +111,7 @@ def test_share_refuses_a_campaign_no_import_could_take_back_in(tmp_path, monkeyp
     refuse_unimportable(str(root))
 
 
+@pytest.mark.needs_pigz
 def test_writer_error_propagates_on_close():
     def boom(_tar):
         raise ValueError("kaboom")
@@ -137,6 +141,7 @@ def test_a_compressor_that_dies_mid_stream_fails_the_stream(monkeypatch):
         list(campaign_archive.iter_tar(_add_random(8 * 1024 * 1024)))
 
 
+@pytest.mark.needs_pigz
 def test_a_reader_that_stops_early_is_not_a_failure():
     stream = campaign_archive.iter_tar(_add_random(8 * 1024 * 1024), chunk_size=1024)
     assert next(stream)
@@ -159,6 +164,7 @@ def test_a_file_truncated_under_the_copy_is_padded_rather_than_raising(tmp_path)
         assert reader.read(10) == b""
 
 
+@pytest.mark.needs_pigz
 def test_a_file_that_vanishes_mid_walk_costs_one_member_not_the_archive(tmp_path):
     """A campaign directory is written to while it is read, and files go away.
 
@@ -187,6 +193,7 @@ def test_a_file_that_vanishes_mid_walk_costs_one_member_not_the_archive(tmp_path
     assert "camp-2026-01-01-000000/aaa-goes-away.log" not in names
 
 
+@pytest.mark.needs_pigz
 def test_a_snapshot_says_so_inside_the_archive(tmp_path):
     """The marker travels with the campaign, carrying what was true at capture.
 
@@ -207,6 +214,7 @@ def test_a_snapshot_says_so_inside_the_archive(tmp_path):
     assert facts["campaign_id"] == "camp-2026-01-01-000000"
 
 
+@pytest.mark.needs_pigz
 @pytest.mark.parametrize("stream", ["download", "share"])
 def test_every_archive_carries_one_stamp_of_the_layout_it_was_written_in(tmp_path, stream):
     """Both streams stamp what they write, and a stamp already in the tree is not copied

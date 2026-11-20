@@ -18,6 +18,7 @@ skip only where robovast really is standing alone.
 """
 
 import os
+import shutil
 from importlib.metadata import entry_points
 
 import pytest
@@ -166,7 +167,23 @@ def simulator_backends() -> list[str]:
     return sorted(e.name for e in entry_points(group=SIMULATOR_GROUP))
 
 
+#: Tests that drive a binary the host may not have are marked `needs_<tool>`, and skip,
+#: naming the tool, where it is absent: a test that cannot run is not a test that passed,
+#: and not one that failed either. The service's own image carries every tool listed.
+EXTERNAL_TOOLS = {
+    "needs_pigz": ("pigz", "campaign archives, exports and shares are compressed through pigz"),
+    "needs_docker": ("docker", "an auxiliary container is run through a local docker where no "
+                               "execution backend is arranged"),
+}
+
+
 def pytest_collection_modifyitems(config, items):
+    absent = {marker: pytest.mark.skip(reason=f"{tool} is not installed here ({why})")
+              for marker, (tool, why) in EXTERNAL_TOOLS.items() if shutil.which(tool) is None}
+    for item in items:
+        for marker, skip in absent.items():
+            if marker in item.keywords:
+                item.add_marker(skip)
     if simulator_backends():
         return
     skip = pytest.mark.skip(
@@ -179,6 +196,9 @@ def pytest_collection_modifyitems(config, items):
 
 
 def pytest_configure(config):
+    for marker, (tool, why) in EXTERNAL_TOOLS.items():
+        config.addinivalue_line(
+            "markers", f"{marker}: drives the `{tool}` binary ({why}); skipped where it is absent")
     config.addinivalue_line(
         "markers",
         "requires_simulator: needs a registered robovast.simulators backend "

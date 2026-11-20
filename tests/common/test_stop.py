@@ -13,6 +13,7 @@ import signal
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -22,12 +23,22 @@ from robovast.common.stop import (run_watching_stop, sleep_unless_stopped, termi
 
 
 def _gone(pid, timeout=5.0):
-    """Whether *pid* is gone within *timeout*, allowing for the reaping that follows a kill."""
+    """Whether *pid* is gone within *timeout*, allowing for the reaping that follows a kill.
+
+    A zombie counts as gone: the killed child is reparented to PID 1 once its parent has
+    died, and where PID 1 reaps nothing (a container whose first process is not an init) it
+    stays a zombie that ``os.kill(pid, 0)`` still finds. Its state in /proc says what it is.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
             os.kill(pid, 0)
         except (ProcessLookupError, PermissionError):
+            return True
+        try:
+            if Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z":
+                return True
+        except (OSError, IndexError):
             return True
         time.sleep(0.05)
     return False

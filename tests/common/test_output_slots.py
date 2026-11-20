@@ -468,6 +468,7 @@ def test_the_query_mounts_the_campaign_where_its_command_looks(tmp_path):
     assert exposed == {"/config": str(tmp_path)}
 
 
+@pytest.mark.needs_docker
 def test_the_local_runner_gets_a_ref_docker_can_pull(monkeypatch):
     """``docker`` cannot pull ``family:<member>`` -- that name is RoboVAST's, not a registry's."""
     from robovast.common.config_generation import _make_container_runner

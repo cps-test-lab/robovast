@@ -262,6 +262,7 @@ def test_a_body_that_is_not_a_tar_is_a_400(client):
     assert resp.status_code == 400, resp.text
 
 
+@pytest.mark.needs_pigz
 def test_the_archive_carries_the_records_and_the_tables_and_raw_only_the_records(client, root):
     campaign = root / _CAMPAIGN
     (campaign / "_calibration").mkdir()
@@ -280,6 +281,7 @@ def test_the_archive_carries_the_records_and_the_tables_and_raw_only_the_records
     assert not [n for n in raw if "/.cache" in n]
 
 
+@pytest.mark.needs_pigz
 def test_the_standalone_plane_reads_liveness_from_the_tree(standalone, root):
     """No registry in the data container: the terminal record is what says a campaign is over."""
     from robovast.execution.campaign_archive import SNAPSHOT_MEMBER
@@ -318,6 +320,7 @@ def test_a_slot_name_cannot_leave_the_staging_tree(root):
         DataPlane(root).staged_dir("../" + _CAMPAIGN)
 
 
+@pytest.mark.needs_pigz
 def test_a_scoped_token_reaches_its_campaign_and_nothing_else(root):
     token = auth.scoped_token(TEST_TOKEN, auth.scope_for_campaign(_CAMPAIGN))
     _campaign(root, _OTHER)
@@ -391,6 +394,7 @@ def test_the_control_plane_mints_tokens_the_data_plane_honours(root):
         assert client.get(Routes.campaign_inputs(_CAMPAIGN), params=_JOB).status_code == 200
 
 
+@pytest.mark.needs_pigz
 def test_only_an_archive_that_leaves_the_cluster_is_compressed(client, root):
     """gzip costs a core per stream and saves little on run output, so every stream a pod
     reads is a plain tar; a download keeps gzip, and names its file for what it is."""

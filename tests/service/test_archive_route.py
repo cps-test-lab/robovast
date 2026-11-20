@@ -72,6 +72,7 @@ def _members(payload: bytes) -> set:
         return set(tar.getnames())
 
 
+@pytest.mark.needs_pigz
 def test_the_service_streams_a_campaign_from_its_results_root(env):
     """The service serves the archive of a campaign in its results root; it does not refuse it."""
     resp = env.get(Routes.campaign_archive(_CAMPAIGN))
@@ -85,6 +86,7 @@ def test_the_service_streams_a_campaign_from_its_results_root(env):
     assert f"{_CAMPAIGN}/_config/campaign.vast" in names
 
 
+@pytest.mark.needs_pigz
 def test_the_archive_carries_the_built_tables_and_nothing_else_of_the_cache(env):
     names = _members(env.get(Routes.campaign_archive(_CAMPAIGN)).content)
     cache = sorted(n for n in names if "/.cache" in n)
@@ -95,6 +97,7 @@ def test_the_archive_carries_the_built_tables_and_nothing_else_of_the_cache(env)
     assert f"{_CAMPAIGN}/_transient/postprocessing.yaml" in names
 
 
+@pytest.mark.needs_pigz
 def test_raw_is_the_records_without_the_tables_or_what_postprocessing_produced(env):
     resp = env.get(Routes.campaign_archive(_CAMPAIGN), params={"raw": "true"})
     assert resp.status_code == 200, resp.text
@@ -114,6 +117,7 @@ def test_an_unknown_campaign_is_a_404(env):
     assert resp.status_code == 404
 
 
+@pytest.mark.needs_pigz
 def test_the_route_needs_no_workspace_store(tmp_path, monkeypatch):
     """Archives are campaign output, so the route must not depend on workspaces.
 
@@ -136,6 +140,7 @@ def test_the_route_needs_no_workspace_store(tmp_path, monkeypatch):
     assert _CAMPAIGN in resp.headers["content-disposition"]
 
 
+@pytest.mark.needs_pigz
 def test_a_running_campaign_downloads_as_an_incomplete_snapshot(tmp_path, monkeypatch):
     """A campaign still being written to is served, and says so in its own name.
 
@@ -162,6 +167,7 @@ def test_a_running_campaign_downloads_as_an_incomplete_snapshot(tmp_path, monkey
     assert f"{_CAMPAIGN}/{SNAPSHOT_MEMBER}" in _members(resp.content)
 
 
+@pytest.mark.needs_pigz
 def test_a_finished_campaign_is_not_marked_incomplete(env):
     """The marker is a claim about this campaign, so it must not ride along on every one.
 
