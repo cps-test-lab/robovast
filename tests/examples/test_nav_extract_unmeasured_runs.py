@@ -7,19 +7,13 @@
 ``NavExtract`` refuses to invent a score for a cell with no ``test.xml`` -- its own comment
 says why: *"0.0 would look like a cell sitting exactly on the boundary, which is the most
 interesting thing a boundary search can find."* A run WITH a verdict and WITHOUT a metrics
-row slipped past that guard and produced exactly the number the guard exists to prevent.
-
-Every reader defaulted independently, and the defaults compose into a plausible-looking
-disaster::
-
-    duration = _f(row, 'duration_s', timeout)     # -> the timeout
-    margins  = [(timeout - duration) / timeout]   # -> 0.0, precisely
-
-so two clean, roomy crossings plus one unmeasured run scored ``robustness: 0.0``:
-the failure boundary, which is what an adversarial search minimizes toward and literally
-the ``level`` the ``boundary`` strategy traces. It also reported ``time_to_goal`` at the
-timeout and a ``failure_mode`` of ``'timeout'`` -- and that one is a QD archive axis, so
-the fabrication lands in a real archive cell and becomes an elite the search then chases.
+row is the other way to reach that number: were each missing value read with a plausible
+default, a duration at the timeout would put the time margin at exactly 0.0, the failure
+boundary, which is what an adversarial search minimizes toward and literally the ``level``
+the ``boundary`` strategy traces; ``time_to_goal`` would sit at the timeout and
+``failure_mode`` at ``'timeout'`` -- and that one is a QD archive axis, so the fabrication
+would land in a real archive cell and become an elite the search then chases. So such a run
+is skipped, and nothing about it is defaulted.
 
 Reachable without anything else being wrong: ``NavMetrics`` writes no row for a run whose
 ground-truth pose track is missing, and counts them in its own note.
@@ -43,16 +37,19 @@ def _extractor_cls():
     return module.NavExtract
 
 
-def _run(config_dir, index, *, metrics=True, clearance=0.9, duration=20.0, to_goal=0.1):
+def _run(config_dir, index, *, metrics=True, clearance=0.9, duration=20.0, to_goal=0.1,
+         passed=True):
     run_dir = config_dir / str(index)
     run_dir.mkdir(parents=True)
+    verdict = "" if passed else '<failure message="x"/>'
     (run_dir / "test.xml").write_text(
-        '<?xml version="1.0"?><testsuite tests="1" failures="0" errors="0">'
-        '<testcase name="t"/></testsuite>', encoding="utf-8")
+        f'<?xml version="1.0"?><testsuite tests="1" failures="{0 if passed else 1}" errors="0">'
+        f'<testcase name="t">{verdict}</testcase></testsuite>', encoding="utf-8")
     if metrics:
         (run_dir / "nav_metrics.csv").write_text(
-            "min_clearance,duration_s,final_distance_to_goal,collided,recovery_count\n"
-            f"{clearance},{duration},{to_goal},0,0\n", encoding="utf-8")
+            "min_clearance,duration_s,final_distance_to_goal,collided,recovery_count,"
+            "nav_start_s,nav_end_s\n"
+            f"{clearance},{duration},{to_goal},0,0,0.0,{duration}\n", encoding="utf-8")
     return run_dir
 
 
@@ -107,7 +104,7 @@ def test_a_cell_whose_every_run_is_unmeasured_produces_no_sample(tmp_path):
 def test_a_failing_run_is_still_scored_from_its_own_measurements(tmp_path):
     """The guard must not swallow a real failure: this run measured a collision."""
     config_dir = tmp_path / "c0"
-    _run(config_dir, 0, clearance=0.0, duration=15.0, to_goal=3.0)
+    _run(config_dir, 0, clearance=0.0, duration=15.0, to_goal=3.0, passed=False)
 
     result = _extract(config_dir)
 
