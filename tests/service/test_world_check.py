@@ -271,6 +271,23 @@ def test_output_reaches_the_caller_even_when_the_command_failed():
     assert any("cannot build" in line for line in lines)
 
 
+def test_stdouts_last_line_stays_apart_from_stderr():
+    """A JSON line printed without a trailing newline is still a line of its own.
+
+    Joined before splitting, stdout's last line would run into stderr's first, and the JSON
+    line the caller reads its answer from would no longer parse.
+    """
+    exec_call = _Exec(_Result(exit_code=1, stdout='setup\n{"components": []}',
+                              stderr="cannot build world\n"))
+    runner = ExecSlotContainerRunner(exec_call, workspace_id="ws-1",
+                                     config_path="a.vast")
+    lines = []
+    with pytest.raises(world_query.QueryCommandFailed) as failed:
+        runner.run(["roqsim"], lines.append)
+    assert lines == ["setup", '{"components": []}', "cannot build world"]
+    assert failed.value.output.splitlines() == lines
+
+
 # -- the check: what a caller is told ----------------------------------------
 
 

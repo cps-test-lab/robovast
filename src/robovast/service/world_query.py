@@ -166,10 +166,13 @@ class ExecSlotContainerRunner:
             # The held pool, never the caller's container: this is a read-only question
             # and a one-shot would destroy whatever they are holding.
             query=True))
-        combined = (result.stdout or "") + (result.stderr or "")
+        stdout, stderr = result.stdout or "", result.stderr or ""
+        # Each stream split on its own: stdout's last line need not end in a newline, and
+        # joined first it would run into stderr's first line -- the JSON line among them.
         if progress_update_callback is not None:
-            for line in combined.splitlines():
+            for line in stdout.splitlines() + stderr.splitlines():
                 progress_update_callback(line)
+        combined = "\n".join(part for part in (stdout.rstrip("\n"), stderr.rstrip("\n")) if part)
         if result.exit_code != 0:
             self.command_failed = True
             raise QueryCommandFailed(result.exit_code, command, output=combined)
