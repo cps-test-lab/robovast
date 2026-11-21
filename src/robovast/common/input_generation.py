@@ -110,6 +110,15 @@ class BaseInputGenerator:
         self.progress_update = logger.info
 
     @classmethod
+    def check_parameters(cls, parameters):
+        """Refuse a parameter dict this generator cannot run, before anything is arranged for it.
+
+        Called before the auxiliary container is made, so a mistake in the ``.vast`` is
+        reported as that mistake and not as whatever the infrastructure said when it was
+        asked for a container the entry would never have used.
+        """
+
+    @classmethod
     def get_required_container(cls, parameters):
         """Auxiliary container this generator needs, or ``None`` to run in-process.
 
@@ -433,6 +442,7 @@ def _run_one(name, generator_cls, params, out, out_dir, vast_dir, field, progres
     from robovast.common.config_generation import (  # pylint: disable=import-outside-toplevel
         aux_image_digest, aux_images_fixed)
 
+    generator_cls.check_parameters(params)
     spec = generator_cls.get_required_container(params)
     container_runner = None
     image_digest = None
@@ -716,6 +726,23 @@ def _resolve_command(name):
         f"'command', or add 'image:' so the command runs in a container that has it.")
 
 
+def _mount_targets(inputs, mount_at) -> dict:
+    """``mount_at`` as ``{index of the declared input: target path}``.
+
+    An entry naming no declared input is a typo that would otherwise leave the tree
+    unmounted and fail inside the tool, so it is refused here, by name.
+    """
+    declared_inputs = list(inputs or [])
+    targets = {}
+    for declared, target in (mount_at or {}).items():
+        if declared not in declared_inputs:
+            raise CampaignConfigError(
+                f"shell generator 'mount_at' names {declared!r}, which is not one "
+                f"of its 'inputs' ({declared_inputs}).")
+        targets[declared_inputs.index(declared)] = target
+    return targets
+
+
 class Shell(BaseInputGenerator):
     """Run a shell command that writes a campaign input — the generic escape hatch.
 
@@ -752,6 +779,10 @@ class Shell(BaseInputGenerator):
     FORMAT_VERSION = 1
 
     @classmethod
+    def check_parameters(cls, parameters):
+        _mount_targets(parameters.get("inputs"), parameters.get("mount_at"))
+
+    @classmethod
     def get_required_container(cls, parameters):
         image = (parameters or {}).get("image")
         if not image:
@@ -782,16 +813,9 @@ class Shell(BaseInputGenerator):
 
         if self.container_runner is not None:
             # `mount_at` is declared against the *input* as written; map it onto the
-            # resolved path the stager keys on. An entry naming no declared input is a
-            # typo that would otherwise leave the tree unmounted and fail inside the tool.
-            declared_inputs = list(inputs or [])
-            mounts = {}
-            for declared, target in (mount_at or {}).items():
-                if declared not in declared_inputs:
-                    raise CampaignConfigError(
-                        f"shell generator 'mount_at' names {declared!r}, which is not one "
-                        f"of its 'inputs' ({declared_inputs}).")
-                mounts[resolved[declared_inputs.index(declared)]] = target
+            # resolved path the stager keys on.
+            mounts = {resolved[index]: target
+                      for index, target in _mount_targets(inputs, mount_at).items()}
             container_out, container_inputs = stage_for_container(
                 self.container_runner, out_dir, resolved, mount_at=mounts)
             argv = [part.format(out=container_out, inputs=container_inputs)

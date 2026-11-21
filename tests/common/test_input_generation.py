@@ -398,6 +398,20 @@ def test_mount_at_naming_no_declared_input_is_a_loud_typo(tmp_path):
         run_input_generators(str(tmp_path), entries)
 
 
+def test_a_mount_at_typo_is_reported_before_a_container_runner_is_made(tmp_path):
+    """A backend that cannot make a runner must not hide the mistake in the ``.vast``."""
+    (tmp_path / "world.yaml").write_text("x: 1\n")
+    entries = [{"shell": {"out": "files/scene", "inputs": ["world.yaml"],
+                          "mount_at": {"worlds.yaml": "/config"},
+                          "command": "true", "image": "example/img:1"}}]
+
+    def no_runner(spec):
+        raise RuntimeError("no container runner on this backend")
+
+    with pytest.raises(CampaignConfigError, match="not one of its 'inputs'"):
+        run_input_generators(str(tmp_path), entries, container_runner_factory=no_runner)
+
+
 def test_a_failed_command_carries_its_output_into_the_error(tmp_path):
     """`CalledProcessError` renders as "returned non-zero exit status 1" and nothing else.
 
