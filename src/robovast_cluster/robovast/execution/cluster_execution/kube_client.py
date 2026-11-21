@@ -46,6 +46,7 @@ dependency is the third-party ``kubernetes`` package; every cluster/service
 module depends on it *downward*.
 """
 
+import codecs
 import contextlib
 import functools
 import json
@@ -318,26 +319,32 @@ def wait_pod_gone(core, namespace: str, name: str, reads=None,
                 f"{name} did not finish terminating within {int(timeout_s)}s")
 
 
-class _Lines:
-    """Whole lines out of a stream that arrives in chunks, for a per-line callback.
+class _Stream:
+    """One exec channel's text, collected in :attr:`text` and handed on as whole lines.
 
-    A chunk ends where the channel's frame ends, so a line can be cut across two: the part
-    after the last newline is held until the next chunk, and handed on by :meth:`flush` when
-    the stream ends without one.
+    A chunk ends where the channel's frame ends, so a character or a line can be cut across
+    two. The bytes are decoded as one UTF-8 stream, so a character split between frames
+    arrives whole; the part of a line after the last newline is held until the next chunk.
+    :meth:`flush` hands on what is held when the stream ends.
     """
 
     def __init__(self, on_line):
         self._on_line = on_line
+        self._decode = codecs.getincrementaldecoder("utf-8")("replace").decode
         self._held = ""
+        self.text: list[str] = []
 
-    def feed(self, chunk: str) -> None:
+    def feed(self, chunk: bytes, final: bool = False) -> None:
+        text = self._decode(chunk, final)
+        self.text.append(text)
         if not self._on_line:
             return
-        *lines, self._held = (self._held + chunk).split("\n")
+        *lines, self._held = (self._held + text).split("\n")
         for line in lines:
             self._on_line(line.rstrip("\r"))
 
     def flush(self) -> None:
+        self.feed(b"", final=True)
         if self._on_line and self._held:
             held, self._held = self._held, ""
             self._on_line(held.rstrip("\r"))
@@ -387,12 +394,12 @@ def exec_stream(pod: str, namespace: str, container: str, command,
         resp = stream(core.connect_get_namespaced_pod_exec, pod, namespace,
                       container=container, command=list(command),
                       stderr=True, stdin=stdin_data is not None, stdout=True,
-                      tty=False, _preload_content=False)
+                      tty=False, _preload_content=False, binary=True)
     except ApiException as exc:
         api.close()
         raise_api_error(exc, f"could not open an exec stream into {pod}/{container}")
-    out, err = [], []
-    stdout_lines, stderr_lines = _Lines(on_stdout_line), _Lines(on_stderr_line)
+    stdout, stderr = _Stream(on_stdout_line), _Stream(on_stderr_line)
+    not_started = ""
     deadline = time.monotonic() + max(1.0, float(limit_s))
     timed_out = False
     try:
@@ -410,13 +417,9 @@ def exec_stream(pod: str, namespace: str, container: str, command,
             # blocking for the whole remaining budget in one update() call.
             resp.update(timeout=min(1.0, remaining))
             if resp.peek_stdout():
-                chunk = resp.read_stdout()
-                out.append(chunk)
-                stdout_lines.feed(chunk)
+                stdout.feed(resp.read_stdout())
             if resp.peek_stderr():
-                chunk = resp.read_stderr()
-                err.append(chunk)
-                stderr_lines.feed(chunk)
+                stderr.feed(resp.read_stderr())
         # `resp.returncode` int()s the exec status the API server returns. When the exec
         # never STARTS -- a missing executable, a bad working dir -- that status carries a
         # message instead of an exit code, so the client raises
@@ -429,18 +432,18 @@ def exec_stream(pod: str, namespace: str, container: str, command,
             try:
                 code = resp.returncode
             except (ValueError, TypeError) as exc:
-                err.append(f"exec did not start: {exc}")
+                not_started = f"exec did not start: {exc}"
                 code = 126  # the shell's "command found but not executable" convention
     finally:
         resp.close()
         api.close()
-        stdout_lines.flush()
-        stderr_lines.flush()
+        stdout.flush()
+        stderr.flush()
     if code is None:
         # Either the deadline fired, or the channel closed without a status — neither is a
         # success, and reporting 0 for the second would invent one.
         timed_out, code = True, 124
-    return code, "".join(out), "".join(err), timed_out
+    return code, "".join(stdout.text), "".join(stderr.text) + not_started, timed_out
 
 
 def read_node_summary(core, node: str, timeout_s: float = 2.0) -> dict:
