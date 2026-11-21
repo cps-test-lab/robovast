@@ -25,7 +25,7 @@ search:
       sim: {instances: components.barrier.instances}
       gap_width: $gap_width
   - ParameterVariationList:
-      sim: components.pedestrian.dwell
+      sim: components.pedestrian.walk.dwell
       values: [$walker_dwell]
   postprocessing:
   # The rosbags_* entries configure the tables this batch's plugins read, built from its
