@@ -318,6 +318,31 @@ def wait_pod_gone(core, namespace: str, name: str, reads=None,
                 f"{name} did not finish terminating within {int(timeout_s)}s")
 
 
+class _Lines:
+    """Whole lines out of a stream that arrives in chunks, for a per-line callback.
+
+    A chunk ends where the channel's frame ends, so a line can be cut across two: the part
+    after the last newline is held until the next chunk, and handed on by :meth:`flush` when
+    the stream ends without one.
+    """
+
+    def __init__(self, on_line):
+        self._on_line = on_line
+        self._held = ""
+
+    def feed(self, chunk: str) -> None:
+        if not self._on_line:
+            return
+        *lines, self._held = (self._held + chunk).split("\n")
+        for line in lines:
+            self._on_line(line.rstrip("\r"))
+
+    def flush(self) -> None:
+        if self._on_line and self._held:
+            held, self._held = self._held, ""
+            self._on_line(held.rstrip("\r"))
+
+
 def exec_stream(pod: str, namespace: str, container: str, command,
                 *, limit_s: float, stdin_data: str | None = None,
                 on_stdout_line=None, on_stderr_line=None, should_stop=None):
@@ -367,6 +392,7 @@ def exec_stream(pod: str, namespace: str, container: str, command,
         api.close()
         raise_api_error(exc, f"could not open an exec stream into {pod}/{container}")
     out, err = [], []
+    stdout_lines, stderr_lines = _Lines(on_stdout_line), _Lines(on_stderr_line)
     deadline = time.monotonic() + max(1.0, float(limit_s))
     timed_out = False
     try:
@@ -386,15 +412,11 @@ def exec_stream(pod: str, namespace: str, container: str, command,
             if resp.peek_stdout():
                 chunk = resp.read_stdout()
                 out.append(chunk)
-                if on_stdout_line:
-                    for line in chunk.splitlines():
-                        on_stdout_line(line)
+                stdout_lines.feed(chunk)
             if resp.peek_stderr():
                 chunk = resp.read_stderr()
                 err.append(chunk)
-                if on_stderr_line:
-                    for line in chunk.splitlines():
-                        on_stderr_line(line)
+                stderr_lines.feed(chunk)
         # `resp.returncode` int()s the exec status the API server returns. When the exec
         # never STARTS -- a missing executable, a bad working dir -- that status carries a
         # message instead of an exit code, so the client raises
@@ -412,6 +434,8 @@ def exec_stream(pod: str, namespace: str, container: str, command,
     finally:
         resp.close()
         api.close()
+        stdout_lines.flush()
+        stderr_lines.flush()
     if code is None:
         # Either the deadline fired, or the channel closed without a status — neither is a
         # success, and reporting 0 for the second would invent one.
