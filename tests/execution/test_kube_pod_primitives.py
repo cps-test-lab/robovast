@@ -220,6 +220,22 @@ def test_exec_stream_collects_both_streams_and_the_exit_code(monkeypatch):
     assert resp.closed
 
 
+def test_exec_stream_hands_on_whole_lines_whatever_the_chunks(monkeypatch):
+    """A chunk ends where the channel's frame ends, not where a line does.
+
+    A line cut across two chunks is one line to the callback, and the last line is handed on
+    when the stream ends even without a newline; a JSON reply read line by line otherwise
+    comes apart wherever a frame happens to fall.
+    """
+    resp = _Resp([('{\n  "na', "wa"), ('me": "x"\n}\n', "rn\nlast"), ("tail", "")])
+    _patched_stream(monkeypatch, resp)
+    lines, errs = [], []
+    exec_stream("p", "ns", "c", ["true"], limit_s=5, on_stdout_line=lines.append,
+                on_stderr_line=errs.append)
+    assert lines == ["{", '  "name": "x"', "}", "tail"]
+    assert errs == ["warn", "last"]
+
+
 def test_exec_stream_bounds_a_command_that_never_finishes(monkeypatch):
     """Without a bound this loop spins for as long as the command runs.
 
