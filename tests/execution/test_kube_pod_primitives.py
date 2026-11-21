@@ -212,7 +212,11 @@ class _Resp:
 
 def _patched_stream(monkeypatch, resp):
     import kubernetes.stream
-    monkeypatch.setattr(kubernetes.stream, "stream", lambda *a, **k: resp)
+
+    def stream(*_a, **kwargs):
+        resp.opened_with = kwargs
+        return resp
+    monkeypatch.setattr(kubernetes.stream, "stream", stream)
 
 
 def test_exec_stream_collects_both_streams_and_the_exit_code(monkeypatch):
@@ -242,8 +246,8 @@ def test_exec_stream_hands_on_whole_lines_whatever_the_chunks(monkeypatch):
 def test_exec_stream_keeps_a_character_split_between_frames(monkeypatch):
     """A frame ends wherever it ends, also inside a character's UTF-8 bytes.
 
-    Decoded frame by frame, each half became U+FFFD, in the collected output and in a line
-    alike; decoded as one stream, the character arrives whole.
+    Decoded frame by frame, each part of a cut character would be replaced by U+FFFD, in the
+    collected output and in a line alike; decoded as one stream, the character arrives whole.
     """
     word = "größe: 4 €\n".encode()
     cut = word.index("€".encode()) + 1
@@ -256,6 +260,7 @@ def test_exec_stream_keeps_a_character_split_between_frames(monkeypatch):
     assert out == "größe: 4 €\n"
     assert lines == ["größe: 4 €"]
     assert err == errs[0] == "\ufffd", "a stream that ends mid-character says so"
+    assert resp.opened_with["binary"] is True, "the client must not decode frame by frame"
 
 
 def test_exec_stream_bounds_a_command_that_never_finishes(monkeypatch):
