@@ -172,8 +172,8 @@ class _Resp:
         self._never_closes = never_closes
         self.closed = False
         self.stdin = []
-        self._out = ""
-        self._err = ""
+        self._out = b""
+        self._err = b""
 
     def write_stdin(self, data):
         self.stdin.append(data)
@@ -182,21 +182,24 @@ class _Resp:
         return self._never_closes or bool(self._chunks)
 
     def update(self, timeout=None):
+        # Bytes, as the client hands them on with ``binary=True``.
         if self._chunks:
-            self._out, self._err = self._chunks.pop(0)
+            self._out, self._err = (
+                part.encode() if isinstance(part, str) else part
+                for part in self._chunks.pop(0))
 
     def peek_stdout(self):
         return self._out
 
     def read_stdout(self):
-        out, self._out = self._out, ""
+        out, self._out = self._out, b""
         return out
 
     def peek_stderr(self):
         return self._err
 
     def read_stderr(self):
-        err, self._err = self._err, ""
+        err, self._err = self._err, b""
         return err
 
     @property
@@ -209,7 +212,11 @@ class _Resp:
 
 def _patched_stream(monkeypatch, resp):
     import kubernetes.stream
-    monkeypatch.setattr(kubernetes.stream, "stream", lambda *a, **k: resp)
+
+    def stream(*_a, **kwargs):
+        resp.opened_with = kwargs
+        return resp
+    monkeypatch.setattr(kubernetes.stream, "stream", stream)
 
 
 def test_exec_stream_collects_both_streams_and_the_exit_code(monkeypatch):
@@ -234,6 +241,26 @@ def test_exec_stream_hands_on_whole_lines_whatever_the_chunks(monkeypatch):
                 on_stderr_line=errs.append)
     assert lines == ["{", '  "name": "x"', "}", "tail"]
     assert errs == ["warn", "last"]
+
+
+def test_exec_stream_keeps_a_character_split_between_frames(monkeypatch):
+    """A frame ends wherever it ends, also inside a character's UTF-8 bytes.
+
+    Decoded frame by frame, each part of a cut character would be replaced by U+FFFD, in the
+    collected output and in a line alike; decoded as one stream, the character arrives whole.
+    """
+    word = "größe: 4 €\n".encode()
+    cut = word.index("€".encode()) + 1
+    resp = _Resp([(word[:3], b""), (word[3:cut], b""), (word[cut:], b"\xe2\x82")])
+    _patched_stream(monkeypatch, resp)
+    lines, errs = [], []
+    _code, out, err, _timed_out = exec_stream(
+        "p", "ns", "c", ["true"], limit_s=5, on_stdout_line=lines.append,
+        on_stderr_line=errs.append)
+    assert out == "größe: 4 €\n"
+    assert lines == ["größe: 4 €"]
+    assert err == errs[0] == "\ufffd", "a stream that ends mid-character says so"
+    assert resp.opened_with["binary"] is True, "the client must not decode frame by frame"
 
 
 def test_exec_stream_bounds_a_command_that_never_finishes(monkeypatch):
