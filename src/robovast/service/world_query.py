@@ -172,7 +172,7 @@ class ExecSlotContainerRunner:
         if progress_update_callback is not None:
             for line in stdout.splitlines() + stderr.splitlines():
                 progress_update_callback(line)
-        combined = "\n".join(part.rstrip("\n") for part in (stdout, stderr) if part)
+        combined = "\n".join(part for part in (stdout.rstrip("\n"), stderr.rstrip("\n")) if part)
         if result.exit_code != 0:
             self.command_failed = True
             raise QueryCommandFailed(result.exit_code, command, output=combined)

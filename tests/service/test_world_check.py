@@ -274,8 +274,8 @@ def test_output_reaches_the_caller_even_when_the_command_failed():
 def test_stdouts_last_line_stays_apart_from_stderr():
     """A JSON line printed without a trailing newline is still a line of its own.
 
-    Joined before splitting, stdout's last line ran into stderr's first, and the JSON line
-    the caller reads its answer from no longer parsed.
+    Joined before splitting, stdout's last line would run into stderr's first, and the JSON
+    line the caller reads its answer from would no longer parse.
     """
     exec_call = _Exec(_Result(exit_code=1, stdout='setup\n{"components": []}',
                               stderr="cannot build world\n"))
