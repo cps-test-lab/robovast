@@ -171,6 +171,28 @@ def test_an_index_is_built_once_and_kept_per_run_and_topic(standalone, root, mon
         "bounded: the least recently asked for is let go"  # pylint: disable=protected-access
 
 
+def test_a_run_packed_after_its_index_was_built_is_indexed_again(standalone, root, monkeypatch):
+    """Packing replaces the recording's files; the kept index of the old ones is let go, and
+    the frames read from the packed file are the frames that were recorded."""
+    from robovast_decode.build import find_runs  # pylint: disable=import-outside-toplevel
+    from robovast_decode.pack import pack_run  # pylint: disable=import-outside-toplevel
+    frames = _frames(4)
+    campaign = _finished_run(root, frames)
+    monkeypatch.setattr(data_app, "_indexes", data_app.collections.OrderedDict())
+    before = [_get_frame(standalone, t=t / 1e9).content for t, _ in frames]
+    (key,) = list(data_app._indexes)  # pylint: disable=protected-access
+    walked = data_app._indexes[key]  # pylint: disable=protected-access
+    assert all(ref.inner is None for ref in walked.entries)
+
+    assert pack_run(str(campaign), find_runs(str(campaign))[0]).packed
+
+    after = [_get_frame(standalone, t=t / 1e9) for t, _ in frames]
+    assert [r.status_code for r in after] == [200] * len(frames)
+    assert [r.content for r in after] == before
+    index = data_app._indexes[key]  # pylint: disable=protected-access
+    assert index is not walked and all(ref.inner is not None for ref in index.entries)
+
+
 # -- a live run ---------------------------------------------------------------------------
 
 def test_a_live_run_answers_from_the_watcher_as_the_recording_grows(standalone, root):

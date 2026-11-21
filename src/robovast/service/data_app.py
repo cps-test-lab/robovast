@@ -411,8 +411,9 @@ def _frame_index(campaign_dir: Path, run: str, topic: str):
 
     Bounded to :data:`FRAME_INDEXES`, least recently asked for first out. The index is
     extended on every request, which costs nothing on a closed recording and follows one
-    a run left open. ``KeyError`` when the run's scenario recording does not carry the
-    topic.
+    a run left open; one whose segments were replaced since -- the recording packed at
+    postprocessing -- is built again. ``KeyError`` when the run's scenario recording does
+    not carry the topic.
     """
     from robovast_decode.build import find_runs, scenario_recording  # pylint: disable=import-outside-toplevel
     from robovast_decode.frames import IMAGE_TYPES, FrameIndex  # pylint: disable=import-outside-toplevel
@@ -421,6 +422,8 @@ def _frame_index(campaign_dir: Path, run: str, topic: str):
         index = _indexes.get(key)
         if index is not None:
             _indexes.move_to_end(key)
+    if index is not None and index.replaced():
+        index = None
     if index is None:
         match = [r for r in find_runs(str(campaign_dir)) if r.key == run]
         bag_dir = scenario_recording(match[0]) if match else None
