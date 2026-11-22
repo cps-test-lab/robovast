@@ -11,7 +11,7 @@ documentation = "https://cps-test-lab.github.io/robovast/"
 packages = [{include = "robovast_data"}]
 
 [tool.poetry.dependencies]
-python = ">=3.12,<3.14"
+python = ">=3.12,<3.15"
 # The decoder builds a table the first time a query names it, into the campaign's own
 # .cache/, exactly as the service does -- so a notebook and the web UI read the same rows.
 # Named by version, as robovast-cluster names robovast: a path would reach the wheel as a

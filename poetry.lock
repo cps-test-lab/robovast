@@ -2638,13 +2638,22 @@ anyio = ">=4.5"
 httpx = ">=0.27.1,<1.0.0"
 httpx-sse = ">=0.4"
 jsonschema = ">=4.20.0"
-pydantic = {version = ">=2.11.0,<3.0.0", markers = "python_version < \"3.14\""}
+pydantic = [
+    {version = ">=2.11.0,<3.0.0", markers = "python_version < \"3.14\""},
+    {version = ">=2.12.0,<3.0.0", markers = "python_version >= \"3.14\""},
+]
 pydantic-settings = ">=2.5.2"
 pyjwt = {version = ">=2.10.1", extras = ["crypto"]}
 python-multipart = ">=0.0.9"
-pywin32 = {version = ">=310", markers = "sys_platform == \"win32\" and python_version < \"3.14\""}
+pywin32 = [
+    {version = ">=310", markers = "sys_platform == \"win32\" and python_version < \"3.14\""},
+    {version = ">=311", markers = "sys_platform == \"win32\" and python_version >= \"3.14\""},
+]
 sse-starlette = ">=1.6.1"
-starlette = {version = ">=0.27", markers = "python_version < \"3.14\""}
+starlette = [
+    {version = ">=0.27", markers = "python_version < \"3.14\""},
+    {version = ">=0.48.0", markers = "python_version >= \"3.14\""},
+]
 typing-extensions = ">=4.9.0"
 typing-inspection = ">=0.4.1"
 uvicorn = {version = ">=0.31.1", markers = "sys_platform != \"emscripten\""}
@@ -4193,7 +4202,7 @@ name = "robovast-client"
 version = "2.2.1"
 description = "Talk to a RoboVAST service: upload projects, launch campaigns, wait for them, fetch results."
 optional = false
-python-versions = ">=3.12,<3.14"
+python-versions = ">=3.12,<3.15"
 files = []
 develop = false
 
@@ -4201,6 +4210,9 @@ develop = false
 click = "^8.1"
 pydantic = "^2.12"
 requests = "^2.31"
+
+[package.extras]
+data = ["robovast-data (>=2.2.0,<3.0.0)"]
 
 [package.source]
 type = "directory"
@@ -4211,11 +4223,12 @@ name = "robovast-data"
 version = "2.2.1"
 description = "A RoboVAST campaign's data in pandas and SQL, from its directory or its archive: tables built on first use, no service, no ROS."
 optional = false
-python-versions = ">=3.12,<3.14"
+python-versions = ">=3.12,<3.15"
 files = []
 develop = false
 
 [package.dependencies]
+click = "^8.1"
 duckdb = "^1.5"
 pandas = "^2.2"
 pyarrow = ">=17"
@@ -4231,7 +4244,7 @@ name = "robovast-decode"
 version = "2.2.1"
 description = "Tables from RoboVAST campaign recordings (ROS 2 bags and mcap), in plain Python: no ROS, no execution image."
 optional = false
-python-versions = ">=3.12,<3.14"
+python-versions = ">=3.12,<3.15"
 files = []
 develop = false
 
@@ -4252,7 +4265,7 @@ name = "robovast-nav"
 version = "2.2.1"
 description = "Navigation-specific variation types for RoboVAST"
 optional = true
-python-versions = ">=3.12,<3.14"
+python-versions = ">=3.12,<3.15"
 files = []
 develop = false
 
@@ -4275,7 +4288,7 @@ name = "robovast-sim-roqsim"
 version = "2.2.1"
 description = "The roqsim simulator backend for RoboVAST"
 optional = true
-python-versions = ">=3.10,<3.14"
+python-versions = ">=3.10,<3.15"
 files = []
 develop = false
 
@@ -5724,5 +5737,5 @@ test = ["cmaes", "ipykernel", "lxml-html-clean", "nbclient", "nbconvert", "nbfor
 
 [metadata]
 lock-version = "2.0"
-python-versions = ">=3.12,<3.14"
-content-hash = "f70df46f85f3e962da7d31b987e1c1b49c8387dfd1340d223ce0885ab0359878"
+python-versions = ">=3.12,<3.15"
+content-hash = "57345a638cb9fd28847ea7b429c924700d284be2877568b4947a7e0abe73052f"

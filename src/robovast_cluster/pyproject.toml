@@ -14,7 +14,7 @@ documentation = "https://cps-test-lab.github.io/robovast/"
 packages = [{include = "robovast"}]
 
 [tool.poetry.dependencies]
-python = ">=3.12,<3.14"
+python = ">=3.12,<3.15"
 # This package is built on the core, and the edge is safe to declare: `robovast` names
 # `robovast-nav` and `robovast-sim-roqsim` as path dependencies but never this package, so
 # there is no cycle to avoid -- which is why `robovast_sim_roqsim` cannot state its

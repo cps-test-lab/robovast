@@ -16,7 +16,7 @@ documentation = "https://cps-test-lab.github.io/robovast/"
 packages = [{include = "robovast"}]
 
 [tool.poetry.dependencies]
-python = ">=3.12,<3.14"
+python = ">=3.12,<3.15"
 # The whole point of this distribution. `pip install robovast` pulls 88 distributions and
 # ~290 MB -- pandas and numpy alone are 152 MB of it -- to run four HTTP verbs. These
 # three are ~30 MB, and nothing here may add a fourth without a reason that survives

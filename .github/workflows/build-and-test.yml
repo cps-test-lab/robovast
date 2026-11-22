@@ -10,6 +10,10 @@ jobs:
   build-and-test:
     name: 'Build with Poetry and test commands'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.14']
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -21,7 +25,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python-version }}
 
       # First, and before the install: this costs seconds and answers a question the
       # controller image otherwise answers minutes into a build, because that image installs
