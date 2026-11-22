@@ -171,6 +171,8 @@ class _Resp:
         self._returncode = returncode
         self._never_closes = never_closes
         self.closed = False
+        # The keyword arguments ``kubernetes.stream.stream`` was called with (_patched_stream).
+        self.opened_with = {}
         self.stdin = []
         self._out = b""
         self._err = b""
