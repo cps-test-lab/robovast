@@ -104,8 +104,8 @@ packages are in neither: a package with a ``source:`` entry and no ``release:`` 
 one; vendor driver and message packages routinely are. Before this key the only way in was to
 bake such a package into a shared family image, which makes every unrelated campaign pay for it.
 
-``ros_packages`` closes that: each entry is a git repository, cloned at a pinned ref and
-colcon-built into the container's ``/ws`` overlay.
+``ros_packages`` closes that: each entry is a git repository, cloned at a pinned ref with the
+submodules that ref names, and colcon-built into the container's ``/ws`` overlay.
 
 .. code-block:: yaml
 
