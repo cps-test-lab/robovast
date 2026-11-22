@@ -105,8 +105,8 @@ one; vendor driver and message packages routinely are. Without this key the only
 be to bake such a package into a shared family image, which makes every unrelated campaign pay
 for it.
 
-``ros_packages`` closes that: each entry is a git repository, cloned at a pinned ref and
-colcon-built into the container's ``/ws`` overlay.
+``ros_packages`` closes that: each entry is a git repository, cloned at a pinned ref with the
+submodules that ref names, and colcon-built into the container's ``/ws`` overlay.
 
 .. code-block:: yaml
 
