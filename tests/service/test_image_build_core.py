@@ -652,6 +652,16 @@ def test_a_repo_is_cloned_at_its_pin_into_the_sourced_workspace(tmp_path):
     assert "colcon build" in df
 
 
+def test_a_repo_is_cloned_with_the_submodules_its_pin_names(tmp_path):
+    """A repository may vendor part of its source as a submodule; without it colcon builds an
+    incomplete tree or fails on a missing header."""
+    df = generate_dockerfile(BuildSpec(tag="t", ros_packages=[PX4_MSGS]), tmp_path, BASE)
+    checkout = f"git -C /ws/src/px4_msgs checkout {PX4_MSGS['ref']}"
+    update = "git -C /ws/src/px4_msgs submodule update --init --recursive"
+    assert update in df
+    assert df.index(checkout) < df.index(update)
+
+
 def test_every_repo_is_built_in_one_colcon_pass(tmp_path):
     """The load-bearing rule: one workspace, one build.
 

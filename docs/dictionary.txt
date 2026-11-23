@@ -394,6 +394,7 @@ subclasses
 subcommand
 subdirectories
 subdirectory
+submodules
 subprocess
 substring
 subtree

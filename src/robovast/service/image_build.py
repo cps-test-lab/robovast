@@ -555,7 +555,9 @@ def build_hash(spec: BuildSpec, project_dir: Path, base_identity: str,
     # rebuild, and -- the reason the epoch and not just the new hash inputs -- an existing
     # project's image must not keep being served by the old renderer, which would produce an
     # image silently missing packages the .vast now declares.
-    h.update(b"v6")
+    # v7: the clone layer checks out the pinned commit's submodules. An image built by v6 from a
+    # repository that has some lacks them, and a matching hash would keep serving it.
+    h.update(b"v7")
     h.update(base_identity.encode())
     for pkg in sorted(spec.system_packages):
         h.update(b"|apt|")
@@ -795,11 +797,14 @@ def _ros_workspace_lines(spec: BuildSpec) -> list:
         # Clone then checkout, and no ``--depth``: a shallow clone of a branch tip resolves the
         # sha only until the branch moves, so a rebuild of this very campaign would later fail
         # with "reference is not a tree" -- a pin that only works today is not a pin. The
+        # submodules are those the pinned commit names: a repository that vendors part of its
+        # source as one (libfranka's protocol headers) builds only with them. The
         # ``test -d`` turns a clone that produced nothing into a failed build naming the repo,
         # rather than a colcon pass that quietly has less to build.
         lines.append(
             f"RUN git clone {repo['git']} {path} "
             f"&& git -C {path} checkout {repo['ref']} "
+            f"&& git -C {path} submodule update --init --recursive "
             f"&& test -d {path} || "
             f"{{ echo \"ros_packages: could not clone {repo['git']} at {repo['ref']}\" >&2; "
             f"exit 1; }}")
