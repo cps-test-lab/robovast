@@ -136,6 +136,23 @@ def test_a_float_is_padded_and_clipped_an_int_rounded_outward():
     assert narrow(SPACE['n'], [2, 3], 0.1) == {'type': 'int', 'low': 1, 'high': 4}
 
 
+def test_a_stepped_int_keeps_the_template_s_lattice():
+    """Edges rounded to the nearest integer would shift the lattice the codec snaps to: low 3
+    with step 2 reaches 3 and 5, never the 4 the record held."""
+    dim = {'type': 'int', 'low': 0, 'high': 10, 'step': 2}
+    assert narrow(dim, [4], 0.1) == {'type': 'int', 'step': 2, 'low': 2, 'high': 6}
+    assert narrow(dim, [10], 0.1)['high'] == 10
+
+
+def test_a_log_dimension_is_padded_in_log_space():
+    """A pad of the linear range would reach from 1 down to the floor of 0.01..100; in log
+    space it is a tenth of the four decades on each side."""
+    dim = {'type': 'float', 'low': 0.01, 'high': 100.0, 'log': True}
+    out = narrow(dim, [1.0], 0.1)
+    assert out['low'] == pytest.approx(10 ** -0.4, rel=1e-5)
+    assert out['high'] == pytest.approx(10 ** 0.4, rel=1e-5)
+
+
 def test_a_choice_or_a_boolean_becomes_the_values_held():
     assert narrow(SPACE['form'], ['c', 'a', 'a'], 0.1) == {'type': 'choice',
                                                             'values': ['a', 'c']}

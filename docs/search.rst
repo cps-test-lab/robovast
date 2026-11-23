@@ -444,9 +444,9 @@ writes the next stage's ``.vast`` from a template.
 
    $ vast campaign download --raw --extract -o records <stage-1-campaign>
    $ vast config derive-stage records/<stage-1-campaign> stage2.template.vast stage2.vast \
-       --fix form --fix angle --select nearest-level --feasible success
+       --fix shape --fix offset --select nearest-level --feasible success
    $ vast config derive-stage records/<stage-2-campaign> stage3.template.vast stage3.vast \
-       --space speed --space crossing --band 5
+       --space speed --space density --band 5
 
 RECORD is the stage's ``campaign.db``, or the directory the download wrote. A cell is a unit
 of the record that scored a finite value of the objective (``--objective``, default the
@@ -454,9 +454,9 @@ record's first).
 
 **Narrowing** (``--space DIM``, repeatable): the cells whose objective lies within ``--band``
 of ``--level`` form a box. A ``float`` or ``int`` dimension becomes their span widened by
-``--pad`` (default 0.1) of the template's range on each side and clipped to it, an integer's
-edges rounded outward; a ``choice`` or ``bool`` becomes a ``choice`` of the values those cells
-hold. ``--band`` is in the objective's unit and has no default. ``--level`` defaults to the
+``--pad`` (default 0.1) of the template's range on each side (in log space for a ``log``
+dimension) and clipped to it, an integer's edges rounded outward onto its ``step``; a
+``choice`` or ``bool`` becomes a ``choice`` of the values those cells hold. ``--band`` is in the objective's unit and has no default. ``--level`` defaults to the
 record's ``strategy_parameters.level`` when its strategy states one (``boundary`` does); any
 level in the objective's unit works. Fewer than ``--min-cells``
 (default 3) cells within the band is refused rather than widened. An option that would change
