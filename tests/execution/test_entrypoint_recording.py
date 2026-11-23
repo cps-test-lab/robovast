@@ -17,6 +17,7 @@ matters is the argv the recorder receives, and no assertion on the script's text
 import os
 import shutil
 import subprocess
+import sys
 import textwrap
 from importlib.resources import files
 
@@ -137,13 +138,26 @@ def _fake_ros2(tmp_path, body: str) -> None:
     (bindir / "ros2").chmod(0o755)
 
 
-def _start(tmp_path, env: dict) -> subprocess.CompletedProcess:
-    """Run the shipped start function with the pidfile under *tmp_path*."""
+# Runs argv as a child subreaper that waits for that child only: an orphaned daemon is
+# reparented here and stays a zombie, as under a container's PID 1 that reaps nothing.
+_NON_REAPING_PARENT = (
+    "import ctypes, subprocess, sys\n"
+    "if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:\n"
+    "    sys.exit('PR_SET_CHILD_SUBREAPER refused')\n"
+    "sys.exit(subprocess.Popen(sys.argv[1:]).wait())\n")
+
+
+def _start(tmp_path, env: dict, *, reaped: bool = True) -> subprocess.CompletedProcess:
+    """Run the shipped start function with the pidfile under *tmp_path*; with ``reaped``
+    false, under a parent that leaves an exited daemon a zombie."""
     pidfile = tmp_path / "scenario_bag.pid"
     block = _recording_block().replace("/tmp/scenario_bag.pid", str(pidfile))
     script = "\n".join(["set -e", 'log() { echo "$*"; }', block, "start_scenario_recorder"])
+    argv = ["bash", "-c", script]
+    if not reaped:
+        argv = [sys.executable, "-c", _NON_REAPING_PARENT] + argv
     return subprocess.run(
-        ["bash", "-c", script], capture_output=True, text=True, check=False, timeout=60,
+        argv, capture_output=True, text=True, check=False, timeout=60,
         env={"PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}",
              "RUN_OUTPUT_DIR": str(tmp_path / "out" / "cell" / "0"), **env})
 
@@ -183,11 +197,14 @@ def test_the_recorder_is_started_with_the_line_built_from_the_environment(tmp_pa
 
 
 @needs_ssd
-def test_a_recorder_that_exits_before_opening_its_bag_fails_the_run(tmp_path):
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="a child subreaper is Linux's")
+@pytest.mark.parametrize("reaped", [True, False], ids=["reaped", "left-a-zombie"])
+def test_a_recorder_that_exits_before_opening_its_bag_fails_the_run(tmp_path, reaped):
     """A daemon that refused its arguments would otherwise leave a run that looks fine and has
-    no bag. Its complaint reaches the log (the daemon keeps the entrypoint's stdio)."""
+    no bag, whether its exit is reaped or it stays a zombie. Its complaint reaches the log (the
+    daemon keeps the entrypoint's stdio)."""
     _fake_ros2(tmp_path, 'echo "ros2 bag record: error: unrecognized arguments" >&2\nexit 2\n')
-    out = _start(tmp_path, {})
+    out = _start(tmp_path, {}, reaped=reaped)
     assert out.returncode == 1
     assert "ERROR: The scenario recorder (PID=" in out.stdout
     assert "exited before it opened" in out.stdout
