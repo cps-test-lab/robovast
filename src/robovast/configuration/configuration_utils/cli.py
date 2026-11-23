@@ -191,6 +191,63 @@ def upgrade(vast, dry_run):
         click.echo("Nothing written (--dry-run).")
 
 
+@configuration.command(name='derive-stage')
+@click.argument('record', type=click.Path(exists=True), metavar='RECORD')
+@click.argument('template', type=click.Path(exists=True, dir_okay=False), metavar='TEMPLATE')
+@click.argument('out', type=click.Path(dir_okay=False), metavar='OUT')
+@click.option('--space', 'space', multiple=True, metavar='DIM',
+              help='Narrow DIM to the cells within --band of --level (repeatable).')
+@click.option('--fix', 'fix', multiple=True, metavar='DIM',
+              help="Fix DIM at the selected cell through the template's $DIM markers "
+                   "(repeatable).")
+@click.option('--select', 'select', default='worst', show_default=True,
+              type=click.Choice(['worst', 'nearest-level', 'feasible-min']),
+              help='The rule that picks the cell --fix reads.')
+@click.option('--feasible', default=None, metavar='MEASURE',
+              help='Select only among cells whose MEASURE is true.')
+@click.option('--level', type=float, default=None,
+              help="The level, in the objective's unit [default: the record's boundary level].")
+@click.option('--band', type=float, default=None,
+              help="Half-width around the level, in the objective's unit; needed by --space.")
+@click.option('--pad', type=float, default=0.1, show_default=True,
+              help="Widen a narrowed range by this share of the template's range on each side.")
+@click.option('--min-cells', type=int, default=3, show_default=True,
+              help='Refuse a box built from fewer cells within the band.')
+@click.option('--objective', default=None, metavar='NAME',
+              help="The objective the rules read [default: the record's first].")
+def derive_stage(record, template, out, space, fix, select, feasible, level, band, pad,
+                 min_cells, objective):
+    """Write a chain's next stage from a finished stage's RECORD.
+
+    RECORD is the finished campaign's ``campaign.db``, or the directory ``vast campaign
+    download --raw --extract`` wrote. TEMPLATE is the next stage's ``.vast``; OUT is written
+    from it with each ``--space`` dimension narrowed to the box around the cells within
+    ``--band`` of ``--level``, and each ``--fix`` dimension set from the one cell ``--select``
+    picks. OUT records where it came from in ``metadata.derived_from``. See
+    ``docs/search.rst``, "Chaining campaigns".
+    """
+    from robovast.search.chain import ChainError, derive  # pylint: disable=import-outside-toplevel
+
+    try:
+        entry = derive(record, template, out, space=space, fix=fix, select=select,
+                       feasible=feasible, level=level, band=band, pad=pad,
+                       min_cells=min_cells, objective=objective)
+    except ChainError as e:
+        click.echo(click.style(f"✗ {e}", fg="red"), err=True)
+        sys.exit(1)
+    except Exception as e:  # noqa: BLE001 - reported, not raised, like every verb here
+        handle_cli_exception(e)
+        return
+    parts = []
+    if 'cells' in entry:
+        parts.append(f"{entry['cells']} cell(s) in the band narrowed {', '.join(entry['space'])}")
+    if 'fix' in entry:
+        parts.append(f"unit {entry['selected_unit']} ({select}) fixed "
+                     + ", ".join(f"{k}={v}" for k, v in entry['fix'].items()))
+    click.echo(click.style(f"✓ {out} from {entry['campaign']}: " + "; ".join(parts),
+                           fg="green"))
+
+
 @configuration.command(name='plugins')
 @click.option('--group', default='robovast.variation_types', show_default=True,
               help='Entry-point group to list.')

@@ -430,6 +430,67 @@ Custom strategies/extractors are file-loadable too — the same
 :ref:`extending-search-strategy` and :ref:`extending-extractor` in the developer
 guide.
 
+Chaining campaigns
+------------------
+
+A compound question is answered by a **chain**: ordinary campaigns in sequence, each stage's
+search space induced by the record of the stage before it. A boundary stage finds where the
+objective crosses a level; the next stage searches only the box around the cells near that
+level, or holds the upstream dimensions at one selected cell while it searches dimensions of
+its own. ``vast config derive-stage`` is the operator: it reads a finished stage's record and
+writes the next stage's ``.vast`` from a template.
+
+.. code-block:: console
+
+   $ vast campaign download --raw --extract -o records <stage-1-campaign>
+   $ vast config derive-stage records/<stage-1-campaign> stage2.template.vast stage2.vast \
+       --fix form --fix angle --select nearest-level --feasible success
+   $ vast config derive-stage records/<stage-2-campaign> stage3.template.vast stage3.vast \
+       --space speed --space crossing --band 5
+
+RECORD is the stage's ``campaign.db``, or the directory the download wrote. A cell is a unit
+of the record that scored a finite value of the objective (``--objective``, default the
+record's first).
+
+**Narrowing** (``--space DIM``, repeatable): the cells whose objective lies within ``--band``
+of ``--level`` form a box. A ``float`` or ``int`` dimension becomes their span widened by
+``--pad`` (default 0.1) of the template's range on each side and clipped to it, an integer's
+edges rounded outward; a ``choice`` or ``bool`` becomes a ``choice`` of the values those cells
+hold. ``--band`` is in the objective's unit and has no default. ``--level`` defaults to the
+record's ``strategy_parameters.level`` when its strategy states one (``boundary`` does); any
+level in the objective's unit works. Fewer than ``--min-cells``
+(default 3) cells within the band is refused rather than widened.
+
+**Fixing** (``--fix DIM``, repeatable): one cell is selected and every ``$DIM`` marker in the
+template is replaced by its value; DIM leaves the template's ``search_space`` if it is there.
+This is how a stage adds dimensions while the upstream answer is held as conditioning: the
+template searches its own dimensions and names the upstream ones only as markers. A batch
+template (a ``configuration:`` block, no ``search:``) takes fixed values too, for a stage that
+runs listed configurations on the selected cell; it has nothing to narrow. The cell is
+chosen by a rule, so the same record always gives the same cell:
+
+``worst`` (default)
+   the extreme the objective's direction seeks: the minimum of a minimised objective.
+``nearest-level``
+   the smallest ``|objective - level|``.
+``feasible-min``
+   the lowest objective.
+
+``--feasible MEASURE`` restricts any rule to cells whose measure is true; a cell that does not
+carry the measure is refused, since its feasibility is unknown. Ties go to the lower
+objective, then to the earlier cell.
+
+Every argument is used or refused: a dimension the record did not search, a ``--space``
+dimension the template does not search, a ``--fix`` dimension with no marker, or a dimension
+both narrowed and fixed is an error naming it. The derived file carries its provenance in
+``metadata.derived_from``, one entry appended per derivation (the record's campaign, the
+dimensions, the level, band and pad or the rule, the selected unit and its values), and its
+header comment says to derive again rather than edit. The template's own leading comment
+follows it.
+
+The operator runs where the files are, on a downloaded record, so it serves a chain whatever
+release the service runs.
+
 When does a search stop?
 ------------------------
 
