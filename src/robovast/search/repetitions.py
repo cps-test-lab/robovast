@@ -109,7 +109,9 @@ class RepetitionPolicy:
         out = []
         for ps in param_sets:
             vec = self._encode(ps.values)
-            nearest = np.argsort(np.linalg.norm(points - vec, axis=1))[:k]
+            # The codec's distance: a choice or a boolean is near only its own value, so a
+            # cell's neighbourhood is not borrowed from the next value in the list.
+            nearest = np.argsort(self._codec.distances(points, vec))[:k]
             local = values[nearest]
             rel = float(local.max() - local.min()) / global_spread
             out.append(int(round(lo + rel * (hi - lo))))

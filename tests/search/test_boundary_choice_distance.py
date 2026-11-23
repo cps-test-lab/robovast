@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""A choice or a boolean is near only its own value.
+"""A choice or a boolean is near only its own value, for every reader of the codec's distance.
 
 The codec puts a choice's values in buckets of the unit interval in the order they were
 written. Measured as a coordinate, that order would read as nearness: the first value would
@@ -15,7 +15,6 @@ import numpy as np
 
 from robovast.common.config import SearchConfig
 from robovast.search.space import SearchSpaceCodec
-from robovast.search.strategies.boundary import mismatch_distances
 from robovast.search.strategy import build_strategy
 from robovast.search.types import Evaluation
 
@@ -45,7 +44,7 @@ def test_every_other_value_of_a_choice_is_equally_far():
     a = _vec(codec, form='a', flag=False, x=5.0)
     b = _vec(codec, form='b', flag=False, x=5.0)
     c = _vec(codec, form='c', flag=False, x=5.0)
-    d = mismatch_distances(codec.dims, np.array([b, c]), a)
+    d = codec.distances(np.array([b, c]), a)
     assert d[0] == d[1] == 1.0
 
 
@@ -55,21 +54,21 @@ def test_the_same_value_is_at_distance_zero_wherever_in_its_bucket():
     inside = a.copy()
     inside[0] = 0.01       # still the first of three buckets
     inside[1] = 0.99       # still True
-    assert mismatch_distances(codec.dims, np.array([inside]), a)[0] == 0.0
+    assert codec.distances(np.array([inside]), a)[0] == 0.0
 
 
 def test_a_boolean_differs_by_one():
     codec = SearchSpaceCodec(_space().search_space)
     t = _vec(codec, form='a', flag=True, x=5.0)
     f = _vec(codec, form='a', flag=False, x=5.0)
-    assert mismatch_distances(codec.dims, np.array([f]), t)[0] == 1.0
+    assert codec.distances(np.array([f]), t)[0] == 1.0
 
 
 def test_a_continuous_coordinate_keeps_its_unit_cube_difference():
     codec = SearchSpaceCodec(_space().search_space)
     p = _vec(codec, form='b', flag=False, x=2.0)
     q = _vec(codec, form='b', flag=False, x=7.0)
-    assert np.isclose(mismatch_distances(codec.dims, np.array([q]), p)[0], 0.5)
+    assert np.isclose(codec.distances(np.array([q]), p)[0], 0.5)
 
 
 def test_the_surrogate_does_not_borrow_a_neighbouring_choice_s_outcome():
@@ -88,3 +87,28 @@ def test_the_surrogate_does_not_borrow_a_neighbouring_choice_s_outcome():
     predicted, nearest = strategy._predict(candidate, known)
     assert nearest == 1.0
     assert np.isclose(predicted, 0.0)
+
+
+# -- the adaptive repetition policy reads the same distance ------------------------------------
+
+def test_the_adaptive_policy_does_not_borrow_a_neighbouring_choice_s_neighbourhood():
+    """Measured: 'a' at x 0.5 scoring 0, and two cells of 'b' nearby in x scoring 10. A 'c'
+    candidate at x 0.5 is a mismatch from all three, so its two nearest are 'a' and the nearer
+    'b', whose disagreement earns the most repetitions. Read by bucket position, 'b' sits next
+    to 'c' in the list and both 'b' cells are nearest: they agree, and the cell got the floor."""
+    from robovast.common.config import RepetitionsConfig
+    from robovast.search.repetitions import build_repetition_policy
+    from robovast.search.types import ParamSet
+
+    space = {'form': {'type': 'choice', 'values': ['a', 'b', 'c']},
+             'x': {'type': 'float', 'low': 0.0, 'high': 1.0}}
+    cfg = SearchConfig(strategy='random', search_space=space, extract={'plugin': 'failure_rate'},
+                       objectives=[{'name': 'margin', 'direction': 'minimize'}], per_batch=1,
+                       budget=[{'batches': 2}], seed=1)
+    policy = build_repetition_policy(
+        RepetitionsConfig(policy='adaptive', min=2, max=12, neighbours=2), cfg.search_space, 4)
+    history = [Evaluation(params=ParamSet(values={'form': f, 'x': x}),
+                          objectives={'margin': v}, n_samples=1)
+               for f, x, v in (('a', 0.5, 0.0), ('b', 0.9, 10.0), ('b', 0.95, 10.0))]
+    (cell,) = policy.assign([ParamSet(values={'form': 'c', 'x': 0.5})], history)
+    assert cell.n_reps == 12
