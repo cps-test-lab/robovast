@@ -734,7 +734,9 @@ Spread among nearby evaluations needs none of that. It reads how much the
 *measurements* disagree, which is the thing extra samples actually resolve, and it
 works unchanged for a rate, a margin or a time. Distances are measured in the
 normalized unit cube, so a dimension in metres and one in percent contribute
-comparably to "nearby" rather than whichever happens to have the larger raw range.
+comparably to "nearby" rather than whichever happens to have the larger raw range; a
+``choice`` or ``bool`` dimension counts by mismatch (0 for the same value, 1 for any other),
+as in the boundary search, so a cell's neighbours are not those of the next value in the list.
 
 Two consequences worth knowing:
 
