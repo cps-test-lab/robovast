@@ -329,7 +329,10 @@ strategy unavailable without an optional extra, on campaigns whose budgets are t
 evaluations rather than thousands — the regime where a GP's advantage is smallest. With
 fewer than two evaluations there is no level to seek, so a cold start draws from the same
 low-discrepancy sequence ``halton`` uses; nothing is wasted, since those points are what
-the model is built from. ``report()`` gives ``level`` and ``closest_to_level``: a boundary
+the model is built from. Its distances are taken in the unit cube, with a ``choice`` or
+``bool`` dimension measured by mismatch: 0 for the same value, 1 for any other. The order in
+which a choice lists its values is not a nearness, so no value's outcome stands in for its
+neighbour in the list. ``report()`` gives ``level`` and ``closest_to_level``: a boundary
 search that never approached its contour found no boundary, and that must be visible
 rather than inferred from a best-objective number that means nothing here.
 

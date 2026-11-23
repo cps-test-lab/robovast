@@ -45,16 +45,39 @@ Nothing is wasted: those points are what the model is built from.
 """
 
 import logging
+import math
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict
 
+from robovast.common.config import BoolDim, ChoiceDim
 from robovast.search.space import SearchSpaceCodec
 from robovast.search.strategies.halton import _halton_point, _PRIMES, _scramble_tables
 from robovast.search.strategy import SearchStrategy
 from robovast.search.types import Evaluation, ParamSet, SearchReport
 
 logger = logging.getLogger(__name__)
+
+
+def mismatch_distances(dims, points: np.ndarray, point: np.ndarray) -> np.ndarray:
+    """Euclidean distance from each row of ``points`` to ``point``, in the unit cube.
+
+    ``dims`` are the search space's dimensions in the codec's order. A ``choice`` or ``bool``
+    coordinate contributes 0 when both lie in the same value's bucket and 1 otherwise: the codec
+    puts a choice's values in buckets in the order they were written, and that order is not a
+    nearness, so the first value is as far from the second as from the last. Every other
+    coordinate contributes its unit-cube difference.
+    """
+    points = np.atleast_2d(np.asarray(points, dtype=float))
+    point = np.asarray(point, dtype=float)
+    delta = np.abs(points - point)
+    for i, dim in enumerate(dims):
+        if isinstance(dim, (ChoiceDim, BoolDim)):
+            k = len(dim.values) if isinstance(dim, ChoiceDim) else 2
+            same = (np.minimum(np.floor(points[:, i] * k), k - 1)
+                    == min(math.floor(point[i] * k), k - 1))
+            delta[:, i] = np.where(same, 0.0, 1.0)
+    return np.sqrt((delta ** 2).sum(axis=1))
 
 
 class BoundaryParams(BaseModel):
@@ -156,7 +179,8 @@ class BoundarySearch(SearchStrategy):
         nearness = 1.0 - min(abs(predicted - self.params.level) / spread, 1.0)
         apart = distance
         if taken:
-            apart = min(apart, min(float(np.linalg.norm(candidate - t)) for t in taken))
+            spread = mismatch_distances(self._codec.dims, np.array(taken), candidate)
+            apart = min(apart, float(spread.min()))
         return nearness + self.params.exploration * apart
 
     def _predict(self, candidate: np.ndarray, known: np.ndarray) -> tuple[float, float]:
@@ -164,9 +188,10 @@ class BoundarySearch(SearchStrategy):
 
         The distance is returned alongside because it is the cheap uncertainty proxy: far
         from every evaluation, the estimate is a guess, and that is exactly where another
-        evaluation is worth most.
+        evaluation is worth most. Distances are :func:`mismatch_distances`, so a choice or a
+        boolean is near only its own value, never a neighbour in the list.
         """
-        deltas = np.linalg.norm(known - candidate, axis=1)
+        deltas = mismatch_distances(self._codec.dims, known, candidate)
         k = min(self.params.neighbours, len(known))
         nearest = np.argsort(deltas)[:k]
         d = deltas[nearest]
