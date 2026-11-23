@@ -459,7 +459,9 @@ edges rounded outward; a ``choice`` or ``bool`` becomes a ``choice`` of the valu
 hold. ``--band`` is in the objective's unit and has no default. ``--level`` defaults to the
 record's ``strategy_parameters.level`` when its strategy states one (``boundary`` does); any
 level in the objective's unit works. Fewer than ``--min-cells``
-(default 3) cells within the band is refused rather than widened.
+(default 3) cells within the band is refused rather than widened. An option that would change
+nothing is refused too: ``--band``, ``--pad`` or ``--min-cells`` without ``--space``,
+``--select`` or ``--feasible`` without ``--fix``, ``--level`` that neither reads.
 
 **Fixing** (``--fix DIM``, repeatable): one cell is selected and every ``$DIM`` marker in the
 template is replaced by its value; DIM leaves the template's ``search_space`` if it is there.

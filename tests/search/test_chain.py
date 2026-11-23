@@ -209,6 +209,12 @@ def test_a_batch_template_takes_fixed_values_and_refuses_narrowing(tmp_path):
     ({'space': ['x'], 'fix': ['x'], 'band': 5.0}, 'both narrowed and fixed'),
     ({'fix': ['n']}, r'no \$n marker'),
     ({'space': ['y'], 'band': 5.0}, "did not search 'y'"),
+    ({'space': ['x'], 'band': 5.0, 'feasible': 'success'}, '--feasible would change nothing'),
+    ({'space': ['x'], 'band': 5.0, 'select': 'worst'}, '--select would change nothing'),
+    ({'fix': ['form'], 'band': 5.0}, '--band would change nothing'),
+    ({'fix': ['form'], 'pad': 0.3}, '--pad would change nothing'),
+    ({'fix': ['form'], 'min_cells': 1}, '--min-cells would change nothing'),
+    ({'fix': ['form'], 'select': 'worst', 'level': 7.0}, '--level would change nothing'),
 ])
 def test_an_argument_that_would_change_nothing_or_cannot_be_honoured_is_refused(
         tmp_path, kwargs, match):
