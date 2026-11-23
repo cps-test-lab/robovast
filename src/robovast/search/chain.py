@@ -217,8 +217,8 @@ def narrow(dim: dict, values: list, pad: float) -> dict:
     """``dim`` (a template's search dimension) cut to what ``values`` span.
 
     A float or an integer: their span, widened by ``pad`` of the template's range on each
-    side and clipped to it; an integer's edges rounded outward. A choice or a boolean: the
-    values held, in the template's order, as a choice.
+    side (in log space for a log one) and clipped to it; an integer's edges rounded outward
+    onto its step. A choice or a boolean: the values held, in the template's order, as a choice.
     """
     kind = dim.get("type")
     if kind in ("choice", "bool"):
@@ -232,12 +232,18 @@ def narrow(dim: dict, values: list, pad: float) -> dict:
         raise ChainError(f"cannot narrow a dimension of type {kind!r}")
     low, high = float(dim["low"]), float(dim["high"])
     numbers = [float(v) for v in values]
-    margin = pad * (high - low)
-    lo = max(low, min(numbers) - margin)
-    hi = min(high, max(numbers) + margin)
+    # The pad is taken where the codec spaces the dimension: in log space for a log one.
+    scale, unscale = (math.log, math.exp) if dim.get("log") else (float, float)
+    margin = pad * (scale(high) - scale(low))
+    lo = max(low, unscale(scale(min(numbers)) - margin))
+    hi = min(high, unscale(scale(max(numbers)) + margin))
     out = {k: v for k, v in dim.items() if k not in ("low", "high")}
     if kind == "int":
-        out["low"], out["high"] = int(math.floor(lo)), int(math.ceil(hi))
+        # Rounded outward onto the template's own lattice, so every value it could take in the
+        # box stays reachable.
+        step, base = int(dim.get("step") or 1), int(dim["low"])
+        out["low"] = base + math.floor((lo - base) / step) * step
+        out["high"] = min(int(dim["high"]), base + math.ceil((hi - base) / step) * step)
     else:
         out["low"], out["high"] = round(lo, 6), round(hi, 6)
     return out
