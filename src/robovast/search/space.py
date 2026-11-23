@@ -22,6 +22,11 @@ unit cube, a single scalar step size (``sigma``) is meaningful across dimensions
 of very different scales. ``float`` dims map linearly (log dims in log-space),
 ``int`` dims round/clip/snap to ``step`` on decode, and ``choice`` dims map to an
 index bucket in ``[0, 1)``.
+
+A bucket's position carries no meaning, so a distance between two encoded points must not
+read it: :meth:`SearchSpaceCodec.distances` measures a ``choice`` or ``bool`` coordinate by
+mismatch, 0 for the same value and 1 for any other, and every other coordinate by its
+difference in the unit cube. Whatever asks "which evaluated cells are near this one" asks it.
 """
 
 import math
@@ -37,6 +42,24 @@ class SearchSpaceCodec:
         self.paths = list(search_space.keys())     # fixed order = vector layout
         self.dims = [search_space[p] for p in self.paths]
         self.dim = len(self.paths)
+
+    def distances(self, points: np.ndarray, point: np.ndarray) -> np.ndarray:
+        """Euclidean distance from each row of ``points`` to ``point``, in the unit cube.
+
+        A ``choice`` or ``bool`` coordinate contributes 0 when both lie in the same value's
+        bucket and 1 otherwise: the order of a choice's values is how they were written, not
+        a nearness, so the first value is as far from the second as from the last.
+        """
+        points = np.atleast_2d(np.asarray(points, dtype=float))
+        point = np.asarray(point, dtype=float)
+        delta = np.abs(points - point)
+        for i, dim in enumerate(self.dims):
+            if isinstance(dim, (ChoiceDim, BoolDim)):
+                k = len(dim.values) if isinstance(dim, ChoiceDim) else 2
+                same = (np.minimum(np.floor(points[:, i] * k), k - 1)
+                        == min(math.floor(point[i] * k), k - 1))
+                delta[:, i] = np.where(same, 0.0, 1.0)
+        return np.sqrt((delta ** 2).sum(axis=1))
 
     def bounds(self) -> tuple[np.ndarray, np.ndarray]:
         """Normalized solution-space bounds: the unit cube."""
