@@ -254,18 +254,32 @@ def _replace_markers(node, values: dict, used: set):
     return node
 
 
-def derive(record_path, template_path, out_path, *, space=(), fix=(), select="worst",
-           feasible=None, level=None, band=None, pad=0.1, min_cells=3,
+def derive(record_path, template_path, out_path, *, space=(), fix=(), select=None,
+           feasible=None, level=None, band=None, pad=None, min_cells=None,
            objective=None) -> dict:
     """Write the next stage's ``.vast`` and return the provenance entry it carries.
 
     ``space`` names the dimensions to narrow to the band box, ``fix`` those to fix at the
     selected cell. Every argument given is used or refused: a dimension the template does not
-    search cannot be narrowed, one the template has no ``$<dim>`` marker for cannot be fixed.
+    search cannot be narrowed, one the template has no ``$<dim>`` marker for cannot be fixed,
+    and an option of narrowing without ``space`` or of selection without ``fix`` is refused.
+    ``None`` is "not given": ``select`` then is ``worst``, ``pad`` 0.1 and ``min_cells`` 3.
     """
     space, fix = list(space), list(fix)
     if not space and not fix:
         raise ChainError("nothing to derive: name at least one --space or --fix dimension")
+    unused = [name for name, value, used in (
+        ("--band", band, space), ("--pad", pad, space), ("--min-cells", min_cells, space),
+        ("--select", select, fix), ("--feasible", feasible, fix),
+        ("--level", level, space or (fix and select == "nearest-level")),
+    ) if value is not None and not used]
+    if unused:
+        raise ChainError(f"{', '.join(unused)} would change nothing here: --band, --pad and "
+                         "--min-cells shape --space, --select and --feasible pick the cell "
+                         "--fix reads, and --level serves --space or --select nearest-level")
+    select = "worst" if select is None else select
+    pad = 0.1 if pad is None else pad
+    min_cells = 3 if min_cells is None else min_cells
     both = sorted(set(space) & set(fix))
     if both:
         raise ChainError(f"{both} are both narrowed and fixed; a dimension is one or the other")

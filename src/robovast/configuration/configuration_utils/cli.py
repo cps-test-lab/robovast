@@ -200,19 +200,20 @@ def upgrade(vast, dry_run):
 @click.option('--fix', 'fix', multiple=True, metavar='DIM',
               help="Fix DIM at the selected cell through the template's $DIM markers "
                    "(repeatable).")
-@click.option('--select', 'select', default='worst', show_default=True,
+@click.option('--select', 'select', default=None,
               type=click.Choice(['worst', 'nearest-level', 'feasible-min']),
-              help='The rule that picks the cell --fix reads.')
+              help='The rule that picks the cell --fix reads [default: worst].')
 @click.option('--feasible', default=None, metavar='MEASURE',
               help='Select only among cells whose MEASURE is true.')
 @click.option('--level', type=float, default=None,
               help="The level, in the objective's unit [default: the record's boundary level].")
 @click.option('--band', type=float, default=None,
               help="Half-width around the level, in the objective's unit; needed by --space.")
-@click.option('--pad', type=float, default=0.1, show_default=True,
-              help="Widen a narrowed range by this share of the template's range on each side.")
-@click.option('--min-cells', type=int, default=3, show_default=True,
-              help='Refuse a box built from fewer cells within the band.')
+@click.option('--pad', type=float, default=None,
+              help="Widen a narrowed range by this share of the template's range on each side "
+                   "[default: 0.1].")
+@click.option('--min-cells', type=int, default=None,
+              help='Refuse a box built from fewer cells within the band [default: 3].')
 @click.option('--objective', default=None, metavar='NAME',
               help="The objective the rules read [default: the record's first].")
 def derive_stage(record, template, out, space, fix, select, feasible, level, band, pad,
@@ -242,7 +243,7 @@ def derive_stage(record, template, out, space, fix, select, feasible, level, ban
     if 'cells' in entry:
         parts.append(f"{entry['cells']} cell(s) in the band narrowed {', '.join(entry['space'])}")
     if 'fix' in entry:
-        parts.append(f"unit {entry['selected_unit']} ({select}) fixed "
+        parts.append(f"unit {entry['selected_unit']} ({entry['select']}) fixed "
                      + ", ".join(f"{k}={v}" for k, v in entry['fix'].items()))
     click.echo(click.style(f"✓ {out} from {entry['campaign']}: " + "; ".join(parts),
                            fg="green"))
