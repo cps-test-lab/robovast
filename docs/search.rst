@@ -244,8 +244,8 @@ Strategies
 
 All strategies share the universal core and differ only in how they propose the
 next batch and what ``report()`` returns. The built-ins are complementary —
-coverage (``random``, ``halton``), diversity (``qd``), exploitation (``optuna``)
-and boundary tracing (``boundary``).
+coverage (``random``, ``halton``), exhaustion (``grid``), diversity (``qd``), exploitation
+(``optuna``) and boundary tracing (``boundary``).
 
 random
 ^^^^^^
@@ -291,6 +291,29 @@ practice a scipy dependency, and a *baseline* that only runs when an extra is in
 is not a baseline. Halton's known weakness is high dimensions, where the larger prime
 bases correlate — it is refused above 20 dimensions rather than quietly degrading, and a
 search space of the size these campaigns declare is nowhere near that.
+
+grid — every cell, once
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Runs every cell of a finite search space, once: the cartesian product of the dimensions in the
+order ``search_space`` declares them, each dimension's values in its own order — a ``choice`` as
+listed, a ``bool`` as ``false, true``, an ``int`` from ``low`` to ``high`` on its ``step``. It is
+the strategy for "run these configurations", and the exhaustive reference a sampling strategy is
+compared against. Ships in the base install.
+
+.. code-block:: yaml
+
+   search:
+     strategy: grid             # no strategy_parameters
+     search_space:
+       config: {type: choice, values: [default, careful]}
+       count:  {type: int, low: 1, high: 3}
+     per_batch: 6               # cells proposed per batch
+
+A grid needs no ``budget``: once every cell has been proposed it ends with stop kind
+``exhausted``. A budget it is given cuts it short, which is how a pilot runs a few of its cells.
+A ``float`` has no finite set of values and is refused by name; write it as an ``int`` with a
+``step``, or as a ``choice`` of the values to run.
 
 boundary — trace a level set
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -437,7 +460,7 @@ Two parallel lists of typed criteria decide when a search ends — **``budget``*
 (resource caps) and **``stopping``** (convergence / quality). All entries are
 **OR-combined**: the search stops as soon as *any* one fires. At least one
 criterion (across the two) is **required** — a search needs a way to end — unless its
-strategy runs out of proposals by itself: such a search ends with stop kind
+strategy runs out of proposals by itself, as ``grid`` does: such a search ends with stop kind
 ``exhausted`` once it has proposed every cell, and a budget it is given caps it earlier.
 Everything is evaluated centrally by the controller after each batch against a
 uniform progress snapshot, so the **same criteria work for every strategy**

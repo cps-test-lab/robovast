@@ -188,8 +188,8 @@ def needs_an_end(strategy_cls, budget, stopping) -> Optional[str]:
     if budget or stopping or getattr(strategy_cls, "ENDS_ITSELF", False):
         return None
     return ("a search must define at least one 'budget' or 'stopping' criterion "
-            "(e.g. budget: [{batches: 20}]); only a strategy that runs out of proposals "
-            "ends by itself")
+            "(e.g. budget: [{batches: 20}]); only a strategy that runs out of proposals, "
+            "such as grid, ends by itself")
 
 
 def build_strategy(cfg: SearchConfig, vast_dir: str = "") -> SearchStrategy:
