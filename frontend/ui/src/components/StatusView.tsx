@@ -324,6 +324,9 @@ export type RingArcRole = 'info' | 'warning' | 'success' | 'error' | 'neutral'
 
 export function ringArcRole(status: Status): RingArcRole {
   if (!isTerminalPhase(status.phase)) return status.stopping_soon === true ? 'warning' : 'info'
+  // Finished, but before its last stage: the line did not run to its end, which must never look
+  // like a search that ran every stage.
+  if (status.phase === 'finished' && stageEndLabel(status.stop as never)) return 'warning'
   if (status.phase === 'finished') return status.best_objective != null ? 'success' : 'neutral'
   if (status.phase === 'unknown') return 'neutral'
   return 'error'
@@ -368,6 +371,17 @@ function budgetFactLabel(b: BudgetItem): string {
  *  the arc measures), then every other declared criterion including the `stopping` ones: any of
  *  them may be what actually ends this campaign, and the arc can only show one.
  */
+/** Where a search that ended before its last stage ended, as one line, or null when it did not:
+ *  `ended at stage 2/4 human (region)`. Read from the stop the status carries (live, and as
+ *  recovered from the record), or from a listing row's `ended_at_stage`. */
+export function stageEndLabel(
+  end: { stage?: string; idx?: number; of?: number; rule?: string | null } | null | undefined,
+): string | null {
+  if (!end || !end.stage) return null
+  const where = end.idx != null && end.of ? `${end.idx + 1}/${end.of} ` : ''
+  return `ended at stage ${where}${end.stage}${end.rule ? ` (${end.rule})` : ''}`
+}
+
 /** `2/4 human` for a search of several stages, null for a search in one. */
 export function searchStageLabel(status: Pick<Status, 'search_stage'>): string | null {
   const stage = status.search_stage as { idx: number; name: string; of: number } | null | undefined
@@ -405,7 +419,19 @@ function SearchHover({ campaignId, status }: { campaignId: string; status: Statu
           { label: 'rounds', value: String(done) },
           // In a search of several stages the budget and the best below are the stage's, so the
           // stage is named before them.
-          { label: 'stage', value: searchStageLabel(status) },
+          { label: 'stage', value: stageEndLabel(status.stop as never) ? null : searchStageLabel(status) },
+          // A search that ended before its last stage: where, why, and what never ran.
+          { label: 'ended', value: stageEndLabel(status.stop as never) },
+          {
+            label: 'why',
+            value: stageEndLabel(status.stop as never)
+              ? String((status.stop as { reason?: string }).reason ?? '')
+              : null,
+          },
+          {
+            label: 'not run',
+            value: ((status.stop as { not_run?: string[] } | null)?.not_run ?? []).join(', ') || null,
+          },
           // A criterion whose position is not yet known keeps its row and shows `— of N`: the
           // criterion demonstrably exists (the campaign declared it), which is a different fact
           // from the one HoverFacts drops, where the panel never had the value at all. A

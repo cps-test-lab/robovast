@@ -770,6 +770,14 @@ class CampaignController:
             report, result, ended = self._run_stage(campaign_id)
             if ended:
                 summaries.append(_stage_summary(stage, ended, None, None))
+                not_run = [st.name for st in self.stages[stage.idx + 1:]]
+                if not_run and self.state is not None:
+                    # Said where it ended and what it left, so no reader takes a campaign that
+                    # stopped in its second stage for one that ran them all.
+                    self.state.update(stop={"kind": result.kind, "reason": result.reason,
+                                            "stage": stage.name, "idx": stage.idx,
+                                            "of": len(self.stages), "rule": ended,
+                                            "not_run": not_run})
                 return self._finish_search(campaign_id, report, result, summaries)
             answer = region = None
             try:
@@ -1049,7 +1057,8 @@ class CampaignController:
         stop = StopResult(kind="stage_condition", reason=reason)
         if self.state is not None:
             self.state.update(stop={"kind": "stage_condition", "reason": reason,
-                                    "stage": stage.name, "rule": cond.rule,
+                                    "stage": stage.name, "idx": stage.idx,
+                                    "of": len(self.stages), "rule": cond.rule,
                                     "not_run": not_run})
         report = self._finish_search(campaign_id, report, stop, summaries)
         report.extra['stop'].update({"stage": stage.name, "rule": cond.rule,

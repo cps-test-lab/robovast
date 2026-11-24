@@ -482,6 +482,11 @@ class CampaignSummary(BaseModel):
     #: predate the field. Carried on the listing because it decides how results are *read*:
     #: only for a search is a configuration's batch a meaningful grouping.
     mode: str = ""
+    #: Where a search that ended before its last stage ended: ``{stage, idx, of, rule, reason,
+    #: not_run}`` (see :func:`robovast.common.store.read_stage_end`). ``None`` for a campaign that
+    #: ran every stage, is still running, or is not a search in stages. On the listing because a
+    #: finished phase alone would show such a campaign as one that ran its whole line.
+    ended_at_stage: Optional[dict] = None
     num_runs: int = 0
     num_passed: int = 0
     num_failed: int = 0

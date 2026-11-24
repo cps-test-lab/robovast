@@ -214,7 +214,11 @@ def get_campaign_status(campaign_id: str) -> dict:
     stage's, and each ``objective_history`` row names its ``stage``, whose ``best_so_far``
     starts again with it. ``search_stages`` lists every stage: what it searched, its
     ``outcome`` (``not_run`` for one the campaign has not reached or ended before), the cell
-    its answer selected.
+    its answer selected. **A search that ended before its last stage** -- a stage whose answer
+    or region found nothing to stand on, a stop, an unproductive stage -- is ``finished`` (or
+    ``stopped``) with ``ended_at_stage``, ``stage_rule`` (``answer``, ``region``,
+    ``stopped``, ...) and ``stages_not_run``; ``stop.reason`` says why. It did not run every
+    stage, so its result is the stage it reached, not the line's.
 
     Args:
         campaign_id: The id from ``start_campaign``.

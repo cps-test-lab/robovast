@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { chartSegments } from './BatchObjectiveChart'
+import { chartSegments, endedHere } from './BatchObjectiveChart'
 import type { SearchHistory } from '@/lib/robovastClient'
 
 const batch = (idx: number, stage: string, best: number) => ({
@@ -42,5 +42,12 @@ describe('chartSegments', () => {
     const history = { stages: [], batches: [], unavailable: 'batch_mode' } as unknown as SearchHistory
     expect(chartSegments(history)).toEqual([
       { label: null, stage: undefined, batches: [], unavailable: 'batch_mode' }])
+  })
+})
+
+describe('endedHere', () => {
+  it('says under the stage that ended the search why it did', () => {
+    expect(endedHere({ stop_reason: "stage 'human' has 1 cell(s)" } as never)).toBe(
+      "ended the search here: stage 'human' has 1 cell(s)")
   })
 })

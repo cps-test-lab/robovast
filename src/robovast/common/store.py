@@ -1701,3 +1701,47 @@ def _stage_rows(conn, campaign) -> list[dict]:
             "region": _loads(r["region_json"]),
             "unavailable": "multi_objective" if len(declared) > 1 else None})
     return out
+
+
+#: The outcomes with which a stage ends the whole campaign, not only itself.
+_CAMPAIGN_ENDING_OUTCOMES = ("condition", "stopped", "error", "unproductive")
+
+
+def read_stage_end(campaign_dir: str | Path) -> Optional[dict]:
+    """Where a search that ended before its last stage ended, or ``None``.
+
+    ``{stage, idx, of, rule, reason, not_run}``: the stage that ended the campaign, its place in
+    the line, the rule that ended it (``answer`` or ``region`` for a stage whose condition found
+    nothing, else how it ended: ``stopped``, ``error``, ``unproductive``), the stage's own reason,
+    and the stages after it that never ran. ``None`` unless a stage did not run: for a campaign
+    that reached its last stage (a search without stages always has), one still running, a batch
+    campaign, and a store without stages. Read-only and never migrating,
+    like :func:`read_batch_objectives`, so every surface reads the one record.
+    """
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT idx, name, outcome, stop_reason, answer_json, region_json FROM stage "
+                "WHERE campaign_id = (SELECT id FROM campaign LIMIT 1) ORDER BY idx").fetchall()
+    except sqlite3.Error:
+        return None
+    ended = next((r for r in rows if r["outcome"] in _CAMPAIGN_ENDING_OUTCOMES), None)
+    if ended is None:
+        return None
+    not_run = [r["name"] for r in rows if r["idx"] > ended["idx"] and r["outcome"] == "not_run"]
+    if not not_run:
+        # The last stage ended the search, so the line ran to its end: a stop, an error or an
+        # unproductive end of the search itself, which its own stop reports. A search without
+        # stages is that one stage, and never shows a stage end.
+        return None
+    if ended["outcome"] == "condition":
+        region = json.loads(ended["region_json"]) if ended["region_json"] else {}
+        rule = "region" if "failed" in region else "answer"
+    else:
+        rule = ended["outcome"]
+    return {"stage": ended["name"], "idx": ended["idx"], "of": len(rows), "rule": rule,
+            "reason": ended["stop_reason"], "not_run": not_run}

@@ -2571,6 +2571,10 @@ export interface components {
              * @default
              */
             description: string;
+            /** Ended At Stage */
+            ended_at_stage: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Error
              * @default

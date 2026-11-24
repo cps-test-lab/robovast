@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ringArcRole, ringLabel, ringLabelField, ringLabelWidth, searchStageLabel } from './StatusView'
+import { ringArcRole, ringLabel, ringLabelField, ringLabelWidth, searchStageLabel, stageEndLabel } from './StatusView'
 import type { Status } from '@/lib/robovastClient'
 
 const CHECK = '\u2713'
@@ -99,5 +99,25 @@ describe('searchStageLabel', () => {
     expect(searchStageLabel({ search_stage: { idx: 0, name: 'search', of: 1 } } as never))
       .toBeNull()
     expect(searchStageLabel({ search_stage: null } as never)).toBeNull()
+  })
+})
+
+describe('a search that ended before its last stage', () => {
+  const ended = {
+    phase: 'finished', best_objective: 1.0,
+    stop: { kind: 'stage_condition', stage: 'human', idx: 1, of: 4, rule: 'region',
+      reason: 'too few cells', not_run: ['hardest', 'decision'] },
+  } as unknown as Status
+
+  it('names where it ended', () => {
+    expect(stageEndLabel(ended.stop as never)).toBe('ended at stage 2/4 human (region)')
+    expect(stageEndLabel({ stage: 'human', rule: 'answer' })).toBe('ended at stage human (answer)')
+    expect(stageEndLabel(null)).toBeNull()
+  })
+
+  it('never paints the ring of one that ran every stage', () => {
+    expect(ringArcRole(ended)).toBe('warning')
+    expect(ringArcRole({ ...ended, stop: { kind: 'exhausted' } } as unknown as Status))
+      .toBe('success')
   })
 })

@@ -754,6 +754,18 @@
             "title": "Description",
             "type": "string"
           },
+          "ended_at_stage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At Stage"
+          },
           "error": {
             "default": "",
             "title": "Error",
@@ -867,6 +879,7 @@
           "campaign_id",
           "created_by",
           "description",
+          "ended_at_stage",
           "error",
           "finished_at",
           "mode",

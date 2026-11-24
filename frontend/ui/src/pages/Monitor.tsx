@@ -81,7 +81,7 @@ import { formatBytes, formatDuration } from '@/lib/format'
 import { campaignEtaSeconds } from '@/lib/eta'
 import { runsFromSummary } from '@/lib/runMeter'
 import { useActiveView } from '@/lib/activeView'
-import { ErrorText, MiniRunMeter, StatusView } from '@/components/StatusView'
+import { ErrorText, MiniRunMeter, StatusView, stageEndLabel } from '@/components/StatusView'
 import { CampaignOrigin } from '@/components/CampaignOrigin'
 import { HoverFacts } from '@/components/HoverFacts'
 import { useCompact } from '@/lib/compact'
@@ -696,7 +696,14 @@ function CampaignCard({ summary, newest, openedByLink, select }: {
   const failedSteps = running
     ? []
     : [postprocError ? 'postprocessing' : '', shareError ? 'upload to share' : ''].filter(Boolean)
-  const stepIssue = failedSteps.length ? `${failedSteps.join(' + ')} failed` : null
+  // A search that ended before its last stage is `finished` and must not read as one that ran
+  // every stage: the phase indicator carries where it ended, as it carries a failed step.
+  const stageEnd = running
+    ? null
+    : stageEndLabel((status.data?.stop as never) ?? summary.ended_at_stage)
+  const stepIssue =
+    [failedSteps.length ? `${failedSteps.join(' + ')} failed` : '', stageEnd ?? '']
+      .filter(Boolean).join(' · ') || null
 
   // The service serves the archive: it tars the campaign's results directory
   // (`campaign_tar_stream` is on the interface) and does not wait on postprocessing. So

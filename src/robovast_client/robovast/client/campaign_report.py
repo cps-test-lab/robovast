@@ -291,6 +291,12 @@ def status_to_dict(campaign_id: str, backend, st) -> dict:
             result["progress_of"] = binding[0].kind or binding[0].label
     if st.stop:
         result["stop"] = st.stop
+        if "stage" in st.stop:
+            # A search that ended before its last stage, said in fields of their own so that a
+            # `finished` phase is never read as a campaign that ran every stage.
+            result["ended_at_stage"] = st.stop["stage"]
+            result["stage_rule"] = st.stop.get("rule")
+            result["stages_not_run"] = list(st.stop.get("not_run") or [])
     if st.error:
         result["error"] = st.error
     # Postprocessing is a separate fact from ``phase`` on purpose (see Status): a
@@ -391,6 +397,11 @@ def summary_to_dict(summary) -> dict:
     # no size, which is a different fact from a size of 0.
     if summary.results_bytes is not None:
         entry["results_bytes"] = summary.results_bytes
+    if summary.ended_at_stage:
+        end = summary.ended_at_stage
+        entry["ended_at_stage"] = end["stage"]
+        entry["stage_rule"] = end.get("rule")
+        entry["stages_not_run"] = list(end.get("not_run") or [])
     if summary.description:
         entry["description"] = summary.description
     if summary.finished_at:

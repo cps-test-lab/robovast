@@ -55,6 +55,11 @@ function reason(unavailable: string | null | undefined, drawn: number): string |
   return null
 }
 
+/** What the stage that ended the campaign says under its rounds. */
+export function endedHere(stage: StageObjective): string {
+  return `ended the search here: ${stage.stop_reason ?? 'its condition found no cell'}`
+}
+
 /** One segment of the chart: a stage's rounds, under the stage's own objective. */
 export interface ChartSegment {
   /** `2/4 human` for a search of several stages; null for the one stage of a search without. */
@@ -134,8 +139,13 @@ function StageChart({
 }) {
   const theme = useTheme()
   const rows = drawable(batches)
+  // A stage the campaign ended before is said to be one, not drawn as an empty plot, and the
+  // stage that ended it says why under its rounds.
+  if (stage?.outcome === 'not_run') return <Note height={height}>not run</Note>
   const why = reason(unavailable, rows.length)
-  if (why) return <Note height={height}>{why}</Note>
+  if (why) {
+    return <Note height={height}>{stage?.outcome === 'condition' ? endedHere(stage) : why}</Note>
+  }
 
   const plot = height - 14
   const W = 100
@@ -237,6 +247,11 @@ function StageChart({
         left={`batch ${rows[0].idx}`}
         right={`batch ${rows[rows.length - 1].idx}`}
       />
+      {stage?.outcome === 'condition' ? (
+        <Typography variant="caption" color="warning.main" sx={{ fontSize: 9, display: 'block' }}>
+          {endedHere(stage)}
+        </Typography>
+      ) : null}
       {/* The objective's name and an arrow for its direction, because neither is inferable from
           the curve: a falling line is progress for a minimized objective and a regression for a
           maximized one. Kept to a name and one glyph so it still fits the Details panel's ~190px
