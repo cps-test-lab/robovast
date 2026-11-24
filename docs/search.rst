@@ -477,7 +477,7 @@ runs listed configurations on the selected cell; it has nothing to narrow. The c
 chosen by a rule, so the same record always gives the same cell:
 
 ``worst`` (default)
-   the extreme the objective's direction seeks: the minimum of a minimised objective.
+   the extreme the objective's direction seeks: the minimum of an objective to minimize.
 ``nearest-level``
    the smallest ``|objective - level|``.
 ``feasible-min``
