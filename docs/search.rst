@@ -455,16 +455,21 @@ record's first).
 **Narrowing** (``--space DIM``, repeatable): the cells whose objective lies within ``--band``
 of ``--level`` form a box. A ``float`` or ``int`` dimension becomes their span widened by
 ``--pad`` (default 0.1) of the template's range on each side (in log space for a ``log``
-dimension) and clipped to it, an integer's edges rounded outward onto its ``step``; a
-``choice`` or ``bool`` becomes a ``choice`` of the values those cells hold. ``--band`` is in the objective's unit and has no default. ``--level`` defaults to the
-record's ``strategy_parameters.level`` when its strategy states one (``boundary`` does); any
-level in the objective's unit works. Fewer than ``--min-cells``
-(default 3) cells within the band is refused rather than widened. An option that would change
-nothing is refused too: ``--band``, ``--pad`` or ``--min-cells`` without ``--space``,
-``--select`` or ``--feasible`` without ``--fix``, ``--level`` that neither reads.
+dimension) and clipped to it. Its edges are rounded outward, a float's at six significant
+digits and an integer's onto its ``step``, so the box always holds the cells it was built
+from. A ``choice`` or ``bool`` becomes a ``choice`` of the values those cells hold. Cells that
+lie wholly outside the template's range, or hold a value its choice lacks, are refused.
+``--band`` is in the objective's unit and has no default. ``--level`` defaults to the record's
+``strategy_parameters.level`` when its strategy states one (``boundary`` does); any level in
+the objective's unit works. Fewer than ``--min-cells`` (default 3) cells within the band is
+refused rather than widened. An option that would change nothing is refused too: ``--band``,
+``--pad`` or ``--min-cells`` without ``--space``, ``--pad`` when every narrowed dimension is a
+``choice`` or ``bool``, ``--select`` or ``--feasible`` without ``--fix``, ``--level`` that
+neither reads.
 
-**Fixing** (``--fix DIM``, repeatable): one cell is selected and every ``$DIM`` marker in the
-template is replaced by its value; DIM leaves the template's ``search_space`` if it is there.
+**Fixing** (``--fix DIM``, repeatable): one cell is selected and every ``$DIM`` or ``${DIM}``
+marker in the template is replaced by its value; DIM leaves the template's ``search_space`` if
+it is there, and a search template must keep at least one dimension to search.
 This is how a stage adds dimensions while the upstream answer is held as conditioning: the
 template searches its own dimensions and names the upstream ones only as markers. A batch
 template (a ``configuration:`` block, no ``search:``) takes fixed values too, for a stage that

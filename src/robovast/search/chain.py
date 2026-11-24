@@ -24,11 +24,11 @@ from a template. Two edits are possible, each per dimension:
 * **narrow** (``space``): the dimension stays searched, its domain cut to the cells within a
   band of a level -- a float or an integer to their span, padded and clipped to the
   template's own domain; a choice or a boolean to the values those cells hold.
-* **fix** (``fix``): the dimension is no longer searched; every ``$<dim>`` marker in the
+* **fix** (``fix``): the dimension is no longer searched; every ``$<dim>`` or ``${<dim>}`` marker in the
   template is replaced by its value in one selected cell, and the dimension leaves the
-  template's ``search_space`` if it was there. A batch template, with no search block, takes
-  fixed values too: a stage that runs listed configurations on the selected cell. This is how a template adds dimensions of its
-  own while the upstream ones are held at the selected cell.
+  template's ``search_space`` if it was there. This is how a template adds dimensions of its
+  own while the upstream ones are held at the selected cell. A batch template, with no search
+  block, takes fixed values too: a stage that runs listed configurations on the selected cell.
 
 The cell is chosen by a rule applied to the record, never by looking: ``worst`` (the extreme the
 objective's direction seeks: the minimum of a minimised objective, the maximum of a
@@ -51,6 +51,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 import yaml
+from pydantic import TypeAdapter, ValidationError
+
+from robovast.common.config import SearchDim, match_var_marker
 
 SELECT_RULES = ("worst", "nearest-level", "feasible-min")
 OPERATOR = "derive-stage"
@@ -134,8 +137,7 @@ def load_record(path, objective: Optional[str] = None) -> Record:
         name = objective or names[0]
         if name not in names:
             raise ChainError(f"{row['name']} has no objective {name!r}; it has {names}")
-        direction = next(o.get("direction", "minimize") for o in objectives
-                         if o.get("name") == name)
+        direction = next(o["direction"] for o in objectives if o.get("name") == name)
         units = con.execute(
             "SELECT unit.id AS id, batch.idx AS batch, unit.params_json AS params, "
             "unit.objectives_json AS objectives, unit.measures_json AS measures "
@@ -213,14 +215,46 @@ def band_cells(record: Record, level: float, band: float) -> list[Cell]:
     return [c for c in record.cells if abs(c.objective - level) <= band]
 
 
+_DIM = TypeAdapter(SearchDim)
+_DIGITS = 6
+
+
+def _checked(dim: dict, what: str) -> dict:
+    """``dim`` as given, once the configuration's own schema accepts it."""
+    try:
+        _DIM.validate_python(dim)
+    except ValidationError as e:
+        raise ChainError(f"{what} is no search dimension: {e.errors()[0]['msg']}") from e
+    return dim
+
+
+def _outward(value: float, down: bool) -> float:
+    """``value`` at ``_DIGITS`` significant digits, rounded away from the box's inside, so an
+    edge written to the file never cuts off the cell it was taken from."""
+    if value == 0:
+        return 0.0
+    decimals = _DIGITS - 1 - math.floor(math.log10(abs(value)))
+    quantum = 10.0 ** -decimals
+    rounded = round(value, decimals)
+    slack = abs(value) * 1e-12      # float noise is not a reason to step outward
+    if down and rounded > value + slack:
+        rounded -= quantum
+    elif not down and rounded < value - slack:
+        rounded += quantum
+    return round(rounded, max(decimals, 0))
+
+
 def narrow(dim: dict, values: list, pad: float) -> dict:
     """``dim`` (a template's search dimension) cut to what ``values`` span.
 
     A float or an integer: their span, widened by ``pad`` of the template's range on each
-    side (in log space for a log one) and clipped to it; an integer's edges rounded outward
-    onto its step. A choice or a boolean: the values held, in the template's order, as a choice.
+    side (in log space for a log one) and clipped to it; a float's edges rounded outward at
+    six significant digits, an integer's outward onto its step. A choice or a boolean: the
+    values held, in the template's order, as a choice. Values that lie wholly outside the
+    template's range are refused, as a value outside a choice's is.
     """
     kind = dim.get("type")
+    _checked(dim, f"the template's dimension {dim}")
     if kind in ("choice", "bool"):
         domain = list(dim["values"]) if kind == "choice" else [False, True]
         held = [v for v in domain if v in values]
@@ -232,6 +266,9 @@ def narrow(dim: dict, values: list, pad: float) -> dict:
         raise ChainError(f"cannot narrow a dimension of type {kind!r}")
     low, high = float(dim["low"]), float(dim["high"])
     numbers = [float(v) for v in values]
+    if min(numbers) > high or max(numbers) < low:
+        raise ChainError(f"values {min(numbers)} to {max(numbers)} lie outside the template's "
+                         f"range {dim['low']} to {dim['high']}")
     # The pad is taken where the codec spaces the dimension: in log space for a log one.
     scale, unscale = (math.log, math.exp) if dim.get("log") else (float, float)
     margin = pad * (scale(high) - scale(low))
@@ -245,8 +282,9 @@ def narrow(dim: dict, values: list, pad: float) -> dict:
         out["low"] = base + math.floor((lo - base) / step) * step
         out["high"] = min(int(dim["high"]), base + math.ceil((hi - base) / step) * step)
     else:
-        out["low"], out["high"] = round(lo, 6), round(hi, 6)
-    return out
+        out["low"] = max(low, _outward(lo, down=True))
+        out["high"] = min(high, _outward(hi, down=False))
+    return _checked(out, f"the narrowed dimension {out}")
 
 
 def _replace_markers(node, values: dict, used: set):
@@ -254,9 +292,10 @@ def _replace_markers(node, values: dict, used: set):
         return {k: _replace_markers(v, values, used) for k, v in node.items()}
     if isinstance(node, list):
         return [_replace_markers(v, values, used) for v in node]
-    if isinstance(node, str) and node.startswith("$") and node[1:] in values:
-        used.add(node[1:])
-        return values[node[1:]]
+    name = match_var_marker(node)
+    if name in values:
+        used.add(name)
+        return values[name]
     return node
 
 
@@ -284,13 +323,15 @@ def derive(record_path, template_path, out_path, *, space=(), fix=(), select=Non
                          "--min-cells shape --space, --select and --feasible pick the cell "
                          "--fix reads, and --level serves --space or --select nearest-level")
     select = "worst" if select is None else select
-    pad = 0.1 if pad is None else pad
+    pad_given, pad = pad is not None, 0.1 if pad is None else pad
     min_cells = 3 if min_cells is None else min_cells
     both = sorted(set(space) & set(fix))
     if both:
         raise ChainError(f"{both} are both narrowed and fixed; a dimension is one or the other")
     if pad < 0:
         raise ChainError(f"pad must be >= 0, got {pad}")
+    if min_cells < 1:
+        raise ChainError(f"min-cells must be >= 1, got {min_cells}: a box needs a cell")
     record = load_record(record_path, objective)
     text = Path(template_path).read_text()
     template = yaml.safe_load(text)
@@ -300,7 +341,9 @@ def derive(record_path, template_path, out_path, *, space=(), fix=(), select=Non
     for line in text.splitlines():
         if not line.startswith("#"):
             break
-        if line != "# Derive again rather than edit.":
+        # A template that was itself derived carries the lines this writes; they are written
+        # once, for this derivation.
+        if not line.startswith(("# Derived from campaign ", "# Derive again rather than edit.")):
             lead.append(line)
     if not isinstance(template, dict):
         raise ChainError(f"{template_path} is not a .vast mapping")
@@ -329,15 +372,23 @@ def derive(record_path, template_path, out_path, *, space=(), fix=(), select=Non
         if band is None:
             raise ChainError("--space needs --band, the half-width around the level in the "
                              "objective's unit")
+        ranged = [d for d in space if tspace[d].get("type") in ("float", "int")]
+        if pad_given and not ranged:
+            raise ChainError(f"--pad would change nothing here: {space} are choices or "
+                             "booleans, which have no range to widen")
         cells = band_cells(record, level, band)
         if len(cells) < min_cells:
             raise ChainError(
                 f"{record.campaign} has {len(cells)} cell(s) within {band} of the level "
                 f"{level} for {record.objective!r}, fewer than the {min_cells} a box needs")
         for dim in space:
-            tspace[dim] = narrow(tspace[dim], [c.params[dim] for c in cells], pad)
-        entry.update({"space": space, "level": level, "band": band, "pad": pad,
-                      "cells": len(cells)})
+            try:
+                tspace[dim] = narrow(tspace[dim], [c.params[dim] for c in cells], pad)
+            except ChainError as e:
+                raise ChainError(f"{dim!r}: {e}") from e
+        entry.update({"space": space, "level": level, "band": band, "cells": len(cells)})
+        if ranged:
+            entry["pad"] = pad
 
     if fix:
         cell = select_cell(record, select, level=level, feasible=feasible)
@@ -349,8 +400,13 @@ def derive(record_path, template_path, out_path, *, space=(), fix=(), select=Non
             raise ChainError(f"the template has no ${unused[0]} marker; fixing "
                              f"{unused} would change nothing")
         if isinstance(template.get("search"), dict):
+            left = template["search"].get("search_space", {})
             for d in fix:
-                template["search"].get("search_space", {}).pop(d, None)
+                left.pop(d, None)
+            if not left:
+                raise ChainError(f"fixing {fix} leaves {template_path} no dimension to search; "
+                                 "a stage that searches nothing is a batch template, with a "
+                                 "configuration: block and no search:")
         entry.update({"fix": values, "select": select, "selected_unit": cell.unit_id,
                       "selected_objective": cell.objective})
         if select == "nearest-level":
