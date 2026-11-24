@@ -1,13 +1,13 @@
-# Quadrotor landing — search example (random / QD / Optuna)
+# Quadrotor landing — search example (random / QD / Optuna / stages)
 
 A toy 2D quadrotor must hover and land on a pad at `x = 0` in wind. It is
 deliberately simple ([files/quadrotor_sim.py](files/quadrotor_sim.py),
 single file, numpy only) but **stochastic** — wind gusts and sensor noise mean a
 given parameter set can land on one run and fail on the next.
 
-All four share one scenario and sim. The three search variants also share the
+All five share one scenario and sim. The four search variants also share the
 wind variation, `QuadMetrics` and the `extract` module; they differ in `strategy`
-(and its `strategy_parameters`) and in their budget:
+(and its `strategy_parameters`) and in their budget — the staged one runs a strategy per stage:
 
 | File | Mode | Run with |
 |---|---|---|
@@ -15,6 +15,7 @@ wind variation, `QuadMetrics` and the `extract` module; they differ in `strategy
 | [quadrotor_landing_search.vast](quadrotor_landing_search.vast) | **random** search — coverage baseline | `vast workspace run` |
 | [quadrotor_landing_qd.vast](quadrotor_landing_qd.vast) | **quality-diversity** (pyribs) — archive of *distinct* failures | `vast workspace run` (`pip install 'robovast[qd]'`) |
 | [quadrotor_landing_optuna.vast](quadrotor_landing_optuna.vast) | **Optuna TPE** — efficient single worst-case | `vast workspace run` (`pip install 'robovast[optuna]'`) |
+| [quadrotor_landing_stages.vast](quadrotor_landing_stages.vast) | **a search in three stages** — the wind's coin-flip contour, the hardest thrust gain on it, every descent rate there | `vast workspace run` (`pip install 'robovast[optuna]'`) |
 
 ## Variation points (search space)
 

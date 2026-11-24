@@ -570,6 +570,10 @@ it, the region it left. ``run_view.stage`` names the stage that proposed each ru
    SELECT name, outcome, answer_json, region_json FROM campaign.stage ORDER BY idx;
    SELECT stage, COUNT(*), MIN(objective) FROM run_view GROUP BY stage;
 
+``configs/examples/quadrotor_landing/quadrotor_landing_stages.vast`` is a search in three
+stages over the toy quadrotor: the wind's coin-flip contour, the hardest thrust gain on the
+wind it selected, then every descent rate on that point.
+
 **What one file cannot hold is not supported.** A stage has one answer, so selecting several
 cells from one stage -- one per value of a choice, or per bin of a float, as a validation set over
 finished stages would need -- is not supported; nor is a stage conditioned on a cell that
@@ -920,5 +924,5 @@ Running a search
 has a ``search:`` block it drives the search loop, otherwise it runs a batch.
 Results, per-batch outputs and a live-queryable ``campaign.db`` are written
 under a timestamped campaign directory in the service's results root. See ``configs/examples/quadrotor_landing/`` for
-runnable random, QD and Optuna variants over one shared scenario, sim and
+runnable random, QD, Optuna and staged variants over one shared scenario, sim and
 extract.
