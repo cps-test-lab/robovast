@@ -1669,11 +1669,11 @@ batch per ask/tell round.
 Schema
 ^^^^^^
 
-``robovast.common.store.CampaignStore`` is a thin wrapper over seven tables: the five below, plus ``node`` (one row per
+``robovast.common.store.CampaignStore`` is a thin wrapper over eight tables: the six below, plus ``node`` (one row per
 cluster node a job ran on, keyed by a hash of its name) and ``container_failure`` (one row per
 container restart the runner saw under a job)::
 
-    campaign (1) --< batch (1) --< unit (one per param set / config) (1) --< run (one per repetition)
+    campaign (1) --< stage (search only) (1) --< batch (1) --< unit (one per param set / config) (1) --< run (one per repetition)
     campaign (1) --< job  (one per execution job)  ...............<  run (via run.job_id)
 
 * **campaign** — ``mode`` (``batch``/``search``), ``config_dir`` (base directory
@@ -1697,8 +1697,20 @@ container restart the runner saw under a job)::
   because sysinfo is written by the *job*, the unit that ran on a host, and its run
   reaches it through the run dir's ``job`` symlink. ``job_dir`` is campaign-relative (``_jobs/batch-0/job-3``), or the
   run's own directory for an older layout that wrote sysinfo beside the run.
+* **stage** — one stage of a search (:doc:`search`, "A search in stages"); a search without
+  ``stages:`` has one, named ``search``. Every stage of the file has its row from launch, with
+  ``outcome`` ``not_run`` until it starts, so a campaign that ends early records the stages that
+  never ran. ``over_json`` and ``space_json`` are the dimensions it searched and their domains as
+  searched, ``point_json`` the values it stood on for every other dimension, ``within`` and
+  ``region_from_json`` the region it read. ``answer_json`` and ``region_json`` are what it
+  selected and the region it left, with the rule that produced them -- or, on a stage whose
+  condition failed, the rule and what it saw. ``stop_kind``/``stop_reason`` are what ended the
+  stage, ``batches``/``evaluations``/``runs`` what it spent, ``definition_digest`` a hash of its
+  resolved definition and of the point it stood on. A store from before schema 17 has its search
+  campaigns migrated to one ``search`` stage holding every batch.
 * **batch** — one ask/tell round (search), or the single batch (``idx=0``) of a
-  batch-mode campaign. ``asked`` is how many parameter sets the strategy proposed, and
+  batch-mode campaign. ``stage_id`` is the stage that proposed it (NULL in batch mode); ``idx``
+  counts across the whole campaign, not per stage. ``asked`` is how many parameter sets the strategy proposed, and
   ``recalls_recorded`` is 1 on every batch whose recalled cells have rows (NULL on one
   written before schema 14). ``complete`` is 1 once every unit of the batch is recorded;
   NULL on a batch still running or interrupted, whose units are not what it ended with.

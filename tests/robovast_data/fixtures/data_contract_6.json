@@ -7,7 +7,8 @@
   "created_at REAL",
   "asked INTEGER",
   "recalls_recorded INTEGER",
-  "complete INTEGER"
+  "complete INTEGER",
+  "stage_id INTEGER"
  ],
  "campaign.campaign": [
   "campaign_id TEXT",
@@ -104,6 +105,31 @@
   "failure_message TEXT",
   "created_at REAL",
   "job_id INTEGER"
+ ],
+ "campaign.stage": [
+  "campaign_id TEXT",
+  "id INTEGER",
+  "idx INTEGER",
+  "name TEXT",
+  "over_json TEXT",
+  "space_json TEXT",
+  "point_json TEXT",
+  "within TEXT",
+  "region_from_json TEXT",
+  "strategy TEXT",
+  "objective TEXT",
+  "direction TEXT",
+  "definition_digest TEXT",
+  "started_at REAL",
+  "ended_at REAL",
+  "batches INTEGER",
+  "evaluations INTEGER",
+  "runs INTEGER",
+  "stop_kind TEXT",
+  "stop_reason TEXT",
+  "answer_json TEXT",
+  "region_json TEXT",
+  "outcome TEXT"
  ],
  "campaign.unit": [
   "campaign_id TEXT",
@@ -410,6 +436,7 @@
   "objective REAL",
   "paramset_id TEXT",
   "batch INTEGER",
+  "stage TEXT",
   "job_dir TEXT",
   "sysinfo_json TEXT",
   "live INTEGER"

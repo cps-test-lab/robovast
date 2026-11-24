@@ -52,7 +52,7 @@ from robovast_decode.types import json_text
 
 #: The tables the record is made of, parents before children. Named, because which tables are
 #: the campaign's record is a decision, not a fact about the file.
-TABLES = ("campaign", "batch", "unit", "job", "node", "run", "container_failure")
+TABLES = ("campaign", "stage", "batch", "unit", "job", "node", "run", "container_failure")
 
 _DROPPED = frozenset({"campaign_id", "strategy_state"})
 _ARROW = {"INTEGER": pa.int64(), "REAL": pa.float64(), "TEXT": pa.string()}

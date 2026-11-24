@@ -151,7 +151,8 @@ CREATE TABLE IF NOT EXISTS batch (
     created_at  REAL,
     asked       INTEGER,         -- parameter sets the strategy PROPOSED for this batch
     recalls_recorded INTEGER,    -- 1: its recalled cells have unit rows; NULL: written before they could
-    complete    INTEGER          -- 1: all its units are recorded; NULL: running or interrupted
+    complete    INTEGER,         -- 1: all its units are recorded; NULL: running or interrupted
+    stage_id    INTEGER REFERENCES stage(id)  -- the search stage that proposed it; NULL in batch mode
 );
 CREATE TABLE IF NOT EXISTS unit (
     id            INTEGER PRIMARY KEY,
@@ -239,6 +240,31 @@ CREATE TABLE IF NOT EXISTS container_failure (
 );
 CREATE INDEX IF NOT EXISTS idx_container_failure_campaign
     ON container_failure (campaign_id);
+CREATE TABLE IF NOT EXISTS stage (
+    id               INTEGER PRIMARY KEY,
+    campaign_id      INTEGER NOT NULL REFERENCES campaign(id),
+    idx              INTEGER NOT NULL,      -- the stage's position in the file, from 0
+    name             TEXT NOT NULL,
+    over_json        TEXT,       -- JSON [dim, ...]: the dimensions it searched
+    space_json       TEXT,       -- JSON {dim: domain}: them as searched, declared or a region read
+    point_json       TEXT,       -- JSON {dim: value}: every other dimension it stood on
+    within           TEXT,       -- the stage whose region it searched; NULL for the declared space
+    region_from_json TEXT,       -- JSON: that region as read (its rule, cells and box)
+    strategy         TEXT,
+    objective        TEXT,       -- its sole objective; NULL with several
+    direction        TEXT,
+    definition_digest TEXT,      -- hash of its resolved definition and of the point it stood on
+    started_at       REAL,
+    ended_at         REAL,
+    batches          INTEGER,
+    evaluations      INTEGER,
+    runs             INTEGER,
+    stop_kind        TEXT,       -- what ended it: a criterion, exhausted, stage_condition, ...
+    stop_reason      TEXT,
+    answer_json      TEXT,       -- JSON {rule, unit_id, values, objective} or the rule and why it failed
+    region_json      TEXT,       -- JSON {rule, cells, box} or the rule and why it failed
+    outcome          TEXT        -- not_run | running | done | condition | stopped | error | unproductive
+);
 """
 
 # 0 -> 1: the initial schema, frozen as it shipped. This is deliberately NOT
@@ -566,8 +592,64 @@ _MIGRATION_ADD_NODE_CALIBRATION = """
 ALTER TABLE node ADD COLUMN calibration_json TEXT;
 """
 
+# 16 -> 17: a search runs in stages, and each batch belongs to one.
+#
+# A search campaign recorded before stages ran in one, over its whole search space, so the
+# step gives it that stage: named ``search``, over every declared dimension, ended the way the
+# campaign row says the search ended, and holding every batch. Every reader then reads one
+# shape. A batch-mode campaign has no stage and its batch keeps ``stage_id`` NULL.
+_MIGRATION_ADD_STAGE = """
+CREATE TABLE IF NOT EXISTS stage (
+    id               INTEGER PRIMARY KEY,
+    campaign_id      INTEGER NOT NULL REFERENCES campaign(id),
+    idx              INTEGER NOT NULL,      -- the stage's position in the file, from 0
+    name             TEXT NOT NULL,
+    over_json        TEXT,       -- JSON [dim, ...]: the dimensions it searched
+    space_json       TEXT,       -- JSON {dim: domain}: them as searched, declared or a region read
+    point_json       TEXT,       -- JSON {dim: value}: every other dimension it stood on
+    within           TEXT,       -- the stage whose region it searched; NULL for the declared space
+    region_from_json TEXT,       -- JSON: that region as read (its rule, cells and box)
+    strategy         TEXT,
+    objective        TEXT,       -- its sole objective; NULL with several
+    direction        TEXT,
+    definition_digest TEXT,      -- hash of its resolved definition and of the point it stood on
+    started_at       REAL,
+    ended_at         REAL,
+    batches          INTEGER,
+    evaluations      INTEGER,
+    runs             INTEGER,
+    stop_kind        TEXT,       -- what ended it: a criterion, exhausted, stage_condition, ...
+    stop_reason      TEXT,
+    answer_json      TEXT,       -- JSON {rule, unit_id, values, objective} or the rule and why it failed
+    region_json      TEXT,       -- JSON {rule, cells, box} or the rule and why it failed
+    outcome          TEXT        -- not_run | running | done | condition | stopped | error | unproductive
+);
+ALTER TABLE batch ADD COLUMN stage_id INTEGER REFERENCES stage(id);
+INSERT INTO stage (campaign_id, idx, name, over_json, space_json, point_json, strategy,
+                   objective, direction, started_at, batches, stop_kind, stop_reason, outcome)
+SELECT c.id, 0, 'search',
+       (SELECT json_group_array(key)
+          FROM json_each(json_extract(c.config_json, '$.search.search_space'))),
+       json_extract(c.config_json, '$.search.search_space'),
+       '{}',
+       json_extract(c.config_json, '$.search.strategy'),
+       CASE WHEN json_array_length(json_extract(c.config_json, '$.search.objectives')) = 1
+            THEN json_extract(c.config_json, '$.search.objectives[0].name') END,
+       CASE WHEN json_array_length(json_extract(c.config_json, '$.search.objectives')) = 1
+            THEN COALESCE(json_extract(c.config_json, '$.search.objectives[0].direction'),
+                          'maximize') END,
+       c.created_at, c.batches, c.stop_kind, c.stop_reason,
+       CASE WHEN c.stop_kind IS NULL THEN 'running'
+            WHEN c.stop_kind IN ('stopped', 'error', 'unproductive') THEN c.stop_kind
+            ELSE 'done' END
+  FROM campaign c WHERE c.mode = 'search';
+UPDATE batch SET stage_id = (SELECT s.id FROM stage s
+                              WHERE s.campaign_id = batch.campaign_id AND s.idx = 0)
+ WHERE stage_id IS NULL;
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -593,6 +675,7 @@ _MIGRATIONS = [
     _MIGRATION_ADD_RECALLED,
     _MIGRATION_ADD_BATCH_COMPLETE,
     _MIGRATION_ADD_NODE_CALIBRATION,
+    _MIGRATION_ADD_STAGE,
 ]
 
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
@@ -712,10 +795,26 @@ class CampaignStore:
             self._conn.executescript(_SCHEMA)
         else:
             for v in range(version, SCHEMA_VERSION):
-                self._conn.executescript(_MIGRATIONS[v])
+                self._migrate_one(v)
         # PRAGMA can't be parameterized; SCHEMA_VERSION is a constant we control.
         self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._conn.commit()
+
+    def _migrate_one(self, version: int) -> None:
+        """Apply the step from *version* to the next in one transaction, with its stamp.
+
+        Either the whole step lands and ``user_version`` says so, or nothing of it does: a step
+        that fails part-way -- a statement this sqlite cannot run -- leaves the store at
+        *version*, readable as it was and migrated again on the next open, rather than half
+        upgraded under a number that names neither layout.
+        """
+        try:
+            self._conn.executescript(
+                f"BEGIN;\n{_MIGRATIONS[version]}\nPRAGMA user_version = {version + 1};\nCOMMIT;")
+        except sqlite3.Error:
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            raise
 
     def _has_tables(self) -> bool:
         """True when this database already holds a campaign schema."""
@@ -785,8 +884,59 @@ class CampaignStore:
         self._conn.commit()
         return cur.lastrowid
 
+    def declare_stages(self, campaign_id: int, stages: list[dict]) -> list[int]:
+        """Write a row for every stage of a search, ``not_run``, and return their ids in order.
+
+        *stages* is one ``{name, over, strategy, objective, direction}`` per stage, in the
+        file's order. Every stage has its row from the start, so a campaign that ends before
+        its last stage records which stages never ran. **Idempotent**: a campaign re-entered
+        after a restart already has its rows, which are returned as they are.
+        """
+        existing = self.stages(campaign_id)
+        if existing:
+            return [row["id"] for row in existing]
+        ids = []
+        for idx, st in enumerate(stages):
+            cur = self._conn.execute(
+                "INSERT INTO stage (campaign_id, idx, name, over_json, strategy, objective, "
+                "direction, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, 'not_run')",
+                (campaign_id, idx, st["name"], json.dumps(st["over"]), st.get("strategy"),
+                 st.get("objective"), st.get("direction")))
+            ids.append(cur.lastrowid)
+        self._conn.commit()
+        return ids
+
+    def open_stage(self, stage_id: int, *, space: dict, point: dict, within=None,
+                   region_from=None, definition_digest: str = "") -> None:
+        """Mark *stage_id* running, with the space it searches and the point it stands on."""
+        self._conn.execute(
+            "UPDATE stage SET outcome = 'running', started_at = ?, space_json = ?, "
+            "point_json = ?, within = ?, region_from_json = ?, definition_digest = ? "
+            "WHERE id = ?",
+            (time.time(), json.dumps(space, default=str), json.dumps(point, default=str),
+             within, _json_or_none(region_from), definition_digest or None, stage_id))
+        self._conn.commit()
+
+    def close_stage(self, stage_id: int, *, outcome: str, stop_kind: str, stop_reason: str,
+                    batches: int, evaluations: int, runs: int, answer=None,
+                    region=None) -> None:
+        """Record how *stage_id* ended: its outcome, its stop, its spend, its answer and region."""
+        self._conn.execute(
+            "UPDATE stage SET outcome = ?, ended_at = ?, stop_kind = ?, stop_reason = ?, "
+            "batches = ?, evaluations = ?, runs = ?, answer_json = ?, region_json = ? "
+            "WHERE id = ?",
+            (outcome, time.time(), stop_kind, stop_reason, batches, evaluations, runs,
+             _json_or_none(answer), _json_or_none(region), stage_id))
+        self._conn.commit()
+
+    def stages(self, campaign_id: int) -> list[sqlite3.Row]:
+        """The stages of a search campaign, in the file's order (idx ascending)."""
+        return list(self._conn.execute(
+            "SELECT * FROM stage WHERE campaign_id = ? ORDER BY idx", (campaign_id,)
+        ).fetchall())
+
     def open_batch(self, campaign_id: int, idx: int, batch_dir: str,
-                   asked: Optional[int] = None) -> int:
+                   asked: Optional[int] = None, stage_id: Optional[int] = None) -> int:
         """Open a batch row. ``asked`` is how many parameter sets the strategy PROPOSED.
 
         Recorded because it is not always the number of ``unit`` rows that follow: two
@@ -798,9 +948,9 @@ class CampaignStore:
         stamped ``recalls_recorded``: that is what tells a replay it has the whole batch.
         """
         cur = self._conn.execute(
-            "INSERT INTO batch (campaign_id, idx, dir, created_at, asked, recalls_recorded) "
-            "VALUES (?, ?, ?, ?, ?, 1)",
-            (campaign_id, idx, batch_dir, time.time(), asked),
+            "INSERT INTO batch (campaign_id, idx, dir, created_at, asked, recalls_recorded, "
+            "stage_id) VALUES (?, ?, ?, ?, ?, 1, ?)",
+            (campaign_id, idx, batch_dir, time.time(), asked, stage_id),
         )
         self._conn.commit()
         return cur.lastrowid

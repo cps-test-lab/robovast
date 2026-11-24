@@ -252,6 +252,8 @@ def _to_schema_14(db, *, batches):
     conn = sqlite3.connect(db)
     conn.execute("ALTER TABLE batch DROP COLUMN complete")
     conn.execute("ALTER TABLE node DROP COLUMN calibration_json")
+    conn.execute("ALTER TABLE batch DROP COLUMN stage_id")
+    conn.execute("DROP TABLE stage")
     conn.execute("UPDATE campaign SET batches = ?", (batches,))
     conn.execute("PRAGMA user_version = 14")
     conn.commit()
