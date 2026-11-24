@@ -1577,6 +1577,11 @@ parsed object as ``params``:
 available on the instance. For single-objective strategies, ``self.objective_value(ev)``
 returns the sole objective sign-oriented so that **higher is always better**.
 
+``DIMENSION_TYPES`` names the ``search_space`` types the strategy can search; it is every type
+(``float``, ``int``, ``choice``, ``bool``) unless a strategy declares fewer. A dimension of any
+other type is refused by name -- by ``vast configuration validate`` and again when the strategy is
+built -- rather than met by the strategy mid-campaign.
+
 Register the class under ``robovast.search_strategies``; the key is the
 ``search.strategy`` name:
 

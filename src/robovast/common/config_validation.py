@@ -1293,6 +1293,13 @@ def _search_problems(search, vast_dir, declared_plugins=()):
                     f"'{strategy}' is not a subclass of SearchStrategy.",
                     field="search.strategy"))
             else:
+                from robovast.search.strategy import \
+                    dimension_type_problems  # pylint: disable=import-outside-toplevel
+                space = search.get("search_space")
+                if isinstance(space, dict):
+                    for sentence in dimension_type_problems(strategy_cls, strategy, space):
+                        problems.append(_problem("search-strategy", sentence,
+                                                 field="search.search_space"))
                 params_model = getattr(strategy_cls, "PARAMS_MODEL", None)
                 params = search.get("strategy_parameters") or {}
                 if params_model is not None and isinstance(params, dict):

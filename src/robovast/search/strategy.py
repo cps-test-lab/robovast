@@ -42,6 +42,11 @@ class SearchStrategy(ABC):
 
     PARAMS_MODEL: Optional[type] = None
 
+    #: The ``search_space`` dimension types this strategy can search. Every type by default;
+    #: a strategy that cannot search one declares the ones it can, and a dimension of any
+    #: other type is refused before the campaign runs (:func:`dimension_type_problems`).
+    DIMENSION_TYPES: frozenset = frozenset({"float", "int", "choice", "bool"})
+
     def __init__(self, cfg: SearchConfig, params: Any):
         self.cfg = cfg
         self.search_space = cfg.search_space
@@ -142,6 +147,24 @@ class SearchStrategy(ABC):
                 measured.setdefault(ev.params.id, ev)
 
 
+def dimension_type_problems(strategy_cls, name: str, search_space: dict) -> list[str]:
+    """One sentence per dimension of *search_space* whose type *strategy_cls* cannot search.
+
+    *search_space* maps a dimension's name to its validated model or to its raw mapping; both
+    carry a ``type``. *name* is how the file names the strategy.
+    """
+    can = getattr(strategy_cls, "DIMENSION_TYPES", SearchStrategy.DIMENSION_TYPES)
+    problems = []
+    for dim, spec in search_space.items():
+        kind = spec.get("type") if isinstance(spec, dict) else getattr(spec, "type", None)
+        if kind not in can:
+            problems.append(
+                f"{name} cannot search {dim!r}, a {kind}: it searches "
+                f"{', '.join(t for t in ('float', 'int', 'choice', 'bool') if t in can)} "
+                f"dimensions")
+    return problems
+
+
 def build_strategy(cfg: SearchConfig, vast_dir: str = "") -> SearchStrategy:
     """Instantiate the strategy plugin named by ``cfg.strategy``.
 
@@ -162,6 +185,9 @@ def build_strategy(cfg: SearchConfig, vast_dir: str = "") -> SearchStrategy:
             ensure_plugins_importable  # pylint: disable=import-outside-toplevel
         ensure_plugins_importable(vast_dir)
     strategy_cls = load_ref(cfg.strategy, STRATEGY_GROUP, vast_dir)
+    refused = dimension_type_problems(strategy_cls, cfg.strategy, cfg.search_space)
+    if refused:
+        raise ValueError("; ".join(refused))
     if strategy_cls.PARAMS_MODEL is not None:
         params = strategy_cls.PARAMS_MODEL(**(cfg.strategy_parameters or {}))
     else:
