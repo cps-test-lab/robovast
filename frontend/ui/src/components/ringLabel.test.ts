@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ringArcRole, ringLabel, ringLabelField, ringLabelWidth } from './StatusView'
+import { ringArcRole, ringLabel, ringLabelField, ringLabelWidth, searchStageLabel } from './StatusView'
 import type { Status } from '@/lib/robovastClient'
 
 const CHECK = '\u2713'
@@ -89,5 +89,15 @@ describe('ringArcRole', () => {
 
   it('leaves an absent verdict neutral rather than calling it a failure', () => {
     expect(ringArcRole(status({ phase: 'unknown' }))).toBe('neutral')
+  })
+})
+
+describe('searchStageLabel', () => {
+  it('names the stage of a search of several, and nothing for a search in one', () => {
+    expect(searchStageLabel({ search_stage: { idx: 1, name: 'human', of: 4 } } as never))
+      .toBe('2/4 human')
+    expect(searchStageLabel({ search_stage: { idx: 0, name: 'search', of: 1 } } as never))
+      .toBeNull()
+    expect(searchStageLabel({ search_stage: null } as never)).toBeNull()
   })
 })

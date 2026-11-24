@@ -368,6 +368,13 @@ function budgetFactLabel(b: BudgetItem): string {
  *  the arc measures), then every other declared criterion including the `stopping` ones: any of
  *  them may be what actually ends this campaign, and the arc can only show one.
  */
+/** `2/4 human` for a search of several stages, null for a search in one. */
+export function searchStageLabel(status: Pick<Status, 'search_stage'>): string | null {
+  const stage = status.search_stage as { idx: number; name: string; of: number } | null | undefined
+  if (!stage || stage.of <= 1) return null
+  return `${stage.idx + 1}/${stage.of} ${stage.name}`
+}
+
 function SearchHover({ campaignId, status }: { campaignId: string; status: Status }) {
   const done = status.batches_done ?? 0
   const bound = ringBudget(status)
@@ -396,6 +403,9 @@ function SearchHover({ campaignId, status }: { campaignId: string; status: Statu
             value: bound ? `${Math.round(bound.share * 100)}% of ${bound.item.label}` : null,
           },
           { label: 'rounds', value: String(done) },
+          // In a search of several stages the budget and the best below are the stage's, so the
+          // stage is named before them.
+          { label: 'stage', value: searchStageLabel(status) },
           // A criterion whose position is not yet known keeps its row and shows `— of N`: the
           // criterion demonstrably exists (the campaign declared it), which is a different fact
           // from the one HoverFacts drops, where the panel never had the value at all. A

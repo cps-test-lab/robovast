@@ -73,6 +73,10 @@ here by what they do:
   shows when nothing bounds the search. Hovering gives the
   rounds, the binding criterion with its unit and its **scope**, every other declared criterion
   including the ``stopping`` ones, the best objective, and the **objective-over-rounds chart**.
+  A search in stages names the stage it is in (``stage 2/4 human``); the budget and the best are
+  that stage's, and the chart draws one segment per stage, each on its own scale under its own
+  objective. In the Results Explorer a round is labelled with the stage that proposed it
+  (``human · batch 3``) and its best is taken in that stage's direction.
 
   The scope matters on the hover because a ``runs`` budget counts the *campaign's* runs while the
   meter beside the ring counts the *current batch's*: two run figures that otherwise look like they

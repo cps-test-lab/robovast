@@ -209,6 +209,13 @@ def get_campaign_status(campaign_id: str) -> dict:
     pre-empting a declared criterion kills a search one batch before it converges; one that
     declares neither is one only you can stop.
 
+    **A search in stages** names the stage it is in (``search_stage``: ``{idx, name, of}``);
+    ``budget``, ``best_objective``, ``objective_name`` and ``batches_since_improvement`` are that
+    stage's, and each ``objective_history`` row names its ``stage``, whose ``best_so_far``
+    starts again with it. ``search_stages`` lists every stage: what it searched, its
+    ``outcome`` (``not_run`` for one the campaign has not reached or ended before), the cell
+    its answer selected.
+
     Args:
         campaign_id: The id from ``start_campaign``.
 
@@ -217,10 +224,11 @@ def get_campaign_status(campaign_id: str) -> dict:
         progress_age_s, stalled, postprocessed, batch_runs_done, batch_runs_total,
         batch_runs_failed, batch_runs_no_result, batch_outcomes_counted}``, plus, on a
         search,
-        ``objective_name``/``objective_direction``/``batches_since_improvement``/
-        ``objective_history`` (and ``objective_history_omitted`` when older batches were
-        dropped, or ``objective_history_unavailable: "multi_objective"`` when the search
-        declares more than one objective and so has no single value to trend), plus
+        ``search_stage``/``search_stages``/``objective_name``/``objective_direction``/
+        ``batches_since_improvement``/``objective_history`` (and ``objective_history_omitted``
+        when older batches were dropped, or ``objective_history_unavailable:
+        "multi_objective"`` when the current stage declares more than one objective and so has
+        no single value to trend), plus
         ``progress_deadline_s`` +
         ``nodes_skipped`` (``{node: why}``, present only when this campaign has left a machine
         out -- its probe never ran, so nothing may be placed there; the campaign is smaller and

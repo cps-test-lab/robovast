@@ -145,31 +145,56 @@ def attach_objective_history(result: dict, client, campaign_id: str) -> None:
         result["objective_history_error"] = str(e)
         return
     if history.unavailable:
+        return
+    # Every stage, in the file's order: what it searched, how it ended, what it selected.
+    result["search_stages"] = [_stage_entry(stage) for stage in history.stages]
+    scored = [b for b in history.batches if b.n_scored]
+    # The trend is the CURRENT stage's: the stage of the last batch, which is the one still
+    # improving or not. A stage's objective may differ from the one before it, so its best
+    # starts again with it.
+    current_name = history.batches[-1].stage if history.batches else None
+    current = next((st for st in history.stages if st.name == current_name), None)
+    if current is not None and current.unavailable:
         # Named rather than silent: "several objectives, so there is no scalar to trend" is a
         # different fact from "this search has found nothing", and an absent field reads as the
         # second one.
-        if history.unavailable == "multi_objective":
-            result["objective_history_unavailable"] = history.unavailable
+        result["objective_history_unavailable"] = current.unavailable
         return
-    batches = [b for b in history.batches if b.n_scored]
-    if not batches:
+    if not scored:
         return
-    best = batches[-1].best_so_far
+    mine = [b for b in scored if b.stage == current_name]
     since = 0
-    # A batch still running has not yet been a round without improvement.
-    for b in reversed([b for b in batches if b.complete]):
-        if b.best_so_far != best:
-            break
-        since += 1
-    result["objective_name"] = history.objective_name
-    result["objective_direction"] = history.direction
+    if mine:
+        best = mine[-1].best_so_far
+        # A batch still running has not yet been a round without improvement.
+        for b in reversed([b for b in mine if b.complete]):
+            if b.best_so_far != best:
+                break
+            since += 1
+    if current is not None:
+        result["objective_name"] = current.objective_name
+        result["objective_direction"] = current.direction
     # Rounds completed since the best last MOVED, so the round that set it does not count itself.
     result["batches_since_improvement"] = max(0, since - 1)
-    window = batches[-OBJECTIVE_HISTORY_WINDOW:]
-    omitted = len(batches) - len(window)
+    window = scored[-OBJECTIVE_HISTORY_WINDOW:]
+    omitted = len(scored) - len(window)
     if omitted:
         result["objective_history_omitted"] = omitted
     result["objective_history"] = [b.model_dump() for b in window]
+
+
+def _stage_entry(stage) -> dict:
+    """One stage of a search history as the status report shows it."""
+    entry = {"name": stage.name, "over": stage.over, "outcome": stage.outcome}
+    if stage.objective_name:
+        entry["objective"] = stage.objective_name
+    if stage.answer and "values" in stage.answer:
+        entry["answer"] = stage.answer["values"]
+    if stage.region and "box" in stage.region:
+        entry["region_cells"] = stage.region["cells"]
+    if stage.outcome not in ("done", "running", "not_run") and stage.stop_reason:
+        entry["reason"] = stage.stop_reason
+    return entry
 
 
 def status_to_dict(campaign_id: str, backend, st) -> dict:
@@ -248,6 +273,9 @@ def status_to_dict(campaign_id: str, backend, st) -> dict:
         result["batch_runs_invalid"] = st.runs.invalid
     if st.batches_done:
         result["batches_done"] = st.batches_done
+    if st.search_stage:
+        # Which stage of how many: the budget and the best below are that stage's.
+        result["search_stage"] = dict(st.search_stage)
     if st.best_objective is not None:
         result["best_objective"] = st.best_objective
     if st.budget:

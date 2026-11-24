@@ -703,6 +703,13 @@ Each batch carries ``complete``: false while it runs, or after an interruption u
 resume finishes it, so its counts are what it has recorded so far. ``batches_since_improvement``
 counts complete batches only.
 
+The trajectory is per stage. The route's ``stages`` lists every stage of the file — its
+dimensions, objective and direction, its ``outcome`` (``not_run`` for one the campaign has not
+reached or ended before), the cell its answer selected and the region it left — and each batch
+names its ``stage``, whose ``best_so_far`` starts again with it in that stage's direction; a
+search without stages has one, ``search``. The campaign status names the stage a search is in
+(``search_stage``: ``{idx, name, of}``), and its budget and best objective are that stage's.
+
 A **second** stop, once the campaign has reached ``postprocessing``, cancels that instead:
 the runs and their results are kept and only the derived data is missing, which
 ``postprocessing_error`` records and ``vast campaign postprocess`` supplies. A stop during

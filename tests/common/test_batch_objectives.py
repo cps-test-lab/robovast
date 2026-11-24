@@ -36,12 +36,13 @@ def test_aggregates_one_row_per_batch_with_a_rising_best(tmp_path):
         [("evaluated", 0.5), ("evaluated", 0.9)],
     ])
     got = read_batch_objectives(root)
-    assert got["objective_name"] == "failure_rate"
+    assert [(st["name"], st["objective_name"]) for st in got["stages"]] == [
+        ("search", "failure_rate")]
     assert got["unavailable"] is None
     assert [b["idx"] for b in got["batches"]] == [0, 1]
     assert got["batches"][0] == {"idx": 0, "n_units": 2, "n_scored": 2, "min": 0.2,
                                  "max": 0.6, "mean": pytest.approx(0.4), "best_so_far": 0.6,
-                                 "complete": True}
+                                 "complete": True, "stage": "search"}
     assert got["batches"][1]["best_so_far"] == 0.9
 
 
@@ -94,20 +95,21 @@ def test_minimize_takes_the_minimum_as_best(tmp_path):
                      batches=[[("evaluated", 5.0), ("evaluated", 2.0)],
                               [("evaluated", 9.0)]])
     got = read_batch_objectives(root)
-    assert got["direction"] == "minimize"
+    assert got["stages"][0]["direction"] == "minimize"
     assert got["batches"][0]["best_so_far"] == 2.0
     assert got["batches"][1]["best_so_far"] == 2.0
 
 
-def test_multi_objective_says_why_rather_than_returning_an_empty_trajectory(tmp_path):
-    """`unit.objective` is NULL with more than one objective, so an empty list here would
-    read as "the search found nothing" rather than "there is no scalar to trend"."""
+def test_multi_objective_says_why_rather_than_reading_as_a_search_that_found_nothing(tmp_path):
+    """`unit.objective` is NULL with more than one objective, so a batch with no scored cell
+    would read as "the search found nothing" rather than "there is no scalar to trend": the
+    stage says why."""
     root = _campaign(tmp_path, objectives=[{"name": "a", "direction": "maximize"},
                                            {"name": "b", "direction": "minimize"}],
                      batches=[[("evaluated", 0.5)]])
     got = read_batch_objectives(root)
-    assert got["unavailable"] == "multi_objective"
-    assert got["batches"] == []
+    assert got["unavailable"] is None
+    assert got["stages"][0]["unavailable"] == "multi_objective"
 
 
 def test_batch_mode_campaign_has_no_trajectory(tmp_path):
@@ -117,3 +119,23 @@ def test_batch_mode_campaign_has_no_trajectory(tmp_path):
 
 def test_absent_store_is_none_not_an_error(tmp_path):
     assert read_batch_objectives(tmp_path) is None
+
+
+@pytest.mark.parametrize("stop_kind, outcome", [
+    (None, "running"), ("batches", "done"), ("stopped", "stopped"), ("error", "error")])
+def test_a_search_recorded_before_stages_has_one_stage_ended_as_the_campaign_ended(
+        tmp_path, stop_kind, outcome):
+    """A store this robovast has not migrated has no stage rows: its one stage is read with the
+    outcome the campaign row records, as the 16 -> 17 step would write it."""
+    import sqlite3
+    root = _campaign(tmp_path, batches=[[("evaluated", 0.2)]])
+    con = sqlite3.connect(root / STORE_FILENAME)
+    con.execute("ALTER TABLE batch DROP COLUMN stage_id")
+    con.execute("DROP TABLE stage")
+    con.execute("UPDATE campaign SET stop_kind = ?, stop_reason = ?", (stop_kind, "why"))
+    con.execute("PRAGMA user_version = 16")
+    con.commit()
+    con.close()
+    [stage] = read_batch_objectives(root)["stages"]
+    assert (stage["name"], stage["outcome"]) == ("search", outcome)
+    assert stage["stop_kind"] == stop_kind

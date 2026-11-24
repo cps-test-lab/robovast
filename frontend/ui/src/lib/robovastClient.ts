@@ -218,6 +218,7 @@ export function readUploadProgress(status: Status | undefined): UploadProgress |
 // trajectory ('batch_mode' | 'multi_objective' | 'no_store'), because an empty `batches` reads
 // as "measured, and there was nothing".
 export type SearchHistory = Schemas['SearchHistory']
+export type StageObjective = Schemas['StageObjective']
 export type BatchObjective = Schemas['BatchObjective']
 
 // An incremental slice of a byte-addressed log (the service's own). Poll from `next_offset`

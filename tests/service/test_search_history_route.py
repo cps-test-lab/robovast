@@ -45,8 +45,9 @@ def test_serves_the_trajectory_of_a_search(harness):
     client, results_root = harness
     _search_campaign(results_root / "s-20260823-000000")
     body = client.get("/campaigns/s-20260823-000000/search/history").json()
-    assert body["objective_name"] == "failure_rate"
-    assert body["direction"] == "maximize"
+    [stage] = body["stages"]
+    assert (stage["name"], stage["objective_name"], stage["direction"]) == (
+        "search", "failure_rate", "maximize")
     assert body["unavailable"] is None
     assert [b["idx"] for b in body["batches"]] == [0, 1]
     assert [b["best_so_far"] for b in body["batches"]] == [0.6, 0.9]
@@ -66,3 +67,43 @@ def test_a_campaign_with_no_store_says_so_rather_than_looking_empty(harness):
     body = client.get("/campaigns/nothing-20260823-000000/search/history").json()
     assert body["unavailable"] == "no_store"
     assert body["batches"] == []
+
+
+def test_a_search_in_stages_has_a_trajectory_per_stage(harness):
+    """Each batch names its stage, and best_so_far starts again in each stage's direction."""
+    client, results_root = harness
+    root = results_root / "st-20260823-000000"
+    root.mkdir(parents=True)
+    store = CampaignStore(root / STORE_FILENAME)
+    cid = store.create_campaign(name="st", mode="search", config_dir=".", config={"search": {
+        "objectives": [{"name": "margin", "direction": "minimize"}],
+        "stages": [{"name": "a", "over": ["x"]},
+                   {"name": "b", "over": ["y"],
+                    "objectives": [{"name": "time", "direction": "maximize"}]},
+                   {"name": "c", "over": ["z"]}]}})
+    a, b, _c = store.declare_stages(cid, [
+        {"name": "a", "over": ["x"], "objective": "margin", "direction": "minimize"},
+        {"name": "b", "over": ["y"], "objective": "time", "direction": "maximize"},
+        {"name": "c", "over": ["z"], "objective": "margin", "direction": "minimize"}])
+    for idx, (stage, values, name) in enumerate([(a, (0.5, -1.0), "margin"),
+                                                 (b, (3.0, 7.0), "time")]):
+        bid = store.open_batch(cid, idx, ".", stage_id=stage)
+        for n, v in enumerate(values):
+            store.record_unit(batch_id=bid, paramset_id=f"p{idx}{n}", config_name=f"c{idx}{n}",
+                              params={}, objectives={name: v}, measures={}, status="evaluated",
+                              result_dir=f"c{idx}{n}", n_samples=1)
+        store.complete_batch(bid)
+    store.close_stage(a, outcome="done", stop_kind="batches", stop_reason="1 batch",
+                      batches=1, evaluations=2, runs=2,
+                      answer={"rule": {"select": "worst"}, "unit_id": 2, "values": {"x": 1},
+                              "objective": -1.0})
+    store.close_stage(b, outcome="condition", stop_kind="stage_condition",
+                      stop_reason="stage 'b' has no cell", batches=1, evaluations=2, runs=2,
+                      answer={"rule": {"select": "worst"}, "cells": 0, "failed": "no cell"})
+    store.close()
+
+    body = client.get("/campaigns/st-20260823-000000/search/history").json()
+    assert [(s["name"], s["objective_name"], s["outcome"]) for s in body["stages"]] == [
+        ("a", "margin", "done"), ("b", "time", "condition"), ("c", "margin", "not_run")]
+    assert body["stages"][0]["answer"]["values"] == {"x": 1}
+    assert [(b["stage"], b["best_so_far"]) for b in body["batches"]] == [("a", -1.0), ("b", 7.0)]

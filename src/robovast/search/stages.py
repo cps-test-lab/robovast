@@ -102,8 +102,7 @@ class Stage:
     def described(self) -> dict:
         """What the store declares of the stage before it runs."""
         if self.config is None:
-            return {"name": self.name, "over": list(self.over),
-                    "strategy": (self.definition or {}).get("strategy")}
+            return {"name": self.name, "over": list(self.over), **(self.definition or {})}
         objective = self.objective
         return {"name": self.name, "over": list(self.over), "strategy": self.config.strategy,
                 "objective": objective.name if objective else None,
@@ -175,8 +174,12 @@ def implicit_stage(strategy) -> Stage:
     """The one stage a search driven by an already-built *strategy* runs: over what it searches."""
     cfg = getattr(strategy, "cfg", None)
     space = getattr(strategy, "search_space", None) or {}
+    objectives = list(getattr(strategy, "objectives", None) or [])
+    single = objectives[0] if len(objectives) == 1 else None
     return Stage(idx=0, name=IMPLICIT_STAGE, over=tuple(space), config=None, implicit=True,
-                 definition={"strategy": getattr(cfg, "strategy", None)})
+                 definition={"strategy": getattr(cfg, "strategy", None),
+                             "objective": single.name if single else None,
+                             "direction": single.direction if single else None})
 
 
 def initial_point(cfg: SearchConfig) -> dict:

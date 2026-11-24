@@ -5,7 +5,7 @@ import Typography from '@mui/material/Typography'
 import { useTheme } from '@mui/material/styles'
 import { AxisEnds, Note } from './chartPrimitives'
 import { bandDomain, bandPoints, linePercents, linePoints } from '@/lib/detailsGeometry'
-import type { BatchObjective, SearchHistory } from '@/lib/robovastClient'
+import type { BatchObjective, SearchHistory, StageObjective } from '@/lib/robovastClient'
 
 // A search's objective over its batches: the spread each round measured, and the best found so far
 // laid over it.
@@ -19,6 +19,11 @@ import type { BatchObjective, SearchHistory } from '@/lib/robovastClient'
 // wide the search is exploring and may yet find something; if the spread has collapsed onto the
 // best value, the strategy is re-sampling one region and further batches will buy nothing. The
 // best-so-far line alone cannot tell those apart.
+//
+// A search in stages draws one segment per stage, each on its own scale and under its own
+// objective's name: a stage may minimise a margin and the next a time, and one curve across them
+// would put two measures on one axis. `best_so_far` starts again with each stage for the same
+// reason.
 //
 // No charting library, deliberately — see the header of DetailsCharts.tsx for the full reasoning.
 
@@ -39,15 +44,44 @@ function drawable(batches: BatchObjective[]) {
 /** Why there is no chart, in the reader's terms. `unavailable` is the service's own word for it —
  *  see interface.py:SearchHistory — and each case is a normal answer rather than a failure, so each
  *  gets a sentence instead of an empty plot. */
-function reason(history: SearchHistory, drawn: number): string | null {
-  if (history.unavailable === 'multi_objective') {
+function reason(unavailable: string | null | undefined, drawn: number): string | null {
+  if (unavailable === 'multi_objective') {
     return 'several objectives — no single value to trend'
   }
-  if (history.unavailable === 'batch_mode') return 'not a search'
-  if (history.unavailable === 'no_store') return 'nothing recorded yet'
+  if (unavailable === 'batch_mode') return 'not a search'
+  if (unavailable === 'no_store') return 'nothing recorded yet'
   if (drawn === 0) return 'no objective measured yet'
   if (drawn === 1) return 'one round so far'
   return null
+}
+
+/** One segment of the chart: a stage's rounds, under the stage's own objective. */
+export interface ChartSegment {
+  /** `2/4 human` for a search of several stages; null for the one stage of a search without. */
+  label: string | null
+  stage: StageObjective | undefined
+  batches: BatchObjective[]
+  unavailable: string | null | undefined
+}
+
+/** The segments *history* is drawn as: one per stage, in the file's order, or a single unlabelled
+ *  one for a search in one stage (and for a history with nothing to show). */
+export function chartSegments(history: SearchHistory): ChartSegment[] {
+  const stages = history.stages ?? []
+  if (history.unavailable || stages.length <= 1) {
+    return [{
+      label: null,
+      stage: stages[0],
+      batches: history.batches,
+      unavailable: history.unavailable ?? stages[0]?.unavailable,
+    }]
+  }
+  return stages.map((stage) => ({
+    label: `${stage.idx + 1}/${stages.length} ${stage.name}`,
+    stage,
+    batches: history.batches.filter((b) => b.stage === stage.name),
+    unavailable: stage.unavailable,
+  }))
 }
 
 export function BatchObjectiveChart({
@@ -57,9 +91,50 @@ export function BatchObjectiveChart({
   history: SearchHistory
   height?: number
 }) {
+  const segments = chartSegments(history)
+  if (segments.length === 1 && segments[0].label === null) {
+    const [only] = segments
+    return (
+      <StageChart batches={only.batches} stage={only.stage} unavailable={only.unavailable}
+        height={height} />
+    )
+  }
+  // The total height is shared so the panel does not grow with the number of stages.
+  const each = Math.max(56, Math.floor(height / segments.length))
+  return (
+    <Stack spacing={0.75}>
+      {segments.map((seg) => (
+        <Box key={seg.label}>
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            noWrap
+            sx={{ fontSize: 9, display: 'block', fontWeight: 600 }}
+          >
+            {seg.label}
+          </Typography>
+          <StageChart batches={seg.batches} stage={seg.stage} unavailable={seg.unavailable}
+            height={each} />
+        </Box>
+      ))}
+    </Stack>
+  )
+}
+
+function StageChart({
+  batches,
+  stage,
+  unavailable,
+  height,
+}: {
+  batches: BatchObjective[]
+  stage: StageObjective | undefined
+  unavailable: string | null | undefined
+  height: number
+}) {
   const theme = useTheme()
-  const rows = drawable(history.batches)
-  const why = reason(history, rows.length)
+  const rows = drawable(batches)
+  const why = reason(unavailable, rows.length)
   if (why) return <Note height={height}>{why}</Note>
 
   const plot = height - 14
@@ -72,7 +147,7 @@ export function BatchObjectiveChart({
   const mean = rows.map((r) => ({ x: r.idx, y: r.mean }))
   const tick = { fontSize: 9, lineHeight: 1, color: 'text.secondary' as const }
   const fmt = (v: number) => v.toPrecision(3)
-  const goal = history.direction === 'minimize' ? 'lower is better' : 'higher is better'
+  const goal = stage?.direction === 'minimize' ? 'lower is better' : 'higher is better'
 
   return (
     <Box>
@@ -174,7 +249,7 @@ export function BatchObjectiveChart({
           noWrap
           sx={{ fontSize: 9, display: 'block', cursor: 'help' }}
         >
-          {history.objective_name ?? 'objective'} {history.direction === 'minimize' ? '↓' : '↑'}
+          {stage?.objective_name ?? 'objective'} {stage?.direction === 'minimize' ? '↓' : '↑'}
         </Typography>
       </Tooltip>
     </Box>

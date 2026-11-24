@@ -685,6 +685,9 @@ def status_cmd(campaign, as_json):  # pylint: disable=redefined-outer-name
         return
     click.echo(f"  campaign  {campaign_id}")
     click.echo(f"  phase     {report['status']}")
+    stage = report.get("search_stage")
+    if stage and stage.get("of", 1) > 1:
+        click.echo(f"  stage     {stage['idx'] + 1}/{stage['of']} {stage['name']}")
     if report["batch_runs_total"]:
         click.echo(f"  runs      {report['batch_runs_done']} / {report['batch_runs_total']}")
     # Only when it happened. A campaign short of a machine is slower than its plan and says so
