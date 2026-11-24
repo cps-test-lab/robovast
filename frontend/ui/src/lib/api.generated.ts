@@ -4757,6 +4757,10 @@ export interface components {
             runs: components["schemas"]["RunProgress"];
             /** Search Since */
             search_since: number | null;
+            /** Search Stage */
+            search_stage: {
+                [key: string]: unknown;
+            } | null;
             /** Share Error */
             share_error: string | null;
             /** Stage */

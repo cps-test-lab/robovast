@@ -917,6 +917,15 @@ class CampaignStore:
              within, _json_or_none(region_from), definition_digest or None, stage_id))
         self._conn.commit()
 
+    def resume_stage(self, stage_id: int) -> None:
+        """Mark *stage_id* running again: a campaign re-entered after a restart carries it on.
+
+        Its start time, space and point stay those it was opened with, so a ``time`` budget
+        is measured from when the stage really began.
+        """
+        self._conn.execute("UPDATE stage SET outcome = 'running' WHERE id = ?", (stage_id,))
+        self._conn.commit()
+
     def close_stage(self, stage_id: int, *, outcome: str, stop_kind: str, stop_reason: str,
                     batches: int, evaluations: int, runs: int, answer=None,
                     region=None) -> None:
@@ -979,6 +988,7 @@ class CampaignStore:
         n_samples: Optional[int] = None,
         n_reps: Optional[int] = None,
         channels: Optional[dict] = None,
+        objective_name: Optional[str] = None,
     ) -> int:
         """Record one parameter set's outcome.
 
@@ -993,8 +1003,13 @@ class CampaignStore:
         strategy, while ``channels`` is what the cell was actually configured with.
         """
         # Surface the sole objective as a queryable REAL column for the common
-        # single-objective case; keep the full dict in JSON regardless.
-        objective_scalar = next(iter(objectives.values())) if len(objectives) == 1 else None
+        # single-objective case; keep the full dict in JSON regardless. A cell of a search in
+        # stages is scored on every stage's objectives, and the column is the one of the stage
+        # that proposed it (``objective_name``).
+        if objective_name is not None:
+            objective_scalar = objectives.get(objective_name)
+        else:
+            objective_scalar = next(iter(objectives.values())) if len(objectives) == 1 else None
         cur = self._conn.execute(
             "INSERT INTO unit (batch_id, paramset_id, config_name, params_json, "
             "objective, objectives_json, measures_json, n_samples, status, result_dir, "

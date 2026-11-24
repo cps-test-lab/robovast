@@ -346,7 +346,13 @@ class Status(BaseModel):
     budget: list[BudgetItem] = Field(default_factory=list)
     runs: RunProgress = Field(default_factory=RunProgress)
     best_objective: Optional[float] = None
-    stop: Optional[dict] = None          # {kind, reason} once the loop ends
+    #: {kind, reason} once the loop ends; a search that ended before its last stage adds the
+    #: stage that ended it, the rule that failed and the stages that did not run:
+    #: {kind, reason, stage, rule, not_run}.
+    stop: Optional[dict] = None
+    #: The stage a search is in: {idx (from 0), name, of (how many stages the file has)}.
+    #: A search without stages is one stage, named "search".
+    search_stage: Optional[dict] = None
     # Human-readable failure reason (message + short traceback tail) when
     # ``phase == "failed"``. Surfaced in the CLI/UI/MCP so a controller crash no
     # longer has to be dug out of the pod log; ``None`` on a healthy campaign.

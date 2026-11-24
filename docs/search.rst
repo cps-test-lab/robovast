@@ -453,6 +453,133 @@ Custom strategies/extractors are file-loadable too — the same
 :ref:`extending-search-strategy` and :ref:`extending-extractor` in the developer
 guide.
 
+A search in stages
+------------------
+
+A compound question — *where does the obstacle start to matter, then how fast may a person
+walk past it, then which configuration copes with the worst of that?* — is a **search in
+stages**: one campaign, one file, whose stages run in the order the file gives them, each
+standing on what the stages before it found. A search without ``stages:`` is the case of one
+stage, over the whole space.
+
+.. code-block:: yaml
+
+   search:
+     search_space:                 # every dimension of the whole search, once
+       form:   {type: choice, values: [rod, box]}
+       width:  {type: float, low: 0, high: 10}
+       speed:  {type: float, low: 0.0, high: 2.0, initial: 0.0}
+       config: {type: choice, values: [default, careful], initial: default}
+     variations:
+     - ParameterVariationList:
+         sim: [obstacle.form, obstacle.width, human.speed, nav.config]
+         values: [[$form, $width, $speed, $config]]
+     extract: {plugin: ...}
+     objectives: [{name: margin, direction: minimize}]
+     per_batch: 16
+     seed: 0
+     stages:
+     - name: obstacle
+       over: [form, width]
+       strategy: boundary
+       strategy_parameters: {level: 0.0}
+       budget: [{runs: 512}]
+       answer: {select: nearest-level, feasible: success}
+     - name: human
+       over: [speed]
+       strategy: boundary
+       strategy_parameters: {level: 0.0}
+       budget: [{runs: 512}]
+       region: {band: 5, min_cells: 3}
+     - name: hardest
+       over: [speed]
+       within: human
+       strategy: optuna
+       objectives: [{name: hardest, direction: minimize}]
+       budget: [{runs: 256}]
+       answer: {select: feasible-min, feasible: success}
+     - name: decision
+       over: [config]
+       strategy: grid
+
+``obstacle`` searches ``form`` and ``width`` with ``speed`` at its initial value; ``human``
+searches ``speed`` on the obstacle ``obstacle`` selected and leaves a region, the cells within
+the band of the level; ``hardest`` searches ``speed`` again inside that region; ``decision`` runs
+every value of ``config`` on the point the stages before it built.
+
+Three rules make the line, in this order of weight:
+
+* **The space is stated once.** ``search_space`` holds every dimension with its full domain. A
+  stage declares no dimension; ``over`` names the ones it searches.
+* **A stage has one answer: one cell.** ``answer`` selects it from the stage's own cells, so the
+  rule belongs to the stage that produced them, not to the stage that uses it.
+* **The search carries one point.** A dimension a stage does not search stands at the answer of
+  the last stage that searched it, and before any did, at its ``initial`` — a value of its type,
+  which may lie outside its domain (a count searched in 1 to 3 stands at 0 before its stage).
+  A ``$name`` marker is the dimension's value in this run, searched or carried.
+
+**A stage** names its ``strategy`` (and ``strategy_parameters``) and how it ends (``budget``,
+``stopping``; a ``grid`` stage needs neither). ``objectives``, ``per_batch`` and
+``repetitions`` are the search's unless the stage gives its own. ``strategy``,
+``strategy_parameters``, ``budget`` and ``stopping`` at the search's level are refused with
+stages: each stage states its own, so one there would govern none of them.
+
+**Between two stages** the stage that just ended is read from the campaign's own record and two
+rules are applied to its cells, the same every time, so the same record always gives the same
+cell:
+
+``answer: {select, feasible, level}``
+   the one cell — ``worst`` (default), ``nearest-level`` or ``feasible-min`` — among the cells
+   whose ``feasible`` measure is true. ``level`` defaults to the stage's
+   ``strategy_parameters.level``; only ``nearest-level`` reads it.
+``region: {band, pad, min_cells, level}``
+   the cells whose objective lies within ``band`` of ``level`` form a box over the stage's
+   dimensions: a float or int their span widened by ``pad`` (default 0.1) of the declared range
+   and clipped to it, a choice or bool the values those cells hold. ``within: <stage>`` makes a
+   later stage search that box over the same dimensions.
+
+A stage that carries an answer or a region has one objective, which the rules read.
+
+**What validation refuses before the run**, each by name: a stage that stands on a dimension
+with no value yet (searched by no earlier stage and without an ``initial``); a stage read for an
+answer it does not select; ``within`` a stage that is not earlier, leaves no region or searches
+other dimensions; an answer or region over several objectives; a rule option that would change
+nothing; an ``initial`` nothing reads; a strategy that cannot search a dimension's type (``grid``
+over a float); a stage with no way to end.
+
+**No pause between stages.** What a person would check by looking is a condition of the stage:
+an ``answer`` with no cell that satisfies it, or a ``region`` with fewer cells than
+``min_cells``, ends the campaign at that stage. It ends ``finished`` — it ran as written, and
+its answer is that no cell satisfies the condition — with stop kind ``stage_condition``, a
+reason naming the stage and the rule, and the stages after it recorded as not run; every stage's
+runs stay in the record and are postprocessed. Every surface shows such a campaign as one that
+ended at that stage. An external stop or an unproductive stage ends the campaign in the stage it
+hits, in the same way. **A pilot is the same file with small stage budgets.**
+
+**The budget is per stage.** A stage's ``budget`` and ``stopping`` count its own batches,
+evaluations, runs and time since it began. A cell is measured once per campaign: a stage that
+proposes a full point an earlier stage measured is told what that cell scored, and it costs no
+runs — ``decision`` above re-proposes the cell ``hardest`` selected, and runs only the other
+configuration.
+
+**The record says what happened between the stages.** ``campaign.stage`` has one row per stage:
+the dimensions it searched and their domains as searched, the point it stood on, the region it
+read, what ended it, what it spent, the cell its ``answer`` selected and the rule that selected
+it, the region it left. ``run_view.stage`` names the stage that proposed each run::
+
+   SELECT name, outcome, answer_json, region_json FROM campaign.stage ORDER BY idx;
+   SELECT stage, COUNT(*), MIN(objective) FROM run_view GROUP BY stage;
+
+**What one file cannot hold is not supported.** A stage has one answer, so selecting several
+cells from one stage -- one per value of a choice, or per bin of a float, as a validation set over
+finished stages would need -- is not supported; nor is a stage conditioned on a cell that
+*another* campaign selected. The stages of one file run in its order, a line with no branch and
+no join, and every input a stage reads is a stage of the same file.
+
+**A restart** re-enters the stage the campaign had reached: the stages before it are taken from
+the record, and the stage itself resumes as a search does (`Surviving a service restart`_), its
+``time`` budget measured from when it began.
+
 When does a search stop?
 ------------------------
 
@@ -493,6 +620,11 @@ multi-field criteria use a nested mapping (``- metric: {name: ..., value: ...}``
   is not counted.
 * ``runs`` — stop after this many individual **executions**. Counted from what each
   batch asks for, so it bounds wall-clock rather than results.
+
+In a search in stages these count within the stage. Two kinds end a search without being
+declared: ``exhausted``, when a strategy that ends by itself (``grid``) has proposed every cell,
+and ``stage_condition``, when a stage's ``answer`` or ``region`` found nothing to stand on (see
+`A search in stages`_).
 
 .. note::
 

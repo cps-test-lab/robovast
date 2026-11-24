@@ -4143,6 +4143,18 @@
             ],
             "title": "Search Since"
           },
+          "search_stage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Stage"
+          },
           "share_error": {
             "anyOf": [
               {
@@ -4286,6 +4298,7 @@
           "results_bytes",
           "runs",
           "search_since",
+          "search_stage",
           "share_error",
           "stage",
           "stall_reason",

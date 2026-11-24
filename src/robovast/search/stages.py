@@ -101,6 +101,9 @@ class Stage:
 
     def described(self) -> dict:
         """What the store declares of the stage before it runs."""
+        if self.config is None:
+            return {"name": self.name, "over": list(self.over),
+                    "strategy": (self.definition or {}).get("strategy")}
         objective = self.objective
         return {"name": self.name, "over": list(self.over), "strategy": self.config.strategy,
                 "objective": objective.name if objective else None,
@@ -166,6 +169,14 @@ def stages_of(cfg: SearchConfig) -> list[Stage]:
                          config=SearchConfig(**base), within=st.within, answer=st.answer,
                          region=st.region, definition=st.model_dump()))
     return out
+
+
+def implicit_stage(strategy) -> Stage:
+    """The one stage a search driven by an already-built *strategy* runs: over what it searches."""
+    cfg = getattr(strategy, "cfg", None)
+    space = getattr(strategy, "search_space", None) or {}
+    return Stage(idx=0, name=IMPLICIT_STAGE, over=tuple(space), config=None, implicit=True,
+                 definition={"strategy": getattr(cfg, "strategy", None)})
 
 
 def initial_point(cfg: SearchConfig) -> dict:
@@ -254,6 +265,7 @@ def stage_values(values: dict, stage: Stage) -> dict:
     return {d: values[d] for d in stage.over if d in values}
 
 
-__all__ = ["IMPLICIT_STAGE", "Stage", "StageCondition", "stages_of", "initial_point",
+__all__ = ["IMPLICIT_STAGE", "Stage", "StageCondition", "stages_of", "implicit_stage",
+           "initial_point",
            "declared_space", "evaluation_objectives", "answer_of", "region_of", "carried",
            "full_values", "stage_values"]

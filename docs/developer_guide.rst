@@ -1730,6 +1730,18 @@ container restart the runner saw under a job)::
   on ``unit``. ``job_id`` points at the job it ran in. A run whose ``test.xml`` is
   missing or unparseable is still recorded, as ``unknown`` — never dropped.
 
+A search runs as a line of stages (:mod:`robovast.search.stages`; a search without
+``stages:`` is one). ``CampaignController._run_search`` declares every stage's row, then for each
+stage builds its strategy, stop conditions and repetition policy from the stage's
+``SearchConfig`` -- its own dimensions, over their declared domains or the region it searches
+within -- runs the ask/evaluate/tell loop, and applies its ``answer`` and ``region`` through
+:mod:`robovast.search.chain` to its own cells. Each cell has two forms: the strategy proposes and
+is told it over the stage's dimensions only, because strategies key their bookkeeping on
+``ParamSet.id``, which is a hash of the values; composition, the ``unit`` row, the result
+directory and recall use it over every dimension, completed with the point the stage stands on.
+The evaluator scores every objective any stage reads, so a cell recalled by a later stage carries
+that stage's objective, and ``unit.objective`` is the proposing stage's.
+
 These rows are also a search's checkpoint: ``search.history.recorded_batches`` reads the
 complete batches back into the ``ask``/``tell`` sequence a resumed strategy is re-driven
 through (:doc:`search`, "Surviving a service restart"), and the live loop builds what it
