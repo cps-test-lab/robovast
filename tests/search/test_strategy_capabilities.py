@@ -69,3 +69,42 @@ def test_a_strategy_that_ends_by_itself_needs_no_budget(tmp_path):
     search = _search("finite.py:Finite", {"x": {"type": "float", "low": 0, "high": 1}})
     assert _search_problems(search, str(tmp_path)) == []
     build_strategy(SearchConfig(**search), str(tmp_path))
+
+
+def _staged(**stage_edits):
+    stages = [
+        {"name": "shape", "over": ["width"], "strategy": "boundary",
+         "strategy_parameters": {"level": 0.0}, "budget": [{"batches": 1}],
+         "answer": {"select": "nearest-level"}},
+        {"name": "decision", "over": ["config"], "strategy": "grid"},
+    ]
+    for key, value in stage_edits.items():
+        i, field = key.split("__")
+        stages[int(i)][field] = value
+    return {"search_space": {"width": {"type": "float", "low": 0, "high": 1},
+                             "config": {"type": "choice", "values": ["a", "b"],
+                                        "initial": "a"}},
+            "extract": {"plugin": "failure_rate"}, "objectives": [{"name": "failure_rate"}],
+            "per_batch": 2, "stages": stages}
+
+
+def test_each_stage_s_strategy_is_resolved_and_checked_by_name():
+    assert _search_problems(_staged(), "") == []
+    SearchConfig(**_staged())
+
+    problems = _search_problems(_staged(**{"1__over": ["width"]}), "")
+    assert [(p["field"], p["message"]) for p in problems] == [
+        ("search.stages[1].over",
+         "stage 'decision': grid cannot search 'width', a float: it searches int, choice, "
+         "bool dimensions")]
+
+
+def test_a_stage_without_an_end_and_bad_parameters_are_refused_where_they_are_written():
+    problems = _search_problems(_staged(**{"0__budget": None,
+                                           "1__strategy_parameters": {"points": 2}}), "")
+    by_field = {p["field"]: p for p in problems}
+    assert by_field["search.stages[0].budget"]["message"].startswith(
+        "stage 'shape': a search must define at least one 'budget' or 'stopping'")
+    assert by_field["search.stages[1].strategy_parameters"]["stage"] == "search-strategy-params"
+    assert by_field["search.stages[1].strategy_parameters"]["message"].startswith(
+        "stage 'decision': ")

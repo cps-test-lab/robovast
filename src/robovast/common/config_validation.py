@@ -1258,12 +1258,9 @@ def _search_problems(search, vast_dir, declared_plugins=()):
     actually runs; one that does not resolve is reported as :func:`_resolution_problems`
     says. Collect-all: never raises.
     """
-    from robovast.common.config import \
-        get_validated_config  # pylint: disable=import-outside-toplevel
     from robovast.search.extractor import Extractor  # pylint: disable=import-outside-toplevel
     from robovast.search.plugins import EXTRACTOR_GROUP  # pylint: disable=import-outside-toplevel
-    from robovast.search.plugins import STRATEGY_GROUP, load_ref
-    from robovast.search.strategy import SearchStrategy  # pylint: disable=import-outside-toplevel
+    from robovast.search.plugins import load_ref  # pylint: disable=import-outside-toplevel
 
     problems = []
 
@@ -1276,43 +1273,24 @@ def _search_problems(search, vast_dir, declared_plugins=()):
             ensure_plugins_importable  # pylint: disable=import-outside-toplevel
         ensure_plugins_importable(vast_dir)
 
-    # -- strategy (+ its optional PARAMS_MODEL) ------------------------------
-    strategy = search.get("strategy")
-    if isinstance(strategy, str) and strategy:
-        try:
-            strategy_cls = load_ref(strategy, STRATEGY_GROUP, vast_dir)
-        except Exception as e:  # noqa: BLE001 - surface any resolution error
-            problems.extend(_resolution_problems(
-                "search-strategy", "Search strategy", strategy, STRATEGY_GROUP, e, vast_dir,
-                declared_plugins, field="search.strategy"))
-        else:
-            if not (inspect.isclass(strategy_cls)
-                    and issubclass(strategy_cls, SearchStrategy)):
-                problems.append(_problem(
-                    "search-strategy",
-                    f"'{strategy}' is not a subclass of SearchStrategy.",
-                    field="search.strategy"))
-            else:
-                from robovast.search.strategy import (  # pylint: disable=import-outside-toplevel
-                    dimension_type_problems, needs_an_end)
-                space = search.get("search_space")
-                if isinstance(space, dict):
-                    for sentence in dimension_type_problems(strategy_cls, strategy, space):
-                        problems.append(_problem("search-strategy", sentence,
-                                                 field="search.search_space"))
-                endless = needs_an_end(strategy_cls, search.get("budget"),
-                                       search.get("stopping"))
-                if endless:
-                    problems.append(_problem("search-strategy", endless, field="search.budget"))
-                params_model = getattr(strategy_cls, "PARAMS_MODEL", None)
-                params = search.get("strategy_parameters") or {}
-                if params_model is not None and isinstance(params, dict):
-                    try:
-                        get_validated_config(params, params_model)
-                    except ValueError as e:
-                        problems.append(_problem(
-                            "search-strategy-params", str(e),
-                            field="search.strategy_parameters"))
+    # -- strategy (+ its optional PARAMS_MODEL), the search's or each stage's ----
+    space = search.get("search_space") if isinstance(search.get("search_space"), dict) else {}
+    stages = search.get("stages")
+    if isinstance(stages, list):
+        for i, stage in enumerate(stages):
+            if not isinstance(stage, dict):
+                continue
+            over = [d for d in (stage.get("over") or []) if d in space]
+            problems.extend(_strategy_problems(
+                stage.get("strategy"), stage.get("strategy_parameters"),
+                {d: space[d] for d in over}, stage.get("budget"), stage.get("stopping"),
+                vast_dir, declared_plugins, field=f"search.stages[{i}]",
+                label=f"stage {stage.get('name')!r}: "))
+    else:
+        problems.extend(_strategy_problems(
+            search.get("strategy"), search.get("strategy_parameters"), space,
+            search.get("budget"), search.get("stopping"), vast_dir, declared_plugins,
+            field="search", label=""))
 
     # -- extractor ----------------------------------------------------------
     extract = search.get("extract")
@@ -1341,6 +1319,49 @@ def _search_problems(search, vast_dir, declared_plugins=()):
                     problems.extend(
                         _requires_run_files_problems(extractor_cls, plugin))
 
+    return problems
+
+
+def _strategy_problems(strategy, params, space, budget, stopping, vast_dir, declared_plugins,
+                       *, field, label):
+    """Resolve one strategy and check it against what it is asked to search and how it ends.
+
+    *field* is where the strategy is written (``search``, or ``search.stages[i]`` for a
+    stage), *label* the prefix that names the stage in each sentence. Collect-all.
+    """
+    from robovast.common.config import \
+        get_validated_config  # pylint: disable=import-outside-toplevel
+    from robovast.search.plugins import (  # pylint: disable=import-outside-toplevel
+        STRATEGY_GROUP, load_ref)
+    from robovast.search.strategy import (  # pylint: disable=import-outside-toplevel
+        SearchStrategy, dimension_type_problems, needs_an_end)
+
+    if not (isinstance(strategy, str) and strategy):
+        return []
+    try:
+        strategy_cls = load_ref(strategy, STRATEGY_GROUP, vast_dir)
+    except Exception as e:  # noqa: BLE001 - surface any resolution error
+        return _resolution_problems(
+            "search-strategy", "Search strategy", strategy, STRATEGY_GROUP, e, vast_dir,
+            declared_plugins, field=f"{field}.strategy")
+    if not (inspect.isclass(strategy_cls) and issubclass(strategy_cls, SearchStrategy)):
+        return [_problem("search-strategy",
+                         f"{label}'{strategy}' is not a subclass of SearchStrategy.",
+                         field=f"{field}.strategy")]
+    problems = [_problem("search-strategy", label + sentence,
+                         field=f"{field}.over" if label else "search.search_space")
+                for sentence in dimension_type_problems(strategy_cls, strategy, space)]
+    endless = needs_an_end(strategy_cls, budget, stopping)
+    if endless:
+        problems.append(_problem("search-strategy", label + endless, field=f"{field}.budget"))
+    params_model = getattr(strategy_cls, "PARAMS_MODEL", None)
+    params = params or {}
+    if params_model is not None and isinstance(params, dict):
+        try:
+            get_validated_config(params, params_model)
+        except ValueError as e:
+            problems.append(_problem("search-strategy-params", label + str(e),
+                                     field=f"{field}.strategy_parameters"))
     return problems
 
 
