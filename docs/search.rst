@@ -436,7 +436,9 @@ When does a search stop?
 Two parallel lists of typed criteria decide when a search ends — **``budget``**
 (resource caps) and **``stopping``** (convergence / quality). All entries are
 **OR-combined**: the search stops as soon as *any* one fires. At least one
-criterion (across the two) is **required** — a search needs a way to end.
+criterion (across the two) is **required** — a search needs a way to end — unless its
+strategy runs out of proposals by itself: such a search ends with stop kind
+``exhausted`` once it has proposed every cell, and a budget it is given caps it earlier.
 Everything is evaluated centrally by the controller after each batch against a
 uniform progress snapshot, so the **same criteria work for every strategy**
 (``random``, ``qd``, ``optuna``) with no per-strategy code.

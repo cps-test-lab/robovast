@@ -852,3 +852,32 @@ def test_an_extractor_s_diagnostics_do_not_cost_the_campaign_its_objective(tmp_p
     assert [b["n_scored"] for b in history["batches"]] == [3, 3], \
         "every evaluated cell is scored -- 0 here is the bug, read as 'measured nothing'"
     assert history["batches"][-1]["best_so_far"] == 0.5
+
+
+class _TwoBatches(_Fixed):
+    """Proposes two batches of one fresh cell each, then has nothing left."""
+    ENDS_ITSELF = True
+
+    def __init__(self, cfg):
+        super().__init__(cfg, [])
+        self._asked = 0
+
+    def ask(self, n):
+        self._asked += 1
+        return [ParamSet(values={"x": 0.1 * self._asked})]
+
+    @property
+    def exhausted(self):
+        return self._asked >= 2
+
+
+def test_a_strategy_that_runs_out_ends_the_search_as_exhausted(tmp_path):
+    cfg = _cfg(budget=[{"batches": 10}])
+    controller, store, backend = _search_controller(cfg, tmp_path, strategy=_TwoBatches(cfg))
+    report = controller.run()
+    assert len(backend.batch_runs) == 2
+    assert report.extra["stop"]["kind"] == "exhausted"
+    conn = sqlite3.connect(store.db_path)
+    assert conn.execute("SELECT stop_kind FROM campaign").fetchone()[0] == "exhausted"
+    conn.close()
+    store.close()

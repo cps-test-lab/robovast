@@ -2559,12 +2559,9 @@ class SearchConfig(BaseModel):
 
     @model_validator(mode='after')
     def _validate_stopping(self):
-        # A search needs at least one way to end: a budget cap or a stopping
-        # criterion. Without either it would run forever.
-        if not self.budget and not self.stopping:
-            raise ValueError(
-                "a search must define at least one 'budget' or 'stopping' "
-                "criterion (e.g. budget: [{type: batches, value: 20}])")
+        # Whether a search has a way to end depends on its strategy as well -- one that
+        # runs out of cells ends by itself -- so it is checked where the strategy class is
+        # resolved: robovast.search.strategy.needs_an_end.
         # target_objective / no_improvement compare the single objective, so they
         # require a single-objective search (matches SearchStrategy.single_objective).
         single_only = {'target_objective', 'no_improvement'}

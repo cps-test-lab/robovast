@@ -673,7 +673,7 @@ class CampaignController:
         # behalf of a strategy that has not been consulted.
         objectives = self.strategy.objectives
         obj_name = objectives[0].name if len(objectives) == 1 else None
-        if not stop.has_budget:
+        if not stop.has_budget and not getattr(self.strategy, "ENDS_ITSELF", False):
             logger.warning("No 'budget' cap configured — this search is bounded "
                            "only by its 'stopping' criteria; it may run a long time.")
         start = time.monotonic()
@@ -952,6 +952,10 @@ class CampaignController:
             # measured it, and counting it again would report work that did not happen.
             self.notifier.batch_finished(batch_idx - 1, len(scored))
             result = stop.should_stop(snap)
+            if not result and getattr(self.strategy, "exhausted", False):
+                result = StopResult(kind="exhausted",
+                                    reason=f"the strategy proposed every cell it has, in "
+                                           f"{batch_idx} batch(es)")
             if not result and self._empty_batches >= EMPTY_BATCH_LIMIT:
                 # Not a criterion the campaign declared, and it does not need to be: a
                 # search that cannot produce an evaluation will not start producing one by

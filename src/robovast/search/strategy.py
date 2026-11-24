@@ -47,6 +47,10 @@ class SearchStrategy(ABC):
     #: other type is refused before the campaign runs (:func:`dimension_type_problems`).
     DIMENSION_TYPES: frozenset = frozenset({"float", "int", "choice", "bool"})
 
+    #: Whether the strategy runs out of proposals by itself (see :attr:`exhausted`). Such a
+    #: search needs no ``budget`` or ``stopping`` to end; any other needs one.
+    ENDS_ITSELF: bool = False
+
     def __init__(self, cfg: SearchConfig, params: Any):
         self.cfg = cfg
         self.search_space = cfg.search_space
@@ -88,6 +92,15 @@ class SearchStrategy(ABC):
         cannot take a short generation must skip the generation, not fill it with a
         fabricated objective or measure (see :meth:`QDStrategy._tell_incomplete`).
         """
+
+    @property
+    def exhausted(self) -> bool:
+        """True once the strategy has nothing left to propose.
+
+        Read by the loop after each batch is told, which then ends the search with stop kind
+        ``exhausted``. Only a strategy that declares :attr:`ENDS_ITSELF` ever answers True.
+        """
+        return False
 
     @abstractmethod
     def report(self) -> SearchReport:
@@ -165,6 +178,20 @@ def dimension_type_problems(strategy_cls, name: str, search_space: dict) -> list
     return problems
 
 
+def needs_an_end(strategy_cls, budget, stopping) -> Optional[str]:
+    """The sentence refusing a search that has no way to end, or ``None`` when it has one.
+
+    A search ends on a ``budget`` cap, a ``stopping`` criterion, or -- for a strategy that
+    declares :attr:`SearchStrategy.ENDS_ITSELF` -- when it runs out of proposals. Without any of
+    the three it would run forever.
+    """
+    if budget or stopping or getattr(strategy_cls, "ENDS_ITSELF", False):
+        return None
+    return ("a search must define at least one 'budget' or 'stopping' criterion "
+            "(e.g. budget: [{batches: 20}]); only a strategy that runs out of proposals "
+            "ends by itself")
+
+
 def build_strategy(cfg: SearchConfig, vast_dir: str = "") -> SearchStrategy:
     """Instantiate the strategy plugin named by ``cfg.strategy``.
 
@@ -186,6 +213,9 @@ def build_strategy(cfg: SearchConfig, vast_dir: str = "") -> SearchStrategy:
         ensure_plugins_importable(vast_dir)
     strategy_cls = load_ref(cfg.strategy, STRATEGY_GROUP, vast_dir)
     refused = dimension_type_problems(strategy_cls, cfg.strategy, cfg.search_space)
+    endless = needs_an_end(strategy_cls, cfg.budget, cfg.stopping)
+    if endless:
+        refused.append(endless)
     if refused:
         raise ValueError("; ".join(refused))
     if strategy_cls.PARAMS_MODEL is not None:

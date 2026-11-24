@@ -1540,7 +1540,7 @@ parameter sets, is told their evaluations, and produces a final report. Strategi
 are algorithm-agnostic and share one config schema; only the per-strategy
 ``strategy_parameters`` block differs.
 
-Subclass ``robovast.search.strategy.SearchStrategy`` and implement the four
+Subclass ``robovast.search.strategy.SearchStrategy`` and implement the three
 abstract methods. Optionally set ``PARAMS_MODEL`` to a Pydantic model — the
 framework validates ``search.strategy_parameters`` against it and passes the
 parsed object as ``params``:
@@ -1565,10 +1565,6 @@ parsed object as ``params``:
            """Ingest the evaluations of the batch just run."""
            ...
 
-       def is_done(self) -> bool:
-           """True when the budget is exhausted / converged."""
-           ...
-
        def report(self) -> SearchReport:
            """Return the deliverable (ranked best, archive, Pareto front)."""
            ...
@@ -1581,6 +1577,12 @@ returns the sole objective sign-oriented so that **higher is always better**.
 (``float``, ``int``, ``choice``, ``bool``) unless a strategy declares fewer. A dimension of any
 other type is refused by name -- by ``vast configuration validate`` and again when the strategy is
 built -- rather than met by the strategy mid-campaign.
+
+A strategy that runs out of proposals by itself sets ``ENDS_ITSELF = True`` and answers its
+``exhausted`` property True once it has proposed everything; the loop reads it after each batch is
+told and ends the search with stop kind ``exhausted``. Such a search needs no ``budget`` or
+``stopping``; any other is refused without one. When to stop otherwise is the controller's, not
+the strategy's: ``budget`` and ``stopping`` are evaluated centrally for every strategy.
 
 Register the class under ``robovast.search_strategies``; the key is the
 ``search.strategy`` name:

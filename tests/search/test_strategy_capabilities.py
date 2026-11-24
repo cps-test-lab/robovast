@@ -46,3 +46,26 @@ def test_the_shipped_strategies_search_every_type(strategy):
     search = _search(strategy, space, budget=[{"batches": 1}], strategy_parameters=params)
     assert _search_problems(search, "") == []
     build_strategy(SearchConfig(**search))
+
+
+_ENDS_ITSELF = (
+    "from robovast.search.strategies.random_search import RandomSearch\n"
+    "class Finite(RandomSearch):\n"
+    "    ENDS_ITSELF = True\n")
+
+
+def test_a_search_with_no_way_to_end_is_refused_where_its_strategy_is_known(tmp_path):
+    search = _search("random", {"x": {"type": "float", "low": 0, "high": 1}})
+    cfg = SearchConfig(**search)    # the model alone cannot know the strategy's class
+    problems = _search_problems(search, "")
+    assert [p["field"] for p in problems] == ["search.budget"]
+    assert "at least one 'budget' or 'stopping'" in problems[0]["message"]
+    with pytest.raises(ValueError, match="at least one 'budget' or 'stopping'"):
+        build_strategy(cfg)
+
+
+def test_a_strategy_that_ends_by_itself_needs_no_budget(tmp_path):
+    (tmp_path / "finite.py").write_text(_ENDS_ITSELF)
+    search = _search("finite.py:Finite", {"x": {"type": "float", "low": 0, "high": 1}})
+    assert _search_problems(search, str(tmp_path)) == []
+    build_strategy(SearchConfig(**search), str(tmp_path))
