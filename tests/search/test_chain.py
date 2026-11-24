@@ -153,6 +153,33 @@ def test_a_log_dimension_is_padded_in_log_space():
     assert out['high'] == pytest.approx(10 ** 0.4, rel=1e-5)
 
 
+def test_a_float_edge_is_rounded_outward_so_the_box_keeps_its_cells():
+    dim = {'type': 'float', 'low': 0.0, 'high': 1.0}
+    out = narrow(dim, [0.1234567, 0.7654321], 0.0)
+    assert out['low'] <= 0.1234567 and out['high'] >= 0.7654321
+    assert out == {'type': 'float', 'low': 0.123456, 'high': 0.765433}
+
+
+def test_a_small_log_dimension_keeps_a_positive_range():
+    dim = {'type': 'float', 'low': 1e-9, 'high': 1e-3, 'log': True}
+    out = narrow(dim, [2e-8, 5e-8], 0.0)
+    assert 0 < out['low'] <= 2e-8 and 5e-8 <= out['high'] < 1e-3
+
+
+@pytest.mark.parametrize('dim, values', [
+    ({'type': 'float', 'low': 0.0, 'high': 5.0}, [6.0, 9.0]),
+    ({'type': 'int', 'low': 7, 'high': 9}, [1, 4]),
+])
+def test_cells_outside_the_template_s_range_are_refused(dim, values):
+    with pytest.raises(ChainError, match="outside the template's range"):
+        narrow(dim, values, 0.1)
+
+
+def test_a_template_dimension_the_schema_rejects_is_refused_by_name():
+    with pytest.raises(ChainError, match='is no search dimension'):
+        narrow({'type': 'float', 'low': 0.0, 'high': 1.0, 'log': True}, [0.5], 0.1)
+
+
 def test_a_choice_or_a_boolean_becomes_the_values_held():
     assert narrow(SPACE['form'], ['c', 'a', 'a'], 0.1) == {'type': 'choice',
                                                             'values': ['a', 'c']}
@@ -231,6 +258,9 @@ def test_a_batch_template_takes_fixed_values_and_refuses_narrowing(tmp_path):
     ({'fix': ['form'], 'band': 5.0}, '--band would change nothing'),
     ({'fix': ['form'], 'pad': 0.3}, '--pad would change nothing'),
     ({'fix': ['form'], 'min_cells': 1}, '--min-cells would change nothing'),
+    ({'space': ['form', 'flag'], 'band': 5.0, 'pad': 0.3}, 'no range to widen'),
+    ({'space': ['x'], 'band': 5.0, 'min_cells': 0}, 'min-cells must be >= 1'),
+    ({'fix': ['form', 'x', 'n', 'flag'], 'select': 'worst'}, r'no \$n marker'),
     ({'fix': ['form'], 'select': 'worst', 'level': 7.0}, '--level would change nothing'),
 ])
 def test_an_argument_that_would_change_nothing_or_cannot_be_honoured_is_refused(
@@ -275,3 +305,36 @@ def test_the_command_exits_non_zero_on_a_refusal(tmp_path):
         str(tmp_path / 'o.vast'), '--space', 'x'])
     assert result.exit_code == 1
     assert '--band' in result.output
+
+
+def test_a_braced_marker_is_a_marker(tmp_path):
+    template = _template(tmp_path)
+    template.write_text(template.read_text().replace("$form", "${form}"))
+    out = tmp_path / 'out.vast'
+    derive(_record(tmp_path), template, out, fix=['form'])
+    doc = yaml.safe_load(out.read_text())
+    assert doc['search']['variations'][0]['ParameterVariationList']['values'][0][0] == 'a'
+    assert 'form' not in doc['search']['search_space']
+
+
+def test_fixing_every_searched_dimension_is_refused(tmp_path):
+    template = _template(tmp_path, space={k: SPACE[k] for k in ('form', 'x')})
+    with pytest.raises(ChainError, match='no dimension to search'):
+        derive(_record(tmp_path), template, tmp_path / 'out.vast', fix=['form', 'x'])
+
+
+def test_a_pad_nothing_read_is_not_recorded(tmp_path):
+    out = tmp_path / 'out.vast'
+    entry = derive(_record(tmp_path), _template(tmp_path), out, space=['form'], band=5.0)
+    assert 'pad' not in entry
+
+
+def test_a_stage_derived_twice_says_once_where_it_came_from(tmp_path):
+    first, second = tmp_path / 'first.vast', tmp_path / 'second.vast'
+    derive(_record(tmp_path), _template(tmp_path), first, fix=['form'])
+    derive(_record(tmp_path, name='rec-2'), first, second, space=['x'], band=5.0)
+    head = [line for line in second.read_text().splitlines() if line.startswith('#')]
+    assert head == ['# Derived from campaign rec-2 by vast config derive-stage; '
+                    'metadata.derived_from has the parameters.',
+                    '# Derive again rather than edit.',
+                    '# A template header that says which file plugins it loads.']
