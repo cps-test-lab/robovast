@@ -156,7 +156,8 @@ class BoundarySearch(SearchStrategy):
         nearness = 1.0 - min(abs(predicted - self.params.level) / spread, 1.0)
         apart = distance
         if taken:
-            apart = min(apart, min(float(np.linalg.norm(candidate - t)) for t in taken))
+            spread = self._codec.distances(np.array(taken), candidate)
+            apart = min(apart, float(spread.min()))
         return nearness + self.params.exploration * apart
 
     def _predict(self, candidate: np.ndarray, known: np.ndarray) -> tuple[float, float]:
@@ -164,9 +165,10 @@ class BoundarySearch(SearchStrategy):
 
         The distance is returned alongside because it is the cheap uncertainty proxy: far
         from every evaluation, the estimate is a guess, and that is exactly where another
-        evaluation is worth most.
+        evaluation is worth most. Distances are the codec's (:meth:`SearchSpaceCodec.distances`), so a choice or a
+        boolean is near only its own value, never a neighbour in the list.
         """
-        deltas = np.linalg.norm(known - candidate, axis=1)
+        deltas = self._codec.distances(known, candidate)
         k = min(self.params.neighbours, len(known))
         nearest = np.argsort(deltas)[:k]
         d = deltas[nearest]
