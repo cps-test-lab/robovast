@@ -197,8 +197,11 @@ def test_the_recorder_is_started_with_the_line_built_from_the_environment(tmp_pa
 
 
 @needs_ssd
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="a child subreaper is Linux's")
-@pytest.mark.parametrize("reaped", [True, False], ids=["reaped", "left-a-zombie"])
+@pytest.mark.parametrize("reaped", [
+    pytest.param(True, id="reaped"),
+    pytest.param(False, id="left-a-zombie", marks=pytest.mark.skipif(
+        not sys.platform.startswith("linux"), reason="a child subreaper is Linux's")),
+])
 def test_a_recorder_that_exits_before_opening_its_bag_fails_the_run(tmp_path, reaped):
     """A daemon that refused its arguments would otherwise leave a run that looks fine and has
     no bag, whether its exit is reaped or it stays a zombie. Its complaint reaches the log (the
