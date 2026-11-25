@@ -268,7 +268,10 @@ else
         local _t=0 _pid=""
         while [ ! -d "${RUN_OUTPUT_DIR}/rosbag2" ]; do
             [ -n "${_pid}" ] || _pid="$(cat /tmp/scenario_bag.pid 2>/dev/null)"
-            if [ -n "${_pid}" ] && ! kill -0 "${_pid}" 2>/dev/null; then
+            # Exited is gone or a zombie: under a PID 1 that reaps nothing an exited daemon
+            # stays a zombie, which kill -0 still answers for.
+            if [ -n "${_pid}" ] && { ! kill -0 "${_pid}" 2>/dev/null \
+                    || [ "$(sed 's/.*) //' "/proc/${_pid}/stat" 2>/dev/null | cut -d' ' -f1)" = Z ]; }; then
                 log "ERROR: The scenario recorder (PID=${_pid}) exited before it opened ${RUN_OUTPUT_DIR}/rosbag2; its output is above."
                 exit 1
             fi
