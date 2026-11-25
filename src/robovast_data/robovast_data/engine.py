@@ -527,7 +527,7 @@ class Engine:
             if not scope.whole:
                 keep = [scope.admits(c, r) for c, r in zip(rows.column("config_name").to_pylist(),
                                                            rows.column("run_id").to_pylist())]
-                rows = rows.filter(pa.array(keep))
+                rows = rows.filter(pa.array(keep, type=pa.bool_()))
             parts.append(rows)
         self._materialise(con, RUNS_TABLE, pa.concat_tables(parts, promote_options="default"))
 
