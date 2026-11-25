@@ -152,13 +152,14 @@ def _key_column(table: pa.Table) -> pa.Array:
 
 def _sources(root: str, plan: _Plan) -> Iterator[pa.Table]:
     """The rows to compact, run after run: those an earlier compaction keeps, then the runs' files."""
-    carried = set(plan.carried)
+    # Typed: with no run carried (every run built again), an untyped array would be of nulls.
+    carried = pa.array(sorted(set(plan.carried)), type=pa.string())
     for rel in plan.previous:
         parquet = pq.ParquetFile(os.path.join(root, rel))
         for batch in parquet.iter_batches(batch_size=ROW_GROUP_ROWS):
             rows = pa.Table.from_batches([batch])
             keep = pc.is_in(_key_column(rows),  # pylint: disable=no-member
-                            value_set=pa.array(sorted(carried)))
+                            value_set=carried)
             rows = rows.filter(keep)
             if rows.num_rows:
                 yield rows
