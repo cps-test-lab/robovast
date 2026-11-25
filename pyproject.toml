@@ -16,7 +16,7 @@ packages = [{include = "robovast", from = "src"}]
 include = [{path = "src/robovast/_ui/**/*", format = "wheel"}]
 
 [tool.poetry.dependencies]
-python = ">=3.12,<3.14"
+python = ">=3.12,<3.15"
 click = "^8.1"
 pyyaml = "^6.0"
 # Round-trip YAML, for ONE job: `vast configuration upgrade` and the manual-migration

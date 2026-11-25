@@ -11,7 +11,7 @@ documentation = "https://cps-test-lab.github.io/robovast/"
 packages = [{include = "robovast_decode"}]
 
 [tool.poetry.dependencies]
-python = ">=3.12,<3.14"
+python = ">=3.12,<3.15"
 # Deliberately NOT depending on robovast. The decoder is the layer the service, the notebook
 # package and a laptop with a downloaded campaign all build tables with, so it carries only
 # what reading a recording needs: the mcap framing, ROS 2 message definitions and CDR, and

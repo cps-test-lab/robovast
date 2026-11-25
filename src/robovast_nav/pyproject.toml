@@ -16,7 +16,7 @@ include = [{path = "robovast_nav/web/dist/**/*", format = ["sdist", "wheel"]}]
 exclude = ["web"]
 
 [tool.poetry.dependencies]
-python = ">=3.12,<3.14"
+python = ">=3.12,<3.15"
 robovast = "^2.0.0"
 # The campaign tables the postprocessing step and the video overlay read.
 robovast-data = "^2.0.0"

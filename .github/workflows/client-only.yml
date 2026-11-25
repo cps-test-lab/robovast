@@ -21,6 +21,10 @@ jobs:
   client-only:
     name: 'robovast-client installs and runs on its own'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.12', '3.14']
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -30,7 +34,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python-version }}
 
       # The wheel, not the source directory: what ships is what has to work, and a
       # packaging mistake -- a module missing from `packages`, a dependency declared in
