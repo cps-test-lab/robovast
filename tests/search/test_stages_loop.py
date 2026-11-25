@@ -126,7 +126,7 @@ def _stage_units(store, name):
 
 def test_four_stages_run_in_line_each_standing_on_the_answers_before_it(tmp_path):
     told = {}
-    controller, store, backend, _ = _controller(tmp_path, _search(FOUR), told=told)
+    controller, store, _, _ = _controller(tmp_path, _search(FOUR), told=told)
     report = controller.run()
     store.close()
 
@@ -416,7 +416,7 @@ def _stage_table(store):
         store, "SELECT name, outcome, stop_kind, batches FROM stage ORDER BY idx")]
 
 
-def test_a_restart_after_the_last_stage_closed_records_the_outcome_without_running_it(tmp_path):
+def test_a_restart_after_the_last_stage_closed_records_its_outcome_and_runs_nothing(tmp_path):
     """Killed after decision closed and before the campaign's outcome was recorded."""
     first, store, _, _ = _controller(tmp_path, _search(FOUR))
     _kill_once(first, "_finish_search")

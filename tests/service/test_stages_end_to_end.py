@@ -168,7 +168,7 @@ def _service(tmp_path, campaign_dir):
 
 
 def test_a_line_of_four_stages_narrows_carries_a_cell_and_runs_to_its_end(tmp_path):
-    campaign_dir, report, backend = _run(tmp_path, "{band: 10.0, min_cells: 2, level: 0.0}")
+    campaign_dir, report, _ = _run(tmp_path, "{band: 10.0, min_cells: 2, level: 0.0}")
     obstacle, refine, human, decision = _rows(campaign_dir, "SELECT * FROM stage ORDER BY idx")
     assert [s["outcome"] for s in (obstacle, refine, human, decision)] == ["done"] * 4
 

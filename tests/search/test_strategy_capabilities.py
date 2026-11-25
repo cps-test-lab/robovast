@@ -99,7 +99,7 @@ def test_each_stage_s_strategy_is_resolved_and_checked_by_name():
          "bool dimensions")]
 
 
-def test_a_stage_without_an_end_and_bad_parameters_are_refused_where_they_are_written():
+def test_a_stage_without_an_end_or_with_bad_parameters_is_refused_where_written():
     problems = _search_problems(_staged(**{"0__budget": None,
                                            "1__strategy_parameters": {"points": 2}}), "")
     by_field = {p["field"]: p for p in problems}

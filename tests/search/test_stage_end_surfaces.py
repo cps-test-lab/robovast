@@ -39,7 +39,7 @@ def test_a_campaign_that_ran_every_stage_has_no_end_to_report(tmp_path):
     assert read_stage_end(tmp_path / "camp") is None
 
 
-def test_the_status_read_back_from_disk_names_the_stage_the_rule_and_the_stages_not_run(tmp_path):
+def test_the_status_read_from_disk_names_the_stage_its_rule_and_the_stages_not_run(tmp_path):
     status = reconstruct_status_from_disk(_ended_on_region(tmp_path))
     assert (status.stop["stage"], status.stop["rule"], status.stop["not_run"]) == (
         "human", "region", ["hardest", "decision"])

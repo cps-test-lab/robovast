@@ -247,8 +247,9 @@ class CampaignController:
                 implicit_stage  # pylint: disable=import-outside-toplevel
             stages = [implicit_stage(strategy)]
             # The one stage runs what this controller holds when it starts.
-            def stage_factory(_cfg):
+            def the_strategy_held(_cfg):
                 return self.strategy, self.stop_conditions, self.repetition_policy
+            stage_factory = the_strategy_held
         self.stages = stages or []
         self.stage_factory = stage_factory
         self.initial_point = dict(initial_point or {})

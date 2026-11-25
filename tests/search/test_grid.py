@@ -76,7 +76,7 @@ def test_a_resumed_grid_carries_on_where_it_stopped():
 def test_the_loop_ends_a_grid_as_exhausted_and_a_budget_cuts_it_short(tmp_path):
     space = {"mode": {"type": "choice", "values": ["a", "b", "c"]}}
     cfg = _cfg(per_batch=2, space=space)
-    controller, store, backend = _search_controller(cfg, tmp_path / "full")
+    controller, store, _ = _search_controller(cfg, tmp_path / "full")
     report = controller.run()
     store.close()
     assert report.extra["stop"]["kind"] == "exhausted"
