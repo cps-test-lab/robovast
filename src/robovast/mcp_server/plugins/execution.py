@@ -181,44 +181,34 @@ def get_campaign_status(campaign_id: str) -> dict:
     """Is it progressing, is it wedged, and are there results? One read, no waiting.
 
     To *wait*, background ``vast campaign wait <campaign_id>``: it exits when the campaign is
-    genuinely over. This is a single look at one you are not waiting on.
+    genuinely over.
 
     Three fields decide what to do next, and ``status`` is none of them.
 
-    ``stalled`` — a campaign holds ``running`` for its whole life whether or not anything is
-    happening. ``true``: nothing completed for longer than one run may take
-    (``progress_age_s`` vs ``progress_deadline_s``); ``stall_reason`` names the next call.
-    ``false``: inside the declared budget. ``null``: **no verdict is possible** — not
-    "healthy"; ``stall_verdict`` says why (no declared timeout, a phase that executes no
-    runs, or a batch queued for capacity). Judge ``progress_age_s`` yourself.
+    ``stalled`` — ``running`` holds whether or not anything happens. ``true``: nothing
+    completed for longer than one run may take (``progress_age_s`` vs
+    ``progress_deadline_s``); ``stall_reason`` names the next call. ``false``: inside the
+    declared budget. ``null``: **no verdict is possible**, not "healthy"; ``stall_verdict``
+    says why. Judge ``progress_age_s`` yourself.
 
     ``health_findings`` — ``error``-level reports a running job's own **simulator** made about
-    itself; what ends a ``vast campaign wait`` early, and it needs no declared timeout.
-    ``get_job_state`` is the fuller read.
+    itself; they end a ``vast campaign wait`` early. ``get_job_state`` is the fuller read.
 
-    ``postprocessed`` — ``finished`` does not imply the campaign-end pass ran: one whose
-    postprocessing failed still finishes, with ``postprocessing_error``; its tables still
-    build on first use, and ``run_postprocessing`` reruns the pass without re-running anything.
+    ``postprocessed`` — ``finished`` does not imply the campaign-end pass ran; a failed one
+    leaves ``postprocessing_error``, and ``run_postprocessing`` reruns it alone.
 
-    **On a search**, ``objective_history`` (one row per batch, the most recent 20:
-    ``min``/``max``/``mean`` and ``best_so_far``) and ``batches_since_improvement`` say whether
-    it is still improving, which ``best_objective`` alone cannot. Read the spread: a flat best
-    with a wide range is still exploring; a range collapsed onto the best is re-sampling one
-    region and further batches buy little. Live during the run. Weigh it against ``budget``: a
-    ``no_improvement`` or ``target_objective`` criterion may be about to stop it, and
-    pre-empting a declared criterion kills a search one batch before it converges; one that
-    declares neither is one only you can stop.
+    **On a search**, ``objective_history`` (per batch, the last 20: ``min``/``max``/``mean``,
+    ``best_so_far``) and ``batches_since_improvement`` say whether it still improves. A flat
+    best with a wide range is still exploring; a range collapsed onto the best is re-sampling
+    one region. Weigh it against ``budget``: pre-empting a ``no_improvement`` or
+    ``target_objective`` criterion kills a search one batch before it converges.
 
-    **A search in stages** names the stage it is in (``search_stage``: ``{idx, name, of}``);
-    ``budget``, ``best_objective``, ``objective_name`` and ``batches_since_improvement`` are that
-    stage's, and each ``objective_history`` row names its ``stage``, whose ``best_so_far``
-    starts again with it. ``search_stages`` lists every stage: what it searched, its
-    ``outcome`` (``not_run`` for one the campaign has not reached or ended before), the cell
-    its answer selected. **A search that ended before its last stage** -- a stage whose answer
-    or region found nothing to stand on, a stop, an unproductive stage -- is ``finished`` (or
-    ``stopped``) with ``ended_at_stage``, ``stage_rule`` (``answer``, ``region``,
-    ``stopped``, ...) and ``stages_not_run``; ``stop.reason`` says why. It did not run every
-    stage, so its result is the stage it reached, not the line's.
+    **In stages**, ``search_stage`` (``{idx, name, of}``) is the current stage, whose
+    ``budget``, ``best_objective`` and history rows (each naming its ``stage``) these are;
+    ``search_stages`` lists each stage's ``outcome`` (``not_run`` if never reached) and the
+    cell its answer selected. One that ended early carries ``ended_at_stage``, ``stage_rule``
+    and ``stages_not_run``, and ``stop.reason`` says why: its result is that stage's, not
+    the line's.
 
     Args:
         campaign_id: The id from ``start_campaign``.
@@ -227,33 +217,23 @@ def get_campaign_status(campaign_id: str) -> dict:
         ``{campaign_id, backend, status, mode, stage, progress, phase_age_s,
         progress_age_s, stalled, postprocessed, batch_runs_done, batch_runs_total,
         batch_runs_failed, batch_runs_no_result, batch_outcomes_counted}``, plus, on a
-        search,
-        ``search_stage``/``search_stages``/``objective_name``/``objective_direction``/
-        ``batches_since_improvement``/``objective_history`` (and ``objective_history_omitted``
-        when older batches were dropped, or ``objective_history_unavailable:
-        "multi_objective"`` when the current stage declares more than one objective and so has
-        no single value to trend), plus
-        ``progress_deadline_s`` +
-        ``nodes_skipped`` (``{node: why}``, present only when this campaign has left a machine
-        out -- its probe never ran, so nothing may be placed there; the campaign is smaller and
-        slower than its plan, and ``_execution/execution.yaml`` records the same fact for a
-        reader who arrives after it ends), plus
-        ``stall_reason`` or ``stall_verdict``, ``health_findings``, ``next_step``, and the
-        search fields (``best_objective``, ``budget``, ``batches_done``, ``stop``) when each
-        applies; or ``{error}``.
+        search, ``search_stage``/``search_stages``/``objective_name``/
+        ``objective_direction``/``batches_since_improvement``/``objective_history`` (and
+        ``objective_history_omitted``, or ``objective_history_unavailable:
+        "multi_objective"`` when the stage has several objectives), plus
+        ``progress_deadline_s``, ``nodes_skipped`` (``{node: why}``, only when a machine was
+        left out: the campaign is smaller and slower than its plan), ``stall_reason`` or
+        ``stall_verdict``, ``health_findings``, ``next_step``, and ``best_objective``,
+        ``budget``, ``batches_done``, ``stop`` where they apply; or ``{error}``.
 
         Run counts are batch-scoped; ``progress`` is overall (``null`` when a search's
-        completion cannot honestly be known). ``phase_age_s`` is the only signal for a
-        phase with no run counter — ``initializing``, ``building``.
+        completion cannot be known). ``phase_age_s`` is the only signal for a phase with no
+        run counter — ``initializing``, ``building``.
 
-        **Read ``batch_outcomes_counted`` before ``batch_runs_failed``.** The failure
-        counts are written once, when the current batch's per-run verdicts are tallied, so
-        until then they read 0 — and 0 is also what a batch that lost nothing reads. While
-        it is ``false``, ``batch_runs_failed: 0`` means "not counted yet" and is not
-        evidence of a healthy sweep; a poll mid-batch has read exactly that and concluded
-        the opposite. Whatever it says, a run's own JUnit verdict
-        (``run_view.status``/``passed``) remains the authority on that run; this aggregate
-        is a convenience, and this flag says when it is one worth having.
+        **Read ``batch_outcomes_counted`` before ``batch_runs_failed``**: until the batch's
+        per-run verdicts are tallied the failure counts read 0, which is not evidence of a
+        healthy sweep. A run's own JUnit verdict (``run_view.status``/``passed``) remains the
+        authority on that run.
     """
     client = service_access.require_service()
     return status_report(client, campaign_id)
