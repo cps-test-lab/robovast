@@ -38,12 +38,10 @@ import json
 from dataclasses import dataclass
 from typing import Optional
 
-from robovast.common.config import AnswerRule, ObjectiveSpec, RegionRule, SearchConfig
+from robovast.common.config import (IMPLICIT_STAGE, AnswerRule, ObjectiveSpec, RegionRule,
+                                    SearchConfig)
 
 from . import chain
-
-#: The name of the one stage a search without ``stages:`` runs.
-IMPLICIT_STAGE = "search"
 
 #: What ``answer`` and ``region`` take when not given.
 DEFAULT_SELECT = "worst"

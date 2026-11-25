@@ -2529,6 +2529,8 @@ class RegionRule(BaseModel):
 
 
 _STAGE_NAME = re.compile(r'^[a-z][a-z0-9_-]*$')
+#: The name of the one stage a search without ``stages:`` runs; no declared stage takes it.
+IMPLICIT_STAGE = "search"
 
 
 class StageConfig(BaseModel):
@@ -2558,6 +2560,9 @@ class StageConfig(BaseModel):
     def _name(cls, v: str) -> str:
         if not _STAGE_NAME.match(v):
             raise ValueError(f"stage name {v!r} must match [a-z][a-z0-9_-]*")
+        if v == IMPLICIT_STAGE:
+            raise ValueError(f"stage name {v!r} is taken: it names the one stage of a search "
+                             "without stages")
         return v
 
     @field_validator('budget', mode='before')

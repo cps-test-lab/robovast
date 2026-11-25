@@ -133,6 +133,8 @@ def test_a_file_without_stages_is_valid_as_written_today():
      "search.strategy_parameters is refused with search.stages: each stage states its own, so "
      "one here would tune none of them"),
     ({"stages.0.name": "Obstacle 1"}, "stage name 'Obstacle 1' must match [a-z][a-z0-9_-]*"),
+    ({"stages.0.name": "search"},
+     "stage name 'search' is taken: it names the one stage of a search without stages"),
 ])
 def test_every_refusal_names_what_to_change(edits, sentence):
     assert sentence in _refused(_sketch(**edits))

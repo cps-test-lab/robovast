@@ -545,7 +545,8 @@ with no value yet (searched by no earlier stage and without an ``initial``); a s
 answer it does not select; ``within`` a stage that is not earlier, leaves no region or searches
 other dimensions; an answer or region over several objectives; a rule option that would change
 nothing; an ``initial`` nothing reads; a strategy that cannot search a dimension's type (``grid``
-over a float); a stage with no way to end.
+over a float); a stage with no way to end; a stage named ``search``, the name of the one stage
+of a search without stages.
 
 **No pause between stages.** What a person would check by looking is a condition of the stage:
 an ``answer`` with no cell that satisfies it, or a ``region`` with fewer cells than
