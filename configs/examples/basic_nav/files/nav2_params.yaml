@@ -45,7 +45,8 @@ amcl:
     recovery_alpha_slow: 0.0
     recovery_alpha_fast: 0.0
     tf_broadcast: true
-    # The robot spawns at the map origin (world YAML: pos [0,0], yaw 0), so seed the filter there.
+    # The robot spawns at world (-8, 0), yaw 0 (world/depot_nav2.yaml), which is (0, 0) in the map frame,
+    # so seed the filter there.
     # The scenario's init_nav2 re-publishes this same initial pose and waits for /amcl_pose.
     set_initial_pose: true
     initial_pose:

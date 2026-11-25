@@ -1,16 +1,14 @@
-# SHARED nav2 params for basic_nav -- passed (params_file:=/config/files/nav2_params.yaml) to BOTH
-# the Gazebo and the roqsim bring-up, so the two simulators run byte-identical nav2 configuration.
+# nav2 params for nav_search's bring-up, passed as params_file:=/config/files/nav2_params.yaml.
 #
 # TurtleBot 4 tuning: base frame 'base_link', odom '/odom', scan '/scan', robot radius ~0.18 m,
-# RegulatedPurePursuit + NavFn, plus AMCL localizing the drifting wheel odometry against the Depot map.
-# Frame names are kept as 'base_link' (not 'base_footprint') so this one file is valid on both
-# simulators: each publishes odom->base_link, a rigid robot frame AMCL/costmaps use directly.
+# RegulatedPurePursuit + NavFn, plus AMCL localizing the drifting wheel odometry against the
+# empty_room map. The simulator publishes odom->base_link, a rigid robot frame AMCL and the
+# costmaps use directly.
 # Every node declares use_sim_time: nav2's RewrittenYaml (which the launch files use to inject the
 # launch argument) only REWRITES keys that already exist -- its add_params inserts a key only for a
 # fully dotted path. With the key absent, every nav2 node silently ran on wall time while TF and the
 # scan carried sim time, and the goal was 'reached' in seconds. The value here is a default; the
-# launch argument overwrites it. (Mirror of roqsim's standalone
-# roqsim_nav2_example/params/nav2_params_depot.yaml -- keep them in sync.)
+# launch argument overwrites it.
 
 amcl:
   ros__parameters:
