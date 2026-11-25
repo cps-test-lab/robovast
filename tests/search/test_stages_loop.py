@@ -14,7 +14,7 @@ import sqlite3
 from robovast.common.config import SearchConfig
 from robovast.common.store import STORE_FILENAME, CampaignStore
 from robovast.execution.backends import RunOptions
-from robovast.execution.control_server import ControllerState
+from robovast.execution.control_server import ControllerState, Phase, stop_scope_for_phase
 from robovast.execution.controller import CampaignController
 from robovast.search.repetitions import build_repetition_policy
 from robovast.search.stages import evaluation_objectives, initial_point, stages_of
@@ -257,6 +257,34 @@ def test_a_stop_in_the_middle_of_a_stage_leaves_the_stages_after_it_not_run(tmp_
         ("obstacle", "done"), ("human", "stopped"), ("hardest", "not_run"),
         ("decision", "not_run")]
     assert _rows(store, "SELECT stop_kind FROM campaign")[0]["stop_kind"] == "external"
+
+
+def test_a_stop_the_service_sends_in_the_second_stage_stops_its_runs(tmp_path):
+    """A stop lands where ``ClusterService.stop`` aims it: at the scope the phase names."""
+    state = ControllerState()
+    evaluator = LandscapeEvaluator(["margin", "hardest"])
+    original = evaluator.evaluate
+    seen = []
+
+    def stop_in_human(config_dir, ps):
+        if ps.values["speed"] != 0.0 and not seen:      # human searches speed
+            snap = state.snapshot()
+            seen.append((snap.phase, snap.stop))
+            state.request_stop(stop_scope_for_phase(snap.phase))
+        return original(config_dir, ps)
+    evaluator.evaluate = stop_in_human
+    controller, store, _, _ = _controller(tmp_path, _search(FOUR), state=state,
+                                          evaluator=evaluator)
+    controller.run()
+    store.close()
+    assert seen == [(Phase.RUNNING, None)]
+    assert [(r["name"], r["outcome"]) for r in _rows(
+        store, "SELECT name, outcome FROM stage ORDER BY idx")] == [
+        ("obstacle", "done"), ("human", "stopped"), ("hardest", "not_run"),
+        ("decision", "not_run")]
+    stop = state.snapshot().stop
+    assert (stop["kind"], stop["stage"], stop["not_run"]) == (
+        "external", "human", ["hardest", "decision"])
 
 
 def test_a_restart_in_the_middle_of_the_second_stage_carries_on_identically(tmp_path):

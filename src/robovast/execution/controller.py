@@ -247,8 +247,8 @@ class CampaignController:
                 implicit_stage  # pylint: disable=import-outside-toplevel
             stages = [implicit_stage(strategy)]
             # The one stage runs what this controller holds when it starts.
-            stage_factory = lambda _cfg: (  # noqa: E731
-                self.strategy, self.stop_conditions, self.repetition_policy)
+            def stage_factory(_cfg):
+                return self.strategy, self.stop_conditions, self.repetition_policy
         self.stages = stages or []
         self.stage_factory = stage_factory
         self.initial_point = dict(initial_point or {})
@@ -771,14 +771,11 @@ class CampaignController:
             if ended:
                 summaries.append(_stage_summary(stage, ended, None, None))
                 not_run = [st.name for st in self.stages[stage.idx + 1:]]
-                if not_run and self.state is not None:
-                    # Said where it ended and what it left, so no reader takes a campaign that
-                    # stopped in its second stage for one that ran them all.
-                    self.state.update(stop={"kind": result.kind, "reason": result.reason,
-                                            "stage": stage.name, "idx": stage.idx,
-                                            "of": len(self.stages), "rule": ended,
-                                            "not_run": not_run})
-                return self._finish_search(campaign_id, report, result, summaries)
+                # Said where it ended and what it left, so no reader takes a campaign that
+                # stopped in its second stage for one that ran them all.
+                where = {"stage": stage.name, "idx": stage.idx, "of": len(self.stages),
+                         "rule": ended, "not_run": not_run} if not_run else None
+                return self._finish_search(campaign_id, report, result, summaries, where)
             answer = region = None
             try:
                 if stage.answer is not None or stage.region is not None:
@@ -1023,8 +1020,16 @@ class CampaignController:
             return {"stop_kind": "stopped", "stop_reason": str(exc) or "stop requested"}
         return {"stop_kind": "error", "stop_reason": f"{type(exc).__name__}: {exc}"}
 
-    def _finish_search(self, campaign_id, report, result, summaries):
-        """Record the outcome of a search that ended the way it meant to, and report."""
+    def _finish_search(self, campaign_id, report, result, summaries, where=None):
+        """Record the outcome of a search that ended the way it meant to, and report.
+
+        The campaign's end, and so the one place its finishing phase and its stop are
+        published; *where* adds the stage it ended in and the stages it left not run.
+        """
+        if self.state is not None:
+            self.state.set_phase(Phase.FINISHING)
+            self.state.update(stop={"kind": result.kind, "reason": result.reason,
+                                    **(where or {})})
         elapsed_s = time.monotonic() - self._search_started
         self.store.record_outcome(
             campaign_id, stop_kind=result.kind, stop_reason=result.reason,
@@ -1055,12 +1060,9 @@ class CampaignController:
         reason = str(cond) + (f"; not run: {', '.join(not_run)}" if not_run else "")
         from robovast.search.stopping import StopResult  # pylint: disable=import-outside-toplevel
         stop = StopResult(kind="stage_condition", reason=reason)
-        if self.state is not None:
-            self.state.update(stop={"kind": "stage_condition", "reason": reason,
-                                    "stage": stage.name, "idx": stage.idx,
-                                    "of": len(self.stages), "rule": cond.rule,
-                                    "not_run": not_run})
-        report = self._finish_search(campaign_id, report, stop, summaries)
+        report = self._finish_search(campaign_id, report, stop, summaries, {
+            "stage": stage.name, "idx": stage.idx, "of": len(self.stages), "rule": cond.rule,
+            "not_run": not_run})
         report.extra['stop'].update({"stage": stage.name, "rule": cond.rule,
                                      "not_run": not_run})
         return report
@@ -1307,9 +1309,8 @@ class CampaignController:
                 result = StopResult(kind="external",
                                     reason="stop requested via control API")
             if result:
-                if self.state is not None:
-                    self.state.set_phase(Phase.FINISHING)
-                    self.state.update(stop={"kind": result.kind, "reason": result.reason})
+                # The stage's end, not the campaign's: it goes into the stage's record, and only
+                # `_finish_search` publishes the campaign's finishing phase and its stop.
                 logger.info("\n%s\n⏹  Stopping — %s\n%s", _BAR, result.reason, _BAR)
                 break
         return result, best_objective
