@@ -183,3 +183,23 @@ def test_a_stage_key_without_stages_is_an_unknown_key():
               "objectives": [{"name": "f"}], "per_batch": 2, "over": ["x"],
               "search_space": {"x": {"type": "float", "low": 0, "high": 1}}}
     assert "over" in _refused(search)
+
+
+@pytest.mark.parametrize("edits, sentence", [
+    ({"stages.1.region": {"band": -1}}, "region band must be >= 0, got -1"),
+    ({"stages.1.region": {"band": 1, "pad": -0.5}}, "region pad must be >= 0, got -0.5"),
+    ({"stages.1.region": {"band": 1, "min_cells": 0}},
+     "region min_cells must be >= 1, got 0: a box needs a cell"),
+    ({"stages.0.budget": {"runs": 512}},
+     "a stage's budget must be a list of single-key mappings"),
+    ({"stages.3.stopping": {"no_improvement": 3}},
+     "a stage's stopping must be a list of single-key mappings"),
+    ({"stages.3.per_batch": 0}, "a stage's per_batch must be >= 1, got 0"),
+    ({"stages.3.objectives": []}, "a stage's objectives, when given, declare at least one"),
+    ({"stages.3.objectives": [{"name": "a"}, {"name": "b"}],
+      "stages.3.stopping": [{"target_objective": 0.0}]},
+     "stage 'decision': stopping 'target_objective' requires a single objective, but 2 are "
+     "configured"),
+])
+def test_every_field_refusal_of_a_stage_names_its_bound(edits, sentence):
+    assert sentence in _refused(_sketch(**edits))
