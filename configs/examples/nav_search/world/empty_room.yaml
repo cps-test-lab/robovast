@@ -9,8 +9,9 @@
 
 sim:
   # The built-in walled room: 10 x 10 m, four perimeter walls. Its Nav2 map (files/empty_room.yaml,
-  # origin [-5,-5]) is co-registered with it, so map == world and one pose serves both frames --
-  # unlike Depot, where map = world + (8, 0) and every analysis has to remember the offset.
+  # origin [-5.4,-5.4], the walls drawn) is co-registered with it, so map == world and one pose
+  # serves both frames -- unlike Depot, where map = world + (8, 0) and every analysis has to
+  # remember the offset.
   world: empty_room
   pacing: realtime
   # 5 physics steps per nav2 control period (20 Hz).
