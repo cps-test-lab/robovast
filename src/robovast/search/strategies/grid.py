@@ -16,7 +16,7 @@
 
 """Grid -- every cell of a finite search space, once.
 
-The cells are the cartesian product of the dimensions, in the order ``search_space`` declares
+The cells are the Cartesian product of the dimensions, in the order ``search_space`` declares
 them, each dimension's values in its own order: a choice as listed, a bool as ``false, true``,
 an int from ``low`` to ``high`` on its ``step``. ``ask(n)`` hands out the next ``n`` cells, and
 once every cell has been asked the strategy is :attr:`exhausted`, which ends the search. A

@@ -295,7 +295,7 @@ search space of the size these campaigns declare is nowhere near that.
 grid — every cell, once
 ^^^^^^^^^^^^^^^^^^^^^^^
 
-Runs every cell of a finite search space, once: the cartesian product of the dimensions in the
+Runs every cell of a finite search space, once: the Cartesian product of the dimensions in the
 order ``search_space`` declares them, each dimension's values in its own order — a ``choice`` as
 listed, a ``bool`` as ``false, true``, an ``int`` from ``low`` to ``high`` on its ``step``. It is
 the strategy for "run these configurations", and the exhaustive reference a sampling strategy is

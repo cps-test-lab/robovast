@@ -1956,7 +1956,7 @@ the list of its keys.
 ``variations``, ``parameters``
    The variation template; a ``$name`` marker is the dimension's value in each run.
 ``postprocessing``, ``extract``, ``objectives``
-   How a cell is measured and what is optimised.
+   How a cell is measured and what is optimized.
 ``per_batch``, ``repetitions``, ``seed``
    Cells per batch, runs per cell, the seed every strategy is built with.
 ``budget``, ``stopping``

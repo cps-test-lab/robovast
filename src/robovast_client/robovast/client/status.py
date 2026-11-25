@@ -350,8 +350,8 @@ class Status(BaseModel):
     #: stage that ended it, the rule that failed and the stages that did not run:
     #: {kind, reason, stage, rule, not_run}.
     stop: Optional[dict] = None
-    #: The stage a search is in: {idx (from 0), name, of (how many stages the file has)}.
-    #: A search without stages is one stage, named "search".
+    #: The stage a search is in, as ``{idx, name, of}``: its index from 0, its name and how
+    #: many stages the file has. A search without stages is one stage, named "search".
     search_stage: Optional[dict] = None
     # Human-readable failure reason (message + short traceback tail) when
     # ``phase == "failed"``. Surfaced in the CLI/UI/MCP so a controller crash no
