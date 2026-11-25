@@ -19,8 +19,8 @@
 
 Each exists because the raw form is a trap every consumer would otherwise walk into on its own.
 
-* ``run_view`` is one row per run from the campaign's record, with its unit's parameters, batch
-  and host, plus one run-less row per unit that produced no run -- a join alone drops those, and
+* ``run_view`` is one row per run from the campaign's record, with its unit's parameters, batch,
+  search stage and host, plus one run-less row per unit that produced no run -- a join alone drops those, and
   with them the only record that the cell was part of the design.
 * ``run_validity_view`` answers *was this run a clean observation of the system under test, or
   partly a measurement of its CPU quota?* ``nr_throttled``/``nr_periods`` are monotonic
@@ -114,12 +114,17 @@ def run_view_sql(have: set, unit_columns: set) -> Optional[str]:
     batch = "b.idx AS batch" if "batch" in have else "NULL AS batch"
     bjoin = ("LEFT JOIN campaign.batch b ON u.batch_id = b.id AND b.campaign_id = u.campaign_id"
              if "batch" in have else "")
+    staged = {"batch", "stage"} <= have
+    stage = "s.name AS stage" if staged else "NULL AS stage"
+    if staged:
+        bjoin += ("\n        LEFT JOIN campaign.stage s ON b.stage_id = s.id "
+                  "AND s.campaign_id = b.campaign_id")
     channels = "u.channels_json" if "channels_json" in unit_columns else "NULL AS channels_json"
     runless = ", ".join(f"'{status}'" for status in RUNLESS_UNIT_STATUSES)
     return f"""
         SELECT l.campaign_id, l.config_name, l.run_id, r.status, r.passed, r.duration_s,
                r.errors, r.failures, r.tests, r.start_time, r.failure_message,
-               u.params_json, {channels}, u.objective, u.paramset_id, {batch}, {host},
+               u.params_json, {channels}, u.objective, u.paramset_id, {batch}, {stage}, {host},
                l.live
         FROM runs l
         LEFT JOIN campaign.unit u ON u.campaign_id = l.campaign_id
@@ -133,7 +138,7 @@ def run_view_sql(have: set, unit_columns: set) -> Optional[str]:
         SELECT u.campaign_id, COALESCE(NULLIF(u.config_name, ''), u.paramset_id) AS config_name,
                NULL AS run_id, u.status, 0 AS passed, NULL AS duration_s, NULL AS errors,
                NULL AS failures, NULL AS tests, NULL AS start_time, NULL AS failure_message,
-               u.params_json, {channels}, u.objective, u.paramset_id, {batch},
+               u.params_json, {channels}, u.objective, u.paramset_id, {batch}, {stage},
                NULL AS job_dir, NULL AS sysinfo_json,
                false AS live
         FROM campaign.unit u

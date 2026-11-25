@@ -148,11 +148,13 @@ def test_build_stop_conditions_from_config():
 
 
 def test_requires_at_least_one_criterion():
-    with pytest.raises(ValueError, match="budget.*stopping|at least one"):
-        SearchConfig(
-            strategy='random', search_space={'x': {'type': 'float', 'low': 0, 'high': 1}},
-            extract={'plugin': 'failure_rate'}, objectives=[{'name': 'failure_rate'}],
-            per_batch=4)
+    from robovast.search.strategy import build_strategy
+    cfg = SearchConfig(
+        strategy='random', search_space={'x': {'type': 'float', 'low': 0, 'high': 1}},
+        extract={'plugin': 'failure_rate'}, objectives=[{'name': 'failure_rate'}],
+        per_batch=4)
+    with pytest.raises(ValueError, match="at least one 'budget' or 'stopping'"):
+        build_strategy(cfg)
 
 
 def test_multi_objective_target_rejected():

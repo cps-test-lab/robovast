@@ -66,7 +66,9 @@ def list_campaigns(limit: int = 20, offset: int = 0,
         num_composition_failed, num_no_sample}`` plus ``description``, ``finished_at`` and
         ``results_bytes`` where recorded, and ``paused``/``priority`` where either is not the default (a
         held campaign makes no progress on purpose) — or ``{error}``. ``mode`` is ``search`` or ``batch``; a search is
-        read by its cells (``run_view``'s ``batch``/``paramset_id``/``objective``).
+        read by its cells (``run_view``'s ``batch``/``paramset_id``/``objective``). A search
+        that ended before its last stage carries ``ended_at_stage``, ``stage_rule`` and
+        ``stages_not_run``: its ``finished`` ran only part of its line.
 
         ``description`` is what its launcher said the run was for, and is usually the
         only thing telling two same-day ``campaign-<timestamp>`` ids apart.

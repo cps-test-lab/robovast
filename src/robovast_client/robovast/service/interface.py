@@ -482,6 +482,11 @@ class CampaignSummary(BaseModel):
     #: predate the field. Carried on the listing because it decides how results are *read*:
     #: only for a search is a configuration's batch a meaningful grouping.
     mode: str = ""
+    #: Where a search that ended before its last stage ended: ``{stage, idx, of, rule, reason,
+    #: not_run}`` (see :func:`robovast.common.store.read_stage_end`). ``None`` for a campaign that
+    #: ran every stage, is still running, or is not a search in stages. On the listing because a
+    #: finished phase alone would show such a campaign as one that ran its whole line.
+    ended_at_stage: Optional[dict] = None
     num_runs: int = 0
     num_passed: int = 0
     num_failed: int = 0
@@ -783,6 +788,34 @@ class BatchObjective(BaseModel):
     #: False while the batch is running, or when it was interrupted and not yet resumed: its
     #: counts are what it has recorded so far.
     complete: bool = False
+    #: The stage that proposed the batch; ``min``/``max``/``mean``/``best_so_far`` are of that
+    #: stage's objective, and ``best_so_far`` starts again with each stage.
+    stage: Optional[str] = None
+
+
+class StageObjective(BaseModel):
+    """One stage of a search, as its history shows it: what it searched, and how it ended.
+
+    ``outcome`` is ``not_run`` for a stage the campaign ended before, ``condition`` for the stage
+    whose answer or region found nothing to stand on (``stop_reason`` names the rule), else
+    ``running``, ``done``, ``stopped``, ``error`` or ``unproductive``. ``unavailable`` is
+    ``multi_objective`` for a stage with several objectives, whose batches have no scalar to
+    trend.
+    """
+
+    idx: int
+    name: str
+    over: list[str] = Field(default_factory=list)
+    objective_name: Optional[str] = None
+    direction: Optional[str] = None
+    outcome: str = "not_run"
+    stop_kind: Optional[str] = None
+    stop_reason: Optional[str] = None
+    #: The cell its answer selected: ``{rule, unit_id, values, objective}``.
+    answer: Optional[dict] = None
+    #: The region it left: ``{rule, cells, box}``.
+    region: Optional[dict] = None
+    unavailable: Optional[str] = None
 
 
 class SearchHistory(BaseModel):
@@ -792,14 +825,16 @@ class SearchHistory(BaseModel):
     cannot. Read from ``campaign.db`` through the record directory, so it is live during a run
     and still there for a finished campaign after a service restart.
 
+    A search runs in one or more stages, each with its own objective, so the trajectory is per
+    stage: ``stages`` lists them in the file's order and each batch names its stage. A search
+    without stages has one, named ``search``.
+
     ``unavailable`` is set instead of returning an empty ``batches`` list, because an empty list
-    reads as "measured, and there was nothing": ``batch_mode`` (not a search), ``multi_objective``
-    (more than one objective, so there is no scalar column to trend — the values are in
-    ``objectives_json``), ``no_store`` (nothing readable).
+    reads as "measured, and there was nothing": ``batch_mode`` (not a search), ``no_store``
+    (nothing readable). A stage with several objectives says so on its own entry.
     """
 
-    objective_name: Optional[str] = None
-    direction: Optional[str] = None
+    stages: list[StageObjective] = Field(default_factory=list)
     batches: list[BatchObjective] = Field(default_factory=list)
     unavailable: Optional[str] = None
 

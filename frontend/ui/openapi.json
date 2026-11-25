@@ -121,6 +121,17 @@
             "default": 0,
             "title": "N Units",
             "type": "integer"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
           }
         },
         "required": [
@@ -131,7 +142,8 @@
           "mean",
           "min",
           "n_scored",
-          "n_units"
+          "n_units",
+          "stage"
         ],
         "title": "BatchObjective",
         "type": "object"
@@ -742,6 +754,18 @@
             "title": "Description",
             "type": "string"
           },
+          "ended_at_stage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At Stage"
+          },
           "error": {
             "default": "",
             "title": "Error",
@@ -855,6 +879,7 @@
           "campaign_id",
           "created_by",
           "description",
+          "ended_at_stage",
           "error",
           "finished_at",
           "mode",
@@ -3530,7 +3555,7 @@
         "type": "object"
       },
       "SearchHistory": {
-        "description": "A search's per-batch objective trajectory: how the objective MOVED, not just its best.\n\nAnswers \"is this search still improving?\", which the single ``Status.best_objective``\ncannot. Read from ``campaign.db`` through the record directory, so it is live during a run\nand still there for a finished campaign after a service restart.\n\n``unavailable`` is set instead of returning an empty ``batches`` list, because an empty list\nreads as \"measured, and there was nothing\": ``batch_mode`` (not a search), ``multi_objective``\n(more than one objective, so there is no scalar column to trend \u2014 the values are in\n``objectives_json``), ``no_store`` (nothing readable).",
+        "description": "A search's per-batch objective trajectory: how the objective MOVED, not just its best.\n\nAnswers \"is this search still improving?\", which the single ``Status.best_objective``\ncannot. Read from ``campaign.db`` through the record directory, so it is live during a run\nand still there for a finished campaign after a service restart.\n\nA search runs in one or more stages, each with its own objective, so the trajectory is per\nstage: ``stages`` lists them in the file's order and each batch names its stage. A search\nwithout stages has one, named ``search``.\n\n``unavailable`` is set instead of returning an empty ``batches`` list, because an empty list\nreads as \"measured, and there was nothing\": ``batch_mode`` (not a search), ``no_store``\n(nothing readable). A stage with several objectives says so on its own entry.",
         "properties": {
           "batches": {
             "items": {
@@ -3539,27 +3564,12 @@
             "title": "Batches",
             "type": "array"
           },
-          "direction": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Direction"
-          },
-          "objective_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Objective Name"
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/StageObjective"
+            },
+            "title": "Stages",
+            "type": "array"
           },
           "unavailable": {
             "anyOf": [
@@ -3575,8 +3585,7 @@
         },
         "required": [
           "batches",
-          "direction",
-          "objective_name",
+          "stages",
           "unavailable"
         ],
         "title": "SearchHistory",
@@ -3948,6 +3957,125 @@
         "title": "ShareWorkspaceArchive",
         "type": "object"
       },
+      "StageObjective": {
+        "description": "One stage of a search, as its history shows it: what it searched, and how it ended.\n\n``outcome`` is ``not_run`` for a stage the campaign ended before, ``condition`` for the stage\nwhose answer or region found nothing to stand on (``stop_reason`` names the rule), else\n``running``, ``done``, ``stopped``, ``error`` or ``unproductive``. ``unavailable`` is\n``multi_objective`` for a stage with several objectives, whose batches have no scalar to\ntrend.",
+        "properties": {
+          "answer": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "idx": {
+            "title": "Idx",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "objective_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Objective Name"
+          },
+          "outcome": {
+            "default": "not_run",
+            "title": "Outcome",
+            "type": "string"
+          },
+          "over": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Over",
+            "type": "array"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          },
+          "stop_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Kind"
+          },
+          "stop_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Reason"
+          },
+          "unavailable": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable"
+          }
+        },
+        "required": [
+          "answer",
+          "direction",
+          "idx",
+          "name",
+          "objective_name",
+          "outcome",
+          "over",
+          "region",
+          "stop_kind",
+          "stop_reason",
+          "unavailable"
+        ],
+        "title": "StageObjective",
+        "type": "object"
+      },
       "StagedArchive": {
         "description": "Where an uploaded campaign archive landed on the service host.\n\nThe PUT that streams the bytes deliberately stops here rather than importing: import is\none op with one report, and making the byte channel a second entrance to it would give\nthe same operation two implementations to keep in step.",
         "properties": {
@@ -4143,6 +4271,18 @@
             ],
             "title": "Search Since"
           },
+          "search_stage": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Stage"
+          },
           "share_error": {
             "anyOf": [
               {
@@ -4286,6 +4426,7 @@
           "results_bytes",
           "runs",
           "search_since",
+          "search_stage",
           "share_error",
           "stage",
           "stall_reason",

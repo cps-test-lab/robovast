@@ -77,6 +77,7 @@ quadrotor_landing/quadrotor_landing.vast
 quadrotor_landing/quadrotor_landing_optuna.vast
 quadrotor_landing/quadrotor_landing_qd.vast
 quadrotor_landing/quadrotor_landing_search.vast
+quadrotor_landing/quadrotor_landing_stages.vast
 quadrotor_landing/scenario.osc
 quadrotor_landing/search/extract.py
 quadrotor_landing/search/metrics.py

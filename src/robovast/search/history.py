@@ -224,9 +224,19 @@ class UnfinishedBatch:
     recalled: frozenset = frozenset()
 
 
-def unfinished_batch(store, campaign_row_id: int) -> Optional[UnfinishedBatch]:
-    """The last batch of *campaign_row_id* when it is not ``complete``, else ``None``."""
+def _batches(store, campaign_row_id: int, stage_id) -> list:
+    """The campaign's batches, or one stage's when *stage_id* is given, in execution order."""
     batches = store.batches(campaign_row_id)
+    if stage_id is None:
+        return batches
+    return [b for b in batches if b["stage_id"] == stage_id]
+
+
+def unfinished_batch(store, campaign_row_id: int,
+                     stage_id: Optional[int] = None) -> Optional[UnfinishedBatch]:
+    """The last batch of *campaign_row_id* (of one stage, given *stage_id*) when it is not
+    ``complete``, else ``None``."""
+    batches = _batches(store, campaign_row_id, stage_id)
     if not batches or batches[-1]["complete"]:
         return None
     batch = batches[-1]
@@ -241,8 +251,9 @@ def unfinished_batch(store, campaign_row_id: int) -> Optional[UnfinishedBatch]:
                            units=units, recalled=frozenset(recalled))
 
 
-def recorded_batches(store, campaign_row_id: int) -> list:
-    """Every complete batch of *campaign_row_id*, in execution order.
+def recorded_batches(store, campaign_row_id: int, stage_id: Optional[int] = None) -> list:
+    """Every complete batch of *campaign_row_id*, in execution order; one stage's, given
+    *stage_id*.
 
     An incomplete last batch is left out (:func:`unfinished_batch`). An incomplete batch
     followed by another is a store that contradicts itself, and raises.
@@ -257,7 +268,14 @@ def recorded_batches(store, campaign_row_id: int) -> list:
     """
     out = []
     by_unit: dict = {}
-    batches = store.batches(campaign_row_id)
+    if stage_id is not None:
+        # A stage may recall a cell an earlier stage measured, so every evaluated unit of the
+        # campaign is one a recalled row can name.
+        for batch in store.batches(campaign_row_id):
+            for row in store.units(batch["id"]):
+                if row["status"] == "evaluated":
+                    by_unit[row["id"]] = _evaluation(row)
+    batches = _batches(store, campaign_row_id, stage_id)
     for position, batch in enumerate(batches):
         if not batch["complete"]:
             if position == len(batches) - 1:
@@ -269,7 +287,7 @@ def recorded_batches(store, campaign_row_id: int) -> list:
         evaluations, recalled = [], []
         for row in rows:
             if row["status"] == "evaluated":
-                by_unit[row["id"]] = _evaluation(row)
+                by_unit.setdefault(row["id"], _evaluation(row))
                 evaluations.append(by_unit[row["id"]])
             elif row["status"] == "recalled":
                 source = by_unit.get(row["recalled_from"])

@@ -27,7 +27,7 @@ A ``.vast`` configuration file has the following top-level structure:
        ...
    execution:
      ...
-   search:                       # optional; see Search
+   search:                       # optional; see Search Section
      ...
    results_processing:
      ...
@@ -1935,6 +1935,39 @@ Which nodes jobs and RoboVAST's own pods may use is decided for the whole cluste
 An archived campaign carrying either key still reads, retriggers and seeds a workspace: the
 keys never affected its run, so they are dropped from the copy with a log line.
 
+
+Search Section
+--------------
+
+**Type:** Mapping
+
+**Required:** No
+
+A ``search:`` block makes the campaign an iterative search instead of a batch, and is mutually
+exclusive with ``configuration:``. Everything it holds is described in :doc:`search`; this is
+the list of its keys.
+
+``strategy``, ``strategy_parameters``
+   How the next cells are chosen. Required without ``stages``.
+``search_space``
+   Every dimension of the search: ``{type: float|int|choice|bool, ...}``. With ``stages``, a
+   dimension may carry ``initial``, the value it stands at before a stage searches it: a value
+   of its type, which may lie outside its domain. ``initial`` is refused where nothing reads it.
+``variations``, ``parameters``
+   The variation template; a ``$name`` marker is the dimension's value in each run.
+``postprocessing``, ``extract``, ``objectives``
+   How a cell is measured and what is optimized.
+``per_batch``, ``repetitions``, ``seed``
+   Cells per batch, runs per cell, the seed every strategy is built with.
+``budget``, ``stopping``
+   When the search ends. Required unless the strategy ends by itself (``grid``).
+``stages``
+   The search as a line of stages, run in the file's order, each naming the dimensions it
+   searches (``over``), its ``strategy`` and how it ends, and optionally its own
+   ``objectives``, ``per_batch`` and ``repetitions``, the region it searches (``within``), the
+   one cell it selects (``answer``) and the region it leaves (``region``). With ``stages``,
+   ``strategy``, ``strategy_parameters``, ``budget`` and ``stopping`` belong to the stages and
+   are refused here.
 
 Results Processing Section
 --------------------------

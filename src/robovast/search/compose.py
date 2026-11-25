@@ -347,8 +347,13 @@ def preview_search_sample(vast_file: str, sample_size: int = 0, *,
     cells those were -- they differ whenever a draw repeats, which a discrete space does
     routinely. ``infeasible`` lists ``{name, params}`` per distinct param set that could
     not be composed, and ``configs`` are the composed config dicts.
+
+    A search in stages is previewed by its first stage, the one a launch runs first: its
+    strategy draws over its own dimensions, and each draw stands at the initial values of the
+    rest, as the campaign's first batch will. ``stage`` names it.
     """
     from robovast.common.config import validate_config
+    from robovast.search.stages import carried, initial_point, stages_of
     from robovast.search.strategy import build_strategy
 
     vast_file = os.path.abspath(vast_file)
@@ -359,20 +364,24 @@ def preview_search_sample(vast_file: str, sample_size: int = 0, *,
     # The campaign's own batch size is the representative sample — it is what one
     # real ask/tell round draws — capped, because composing runs the variation
     # plugins for real and a preview should stay cheap.
-    n = sample_size or min(search_cfg.per_batch, _PREVIEW_SAMPLE_CAP)
+    first = stages_of(search_cfg)[0]
+    n = sample_size or min(first.config.per_batch, _PREVIEW_SAMPLE_CAP)
     # Collapsed exactly as a real batch is, so the preview reports what the campaign would
     # compose rather than failing on a repeat the campaign itself would have absorbed. Both
     # counts are reported: on a discrete space they differ by a lot, and a preview that
     # showed only the survivors would look like a strategy proposing fewer sets than the
     # campaign asked for.
-    drawn = build_strategy(search_cfg, os.path.dirname(vast_file)).ask(n)
-    param_sets = distinct_draws(drawn, "This preview")
+    drawn = build_strategy(first.config, os.path.dirname(vast_file)).ask(n)
+    point = carried(initial_point(search_cfg), first)
+    param_sets = [ParamSet(values={**point, **ps.values}, n_reps=ps.n_reps)
+                  for ps in distinct_draws(drawn, "This preview")]
 
     with tempfile.TemporaryDirectory(prefix="robovast_preview_") as artifacts:
         campaign_data, name_by_id = Compose(vast_file).compose(
             param_sets, artifacts, container_queries=container_queries)
 
     return {
+        "stage": first.name,
         "sampled": len(drawn),
         "distinct": len(param_sets),
         "composed": len(name_by_id),

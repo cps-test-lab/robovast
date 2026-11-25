@@ -852,3 +852,114 @@ def test_an_extractor_s_diagnostics_do_not_cost_the_campaign_its_objective(tmp_p
     assert [b["n_scored"] for b in history["batches"]] == [3, 3], \
         "every evaluated cell is scored -- 0 here is the bug, read as 'measured nothing'"
     assert history["batches"][-1]["best_so_far"] == 0.5
+
+
+class _TwoBatches(_Fixed):
+    """Proposes two batches of one fresh cell each, then has nothing left."""
+    ENDS_ITSELF = True
+
+    def __init__(self, cfg):
+        super().__init__(cfg, [])
+        self._asked = 0
+
+    def ask(self, n):
+        self._asked += 1
+        return [ParamSet(values={"x": 0.1 * self._asked})]
+
+    @property
+    def exhausted(self):
+        return self._asked >= 2
+
+
+def test_a_strategy_that_runs_out_ends_the_search_as_exhausted(tmp_path):
+    cfg = _cfg(budget=[{"batches": 10}])
+    controller, store, backend = _search_controller(cfg, tmp_path, strategy=_TwoBatches(cfg))
+    report = controller.run()
+    assert len(backend.batch_runs) == 2
+    assert report.extra["stop"]["kind"] == "exhausted"
+    conn = sqlite3.connect(store.db_path)
+    assert conn.execute("SELECT stop_kind FROM campaign").fetchone()[0] == "exhausted"
+    conn.close()
+    store.close()
+
+
+def test_a_search_store_before_stages_migrates_to_one_stage_holding_its_batches(tmp_path):
+    """A v16 search campaign ran in one stage over its whole space; the step records that."""
+    from robovast.common.store import _MIGRATION_INITIAL, _MIGRATIONS
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(_MIGRATION_INITIAL)
+    for v in range(1, 16):
+        conn.executescript(_MIGRATIONS[v])
+    config = {"search": {"strategy": "halton", "objectives": [{"name": "m", "direction": "minimize"}],
+                         "search_space": {"x": {"type": "float", "low": 0, "high": 1},
+                                          "y": {"type": "int", "low": 0, "high": 3}}}}
+    conn.execute("INSERT INTO campaign (id, name, mode, config_json, created_at, stop_kind, "
+                 "stop_reason, batches) VALUES (1, 's', 'search', ?, 5.0, 'batches', 'done', 2)",
+                 (json.dumps(config),))
+    conn.execute("INSERT INTO campaign (id, name, mode, config_json) VALUES (2, 'b', 'batch', '{}')")
+    for idx in (0, 1):
+        conn.execute("INSERT INTO batch (campaign_id, idx) VALUES (1, ?)", (idx,))
+    conn.execute("INSERT INTO batch (campaign_id, idx) VALUES (2, 0)")
+    conn.execute("PRAGMA user_version = 16")
+    conn.commit()
+    conn.close()
+
+    with CampaignStore(db) as store:
+        [stage] = store.stages(1)
+        assert (stage["name"], stage["idx"], stage["outcome"]) == ("search", 0, "done")
+        assert json.loads(stage["over_json"]) == ["x", "y"]
+        assert (stage["strategy"], stage["objective"], stage["direction"]) == (
+            "halton", "m", "minimize")
+        assert (stage["stop_kind"], stage["batches"]) == ("batches", 2)
+        assert [b["stage_id"] for b in store.batches(1)] == [stage["id"], stage["id"]]
+        assert store.stages(2) == []
+        assert [b["stage_id"] for b in store.batches(2)] == [None]
+
+
+def test_every_stage_is_declared_not_run_and_opened_and_closed_in_place(tmp_path):
+    with CampaignStore(tmp_path / "c.db") as store:
+        cid = store.create_campaign("c", {})
+        ids = store.declare_stages(cid, [{"name": "a", "over": ["x"]},
+                                         {"name": "b", "over": ["y"], "objective": "m"}])
+        assert store.declare_stages(cid, [{"name": "ignored", "over": []}]) == ids
+        assert [r["outcome"] for r in store.stages(cid)] == ["not_run", "not_run"]
+        store.open_stage(ids[0], space={"x": {"type": "bool"}}, point={"y": 0},
+                         definition_digest="d")
+        store.close_stage(ids[0], outcome="condition", stop_kind="stage_condition",
+                          stop_reason="no cell", batches=1, evaluations=2, runs=4,
+                          answer={"rule": {"select": "worst"}, "cells": 0})
+        a, b = store.stages(cid)
+        assert (a["outcome"], json.loads(a["point_json"]), a["runs"]) == ("condition", {"y": 0}, 4)
+        assert json.loads(a["answer_json"])["cells"] == 0
+        assert b["outcome"] == "not_run" and b["started_at"] is None
+
+
+def test_a_migration_step_that_fails_part_way_leaves_the_store_where_it_was(tmp_path,
+                                                                            monkeypatch):
+    """The 16 -> 17 step creates a table, then fills it; a failure in the filling must not leave
+    the table behind under either number."""
+    from robovast.common import store as store_module
+    from robovast.common.store import _MIGRATION_INITIAL, _MIGRATIONS
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(_MIGRATION_INITIAL)
+    for v in range(1, 16):
+        conn.executescript(_MIGRATIONS[v])
+    conn.execute("PRAGMA user_version = 16")
+    conn.commit()
+    conn.close()
+    broken = list(_MIGRATIONS)
+    broken[16] = _MIGRATIONS[16].replace("FROM campaign c WHERE", "FROM no_such_table c WHERE")
+    monkeypatch.setattr(store_module, "_MIGRATIONS", broken)
+    with pytest.raises(sqlite3.Error):
+        CampaignStore(db)
+    conn = sqlite3.connect(db)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 16
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(batch)")}
+    conn.close()
+    assert "stage" not in tables and "stage_id" not in columns
+    monkeypatch.undo()
+    with CampaignStore(db) as store:            # and the real step lands on the next open
+        assert store._conn.execute("PRAGMA user_version").fetchone()[0] == 17

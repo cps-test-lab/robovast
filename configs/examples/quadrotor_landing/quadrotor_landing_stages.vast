@@ -1,0 +1,50 @@
+version: 7
+metadata:
+  name: quadrotor_landing_stages
+# Three stages: the wind's coin-flip contour, the hardest thrust gain on it, every descent rate.
+# Run with: vast workspace run <workspace> quadrotor_landing_stages.vast
+execution:
+  containers:
+    scenario: {}
+  runs: 5
+  scenario_file: scenario.osc
+  run_files:
+  - "files/*.py"
+search:
+  search_space:
+    thrust_gain: {type: float, low: 0.3, high: 3.0, initial: 1.5}
+    mass: {type: float, low: 0.5, high: 3.0, initial: 1.0}   # searched by no stage: constant
+    descent_rate: {type: choice, values: [0.5, 1.0, 2.0], initial: 1.0}
+    wind_speed: {type: float, low: 0.0, high: 12.0}
+    turbulence: {type: float, low: 0.0, high: 0.5}
+  variations:
+  - variations/wind.py:WindFieldVariation:
+      wind_speed: $wind_speed
+      turbulence: $turbulence
+  postprocessing:
+  - search/metrics.py:QuadMetrics
+  extract:
+    plugin: search/extract.py:QuadExtract
+  objectives:
+  - {name: failure_rate, direction: maximize}
+  per_batch: 8
+  seed: 0
+  stages:
+  - name: wind
+    over: [wind_speed, turbulence]
+    strategy: boundary
+    strategy_parameters: {level: 0.5}
+    budget: [{batches: 4}]
+    answer: {select: nearest-level}
+    region: {band: 0.25, min_cells: 3}   # fewer cells near the contour ends the search here
+  - name: thrust
+    over: [thrust_gain]
+    strategy: optuna
+    budget: [{batches: 3}]
+    answer: {select: worst}
+  - name: descent
+    over: [descent_rate]
+    strategy: grid
+results_processing:
+  postprocessing:
+  - analysis/render.py:DescentVideo

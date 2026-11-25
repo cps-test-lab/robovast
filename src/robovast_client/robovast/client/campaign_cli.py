@@ -630,9 +630,16 @@ def list_cmd(limit, sort_key, descending, as_json):
     size_width = max(len(s) for s in sizes)
     standings = {c["campaign_id"]: _queue_standing(c) for c in listed}
     mark = max(len(t) + 3 for t in standings.values()) if any(standings.values()) else 0
+    # A search that ended before its last stage says where, so `finished` is not read as a
+    # campaign that ran its whole line.
+    phases = {c["campaign_id"]: c["status"] + (f" at {c['ended_at_stage']}"
+                                               if c.get("ended_at_stage") else "")
+              for c in listed}
+    phase_width = max(12, *(len(p) for p in phases.values()))
     for summary, size in zip(listed, sizes):
         standing = standings[summary["campaign_id"]]
-        click.echo(f"  {summary['campaign_id']:<{width}}  {summary['status']:<12} "
+        phase = phases[summary["campaign_id"]]
+        click.echo(f"  {summary['campaign_id']:<{width}}  {phase:<{phase_width}} "
                    + f"{size:>{size_width}}  "
                    + f"{f'[{standing}]' if standing else '':<{mark}}"
                    + f"{summary.get('description', '')}")
@@ -685,6 +692,14 @@ def status_cmd(campaign, as_json):  # pylint: disable=redefined-outer-name
         return
     click.echo(f"  campaign  {campaign_id}")
     click.echo(f"  phase     {report['status']}")
+    stage = report.get("search_stage")
+    stop = report.get("stop") or {}
+    if "stage" in stop:
+        # Before the phase is read as the whole story: `finished` here ran part of the line.
+        line = f"at stage {stop['idx'] + 1}/{stop['of']} {stop['stage']} ({stop.get('rule')})"
+        click.echo(f"  ended     {line}: {stop.get('reason')}")
+    elif stage and stage.get("of", 1) > 1:
+        click.echo(f"  stage     {stage['idx'] + 1}/{stage['of']} {stage['name']}")
     if report["batch_runs_total"]:
         click.echo(f"  runs      {report['batch_runs_done']} / {report['batch_runs_total']}")
     # Only when it happened. A campaign short of a machine is slower than its plan and says so
