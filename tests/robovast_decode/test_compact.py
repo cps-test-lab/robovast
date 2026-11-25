@@ -113,6 +113,18 @@ def test_a_compacted_run_built_again_is_read_from_its_own_file_and_compacted_bac
     assert _rows(campaign, "poses") == before
 
 
+def test_every_compacted_run_built_again_is_compacted_back(campaign):
+    build(str(campaign), tables=["poses"])
+    compact(str(campaign))
+    before = _rows(campaign, "poses")
+    build(str(campaign), tables=["poses"], force=True)
+    assert compacted_runs(read_manifest(str(campaign)), "poses") == set()
+    report = compact(str(campaign))
+    assert report.compacted["poses"] == len(RUNS)
+    assert compacted_runs(read_manifest(str(campaign)), "poses") == {f"{c}/{r}" for c, r in RUNS}
+    assert _rows(campaign, "poses") == before
+
+
 def test_a_run_without_its_verdict_keeps_its_own_file(campaign):
     (campaign / "cfg-b" / "0" / "test.xml").unlink()
     build(str(campaign), tables=["poses"])
