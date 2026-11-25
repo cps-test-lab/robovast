@@ -19,7 +19,7 @@ import logging
 import math
 import re
 from functools import lru_cache
-from typing import Annotated, Any, ClassVar, Literal, Optional, Union
+from typing import Annotated, Any, ClassVar, Literal, Optional, Union, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -2169,6 +2169,8 @@ class FloatDim(BaseModel):
     low: float
     high: float
     log: bool = False
+    #: The value the dimension stands at before a stage searches it (``search.stages``).
+    initial: Optional[Any] = None
 
     @model_validator(mode='after')
     def _check_bounds(self):
@@ -2187,6 +2189,8 @@ class IntDim(BaseModel):
     high: int
     log: bool = False
     step: Optional[int] = None
+    #: The value the dimension stands at before a stage searches it (``search.stages``).
+    initial: Optional[Any] = None
 
     @model_validator(mode='after')
     def _check_bounds(self):
@@ -2204,6 +2208,8 @@ class ChoiceDim(BaseModel):
     model_config = ConfigDict(extra='forbid')
     type: Literal['choice']
     values: list[Any]
+    #: The value the dimension stands at before a stage searches it (``search.stages``).
+    initial: Optional[Any] = None
 
     @field_validator('values')
     @classmethod
@@ -2217,6 +2223,31 @@ class BoolDim(BaseModel):
     """A boolean search dimension — sugar for a two-value categorical."""
     model_config = ConfigDict(extra='forbid')
     type: Literal['bool']
+    #: The value the dimension stands at before a stage searches it (``search.stages``).
+    initial: Optional[Any] = None
+
+
+def _initial_problem(dim) -> Optional[str]:
+    """Why *dim*'s ``initial`` is not a value of its type, or ``None`` when it is one.
+
+    An initial may lie outside the declared domain -- a count searched in 1..3 can stand at 0
+    before its stage -- so only the type is checked.
+    """
+    value, kind = dim.initial, dim.type
+    if value is None:
+        return None
+    if kind == 'bool':
+        ok = isinstance(value, bool)
+    elif kind == 'int':
+        ok = isinstance(value, int) and not isinstance(value, bool)
+    elif kind == 'float':
+        ok = isinstance(value, (int, float)) and not isinstance(value, bool)
+    else:
+        ok = not isinstance(value, (dict, list))
+    if ok:
+        return None
+    what = {'int': 'an int', 'float': 'a float', 'bool': 'a bool', 'choice': 'a scalar'}[kind]
+    return f"initial {value!r} is not {what}"
 
 
 # Typed search-space dimension; discriminated on the ``type`` tag so that a
@@ -2448,6 +2479,233 @@ class ObjectiveSpec(BaseModel):
     direction: Literal['maximize', 'minimize'] = 'maximize'
 
 
+#: What ``answer.select`` may name; the rules :mod:`robovast.search.chain` applies.
+SelectRule = Literal['worst', 'nearest-level', 'feasible-min']
+SELECT_RULES = get_args(SelectRule)
+
+
+class AnswerRule(BaseModel):
+    """The rule that selects a stage's one cell (``search.stages[].answer``).
+
+    Applied to the stage's own evaluated cells by :func:`robovast.search.chain.select_cell`:
+    ``select`` is the rule (``worst`` when not given), ``feasible`` restricts it to cells whose
+    named measure is true, ``level`` is what ``nearest-level`` reads (the stage's
+    ``strategy_parameters.level`` when not given).
+    """
+    model_config = ConfigDict(extra='forbid')
+    select: Optional[SelectRule] = None
+    feasible: Optional[str] = None
+    level: Optional[float] = None
+
+
+class RegionRule(BaseModel):
+    """The region a stage leaves (``search.stages[].region``): the box around its cells near a level.
+
+    Built by :func:`robovast.search.chain.region_box`: the cells whose objective lies within
+    ``band`` of ``level`` (the stage's ``strategy_parameters.level`` when not given), each
+    float or int dimension widened by ``pad`` of its declared range (0.1 when not given), a
+    choice or bool held to the values those cells hold; fewer than ``min_cells`` (3 when not
+    given) ends the campaign.
+    """
+    model_config = ConfigDict(extra='forbid')
+    band: float
+    pad: Optional[float] = None
+    min_cells: Optional[int] = None
+    level: Optional[float] = None
+
+    @field_validator('band', 'pad')
+    @classmethod
+    def _not_negative(cls, v, info):
+        if v is not None and v < 0:
+            raise ValueError(f"region {info.field_name} must be >= 0, got {v}")
+        return v
+
+    @field_validator('min_cells')
+    @classmethod
+    def _a_box_needs_a_cell(cls, v):
+        if v is not None and v < 1:
+            raise ValueError(f"region min_cells must be >= 1, got {v}: a box needs a cell")
+        return v
+
+
+_STAGE_NAME = re.compile(r'^[a-z][a-z0-9_-]*$')
+#: The name of the one stage a search without ``stages:`` runs; no declared stage takes it.
+IMPLICIT_STAGE = "search"
+
+
+class StageConfig(BaseModel):
+    """One stage of a search (``search.stages[]``): the dimensions it searches and how.
+
+    A dimension the stage does not search stands at the answer of the last stage that searched
+    it, and before any did, at its ``initial``. ``objectives``, ``per_batch`` and
+    ``repetitions`` default to the search's; ``strategy``, its parameters and the way the stage
+    ends are its own. See ``docs/search.rst``, "A search in stages".
+    """
+    model_config = ConfigDict(extra='forbid')
+    name: str
+    over: list[str]
+    strategy: str
+    strategy_parameters: dict[str, Any] = {}
+    objectives: Optional[list[ObjectiveSpec]] = None
+    per_batch: Optional[int] = None
+    repetitions: Optional[RepetitionsConfig] = None
+    budget: Optional[list[BudgetCriterion]] = None
+    stopping: Optional[list[StopCriterion]] = None
+    within: Optional[str] = None
+    answer: Optional[AnswerRule] = None
+    region: Optional[RegionRule] = None
+
+    @field_validator('name')
+    @classmethod
+    def _name(cls, v: str) -> str:
+        if not _STAGE_NAME.match(v):
+            raise ValueError(f"stage name {v!r} must match [a-z][a-z0-9_-]*")
+        if v == IMPLICIT_STAGE:
+            raise ValueError(f"stage name {v!r} is taken: it names the one stage of a search "
+                             "without stages")
+        return v
+
+    @field_validator('budget', mode='before')
+    @classmethod
+    def _norm_budget(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, list):
+            raise ValueError("a stage's budget must be a list of single-key mappings")
+        return [_normalize_criterion(e, _BUDGET_SCALAR, 'budget') for e in v]
+
+    @field_validator('stopping', mode='before')
+    @classmethod
+    def _norm_stopping(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, list):
+            raise ValueError("a stage's stopping must be a list of single-key mappings")
+        return [_normalize_criterion(e, _STOPPING_SCALAR, 'stopping') for e in v]
+
+    @field_validator('per_batch')
+    @classmethod
+    def _positive_per_batch(cls, v):
+        if v is not None and v < 1:
+            raise ValueError(f"a stage's per_batch must be >= 1, got {v}")
+        return v
+
+    @field_validator('objectives')
+    @classmethod
+    def _non_empty_objectives(cls, v):
+        if v is not None and not v:
+            raise ValueError("a stage's objectives, when given, declare at least one")
+        return v
+
+    def level(self, rule) -> Optional[float]:
+        """The level *rule* (an answer or a region) reads: its own, else the strategy's."""
+        if rule is not None and rule.level is not None:
+            return rule.level
+        level = (self.strategy_parameters or {}).get('level')
+        return None if level is None else float(level)
+
+
+def _stage_problems(search) -> list[str]:
+    """Every sentence refusing *search*'s ``stages``, in the order a reader would fix them.
+
+    *search* is a :class:`SearchConfig` whose own fields have validated. A pure walk over the
+    file's stages: what a stage stands on is decided here, by the rule that a dimension it does
+    not search stands at the answer of the last stage that searched it, and before any did, at
+    its initial.
+    """
+    space, stages = search.search_space, search.stages
+    if not stages:
+        return ["search.stages is empty: leave it out for a search in one stage"]
+    problems = []
+    verbs = {'strategy': 'choose for', 'strategy_parameters': 'tune',
+             'budget': 'bound', 'stopping': 'end'}
+    for key, verb in verbs.items():
+        if getattr(search, key):
+            problems.append(f"search.{key} is refused with search.stages: each stage states "
+                            f"its own, so one here would {verb} none of them")
+    names = [st.name for st in stages]
+    for name in dict.fromkeys(n for n in names if names.count(n) > 1):
+        problems.append(f"search.stages: stage {name!r} is named twice; within: and the record "
+                        "address a stage by its name")
+    by_name = {}
+    last_searcher: dict = {}
+    initial_read: set = set()
+    for k, st in enumerate(stages):
+        label = f"stage {st.name!r}"
+        if not st.over:
+            problems.append(f"{label} searches nothing: over: names at least one dimension")
+        for dim in dict.fromkeys(d for d in st.over if st.over.count(d) > 1):
+            problems.append(f"{label} names {dim!r} twice in over:")
+        unknown = [d for d in st.over if d not in space]
+        for dim in unknown:
+            problems.append(f"{label} searches {dim!r}, which search_space does not declare; "
+                            f"declared: [{', '.join(sorted(space))}]")
+        if st.within is not None:
+            earlier = names[:k]
+            source = by_name.get(st.within)
+            if source is None:
+                problems.append(f"{label} searches within {st.within!r}, which is no earlier "
+                                f"stage; earlier: [{', '.join(earlier)}]")
+            elif source.region is None:
+                problems.append(f"{label} searches within {st.within!r}, which leaves no "
+                                f"region: give {st.within!r} a region")
+            elif set(source.over) != set(st.over):
+                problems.append(
+                    f"{label} searches [{', '.join(st.over)}] within {st.within!r}, whose region "
+                    f"is over [{', '.join(source.over)}]; a stage within a region searches that "
+                    "region's dimensions")
+        objectives = st.objectives or search.objectives
+        if (st.answer or st.region) and len(objectives) != 1:
+            problems.append(f"{label} has {len(objectives)} objectives; an answer and a region "
+                            "read one: give the stage one objective")
+        single_only = {'target_objective', 'no_improvement'}
+        for crit in (st.stopping or []):
+            if crit.type in single_only and len(objectives) != 1:
+                problems.append(f"{label}: stopping '{crit.type}' requires a single objective, "
+                                f"but {len(objectives)} are configured")
+        if st.answer is not None:
+            select = st.answer.select or 'worst'
+            if st.answer.level is not None and select != 'nearest-level':
+                problems.append(f"{label}: answer.level would change nothing: only select "
+                                "nearest-level reads it")
+            if select == 'nearest-level' and st.level(st.answer) is None:
+                problems.append(f"{label}: answer select nearest-level needs a level: give "
+                                "answer.level, or a strategy_parameters.level")
+        if st.region is not None:
+            if st.level(st.region) is None:
+                problems.append(f"{label}: a region is the cells near a level, and it has none: "
+                                "give region.level, or a strategy_parameters.level")
+            ranged = [d for d in st.over if d in space and space[d].type in ('float', 'int')]
+            if st.region.pad is not None and not ranged and not unknown:
+                problems.append(f"{label}: region.pad would change nothing: "
+                                f"[{', '.join(st.over)}] are choices or booleans, which have no "
+                                "range to widen")
+        for dim in space:
+            if dim in st.over:
+                continue
+            if dim not in last_searcher:
+                if space[dim].initial is None:
+                    problems.append(f"{label} stands on {dim!r} before any stage searches it, "
+                                    f"and search_space.{dim} has no initial: give it one")
+                else:
+                    initial_read.add(dim)
+                continue
+            source = stages[last_searcher[dim]]
+            if source.answer is None:
+                problems.append(f"{label} stands on {dim!r} at the answer of {source.name!r}, "
+                                f"the last stage to search it, and {source.name!r} has no "
+                                "answer: give it one")
+        for dim in st.over:
+            last_searcher[dim] = k
+        by_name.setdefault(st.name, st)
+    for dim, spec in space.items():
+        if spec.initial is not None and dim not in initial_read:
+            first = next((st.name for st in stages if dim in st.over), None)
+            problems.append(f"search_space.{dim}: initial would change nothing: {first!r}, "
+                            "the first stage, searches it")
+    return problems
+
+
 class SearchConfig(BaseModel):
     """Closed-loop search over a typed parameter space.
 
@@ -2464,7 +2722,8 @@ class SearchConfig(BaseModel):
     entry-point names or local files relative to the ``.vast``.
     """
     model_config = ConfigDict(extra='forbid')
-    strategy: str
+    #: Required without ``stages``; with them, each stage names its own and this is refused.
+    strategy: Optional[str] = None
     search_space: dict[str, SearchDim]
     extract: ExtractConfig
     objectives: list[ObjectiveSpec]
@@ -2499,6 +2758,9 @@ class SearchConfig(BaseModel):
     postprocessing: Optional[list[Union[str, dict[str, Any]]]] = None
     # Free-form; validated by the strategy plugin's own params model at load.
     strategy_parameters: dict[str, Any] = {}
+    #: The search as a line of stages, run in this order; absent, the search is one stage over
+    #: the whole ``search_space``. See :class:`StageConfig`.
+    stages: Optional[list[StageConfig]] = None
 
     @field_validator('budget', mode='before')
     @classmethod
@@ -2558,13 +2820,28 @@ class SearchConfig(BaseModel):
         return v
 
     @model_validator(mode='after')
+    def _validate_stages(self):
+        problems = [f"search_space.{name}: {why}" for name, dim in self.search_space.items()
+                    for why in [_initial_problem(dim)] if why]
+        if self.stages is None:
+            if self.strategy is None:
+                problems.append("search.strategy is required: a search without stages names "
+                                "its strategy")
+            problems += [f"search_space.{name}: initial would change nothing without stages: "
+                         "every dimension is searched from the first batch"
+                         for name, dim in self.search_space.items()
+                         if dim.initial is not None and not _initial_problem(dim)]
+        else:
+            problems += _stage_problems(self)
+        if problems:
+            raise ValueError("; ".join(problems))
+        return self
+
+    @model_validator(mode='after')
     def _validate_stopping(self):
-        # A search needs at least one way to end: a budget cap or a stopping
-        # criterion. Without either it would run forever.
-        if not self.budget and not self.stopping:
-            raise ValueError(
-                "a search must define at least one 'budget' or 'stopping' "
-                "criterion (e.g. budget: [{type: batches, value: 20}])")
+        # Whether a search has a way to end depends on its strategy as well -- one that
+        # runs out of cells ends by itself -- so it is checked where the strategy class is
+        # resolved: robovast.search.strategy.needs_an_end.
         # target_objective / no_improvement compare the single objective, so they
         # require a single-objective search (matches SearchStrategy.single_objective).
         single_only = {'target_objective', 'no_improvement'}

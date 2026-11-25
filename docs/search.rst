@@ -244,8 +244,8 @@ Strategies
 
 All strategies share the universal core and differ only in how they propose the
 next batch and what ``report()`` returns. The built-ins are complementary —
-coverage (``random``, ``halton``), diversity (``qd``), exploitation (``optuna``)
-and boundary tracing (``boundary``).
+coverage (``random``, ``halton``), exhaustion (``grid``), diversity (``qd``), exploitation
+(``optuna``) and boundary tracing (``boundary``).
 
 random
 ^^^^^^
@@ -291,6 +291,29 @@ practice a scipy dependency, and a *baseline* that only runs when an extra is in
 is not a baseline. Halton's known weakness is high dimensions, where the larger prime
 bases correlate — it is refused above 20 dimensions rather than quietly degrading, and a
 search space of the size these campaigns declare is nowhere near that.
+
+grid — every cell, once
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Runs every cell of a finite search space, once: the Cartesian product of the dimensions in the
+order ``search_space`` declares them, each dimension's values in its own order — a ``choice`` as
+listed, a ``bool`` as ``false, true``, an ``int`` from ``low`` to ``high`` on its ``step``. It is
+the strategy for "run these configurations", and the exhaustive reference a sampling strategy is
+compared against. Ships in the base install.
+
+.. code-block:: yaml
+
+   search:
+     strategy: grid             # no strategy_parameters
+     search_space:
+       config: {type: choice, values: [default, careful]}
+       count:  {type: int, low: 1, high: 3}
+     per_batch: 6               # cells proposed per batch
+
+A grid needs no ``budget``: once every cell has been proposed it ends with stop kind
+``exhausted``. A budget it is given cuts it short, which is how a pilot runs a few of its cells.
+A ``float`` has no finite set of values and is refused by name; write it as an ``int`` with a
+``step``, or as a ``choice`` of the values to run.
 
 boundary — trace a level set
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -430,13 +453,147 @@ Custom strategies/extractors are file-loadable too — the same
 :ref:`extending-search-strategy` and :ref:`extending-extractor` in the developer
 guide.
 
+A search in stages
+------------------
+
+A compound question — *where does the obstacle start to matter, then how fast may a person
+walk past it, then which configuration copes with the worst of that?* — is a **search in
+stages**: one campaign, one file, whose stages run in the order the file gives them, each
+standing on what the stages before it found. A search without ``stages:`` is the case of one
+stage, over the whole space.
+
+.. code-block:: yaml
+
+   search:
+     search_space:                 # every dimension of the whole search, once
+       form:   {type: choice, values: [rod, box]}
+       width:  {type: float, low: 0, high: 10}
+       speed:  {type: float, low: 0.0, high: 2.0, initial: 0.0}
+       config: {type: choice, values: [default, careful], initial: default}
+     variations:
+     - ParameterVariationList:
+         sim: [obstacle.form, obstacle.width, human.speed, nav.config]
+         values: [[$form, $width, $speed, $config]]
+     extract: {plugin: ...}
+     objectives: [{name: margin, direction: minimize}]
+     per_batch: 16
+     seed: 0
+     stages:
+     - name: obstacle
+       over: [form, width]
+       strategy: boundary
+       strategy_parameters: {level: 0.0}
+       budget: [{runs: 512}]
+       answer: {select: nearest-level, feasible: success}
+     - name: human
+       over: [speed]
+       strategy: boundary
+       strategy_parameters: {level: 0.0}
+       budget: [{runs: 512}]
+       region: {band: 5, min_cells: 3}
+     - name: hardest
+       over: [speed]
+       within: human
+       strategy: optuna
+       objectives: [{name: hardest, direction: minimize}]
+       budget: [{runs: 256}]
+       answer: {select: feasible-min, feasible: success}
+     - name: decision
+       over: [config]
+       strategy: grid
+
+``obstacle`` searches ``form`` and ``width`` with ``speed`` at its initial value; ``human``
+searches ``speed`` on the obstacle ``obstacle`` selected and leaves a region, the cells within
+the band of the level; ``hardest`` searches ``speed`` again inside that region; ``decision`` runs
+every value of ``config`` on the point the stages before it built.
+
+Three rules make the line, in this order of weight:
+
+* **The space is stated once.** ``search_space`` holds every dimension with its full domain. A
+  stage declares no dimension; ``over`` names the ones it searches.
+* **A stage has one answer: one cell.** ``answer`` selects it from the stage's own cells, so the
+  rule belongs to the stage that produced them, not to the stage that uses it.
+* **The search carries one point.** A dimension a stage does not search stands at the answer of
+  the last stage that searched it, and before any did, at its ``initial`` — a value of its type,
+  which may lie outside its domain (a count searched in 1 to 3 stands at 0 before its stage).
+  A ``$name`` marker is the dimension's value in this run, searched or carried.
+
+**A stage** names its ``strategy`` (and ``strategy_parameters``) and how it ends (``budget``,
+``stopping``; a ``grid`` stage needs neither). ``objectives``, ``per_batch`` and
+``repetitions`` are the search's unless the stage gives its own. ``strategy``,
+``strategy_parameters``, ``budget`` and ``stopping`` at the search's level are refused with
+stages: each stage states its own, so one there would govern none of them.
+
+**Between two stages** the stage that just ended is read from the campaign's own record and two
+rules are applied to its cells, the same every time, so the same record always gives the same
+cell:
+
+``answer: {select, feasible, level}``
+   the one cell — ``worst`` (default), ``nearest-level`` or ``feasible-min`` — among the cells
+   whose ``feasible`` measure is true. ``level`` defaults to the stage's
+   ``strategy_parameters.level``; only ``nearest-level`` reads it.
+``region: {band, pad, min_cells, level}``
+   the cells whose objective lies within ``band`` of ``level`` form a box over the stage's
+   dimensions: a float or int their span widened by ``pad`` (default 0.1) of the declared range
+   and clipped to it, a choice or bool the values those cells hold. ``within: <stage>`` makes a
+   later stage search that box over the same dimensions.
+
+A stage that carries an answer or a region has one objective, which the rules read.
+
+**What validation refuses before the run**, each by name: a stage that stands on a dimension
+with no value yet (searched by no earlier stage and without an ``initial``); a stage read for an
+answer it does not select; ``within`` a stage that is not earlier, leaves no region or searches
+other dimensions; an answer or region over several objectives; a rule option that would change
+nothing; an ``initial`` nothing reads; a strategy that cannot search a dimension's type (``grid``
+over a float); a stage with no way to end; a stage named ``search``, the name of the one stage
+of a search without stages.
+
+**No pause between stages.** What a person would check by looking is a condition of the stage:
+an ``answer`` with no cell that satisfies it, or a ``region`` with fewer cells than
+``min_cells``, ends the campaign at that stage. It ends ``finished`` — it ran as written, and
+its answer is that no cell satisfies the condition — with stop kind ``stage_condition``, a
+reason naming the stage and the rule, and the stages after it recorded as not run; every stage's
+runs stay in the record and are postprocessed. Every surface shows such a campaign as one that
+ended at that stage. An external stop or an unproductive stage ends the campaign in the stage it
+hits, in the same way. **A pilot is the same file with small stage budgets.**
+
+**The budget is per stage.** A stage's ``budget`` and ``stopping`` count its own batches,
+evaluations, runs and time since it began. A cell is measured once per campaign: a stage that
+proposes a full point an earlier stage measured is told what that cell scored, and it costs no
+runs — ``decision`` above re-proposes the cell ``hardest`` selected, and runs only the other
+configuration.
+
+**The record says what happened between the stages.** ``campaign.stage`` has one row per stage:
+the dimensions it searched and their domains as searched, the point it stood on, the region it
+read, what ended it, what it spent, the cell its ``answer`` selected and the rule that selected
+it, the region it left. ``run_view.stage`` names the stage that proposed each run::
+
+   SELECT name, outcome, answer_json, region_json FROM campaign.stage ORDER BY idx;
+   SELECT stage, COUNT(*), MIN(objective) FROM run_view GROUP BY stage;
+
+``configs/examples/quadrotor_landing/quadrotor_landing_stages.vast`` is a search in three
+stages over the toy quadrotor: the wind's coin-flip contour, the hardest thrust gain on the
+wind it selected, then every descent rate on that point.
+
+**What one file cannot hold is not supported.** A stage has one answer, so selecting several
+cells from one stage -- one per value of a choice, or per bin of a float, as a validation set over
+finished stages would need -- is not supported; nor is a stage conditioned on a cell that
+*another* campaign selected. The stages of one file run in its order, a line with no branch and
+no join, and every input a stage reads is a stage of the same file.
+
+**A restart** re-enters the stage the campaign had reached: the stages before it are taken from
+the record, and the stage itself resumes as a search does (`Surviving a service restart`_), its
+``time`` budget measured from when it began.
+
 When does a search stop?
 ------------------------
 
 Two parallel lists of typed criteria decide when a search ends — **``budget``**
 (resource caps) and **``stopping``** (convergence / quality). All entries are
 **OR-combined**: the search stops as soon as *any* one fires. At least one
-criterion (across the two) is **required** — a search needs a way to end.
+criterion (across the two) is **required** — a search needs a way to end — unless its
+strategy runs out of proposals by itself, as ``grid`` does: such a search ends with stop kind
+``exhausted`` once it has proposed every cell, and a budget it is given caps it earlier.
 Everything is evaluated centrally by the controller after each batch against a
 uniform progress snapshot, so the **same criteria work for every strategy**
 (``random``, ``qd``, ``optuna``) with no per-strategy code.
@@ -468,6 +625,11 @@ multi-field criteria use a nested mapping (``- metric: {name: ..., value: ...}``
   is not counted.
 * ``runs`` — stop after this many individual **executions**. Counted from what each
   batch asks for, so it bounds wall-clock rather than results.
+
+In a search in stages these count within the stage. Two kinds end a search without being
+declared: ``exhausted``, when a strategy that ends by itself (``grid``) has proposed every cell,
+and ``stage_condition``, when a stage's ``answer`` or ``region`` found nothing to stand on (see
+`A search in stages`_).
 
 .. note::
 
@@ -545,6 +707,13 @@ so it needs no postprocessing at all and is available while the search is still 
 Each batch carries ``complete``: false while it runs, or after an interruption until the
 resume finishes it, so its counts are what it has recorded so far. ``batches_since_improvement``
 counts complete batches only.
+
+The trajectory is per stage. The route's ``stages`` lists every stage of the file — its
+dimensions, objective and direction, its ``outcome`` (``not_run`` for one the campaign has not
+reached or ended before), the cell its answer selected and the region it left — and each batch
+names its ``stage``, whose ``best_so_far`` starts again with it in that stage's direction; a
+search without stages has one, ``search``. The campaign status names the stage a search is in
+(``search_stage``: ``{idx, name, of}``), and its budget and best objective are that stage's.
 
 A **second** stop, once the campaign has reached ``postprocessing``, cancels that instead:
 the runs and their results are kept and only the derived data is missing, which
@@ -756,5 +925,5 @@ Running a search
 has a ``search:`` block it drives the search loop, otherwise it runs a batch.
 Results, per-batch outputs and a live-queryable ``campaign.db`` are written
 under a timestamped campaign directory in the service's results root. See ``configs/examples/quadrotor_landing/`` for
-runnable random, QD and Optuna variants over one shared scenario, sim and
+runnable random, QD, Optuna and staged variants over one shared scenario, sim and
 extract.

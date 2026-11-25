@@ -127,7 +127,11 @@ def classify(base: dict, head: dict) -> "tuple[bool, list[str], list[str]]":
                 additive.append(f"{key[0]} extra: {was_type} -> {is_type}")
             continue
         if was_type != is_type:
-            if key in _ANNOTATION_CORRECTIONS:
+            if is_type == f"Union[{was_type}, NoneType]" and not is_required:
+                # Widened to also accept "absent": every value that loaded before still
+                # loads and means what it meant, so no file needs a step.
+                additive.append(f"{key[0]}.{key[1]} type {was_type} -> {is_type} (widened)")
+            elif key in _ANNOTATION_CORRECTIONS:
                 additive.append(
                     f"{key[0]}.{key[1]} type {was_type} -> {is_type} "
                     f"(correction: {_ANNOTATION_CORRECTIONS[key]})")

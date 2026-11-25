@@ -63,7 +63,10 @@ Every group is named after what it acts on, so the group tells you what you are 
        launches in one step; ``--wait-and-download`` blocks and pulls the results down.
    * - ``vast campaign list|status``
      - What has run, and where one campaign has got to. The list marks a live campaign whose
-       queue priority or hold is not the default (``[prio -1]``, ``[paused]``). ``--json``
+       queue priority or hold is not the default (``[prio -1]``, ``[paused]``). A search in
+       stages shows the stage it is in (``stage 2/4 human``); one that ended before its last
+       stage says where (``finished at human`` in the list, ``ended at stage 2/4 human
+       (region): ...`` in the status). ``--json``
        prints one JSON object with the fields the MCP ``list_campaigns`` and
        ``get_campaign_status`` tools return (stall verdict, health findings and ``next_step``
        included), with the ``Target:`` line on stderr so stdout parses.

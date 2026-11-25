@@ -1540,7 +1540,7 @@ parameter sets, is told their evaluations, and produces a final report. Strategi
 are algorithm-agnostic and share one config schema; only the per-strategy
 ``strategy_parameters`` block differs.
 
-Subclass ``robovast.search.strategy.SearchStrategy`` and implement the four
+Subclass ``robovast.search.strategy.SearchStrategy`` and implement the three
 abstract methods. Optionally set ``PARAMS_MODEL`` to a Pydantic model — the
 framework validates ``search.strategy_parameters`` against it and passes the
 parsed object as ``params``:
@@ -1565,10 +1565,6 @@ parsed object as ``params``:
            """Ingest the evaluations of the batch just run."""
            ...
 
-       def is_done(self) -> bool:
-           """True when the budget is exhausted / converged."""
-           ...
-
        def report(self) -> SearchReport:
            """Return the deliverable (ranked best, archive, Pareto front)."""
            ...
@@ -1576,6 +1572,17 @@ parsed object as ``params``:
 ``self.search_space``, ``self.objectives`` and the validated ``self.params`` are
 available on the instance. For single-objective strategies, ``self.objective_value(ev)``
 returns the sole objective sign-oriented so that **higher is always better**.
+
+``DIMENSION_TYPES`` names the ``search_space`` types the strategy can search; it is every type
+(``float``, ``int``, ``choice``, ``bool``) unless a strategy declares fewer. A dimension of any
+other type is refused by name -- by ``vast configuration validate`` and again when the strategy is
+built -- rather than met by the strategy mid-campaign.
+
+A strategy that runs out of proposals by itself sets ``ENDS_ITSELF = True`` and answers its
+``exhausted`` property True once it has proposed everything; the loop reads it after each batch is
+told and ends the search with stop kind ``exhausted``. Such a search needs no ``budget`` or
+``stopping``; any other is refused without one. When to stop otherwise is the controller's, not
+the strategy's: ``budget`` and ``stopping`` are evaluated centrally for every strategy.
 
 Register the class under ``robovast.search_strategies``; the key is the
 ``search.strategy`` name:
@@ -1662,11 +1669,11 @@ batch per ask/tell round.
 Schema
 ^^^^^^
 
-``robovast.common.store.CampaignStore`` is a thin wrapper over seven tables: the five below, plus ``node`` (one row per
+``robovast.common.store.CampaignStore`` is a thin wrapper over eight tables: the six below, plus ``node`` (one row per
 cluster node a job ran on, keyed by a hash of its name) and ``container_failure`` (one row per
 container restart the runner saw under a job)::
 
-    campaign (1) --< batch (1) --< unit (one per param set / config) (1) --< run (one per repetition)
+    campaign (1) --< stage (search only) (1) --< batch (1) --< unit (one per param set / config) (1) --< run (one per repetition)
     campaign (1) --< job  (one per execution job)  ...............<  run (via run.job_id)
 
 * **campaign** — ``mode`` (``batch``/``search``), ``config_dir`` (base directory
@@ -1690,8 +1697,20 @@ container restart the runner saw under a job)::
   because sysinfo is written by the *job*, the unit that ran on a host, and its run
   reaches it through the run dir's ``job`` symlink. ``job_dir`` is campaign-relative (``_jobs/batch-0/job-3``), or the
   run's own directory for an older layout that wrote sysinfo beside the run.
+* **stage** — one stage of a search (:doc:`search`, "A search in stages"); a search without
+  ``stages:`` has one, named ``search``. Every stage of the file has its row from launch, with
+  ``outcome`` ``not_run`` until it starts, so a campaign that ends early records the stages that
+  never ran. ``over_json`` and ``space_json`` are the dimensions it searched and their domains as
+  searched, ``point_json`` the values it stood on for every other dimension, ``within`` and
+  ``region_from_json`` the region it read. ``answer_json`` and ``region_json`` are what it
+  selected and the region it left, with the rule that produced them -- or, on a stage whose
+  condition failed, the rule and what it saw. ``stop_kind``/``stop_reason`` are what ended the
+  stage, ``batches``/``evaluations``/``runs`` what it spent, ``definition_digest`` a hash of its
+  resolved definition and of the point it stood on. A store from before schema 17 has its search
+  campaigns migrated to one ``search`` stage holding every batch.
 * **batch** — one ask/tell round (search), or the single batch (``idx=0``) of a
-  batch-mode campaign. ``asked`` is how many parameter sets the strategy proposed, and
+  batch-mode campaign. ``stage_id`` is the stage that proposed it (NULL in batch mode); ``idx``
+  counts across the whole campaign, not per stage. ``asked`` is how many parameter sets the strategy proposed, and
   ``recalls_recorded`` is 1 on every batch whose recalled cells have rows (NULL on one
   written before schema 14). ``complete`` is 1 once every unit of the batch is recorded;
   NULL on a batch still running or interrupted, whose units are not what it ended with.
@@ -1710,6 +1729,18 @@ container restart the runner saw under a job)::
   within the config dir — so it is **not unique on its own**; ``config_name`` lives
   on ``unit``. ``job_id`` points at the job it ran in. A run whose ``test.xml`` is
   missing or unparseable is still recorded, as ``unknown`` — never dropped.
+
+A search runs as a line of stages (:mod:`robovast.search.stages`; a search without
+``stages:`` is one). ``CampaignController._run_search`` declares every stage's row, then for each
+stage builds its strategy, stop conditions and repetition policy from the stage's
+``SearchConfig`` -- its own dimensions, over their declared domains or the region it searches
+within -- runs the ask/evaluate/tell loop, and applies its ``answer`` and ``region`` through
+:mod:`robovast.search.chain` to its own cells. Each cell has two forms: the strategy proposes and
+is told it over the stage's dimensions only, because strategies key their bookkeeping on
+``ParamSet.id``, which is a hash of the values; composition, the ``unit`` row, the result
+directory and recall use it over every dimension, completed with the point the stage stands on.
+The evaluator scores every objective any stage reads, so a cell recalled by a later stage carries
+that stage's objective, and ``unit.objective`` is the proposing stage's.
 
 These rows are also a search's checkpoint: ``search.history.recorded_batches`` reads the
 complete batches back into the ``ask``/``tell`` sequence a resumed strategy is re-driven

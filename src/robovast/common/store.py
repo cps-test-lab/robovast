@@ -151,7 +151,8 @@ CREATE TABLE IF NOT EXISTS batch (
     created_at  REAL,
     asked       INTEGER,         -- parameter sets the strategy PROPOSED for this batch
     recalls_recorded INTEGER,    -- 1: its recalled cells have unit rows; NULL: written before they could
-    complete    INTEGER          -- 1: all its units are recorded; NULL: running or interrupted
+    complete    INTEGER,         -- 1: all its units are recorded; NULL: running or interrupted
+    stage_id    INTEGER REFERENCES stage(id)  -- the search stage that proposed it; NULL in batch mode
 );
 CREATE TABLE IF NOT EXISTS unit (
     id            INTEGER PRIMARY KEY,
@@ -239,6 +240,31 @@ CREATE TABLE IF NOT EXISTS container_failure (
 );
 CREATE INDEX IF NOT EXISTS idx_container_failure_campaign
     ON container_failure (campaign_id);
+CREATE TABLE IF NOT EXISTS stage (
+    id               INTEGER PRIMARY KEY,
+    campaign_id      INTEGER NOT NULL REFERENCES campaign(id),
+    idx              INTEGER NOT NULL,      -- the stage's position in the file, from 0
+    name             TEXT NOT NULL,
+    over_json        TEXT,       -- JSON [dim, ...]: the dimensions it searched
+    space_json       TEXT,       -- JSON {dim: domain}: them as searched, declared or a region read
+    point_json       TEXT,       -- JSON {dim: value}: every other dimension it stood on
+    within           TEXT,       -- the stage whose region it searched; NULL for the declared space
+    region_from_json TEXT,       -- JSON: that region as read (its rule, cells and box)
+    strategy         TEXT,
+    objective        TEXT,       -- its sole objective; NULL with several
+    direction        TEXT,
+    definition_digest TEXT,      -- hash of its resolved definition and of the point it stood on
+    started_at       REAL,
+    ended_at         REAL,
+    batches          INTEGER,
+    evaluations      INTEGER,
+    runs             INTEGER,
+    stop_kind        TEXT,       -- what ended it: a criterion, exhausted, stage_condition, ...
+    stop_reason      TEXT,
+    answer_json      TEXT,       -- JSON {rule, unit_id, values, objective} or the rule and why it failed
+    region_json      TEXT,       -- JSON {rule, cells, box} or the rule and why it failed
+    outcome          TEXT        -- not_run | running | done | condition | stopped | error | unproductive
+);
 """
 
 # 0 -> 1: the initial schema, frozen as it shipped. This is deliberately NOT
@@ -566,8 +592,64 @@ _MIGRATION_ADD_NODE_CALIBRATION = """
 ALTER TABLE node ADD COLUMN calibration_json TEXT;
 """
 
+# 16 -> 17: a search runs in stages, and each batch belongs to one.
+#
+# A search campaign recorded before stages ran in one, over its whole search space, so the
+# step gives it that stage: named ``search``, over every declared dimension, ended the way the
+# campaign row says the search ended, and holding every batch. Every reader then reads one
+# shape. A batch-mode campaign has no stage and its batch keeps ``stage_id`` NULL.
+_MIGRATION_ADD_STAGE = """
+CREATE TABLE IF NOT EXISTS stage (
+    id               INTEGER PRIMARY KEY,
+    campaign_id      INTEGER NOT NULL REFERENCES campaign(id),
+    idx              INTEGER NOT NULL,      -- the stage's position in the file, from 0
+    name             TEXT NOT NULL,
+    over_json        TEXT,       -- JSON [dim, ...]: the dimensions it searched
+    space_json       TEXT,       -- JSON {dim: domain}: them as searched, declared or a region read
+    point_json       TEXT,       -- JSON {dim: value}: every other dimension it stood on
+    within           TEXT,       -- the stage whose region it searched; NULL for the declared space
+    region_from_json TEXT,       -- JSON: that region as read (its rule, cells and box)
+    strategy         TEXT,
+    objective        TEXT,       -- its sole objective; NULL with several
+    direction        TEXT,
+    definition_digest TEXT,      -- hash of its resolved definition and of the point it stood on
+    started_at       REAL,
+    ended_at         REAL,
+    batches          INTEGER,
+    evaluations      INTEGER,
+    runs             INTEGER,
+    stop_kind        TEXT,       -- what ended it: a criterion, exhausted, stage_condition, ...
+    stop_reason      TEXT,
+    answer_json      TEXT,       -- JSON {rule, unit_id, values, objective} or the rule and why it failed
+    region_json      TEXT,       -- JSON {rule, cells, box} or the rule and why it failed
+    outcome          TEXT        -- not_run | running | done | condition | stopped | error | unproductive
+);
+ALTER TABLE batch ADD COLUMN stage_id INTEGER REFERENCES stage(id);
+INSERT INTO stage (campaign_id, idx, name, over_json, space_json, point_json, strategy,
+                   objective, direction, started_at, batches, stop_kind, stop_reason, outcome)
+SELECT c.id, 0, 'search',
+       (SELECT json_group_array(key)
+          FROM json_each(json_extract(c.config_json, '$.search.search_space'))),
+       json_extract(c.config_json, '$.search.search_space'),
+       '{}',
+       json_extract(c.config_json, '$.search.strategy'),
+       CASE WHEN json_array_length(json_extract(c.config_json, '$.search.objectives')) = 1
+            THEN json_extract(c.config_json, '$.search.objectives[0].name') END,
+       CASE WHEN json_array_length(json_extract(c.config_json, '$.search.objectives')) = 1
+            THEN COALESCE(json_extract(c.config_json, '$.search.objectives[0].direction'),
+                          'maximize') END,
+       c.created_at, c.batches, c.stop_kind, c.stop_reason,
+       CASE WHEN c.stop_kind IS NULL THEN 'running'
+            WHEN c.stop_kind IN ('stopped', 'error', 'unproductive') THEN c.stop_kind
+            ELSE 'done' END
+  FROM campaign c WHERE c.mode = 'search';
+UPDATE batch SET stage_id = (SELECT s.id FROM stage s
+                              WHERE s.campaign_id = batch.campaign_id AND s.idx = 0)
+ WHERE stage_id IS NULL;
+"""
+
 # Current schema version, stored in the database as ``PRAGMA user_version``.
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # Ordered, append-only migrations: ``_MIGRATIONS[i]`` is the SQL that upgrades a
 # database from ``user_version == i`` to ``user_version == i + 1``. To change the
@@ -593,6 +675,7 @@ _MIGRATIONS = [
     _MIGRATION_ADD_RECALLED,
     _MIGRATION_ADD_BATCH_COMPLETE,
     _MIGRATION_ADD_NODE_CALIBRATION,
+    _MIGRATION_ADD_STAGE,
 ]
 
 assert len(_MIGRATIONS) == SCHEMA_VERSION  # one migration per version step
@@ -712,10 +795,26 @@ class CampaignStore:
             self._conn.executescript(_SCHEMA)
         else:
             for v in range(version, SCHEMA_VERSION):
-                self._conn.executescript(_MIGRATIONS[v])
+                self._migrate_one(v)
         # PRAGMA can't be parameterized; SCHEMA_VERSION is a constant we control.
         self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         self._conn.commit()
+
+    def _migrate_one(self, version: int) -> None:
+        """Apply the step from *version* to the next in one transaction, with its stamp.
+
+        Either the whole step lands and ``user_version`` says so, or nothing of it does: a step
+        that fails part-way -- a statement this sqlite cannot run -- leaves the store at
+        *version*, readable as it was and migrated again on the next open, rather than half
+        upgraded under a number that names neither layout.
+        """
+        try:
+            self._conn.executescript(
+                f"BEGIN;\n{_MIGRATIONS[version]}\nPRAGMA user_version = {version + 1};\nCOMMIT;")
+        except sqlite3.Error:
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            raise
 
     def _has_tables(self) -> bool:
         """True when this database already holds a campaign schema."""
@@ -785,8 +884,68 @@ class CampaignStore:
         self._conn.commit()
         return cur.lastrowid
 
+    def declare_stages(self, campaign_id: int, stages: list[dict]) -> list[int]:
+        """Write a row for every stage of a search, ``not_run``, and return their ids in order.
+
+        *stages* is one ``{name, over, strategy, objective, direction}`` per stage, in the
+        file's order. Every stage has its row from the start, so a campaign that ends before
+        its last stage records which stages never ran. **Idempotent**: a campaign re-entered
+        after a restart already has its rows, which are returned as they are.
+        """
+        existing = self.stages(campaign_id)
+        if existing:
+            return [row["id"] for row in existing]
+        ids = []
+        for idx, st in enumerate(stages):
+            cur = self._conn.execute(
+                "INSERT INTO stage (campaign_id, idx, name, over_json, strategy, objective, "
+                "direction, outcome) VALUES (?, ?, ?, ?, ?, ?, ?, 'not_run')",
+                (campaign_id, idx, st["name"], json.dumps(st["over"]), st.get("strategy"),
+                 st.get("objective"), st.get("direction")))
+            ids.append(cur.lastrowid)
+        self._conn.commit()
+        return ids
+
+    def open_stage(self, stage_id: int, *, space: dict, point: dict, within=None,
+                   region_from=None, definition_digest: str = "") -> None:
+        """Mark *stage_id* running, with the space it searches and the point it stands on."""
+        self._conn.execute(
+            "UPDATE stage SET outcome = 'running', started_at = ?, space_json = ?, "
+            "point_json = ?, within = ?, region_from_json = ?, definition_digest = ? "
+            "WHERE id = ?",
+            (time.time(), json.dumps(space, default=str), json.dumps(point, default=str),
+             within, _json_or_none(region_from), definition_digest or None, stage_id))
+        self._conn.commit()
+
+    def resume_stage(self, stage_id: int) -> None:
+        """Mark *stage_id* running again: a campaign re-entered after a restart carries it on.
+
+        Its start time, space and point stay those it was opened with, so a ``time`` budget
+        is measured from when the stage really began.
+        """
+        self._conn.execute("UPDATE stage SET outcome = 'running' WHERE id = ?", (stage_id,))
+        self._conn.commit()
+
+    def close_stage(self, stage_id: int, *, outcome: str, stop_kind: str, stop_reason: str,
+                    batches: int, evaluations: int, runs: int, answer=None,
+                    region=None) -> None:
+        """Record how *stage_id* ended: its outcome, its stop, its spend, its answer and region."""
+        self._conn.execute(
+            "UPDATE stage SET outcome = ?, ended_at = ?, stop_kind = ?, stop_reason = ?, "
+            "batches = ?, evaluations = ?, runs = ?, answer_json = ?, region_json = ? "
+            "WHERE id = ?",
+            (outcome, time.time(), stop_kind, stop_reason, batches, evaluations, runs,
+             _json_or_none(answer), _json_or_none(region), stage_id))
+        self._conn.commit()
+
+    def stages(self, campaign_id: int) -> list[sqlite3.Row]:
+        """The stages of a search campaign, in the file's order (idx ascending)."""
+        return list(self._conn.execute(
+            "SELECT * FROM stage WHERE campaign_id = ? ORDER BY idx", (campaign_id,)
+        ).fetchall())
+
     def open_batch(self, campaign_id: int, idx: int, batch_dir: str,
-                   asked: Optional[int] = None) -> int:
+                   asked: Optional[int] = None, stage_id: Optional[int] = None) -> int:
         """Open a batch row. ``asked`` is how many parameter sets the strategy PROPOSED.
 
         Recorded because it is not always the number of ``unit`` rows that follow: two
@@ -798,9 +957,9 @@ class CampaignStore:
         stamped ``recalls_recorded``: that is what tells a replay it has the whole batch.
         """
         cur = self._conn.execute(
-            "INSERT INTO batch (campaign_id, idx, dir, created_at, asked, recalls_recorded) "
-            "VALUES (?, ?, ?, ?, ?, 1)",
-            (campaign_id, idx, batch_dir, time.time(), asked),
+            "INSERT INTO batch (campaign_id, idx, dir, created_at, asked, recalls_recorded, "
+            "stage_id) VALUES (?, ?, ?, ?, ?, 1, ?)",
+            (campaign_id, idx, batch_dir, time.time(), asked, stage_id),
         )
         self._conn.commit()
         return cur.lastrowid
@@ -829,6 +988,7 @@ class CampaignStore:
         n_samples: Optional[int] = None,
         n_reps: Optional[int] = None,
         channels: Optional[dict] = None,
+        objective_name: Optional[str] = None,
     ) -> int:
         """Record one parameter set's outcome.
 
@@ -843,8 +1003,13 @@ class CampaignStore:
         strategy, while ``channels`` is what the cell was actually configured with.
         """
         # Surface the sole objective as a queryable REAL column for the common
-        # single-objective case; keep the full dict in JSON regardless.
-        objective_scalar = next(iter(objectives.values())) if len(objectives) == 1 else None
+        # single-objective case; keep the full dict in JSON regardless. A cell of a search in
+        # stages is scored on every stage's objectives, and the column is the one of the stage
+        # that proposed it (``objective_name``).
+        if objective_name is not None:
+            objective_scalar = objectives.get(objective_name)
+        else:
+            objective_scalar = next(iter(objectives.values())) if len(objectives) == 1 else None
         cur = self._conn.execute(
             "INSERT INTO unit (batch_id, paramset_id, config_name, params_json, "
             "objective, objectives_json, measures_json, n_samples, status, result_dir, "
@@ -1391,6 +1556,13 @@ def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
     that data on the cluster (a SQL query there reads a snapshot from the object
     store, which the campaign publishes only once, at the end).
 
+    **Per stage.** A search runs in one or more stages, each with its own objective, and
+    ``unit.objective`` is the proposing stage's; so every batch names its stage, and
+    ``best_so_far`` -- the one figure that depends on the objective's *direction* -- starts again
+    with each stage, in that stage's direction. ``stages`` lists every stage of the file, those
+    not run included, with how each ended and what it selected. A store from before stages were
+    recorded reads as one stage, ``search``, over the whole space.
+
     ``status = 'evaluated'`` is required, not tidiness: a ``no_sample`` unit ran but
     produced nothing measurable and a ``composition_failed`` one never ran at all, and both
     carry empty objectives. Averaging them in would score cells that were never measured.
@@ -1400,38 +1572,32 @@ def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
     ``complete`` is false for a batch still running or interrupted: its counts are what it
     has recorded so far, not what it ended with.
 
-    ``best_so_far`` is folded here rather than stored, because it is the only figure that
-    depends on the objective's *direction*; ``min``/``max``/``mean`` are raw, so no reader
-    has to know the direction to interpret a field name.
-
     Returns ``None`` when there is no store to read, and a dict with ``unavailable`` set
-    when there is one but no scalar trajectory in it:
+    when there is one but no trajectory in it:
 
     * ``batch_mode`` — not a search, so its single batch is not a trajectory;
-    * ``multi_objective`` — ``unit.objective`` is NULL whenever a search declares more than
-      one objective (see :meth:`CampaignStore.record_unit`), so there is nothing to trend;
-      the values are in ``objectives_json``;
     * ``no_store`` — the ``batch``/``unit`` tables predate this schema.
+
+    A stage with several objectives has ``unit.objective`` NULL (see
+    :meth:`CampaignStore.record_unit`) and says ``unavailable: multi_objective`` on its own
+    entry; the values are in ``objectives_json``.
     """
     db = Path(campaign_dir) / STORE_FILENAME
     if not db.is_file():
         return None
-    empty = {"objective_name": None, "direction": None, "batches": []}
+    empty = {"stages": [], "batches": []}
     try:
         with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
             conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT mode, "
-                "json_extract(config_json, '$.search.objectives[0].name') AS name, "
-                "json_extract(config_json, '$.search.objectives[0].direction') AS direction, "
-                "json_array_length(json_extract(config_json, '$.search.objectives')) AS n_obj "
-                "FROM campaign LIMIT 1").fetchone()
+            row = conn.execute("SELECT id, mode, config_json, stop_kind, stop_reason "
+                               "FROM campaign LIMIT 1").fetchone()
             if row is None:
                 return {**empty, "unavailable": "no_store"}
             if (row["mode"] or "") != "search":
                 return {**empty, "unavailable": "batch_mode"}
-            if (row["n_obj"] or 0) > 1:
-                return {**empty, "unavailable": "multi_objective"}
+            stages = _stage_rows(conn, row)
+            batch_columns = {c[1] for c in conn.execute("PRAGMA table_info(batch)")}
+            stage_of = "b.stage_id" if "stage_id" in batch_columns else "NULL"
             rows = conn.execute(
                 # The 'evaluated' filter is a conditional AGGREGATE, not a join condition, and
                 # the difference is the whole point of reporting two counts. In the join it also
@@ -1441,7 +1607,7 @@ def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
                 # objective, so `7/8` reads as what it is: one cell that produced nothing. A
                 # recalled cell is not one the batch had: an earlier batch measured it, and
                 # counting it here would report a shortfall where nothing was lost.
-                "SELECT b.idx AS idx, "
+                f"SELECT b.idx AS idx, {stage_of} AS stage_id, "
                 "COUNT(CASE WHEN u.status IS NOT 'recalled' THEN u.id END) AS n_units, "
                 "COUNT(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS n_scored, "
                 "MIN(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS lo, "
@@ -1449,7 +1615,6 @@ def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
                 "AVG(CASE WHEN u.status = 'evaluated' THEN u.objective END) AS mean "
                 "FROM batch b LEFT JOIN unit u ON u.batch_id = b.id "
                 "GROUP BY b.idx ORDER BY b.idx").fetchall()
-            batch_columns = {c[1] for c in conn.execute("PRAGMA table_info(batch)")}
             complete = "batch.complete" if "complete" in batch_columns \
                 else _BATCH_COMPLETE_BEFORE_15
             complete_by_idx = dict(conn.execute(
@@ -1457,9 +1622,14 @@ def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
     except sqlite3.Error:
         return {**empty, "unavailable": "no_store"}  # pre-batch/unit schema, or unreadable
 
-    maximize = (row["direction"] or "maximize") != "minimize"
-    batches, best = [], None
+    by_id = {st["_id"]: st for st in stages}
+    only = stages[0] if len(stages) == 1 else None
+    batches, best, current = [], None, None
     for r in rows:
+        stage = by_id.get(r["stage_id"], only)
+        if stage is not current:
+            current, best = stage, None
+        maximize = ((stage or {}).get("direction") or "maximize") != "minimize"
         scored = r["n_scored"] or 0
         if scored:
             reached = r["hi"] if maximize else r["lo"]
@@ -1475,6 +1645,103 @@ def read_batch_objectives(campaign_dir: str | Path) -> Optional[dict]:
             "mean": r["mean"] if scored else None,
             "best_so_far": best,
             "complete": bool(complete_by_idx.get(r["idx"])),
+            "stage": stage["name"] if stage else None,
         })
-    return {"objective_name": row["name"], "direction": row["direction"] or "maximize",
-            "batches": batches, "unavailable": None}
+    for st in stages:
+        del st["_id"]
+    return {"stages": stages, "batches": batches, "unavailable": None}
+
+
+def _outcome_of_stop(stop_kind: Optional[str]) -> str:
+    """The outcome of the one stage of a search recorded before stages, from how it stopped."""
+    if stop_kind is None:
+        return "running"
+    return stop_kind if stop_kind in ("stopped", "error", "unproductive") else "done"
+
+
+def _stage_rows(conn, campaign) -> list[dict]:
+    """The stages of *campaign* as a search history lists them, each with its row's ``_id``.
+
+    A store without stage rows recorded its search as one stage over the whole space, and is
+    read as that.
+    """
+    def _loads(text):
+        return json.loads(text) if text else None
+
+    try:
+        rows = conn.execute("SELECT * FROM stage WHERE campaign_id = ? ORDER BY idx",
+                            (campaign["id"],)).fetchall()
+    except sqlite3.OperationalError:     # a store from before stages were recorded
+        rows = []
+    config = json.loads(campaign["config_json"] or "{}").get("search") or {}
+    objectives = config.get("objectives") or []
+    if not rows:
+        single = objectives[0] if len(objectives) == 1 else None
+        return [{"_id": None, "idx": 0, "name": "search",
+                 "over": list(config.get("search_space") or {}),
+                 "objective_name": single.get("name") if single else None,
+                 "direction": (single.get("direction") or "maximize") if single else None,
+                 # Ended as the campaign row says the search ended, by the rule the 16 -> 17
+                 # step applies to the stage it writes for such a campaign.
+                 "outcome": _outcome_of_stop(campaign["stop_kind"]),
+                 "stop_kind": campaign["stop_kind"], "stop_reason": campaign["stop_reason"],
+                 "answer": None, "region": None,
+                 "unavailable": None if single else "multi_objective"}]
+    by_name = {st.get("name"): st for st in config.get("stages") or []}
+    out = []
+    for r in rows:
+        declared = (by_name.get(r["name"]) or {}).get("objectives") or objectives
+        out.append({
+            "_id": r["id"], "idx": r["idx"], "name": r["name"],
+            "over": _loads(r["over_json"]) or [],
+            "objective_name": r["objective"],
+            "direction": r["direction"] or ("maximize" if r["objective"] else None),
+            "outcome": r["outcome"], "stop_kind": r["stop_kind"],
+            "stop_reason": r["stop_reason"], "answer": _loads(r["answer_json"]),
+            "region": _loads(r["region_json"]),
+            "unavailable": "multi_objective" if len(declared) > 1 else None})
+    return out
+
+
+#: The outcomes with which a stage ends the whole campaign, not only itself.
+_CAMPAIGN_ENDING_OUTCOMES = ("condition", "stopped", "error", "unproductive")
+
+
+def read_stage_end(campaign_dir: str | Path) -> Optional[dict]:
+    """Where a search that ended before its last stage ended, or ``None``.
+
+    ``{stage, idx, of, rule, reason, not_run}``: the stage that ended the campaign, its place in
+    the line, the rule that ended it (``answer`` or ``region`` for a stage whose condition found
+    nothing, else how it ended: ``stopped``, ``error``, ``unproductive``), the stage's own reason,
+    and the stages after it that never ran. ``None`` unless a stage did not run: for a campaign
+    that reached its last stage (a search without stages always has), one still running, a batch
+    campaign, and a store without stages. Read-only and never migrating,
+    like :func:`read_batch_objectives`, so every surface reads the one record.
+    """
+    db = Path(campaign_dir) / STORE_FILENAME
+    if not db.is_file():
+        return None
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT idx, name, outcome, stop_reason, answer_json, region_json FROM stage "
+                "WHERE campaign_id = (SELECT id FROM campaign LIMIT 1) ORDER BY idx").fetchall()
+    except sqlite3.Error:
+        return None
+    ended = next((r for r in rows if r["outcome"] in _CAMPAIGN_ENDING_OUTCOMES), None)
+    if ended is None:
+        return None
+    not_run = [r["name"] for r in rows if r["idx"] > ended["idx"] and r["outcome"] == "not_run"]
+    if not not_run:
+        # The last stage ended the search, so the line ran to its end: a stop, an error or an
+        # unproductive end of the search itself, which its own stop reports. A search without
+        # stages is that one stage, and never shows a stage end.
+        return None
+    if ended["outcome"] == "condition":
+        region = json.loads(ended["region_json"]) if ended["region_json"] else {}
+        rule = "region" if "failed" in region else "answer"
+    else:
+        rule = ended["outcome"]
+    return {"stage": ended["name"], "idx": ended["idx"], "of": len(rows), "rule": rule,
+            "reason": ended["stop_reason"], "not_run": not_run}

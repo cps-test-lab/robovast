@@ -48,3 +48,22 @@ def test_pin_released_siblings_pins_a_version(version, tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     text = manifest.read_text(encoding="utf-8")
     assert f'robovast-client = {{version = "=={version}"}}' in text
+
+
+def _check_config_version():
+    spec = importlib.util.spec_from_file_location("_tool_ccv", TOOLS / "check_config_version.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_field_widened_to_optional_needs_no_version():
+    """``str`` -> ``Optional[str]`` accepts every file that loaded before, so it is additive."""
+    classify = _check_config_version().classify
+    base = {"SearchConfig": [["strategy", True, "str"]]}
+    widened = {"SearchConfig": [["strategy", False, "Union[str, NoneType]"]]}
+    breaking, reasons, additive = classify(base, widened)
+    assert not breaking and reasons == []
+    assert any("widened" in note for note in additive)
+    narrowed = {"SearchConfig": [["strategy", False, "int"]]}
+    assert classify(base, narrowed)[0]
