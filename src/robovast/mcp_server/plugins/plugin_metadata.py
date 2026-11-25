@@ -69,7 +69,7 @@ _PLUGIN_GROUPS: dict[str, dict] = {
     "robovast.search_strategies": {
         "description": (
             "Search strategies that propose the next configurations to run "
-            "(random, halton, boundary, qd, optuna …), named by ``search.strategy``."
+            "(random, halton, grid, boundary, qd, optuna …), named by ``search.strategy``."
         ),
         "loader_module": "robovast.search.strategy",
     },

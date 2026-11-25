@@ -1,4 +1,26 @@
 {
+  "AnswerRule": [
+    [
+      "feasible",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "level",
+      false,
+      "Union[float, NoneType]"
+    ],
+    [
+      "select",
+      false,
+      "Union[Literal[worst, nearest-level, feasible-min], NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
   "BatchesBudget": [
     [
       "type",
@@ -17,6 +39,11 @@
     ]
   ],
   "BoolDim": [
+    [
+      "initial",
+      false,
+      "Union[Any, NoneType]"
+    ],
     [
       "type",
       true,
@@ -90,6 +117,11 @@
     ]
   ],
   "ChoiceDim": [
+    [
+      "initial",
+      false,
+      "Union[Any, NoneType]"
+    ],
     [
       "type",
       true,
@@ -475,6 +507,11 @@
       "float"
     ],
     [
+      "initial",
+      false,
+      "Union[Any, NoneType]"
+    ],
+    [
       "log",
       false,
       "bool"
@@ -522,6 +559,11 @@
       "high",
       true,
       "int"
+    ],
+    [
+      "initial",
+      false,
+      "Union[Any, NoneType]"
     ],
     [
       "log",
@@ -720,6 +762,33 @@
       "ros2",
       false,
       "Union[Ros2RecordingConfig, NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "RegionRule": [
+    [
+      "band",
+      true,
+      "float"
+    ],
+    [
+      "level",
+      false,
+      "Union[float, NoneType]"
+    ],
+    [
+      "min_cells",
+      false,
+      "Union[int, NoneType]"
+    ],
+    [
+      "pad",
+      false,
+      "Union[float, NoneType]"
     ],
     [
       "<extra>",
@@ -1054,6 +1123,78 @@
       "Union[int, NoneType]"
     ],
     [
+      "stages",
+      false,
+      "Union[list[StageConfig], NoneType]"
+    ],
+    [
+      "stopping",
+      false,
+      "Union[list[Annotated[Union[TargetObjectiveStop, NoImprovementStop, MetricStop], annotation=NoneType required=True discriminator='type']], NoneType]"
+    ],
+    [
+      "strategy",
+      false,
+      "Union[str, NoneType]"
+    ],
+    [
+      "strategy_parameters",
+      false,
+      "dict[str, Any]"
+    ],
+    [
+      "variations",
+      false,
+      "Union[list[dict[str, Any]], NoneType]"
+    ],
+    [
+      "<extra>",
+      false,
+      "forbid"
+    ]
+  ],
+  "StageConfig": [
+    [
+      "answer",
+      false,
+      "Union[AnswerRule, NoneType]"
+    ],
+    [
+      "budget",
+      false,
+      "Union[list[Annotated[Union[BatchesBudget, TimeBudget, EvaluationsBudget, RunsBudget], annotation=NoneType required=True discriminator='type']], NoneType]"
+    ],
+    [
+      "name",
+      true,
+      "str"
+    ],
+    [
+      "objectives",
+      false,
+      "Union[list[ObjectiveSpec], NoneType]"
+    ],
+    [
+      "over",
+      true,
+      "list[str]"
+    ],
+    [
+      "per_batch",
+      false,
+      "Union[int, NoneType]"
+    ],
+    [
+      "region",
+      false,
+      "Union[RegionRule, NoneType]"
+    ],
+    [
+      "repetitions",
+      false,
+      "Union[RepetitionsConfig, NoneType]"
+    ],
+    [
       "stopping",
       false,
       "Union[list[Annotated[Union[TargetObjectiveStop, NoImprovementStop, MetricStop], annotation=NoneType required=True discriminator='type']], NoneType]"
@@ -1069,9 +1210,9 @@
       "dict[str, Any]"
     ],
     [
-      "variations",
+      "within",
       false,
-      "Union[list[dict[str, Any]], NoneType]"
+      "Union[str, NoneType]"
     ],
     [
       "<extra>",

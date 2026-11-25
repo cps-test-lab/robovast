@@ -210,6 +210,7 @@ halton = "robovast.search.strategies.halton:HaltonSearch"
 boundary = "robovast.search.strategies.boundary:BoundarySearch"
 qd = "robovast.search.strategies.qd:QDStrategy"
 optuna = "robovast.search.strategies.optuna:OptunaStrategy"
+grid = "robovast.search.strategies.grid:GridSearch"
 
 [tool.poetry.plugins."robovast.extractors"]
 failure_rate = "robovast.search.extractors.failure_rate:FailureRate"

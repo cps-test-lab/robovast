@@ -188,7 +188,7 @@ def reconstruct_status_from_disk(campaign_dir: str | Path,
         # nobody is going to advance.
         if not is_terminal(outcome.phase):
             outcome.phase = Phase.CRASHED
-        return outcome
+        return _with_stage_end(outcome, campaign_dir)
 
     # No durable record. Nothing here may claim a run passed without a verdict saying
     # so: reporting `completed == total` paints a campaign green having never looked at
@@ -207,11 +207,27 @@ def reconstruct_status_from_disk(campaign_dir: str | Path,
     # runs missing — as a finished campaign, which is the answer that stops a reader
     # (and a waiter) from ever looking again.
     complete = runs["completed"] > 0 and runs["no_result"] == 0
-    return Status(phase=Phase.FINISHED if complete else Phase.CRASHED,
-                  campaign_id=campaign_id,
-                  mode=read_campaign_mode(campaign_dir),
-                  postprocessed=postprocessed,
-                  runs=runs)
+    return _with_stage_end(Status(phase=Phase.FINISHED if complete else Phase.CRASHED,
+                                  campaign_id=campaign_id,
+                                  mode=read_campaign_mode(campaign_dir),
+                                  postprocessed=postprocessed,
+                                  runs=runs), campaign_dir)
+
+
+def _with_stage_end(status: Status, campaign_dir) -> Status:
+    """*status* with ``stop`` saying where a search that ended before its last stage ended.
+
+    From the store, which records every stage's outcome, so a campaign read back from disk is
+    told apart from one that ran every stage exactly as a live one is.
+    """
+    from robovast.common.store import read_stage_end  # pylint: disable=import-outside-toplevel
+    end = read_stage_end(campaign_dir)
+    if end is not None:
+        stop = dict(status.stop or {})
+        stop.update({k: end[k] for k in ("stage", "idx", "of", "rule", "not_run")})
+        stop.setdefault("reason", end["reason"])
+        status.stop = stop
+    return status
 
 
 def record_step_outcome(campaign_dir: str | Path, *,

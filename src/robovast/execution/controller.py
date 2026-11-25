@@ -36,6 +36,7 @@ there is no per-campaign controller pod, in-pod ``main()`` or control server, so
 cluster and local share the same driver-hosting shape.
 """
 
+import json
 import logging
 import os
 import re
@@ -150,6 +151,18 @@ def campaign_id_for(campaign_config, name_override: str | None = None) -> str:
 EMPTY_BATCH_LIMIT = 2
 
 
+def _stage_summary(stage, outcome, answer, region, rule=None, reason=None) -> dict:
+    """What a search's report says of one of its stages."""
+    out = {"name": stage.name, "over": list(stage.over), "outcome": outcome}
+    if answer and "values" in answer:
+        out["answer"] = answer
+    if region and "box" in region:
+        out["region"] = region
+    if rule:
+        out.update({"rule": rule, "reason": reason})
+    return out
+
+
 def _empty_batch_reason(unrunnable: dict) -> str:
     """Why a batch scored nothing, phrased for whoever has to fix it.
 
@@ -179,7 +192,8 @@ class CampaignController:
                  vast_dir: str, strategy=None, evaluator=None, compose=None,
                  per_batch: int = 1, postprocessing=None, batch_campaign_data=None,
                  stop_conditions=None, repetition_policy=None, state=None,
-                 notifier=None, description="", created_by="", origin=None):
+                 notifier=None, description="", created_by="", origin=None,
+                 stages=None, stage_factory=None, initial_point=None):
         self.campaign_id = campaign_id
         self.campaign_root = os.path.join(results_dir, campaign_id)
         self.runs = runs
@@ -208,7 +222,7 @@ class CampaignController:
         self.compose = compose
         self.per_batch = per_batch
         self.batch_campaign_data = batch_campaign_data
-        self.mode = "search" if strategy is not None else "batch"
+        self.mode = "search" if (strategy is not None or stages) else "batch"
         self.postprocessing = postprocessing or []
         # Combined budget + stopping evaluator (search mode); drives loop end and
         # the per-batch progress line. None in batch mode.
@@ -218,9 +232,34 @@ class CampaignController:
         # `execution.runs` times exactly as before -- absence of a policy, not a
         # policy of uniformity.
         self.repetition_policy = repetition_policy
-        #: Every evaluation scored so far, in order. The repetition policy reads it to
-        #: judge where the landscape is contested; nothing else depends on it.
+        #: Every evaluation the current stage scored so far, in order. The repetition policy
+        #: reads it to judge where the stage's landscape is contested.
         self._history: list = []
+        #: Every evaluation the campaign scored, across its stages: what a re-proposed cell
+        #: is recalled from (see :meth:`_split_already_evaluated`).
+        self._measured: list = []
+        # The line of stages a search runs (robovast.search.stages.Stage), and how each
+        # stage's strategy, stop conditions and repetition policy are built from its
+        # SearchConfig. Given a strategy and no stages, the search is the one stage that
+        # strategy, those stop conditions and that policy make.
+        if strategy is not None and stages is None:
+            from robovast.search.stages import \
+                implicit_stage  # pylint: disable=import-outside-toplevel
+            stages = [implicit_stage(strategy)]
+            # The one stage runs what this controller holds when it starts.
+            def the_strategy_held(_cfg):
+                return self.strategy, self.stop_conditions, self.repetition_policy
+            stage_factory = the_strategy_held
+        self.stages = stages or []
+        self.stage_factory = stage_factory
+        self.initial_point = dict(initial_point or {})
+        #: The stage running now: its plan, its row, the values it stands on.
+        self._stage = None
+        self._stage_row_id = None
+        self._carried: dict = {}
+        self._objective_name = None
+        #: The campaign-wide index of the current stage's first batch.
+        self._stage_first_batch = 0
         self._unfinished = None
         # Optional control-channel state (cluster mode). When set, the controller
         # publishes loop phase/progress and honours the cooperative `stop` command.
@@ -306,7 +345,7 @@ class CampaignController:
         self.notifier.started(self.mode)
         run_started = time.monotonic()
         try:
-            if self.strategy is None:
+            if self.mode == "batch":
                 result = self._run_batch_mode(campaign_id)
             else:
                 result = self._run_search(campaign_id)
@@ -663,6 +702,133 @@ class CampaignController:
     # -- search mode --------------------------------------------------------
 
     def _run_search(self, campaign_id: int):
+        """Run the search's stages in the file's order, and report the last one's deliverable.
+
+        Every stage has its row from the start (``not_run``), so a campaign that ends before
+        its last stage records which stages never ran. A stage already closed -- on a
+        campaign re-entered after a restart -- is not run again: the record gives the answer
+        and region it left, and the stages after it stand on those. A stage that ends on its
+        condition, an external stop or an unproductive stage ends the campaign there.
+        """
+        from robovast.search.chain import \
+            ChainError  # pylint: disable=import-outside-toplevel
+        from robovast.search.stages import (StageCondition,  # pylint: disable=import-outside-toplevel
+                                            carried, declared_space)
+        row_ids = self.store.declare_stages(campaign_id, [st.described() for st in self.stages])
+        rows = {row["id"]: row for row in self.store.stages(campaign_id)}
+        point = dict(self.initial_point)
+        regions: dict = {}
+        summaries: list = []
+        self._batches_done = 0
+        # The origin of the campaign row's elapsed_s: this run's start for a campaign starting
+        # now, and the campaign's start for one re-entered with batches on record -- the meaning
+        # elapsed_s has for every search.
+        recorded = bool(self.store.batches(campaign_id))
+        self._search_started = time.monotonic() - (
+            self._campaign_age(campaign_id) if recorded else 0.0)
+        report, result = None, None
+        # The stage a previous life of this campaign reached is re-entered, the ones before it
+        # taken over from the record.
+        begun = [i for i, row_id in enumerate(row_ids) if rows[row_id]["outcome"] != "not_run"]
+        reached = begun[-1] if begun else 0
+        if (begun and rows[row_ids[reached]]["outcome"] == "done"
+                and reached + 1 < len(row_ids)):
+            # A restart between one stage's close and the next's open: the closed stage is
+            # taken over, not re-entered, and the line goes on with the next.
+            reached += 1
+        for stage, row_id in zip(self.stages, row_ids):
+            row = rows[row_id]
+            if stage.idx < reached and row["outcome"] == "done":
+                answer = json.loads(row["answer_json"]) if row["answer_json"] else None
+                region = json.loads(row["region_json"]) if row["region_json"] else None
+                self._take_over_stage(campaign_id, row)
+                if answer:
+                    point.update(answer["values"])
+                if region:
+                    regions[stage.name] = region["box"]
+                summaries.append(_stage_summary(stage, row["outcome"], answer, region))
+                continue
+            if stage.idx == reached and not stage.implicit and row["outcome"] in (
+                    "done", "condition"):
+                # A stage of the line that closed before the restart is never run again: the
+                # last stage goes on to record the campaign's outcome, a stage that ended on its
+                # condition ends the campaign as it did.
+                return self._end_after_closed_stage(campaign_id, stage, row, summaries)
+            if stage.idx < reached:
+                raise ValueError(
+                    f"stage {stage.name!r} of {self.campaign_id} ended {row['outcome']}, yet "
+                    f"stage {self.stages[reached].name!r} after it began; the record "
+                    "contradicts itself")
+            if stage.config is None:      # the one stage of an already-built strategy
+                space, stage_cfg = {}, None
+            else:
+                space = (regions[stage.within] if stage.within is not None
+                         else declared_space(stage.config, stage))
+                stage_cfg = stage.config_over(space)
+            self._begin_stage(campaign_id, stage, row, stage_cfg, carried(point, stage), space,
+                              regions.get(stage.within) and {"stage": stage.within,
+                                                             "box": regions[stage.within]})
+            report, result, ended = self._run_stage(campaign_id)
+            if ended:
+                summaries.append(_stage_summary(stage, ended, None, None))
+                not_run = [st.name for st in self.stages[stage.idx + 1:]]
+                # Said where it ended and what it left, so no reader takes a campaign that
+                # stopped in its second stage for one that ran them all.
+                where = {"stage": stage.name, "idx": stage.idx, "of": len(self.stages),
+                         "rule": ended, "not_run": not_run} if not_run else None
+                return self._finish_search(campaign_id, report, result, summaries, where)
+            answer = region = None
+            try:
+                if stage.answer is not None or stage.region is not None:
+                    from robovast.search.chain import \
+                        load_record  # pylint: disable=import-outside-toplevel
+                    record = load_record(self.store.db_path, objective=self._objective_name,
+                                         stage=stage.name)
+                    if stage.answer is not None:
+                        from robovast.search.stages import \
+                            answer_of  # pylint: disable=import-outside-toplevel
+                        answer = answer_of(stage, record)
+                    if stage.region is not None:
+                        from robovast.search.stages import \
+                            region_of  # pylint: disable=import-outside-toplevel
+                        region = region_of(stage, record, declared_space(stage.config, stage))
+            except ChainError as exc:
+                # A rule that could not be applied at all -- a feasible measure no cell
+                # carries -- is not the stage's condition: the campaign fails, and the stage
+                # says so rather than staying "running".
+                from robovast.search.stopping import \
+                    StopResult  # pylint: disable=import-outside-toplevel
+                failed = StopResult(kind="error", reason=f"stage {stage.name!r}: {exc}")
+                self._close_stage(failed, outcome="error")
+                self.store.record_outcome(campaign_id, stop_kind=failed.kind,
+                                          stop_reason=failed.reason, batches=self._batches_done,
+                                          elapsed_s=time.monotonic() - self._search_started)
+                raise
+            except StageCondition as cond:
+                self._close_stage(result, outcome="condition", answer=answer, region=region,
+                                  condition=cond)
+                summaries.append(_stage_summary(stage, "condition", answer, region,
+                                                cond.rule, str(cond)))
+                return self._end_on_condition(campaign_id, report, stage, cond, summaries)
+            self._close_stage(result, outcome="done", answer=answer, region=region)
+            if answer:
+                point.update(answer["values"])
+                logger.info("Stage %r selected unit %s (%s): %s", stage.name,
+                            answer["unit_id"], answer["rule"]["select"], answer["values"])
+            if region:
+                regions[stage.name] = region["box"]
+                logger.info("Stage %r left a region of %d cell(s): %s", stage.name,
+                            region["cells"], region["box"])
+            summaries.append(_stage_summary(stage, "done", answer, region))
+        return self._finish_search(campaign_id, report, result, summaries)
+
+    def _run_stage(self, campaign_id: int):
+        """Run the current stage's ask/evaluate/tell loop.
+
+        Returns ``(report, result, ended)``: the strategy's report, the stop that ended the
+        stage, and the outcome that ends the campaign with it (``stopped`` or
+        ``unproductive``), ``None`` when the line goes on.
+        """
         from robovast.search.stopping import StopSnapshot
         stop = self.stop_conditions
         # A scalar best exists only when there is one objective. With several, "best" is not
@@ -673,7 +839,7 @@ class CampaignController:
         # behalf of a strategy that has not been consulted.
         objectives = self.strategy.objectives
         obj_name = objectives[0].name if len(objectives) == 1 else None
-        if not stop.has_budget:
+        if not stop.has_budget and not getattr(self.strategy, "ENDS_ITSELF", False):
             logger.warning("No 'budget' cap configured — this search is bounded "
                            "only by its 'stopping' criteria; it may run a long time.")
         start = time.monotonic()
@@ -684,13 +850,14 @@ class CampaignController:
         # decide when the search STOPS rather than merely what it displays, and a counter
         # left at zero is indistinguishable from one that is legitimately zero.
         position = self._rehydrate_search(
-            campaign_id, lambda best, evs: self._update_best(best, evs, obj_name))
+            campaign_id, lambda best, evs: self._update_best(best, evs, obj_name),
+            stage_row_id=self._stage_row_id)
         # On `self`, not locals, and that is the whole point: the loop below runs in a
         # callee, so locals here would still read 0 after the callee raised -- which is
         # how the first campaign to exercise this path recorded `batches: 0` for 22
         # batches of completed work. Counts that survive the raise are the one fact this
         # record exists to carry.
-        self._batches_done = position.batches
+        self._batches_done = self._stage_first_batch + position.batches
         self._evaluations_done = position.evaluations
         self._runs_done = position.runs
         # How many batches in a row measured nothing, and why the last of them did. Reset to
@@ -699,7 +866,8 @@ class CampaignController:
         # produce, and the batches it did produce are on record.
         self._empty_batches = 0
         self._empty_batch_reason = ""
-        self._history.extend(position.history)
+        self._history = list(position.history)
+        self._measured.extend(position.history)
         best_objective = position.best_objective   # best-so-far, in raw objective units
         # `_search_loop` already begins at `self._batches_done` -- it was written that way
         # so an abort mid-loop still counted the batches behind it -- so seeding these IS
@@ -750,7 +918,8 @@ class CampaignController:
         # has measured it, and `_progress` already omits that row rather than inventing a
         # value for it.
         self._publish_budget(stop, StopSnapshot(
-            batch=self._batches_done, elapsed=time.monotonic() - start,
+            batch=self._batches_done - self._stage_first_batch,
+            elapsed=time.monotonic() - start,
             best_objective=best_objective, evaluations=self._evaluations_done,
             runs=self._runs_done))
         try:
@@ -761,13 +930,22 @@ class CampaignController:
             # campaign row said NOTHING about why it stopped -- stop_kind, stop_reason and
             # batches all NULL, indistinguishable from a campaign that never ran a batch.
             # The one that motivated this had two batches of real data behind that silence.
+            outcome = self._abort_outcome(exc)
+            from robovast.search.stopping import \
+                StopResult  # pylint: disable=import-outside-toplevel
+            self._close_stage(StopResult(kind=outcome["stop_kind"], reason=outcome["stop_reason"]),
+                              outcome="stopped" if outcome["stop_kind"] == "stopped" else "error")
             self.store.record_outcome(
                 campaign_id, batches=self._batches_done,
-                elapsed_s=time.monotonic() - start, **self._abort_outcome(exc))
+                elapsed_s=time.monotonic() - self._search_started, **outcome)
             raise
-        return self._finish_search(campaign_id, result, self._batches_done, start)
+        report = self.strategy.report()
+        ended = {"external": "stopped", "unproductive": "unproductive"}.get(result.kind)
+        if ended:
+            self._close_stage(result, outcome=ended)
+        return report, result, ended
 
-    def _rehydrate_search(self, campaign_id: int, fold_best):
+    def _rehydrate_search(self, campaign_id: int, fold_best, stage_row_id=None):
         """Re-drive the strategy from what this campaign already recorded, and return the
         :class:`~robovast.search.history.SearchPosition` that record folds to.
 
@@ -790,15 +968,17 @@ class CampaignController:
         from robovast.search.history import (position_from, recorded_batches,
                                              unfinished_batch)
 
-        batches = recorded_batches(self.store, campaign_id)
+        batches = recorded_batches(self.store, campaign_id, stage_id=stage_row_id)
         # Finished by the first round of `_search_loop`, which re-asks it.
-        self._unfinished = unfinished_batch(self.store, campaign_id)
+        self._unfinished = unfinished_batch(self.store, campaign_id, stage_id=stage_row_id)
         position = position_from(
             batches, default_runs=self.runs, fold_best=fold_best,
-            age_s=self._campaign_age(campaign_id)
+            age_s=self._stage_age(campaign_id)
             if batches or self._unfinished else 0.0)
         if batches:
-            self.strategy.resume(batches)
+            # The strategy is told the cells as it proposed them: over the stage's own
+            # dimensions, without the values the stage stood on.
+            self.strategy.resume([self._local_batch(b) for b in batches])
             logger.info("Resuming search after %d recorded batch(es): %d evaluation(s), "
                         "%d run(s) already spent.",
                         position.batches, position.evaluations, position.runs)
@@ -841,13 +1021,20 @@ class CampaignController:
             return {"stop_kind": "stopped", "stop_reason": str(exc) or "stop requested"}
         return {"stop_kind": "error", "stop_reason": f"{type(exc).__name__}: {exc}"}
 
-    def _finish_search(self, campaign_id, result, batch_idx, start):
-        """Record the outcome of a search that ended the way it meant to, and report."""
-        elapsed_s = time.monotonic() - start
+    def _finish_search(self, campaign_id, report, result, summaries, where=None):
+        """Record the outcome of a search that ended the way it meant to, and report.
+
+        The campaign's end, and so the one place its finishing phase and its stop are
+        published; *where* adds the stage it ended in and the stages it left not run.
+        """
+        if self.state is not None:
+            self.state.set_phase(Phase.FINISHING)
+            self.state.update(stop={"kind": result.kind, "reason": result.reason,
+                                    **(where or {})})
+        elapsed_s = time.monotonic() - self._search_started
         self.store.record_outcome(
             campaign_id, stop_kind=result.kind, stop_reason=result.reason,
-            batches=batch_idx, elapsed_s=elapsed_s)
-        report = self.strategy.report()
+            batches=self._batches_done, elapsed_s=elapsed_s)
         # Computed here rather than in each strategy: a front is the shape of the answer, not a
         # way of searching, so every strategy that reports its evaluations gets one without
         # knowing the concept. A strategy that fills `front` itself (one whose optimiser tracks
@@ -856,11 +1043,159 @@ class CampaignController:
             from robovast.search.pareto import pareto_front
             report.front = pareto_front(report.evaluations, self.strategy.objectives)
         report.extra['stop'] = {"kind": result.kind, "reason": result.reason,
-                                "batches": batch_idx, "elapsed_s": elapsed_s}
+                                "batches": self._batches_done, "elapsed_s": elapsed_s}
+        report.extra['stages'] = summaries
         logger.info("\n%s\n✅  Search complete  —  %d batch(es), %d evaluation(s) "
-                    "(%s)\n%s", _BAR, batch_idx, len(report.evaluations), result.reason,
-                    _BAR)
+                    "(%s)\n%s", _BAR, self._batches_done, len(report.evaluations),
+                    result.reason, _BAR)
         return report
+
+    def _end_on_condition(self, campaign_id, report, stage, cond, summaries):
+        """End the campaign at *stage*, whose answer or region found nothing to stand on.
+
+        The campaign ran as written and its answer is that no cell satisfies the condition, so
+        it ends ``finished``; its stop names the stage, the rule and the stages that did not
+        run, so no reader can take it for a campaign that ran every stage.
+        """
+        not_run = [st.name for st in self.stages[stage.idx + 1:]]
+        reason = str(cond) + (f"; not run: {', '.join(not_run)}" if not_run else "")
+        from robovast.search.stopping import StopResult  # pylint: disable=import-outside-toplevel
+        stop = StopResult(kind="stage_condition", reason=reason)
+        report = self._finish_search(campaign_id, report, stop, summaries, {
+            "stage": stage.name, "idx": stage.idx, "of": len(self.stages), "rule": cond.rule,
+            "not_run": not_run})
+        report.extra['stop'].update({"stage": stage.name, "rule": cond.rule,
+                                     "not_run": not_run})
+        return report
+
+    # -- the stages ------------------------------------------------------------
+
+    def _begin_stage(self, campaign_id, stage, row, stage_cfg, point, space, region_from):
+        """Make *stage* the one the loop runs: its strategy, stops, policy and row."""
+        self._stage = stage
+        self._stage_row_id = row["id"]
+        self._carried = point
+        self._stage_first_batch = self._batches_done
+        if stage_cfg is not None:
+            self.strategy, self.stop_conditions, self.repetition_policy = \
+                self.stage_factory(stage_cfg)
+            self.per_batch = stage_cfg.per_batch
+        else:
+            self.strategy, self.stop_conditions, self.repetition_policy = \
+                self.stage_factory(None)
+        objectives = self.strategy.objectives
+        self._objective_name = objectives[0].name if len(objectives) == 1 else None
+        if row["outcome"] == "not_run":
+            self.store.open_stage(row["id"], space=space, point=point, within=stage.within,
+                                  region_from=region_from,
+                                  definition_digest=stage.digest(space, point))
+        else:
+            self.store.resume_stage(row["id"])
+        if self.state is not None:
+            self.state.update(search_stage={"idx": stage.idx, "name": stage.name,
+                                            "of": len(self.stages)})
+        if len(self.stages) > 1:
+            logger.info("\n%s\n🧭  Stage %d/%d  —  %s over %s, standing on %s\n%s", _BAR,
+                        stage.idx + 1, len(self.stages), stage.name, ", ".join(stage.over),
+                        point or "nothing", _BAR)
+
+    def _close_stage(self, result, *, outcome, answer=None, region=None, condition=None):
+        """Record how the current stage ended."""
+        if self._stage_row_id is None:
+            return
+        if condition is not None:
+            answer = condition.record if condition.rule == "answer" else answer
+            region = condition.record if condition.rule == "region" else region
+        self.store.close_stage(
+            self._stage_row_id, outcome=outcome,
+            stop_kind="stage_condition" if condition is not None else result.kind,
+            stop_reason=str(condition) if condition is not None else result.reason,
+            batches=self._batches_done - self._stage_first_batch,
+            evaluations=getattr(self, "_evaluations_done", 0),
+            runs=getattr(self, "_runs_done", 0), answer=answer, region=region)
+
+    def _end_after_closed_stage(self, campaign_id, stage, row, summaries):
+        """End a campaign re-entered after *stage*, which it had reached, closed.
+
+        The stage's strategy is rebuilt over the space it searched and replayed through its record,
+        for the report; nothing runs.
+        """
+        from robovast.search.history import \
+            recorded_batches  # pylint: disable=import-outside-toplevel
+        from robovast.search.stages import \
+            StageCondition  # pylint: disable=import-outside-toplevel
+        from robovast.search.stopping import \
+            StopResult  # pylint: disable=import-outside-toplevel
+        self._take_over_stage(campaign_id, row)
+        self._stage, self._stage_row_id = stage, row["id"]
+        self._carried = json.loads(row["point_json"] or "{}")
+        stage_cfg = stage.config_over(json.loads(row["space_json"] or "{}"))
+        self.strategy, self.stop_conditions, self.repetition_policy = \
+            self.stage_factory(stage_cfg)
+        self.strategy.resume([self._local_batch(b) for b in recorded_batches(
+            self.store, campaign_id, stage_id=row["id"])])
+        report = self.strategy.report()
+        answer = json.loads(row["answer_json"]) if row["answer_json"] else None
+        region = json.loads(row["region_json"]) if row["region_json"] else None
+        if row["outcome"] == "condition":
+            rule = "region" if region and "failed" in region else "answer"
+            cond = StageCondition(row["stop_reason"], rule,
+                                  region if rule == "region" else answer)
+            summaries.append(_stage_summary(stage, "condition", answer, region, rule,
+                                            row["stop_reason"]))
+            return self._end_on_condition(campaign_id, report, stage, cond, summaries)
+        summaries.append(_stage_summary(stage, "done", answer, region))
+        return self._finish_search(
+            campaign_id, report, StopResult(kind=row["stop_kind"], reason=row["stop_reason"]),
+            summaries)
+
+    def _take_over_stage(self, campaign_id, row):
+        """Account for a stage a previous life of this campaign closed: its batches and cells."""
+        from robovast.search.history import \
+            recorded_batches  # pylint: disable=import-outside-toplevel
+        batches = recorded_batches(self.store, campaign_id, stage_id=row["id"])
+        self._batches_done += len(batches)
+        for batch in batches:
+            self._measured.extend(batch.evaluations)
+
+    def _stage_age(self, campaign_id: int) -> float:
+        """How long the current stage has been running, in wall-clock seconds."""
+        if self._stage_row_id is None:
+            return self._campaign_age(campaign_id)
+        row = self.store._conn.execute(  # noqa: SLF001 - no narrower reader exists
+            "SELECT started_at FROM stage WHERE id = ?", (self._stage_row_id,)).fetchone()
+        started = row[0] if row and row[0] is not None else None
+        if started is None:
+            return self._campaign_age(campaign_id)
+        return max(0.0, time.time() - started)
+
+    def _local(self, ev):
+        """*ev* as the current stage's strategy proposed it: without the values it stood on,
+        and with only the stage's own objectives."""
+        from robovast.search.types import (  # pylint: disable=import-outside-toplevel
+            Evaluation, ParamSet)
+        if not self._carried and len(ev.objectives) == len(self.strategy.objectives):
+            return ev
+        values = {k: v for k, v in ev.params.values.items() if k not in self._carried}
+        names = [o.name for o in self.strategy.objectives]
+        return Evaluation(params=ParamSet(values=values, n_reps=ev.params.n_reps),
+                          objectives={n: ev.objectives[n] for n in names if n in ev.objectives},
+                          measures=ev.measures, n_samples=ev.n_samples, raw=ev.raw)
+
+    def _local_batch(self, batch):
+        """A recorded batch as the current stage's strategy was told it."""
+        from dataclasses import replace  # pylint: disable=import-outside-toplevel
+        return replace(batch, evaluations=[self._local(e) for e in batch.evaluations],
+                       recalled=[self._local(e) for e in batch.recalled])
+
+    def _full(self, param_sets):
+        """The stage's proposals as cells over every dimension: the point it stands on, overridden
+        by what was proposed."""
+        if not self._carried:
+            return param_sets
+        from robovast.search.types import ParamSet  # pylint: disable=import-outside-toplevel
+        return [ParamSet(values={**self._carried, **ps.values}, n_reps=ps.n_reps)
+                for ps in param_sets]
 
     def _search_loop(self, campaign_id, stop, obj_name, start, best_objective):
         """The ask/evaluate/tell loop; returns ``(result, best_objective)``.
@@ -877,8 +1212,9 @@ class CampaignController:
             unfinished, self._unfinished = self._unfinished, None
             proposed = self.strategy.ask(self.per_batch)
             # A repeated draw is one cell, not two: collapsed before composition, which
-            # can only give it one config name and one result directory.
-            param_sets = distinct_draws(proposed, f"Batch {batch_idx}")
+            # can only give it one config name and one result directory. Then each cell is
+            # completed with the values the stage stands on.
+            param_sets = self._full(distinct_draws(proposed, f"Batch {batch_idx}"))
             if self.repetition_policy is not None:
                 param_sets = self.repetition_policy.assign(param_sets, self._history)
             if unfinished is None:
@@ -886,7 +1222,8 @@ class CampaignController:
                 # a resume re-drives the strategy through the sequence it saw, and asking
                 # it for the collapsed count would rewind its stream by every repeat.
                 batch_id = self.store.open_batch(campaign_id, batch_idx, ".",
-                                                 asked=len(proposed))
+                                                 asked=len(proposed),
+                                                 stage_id=self._stage_row_id)
                 recorded, recalls_recorded = {}, frozenset()
             else:
                 batch_id = unfinished.batch_id
@@ -923,7 +1260,8 @@ class CampaignController:
                 if ev.params.id not in recalls_recorded:
                     self.store.record_recall(batch_id, ev.params.id, ev.params.values)
             self.store.complete_batch(batch_id)
-            self.strategy.tell(RecordedBatch(evaluations=scored, recalled=recalled).told)
+            self.strategy.tell(RecordedBatch(evaluations=[self._local(e) for e in scored],
+                                             recalled=[self._local(e) for e in recalled]).told)
             batch_idx += 1
             # Published immediately, so an abort anywhere after this counts this batch.
             self._batches_done = batch_idx
@@ -933,9 +1271,10 @@ class CampaignController:
             # let a search exhaust an `evaluations` budget without measuring anything.
             self._evaluations_done += len(scored)
             self._history.extend(scored)
+            self._measured.extend(scored)
             best_objective = self._update_best(best_objective, scored, obj_name)
 
-            snap = StopSnapshot(batch=batch_idx,
+            snap = StopSnapshot(batch=batch_idx - self._stage_first_batch,
                                 elapsed=time.monotonic() - start,
                                 best_objective=best_objective,
                                 evaluations=self._evaluations_done,
@@ -952,6 +1291,10 @@ class CampaignController:
             # measured it, and counting it again would report work that did not happen.
             self.notifier.batch_finished(batch_idx - 1, len(scored))
             result = stop.should_stop(snap)
+            if not result and getattr(self.strategy, "exhausted", False):
+                result = StopResult(kind="exhausted",
+                                    reason=f"the strategy proposed every cell it has, in "
+                                           f"{batch_idx - self._stage_first_batch} batch(es)")
             if not result and self._empty_batches >= EMPTY_BATCH_LIMIT:
                 # Not a criterion the campaign declared, and it does not need to be: a
                 # search that cannot produce an evaluation will not start producing one by
@@ -967,9 +1310,8 @@ class CampaignController:
                 result = StopResult(kind="external",
                                     reason="stop requested via control API")
             if result:
-                if self.state is not None:
-                    self.state.set_phase(Phase.FINISHING)
-                    self.state.update(stop={"kind": result.kind, "reason": result.reason})
+                # The stage's end, not the campaign's: it goes into the stage's record, and only
+                # `_finish_search` publishes the campaign's finishing phase and its stop.
                 logger.info("\n%s\n⏹  Stopping — %s\n%s", _BAR, result.reason, _BAR)
                 break
         return result, best_objective
@@ -993,7 +1335,7 @@ class CampaignController:
         replayed, so a restart does not make the campaign forget what it has measured.
         """
         by_id = {}
-        for ev in self._history:
+        for ev in self._measured:
             by_id.setdefault(ev.params.id, ev)
         fresh, recalled = [], []
         for ps in param_sets:
@@ -1218,6 +1560,7 @@ class CampaignController:
                     unit_id = self.store.record_unit(
                         batch_id=batch_id, paramset_id=ps.id, config_name=config_name,
                         params=ps.values, objectives=ev.objectives, measures=ev.measures,
+                        objective_name=self._objective_name,
                         n_samples=ev.n_samples, status="evaluated",
                         result_dir=result_dir, n_reps=reps,
                         channels=read_config_channels(config_dir))
@@ -1920,6 +2263,7 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
     from robovast.search.compose import Compose
     from robovast.search.evaluator import Evaluator
     from robovast.search.repetitions import build_repetition_policy
+    from robovast.search.stages import evaluation_objectives, initial_point, stages_of
     from robovast.search.stopping import build_stop_conditions
     from robovast.search.strategy import build_strategy
 
@@ -1947,21 +2291,33 @@ def run_search_campaign(vast_file, campaign_config, results_dir, runs,
     # One notifier drives the whole campaign: the controller fires the lifecycle
     # events, and _finish_campaign (outside the controller) fires `uploaded`.
     notifier = notifier or Notifier.from_env(campaign_id)
+    stages = stages_of(search_cfg)
+
+    def stage_factory(stage_cfg):
+        return (build_strategy(stage_cfg, vast_dir), build_stop_conditions(stage_cfg),
+                build_repetition_policy(stage_cfg.repetitions, stage_cfg.search_space, runs))
+
+    # Every stage's strategy is built once over its declared space before the first runs, so
+    # a stage the campaign could not reach is refused now, not after the stages before it.
+    for stage in stages:
+        build_strategy(stage.config, vast_dir)
     store = CampaignStore(os.path.join(results_dir, campaign_id, STORE_FILENAME))
     controller = CampaignController(
         campaign_id=campaign_id, results_dir=results_dir, runs=runs,
         backend=be, options=opts,
         store=store, campaign_config_dump=campaign_config.model_dump(),
-        vast_dir=vast_dir, strategy=build_strategy(search_cfg, vast_dir),
-        evaluator=Evaluator(search_cfg, vast_dir),
+        vast_dir=vast_dir,
+        # Scored once on every objective a stage reads: a cell may be recalled by a later
+        # stage that re-proposes it.
+        evaluator=Evaluator(search_cfg.model_copy(
+            update={"objectives": evaluation_objectives(search_cfg)}), vast_dir),
         compose=Compose(vast_file, image_project=opts.image_project,
                         image_project_tag=opts.image_project_tag,
                         image_pins=_replayed_pins(opts),
                         should_stop=stop_checker(state, scope=STOP_RUNS)),
-        per_batch=search_cfg.per_batch, postprocessing=search_cfg.postprocessing,
-        stop_conditions=build_stop_conditions(search_cfg),
-        repetition_policy=build_repetition_policy(
-            search_cfg.repetitions, search_cfg.search_space, runs),
+        postprocessing=search_cfg.postprocessing,
+        stages=stages, stage_factory=stage_factory,
+        initial_point=initial_point(search_cfg),
         state=state, notifier=notifier,
         description=description, created_by=created_by, origin=origin)
     try:

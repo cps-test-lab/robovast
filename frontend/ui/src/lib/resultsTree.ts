@@ -30,10 +30,20 @@ import { isFailed, isRunning, type CampaignSummary } from './robovastClient'
 // objective (0-based), and `->>` yields the direction as text, which is what the client compares
 // against 'minimize'/'maximize'. A campaign without a search block yields NULL rather than an error
 // at every step.
+//
+// A search in stages proposes each round from one stage, named in `stage`, whose objective -- and
+// so whose direction -- may be its own: `stage_direction` is the direction of the objective the
+// stage declares in the campaign's `.vast`, NULL where it declares none (the campaign's applies).
+// Read from `config_json` rather than the `stage` table, which a store recorded before stages does
+// not have until something opens it read-write: the query must answer for it all the same.
 export const CAMPAIGN_RUNS_SQL =
-  'SELECT config_name, run_id, status, passed, objective, batch, live, ' +
+  'SELECT config_name, run_id, status, passed, objective, batch, stage, live, ' +
   "(SELECT config_json::JSON -> 'search' -> 'objectives' -> 0 ->> 'direction' " +
-  'FROM campaign.campaign LIMIT 1) AS objective_direction ' +
+  'FROM campaign.campaign LIMIT 1) AS objective_direction, ' +
+  "(SELECT json_extract_string(st, '$.objectives[0].direction') FROM (" +
+  "SELECT unnest(json_extract(config_json::JSON, '$.search.stages[*]')) AS st " +
+  "FROM campaign.campaign) WHERE json_extract_string(st, '$.name') = run_view.stage " +
+  'LIMIT 1) AS stage_direction ' +
   'FROM run_view ORDER BY batch, config_name, run_id'
 
 // The whole tree of one campaign comes from a single query, so the cap has to hold every run of
@@ -387,13 +397,20 @@ function batchNode(
   const objectives = configs
     .map((c) => c.objective)
     .filter((o): o is number => o !== null && o !== undefined)
+  // The round's own stage decides which end is best; its objective may not be the campaign's.
+  const stageDirection = rows.find((r) => typeof r.stage_direction === 'string')?.stage_direction
+  const goal = (stageDirection as ObjectiveDirection | undefined) ?? direction
   const best = objectives.length
-    ? direction === 'minimize' ? Math.min(...objectives) : Math.max(...objectives)
+    ? goal === 'minimize' ? Math.min(...objectives) : Math.max(...objectives)
     : null
+  // Named by its stage in a search of several, so a round reads as part of the stage it served.
+  // A search without stages has one, `search`, and its rounds keep their plain label.
+  const stage = rows.find((r) => typeof r.stage === 'string')?.stage as string | undefined
+  const round = stage && stage !== 'search' ? `${stage} · batch ${batch}` : `batch ${batch}`
 
   return {
     id: batchNodeId(campaignId, batch),
-    label: best === null ? `batch ${batch}` : `batch ${batch}  best ${fmtObjective(best)}`,
+    label: best === null ? round : `${round}  best ${fmtObjective(best)}`,
     kind: 'batch',
     campaignId,
     batch,

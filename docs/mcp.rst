@@ -987,6 +987,32 @@ figures are deliberately separate (``job_deadline_seconds``, which falls back, v
 ``declared_job_seconds``, which does not). A wedged local run with no declared timeout
 therefore stays alive to be inspected — end it with ``stop_campaign``.
 
+**Which stage is it in, and did it reach its last?** A search in stages (``search.stages``)
+is reported stage by stage:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 26 74
+
+   * - Field
+     - Meaning
+   * - ``search_stage``
+     - ``{idx, name, of}``: the stage the search is in. ``budget``, ``best_objective``,
+       ``objective_name`` and ``batches_since_improvement`` are that stage's, and each
+       ``objective_history`` row names its ``stage``. A search without stages is one stage,
+       ``search``.
+   * - ``search_stages``
+     - Every stage of the file: what it searches, its ``outcome`` (``not_run`` for one the
+       search has not reached or ended before), the cell its answer selected.
+   * - ``ended_at_stage``, ``stage_rule``, ``stages_not_run``
+     - Present only when the search ended **before its last stage**: the stage that ended it,
+       the rule (``answer`` or ``region`` for a stage whose condition found no cell, else
+       ``stopped``, ``error`` or ``unproductive``) and the stages that never ran. Such a
+       campaign is ``finished`` (or ``stopped``) without having run its whole line, and
+       ``stop.reason`` says why. ``list_campaigns`` carries the same three on its row. A search
+       without stages never has them: its one stage is the whole search, and ``stop`` reports
+       how it ended.
+
 .. _mcp-health-findings:
 
 What a running campaign says is wrong

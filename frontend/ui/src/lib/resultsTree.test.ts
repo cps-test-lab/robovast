@@ -370,3 +370,31 @@ describe('the `running` status', () => {
       .not.toBe('running')
   })
 })
+
+// A search in stages proposes each round from one stage: the round is named by it, and its best
+// is taken in that stage's direction, which need not be the campaign's.
+describe('buildCampaignChildren, a search in stages', () => {
+  const staged = [
+    { ...row('ca', 0, 'passed', { batch: 0, objective: -1 }), stage: 'obstacle',
+      stage_direction: 'minimize' },
+    { ...row('cb', 0, 'passed', { batch: 0, objective: 2 }), stage: 'obstacle',
+      stage_direction: 'minimize' },
+    { ...row('cc', 0, 'passed', { batch: 1, objective: 3 }), stage: 'speed',
+      stage_direction: 'maximize' },
+    { ...row('cd', 0, 'passed', { batch: 1, objective: 5 }), stage: 'speed',
+      stage_direction: 'maximize' },
+  ]
+
+  it("labels each round with its stage and takes its best in the stage's direction", () => {
+    const [b0, b1] = buildCampaignChildren(CID, staged, { grouped: true, direction: 'minimize' })
+    expect(b0.label).toBe('obstacle · batch 0  best -1')
+    expect(b1.label).toBe('speed · batch 1  best 5')
+  })
+
+  it('keeps the plain label for the one stage of a search without stages', () => {
+    const [b0] = buildCampaignChildren(
+      CID, [{ ...row('ca', 0, 'passed', { batch: 0, objective: 0.5 }), stage: 'search' }],
+      { grouped: true })
+    expect(b0.label).toBe('batch 0  best 0.5')
+  })
+})

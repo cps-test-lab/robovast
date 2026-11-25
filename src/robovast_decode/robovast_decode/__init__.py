@@ -36,4 +36,5 @@ except PackageNotFoundError:  # a source tree that was never installed
 #: 3: campaign.batch has recalls_recorded and complete; campaign.unit has recalled_from.
 #: 4: campaign.node has calibration_json.
 #: 5: ground_truth_poses.
-DATA_CONTRACT = 5
+#: 6: campaign.stage; campaign.batch has stage_id; run_view has stage.
+DATA_CONTRACT = 6

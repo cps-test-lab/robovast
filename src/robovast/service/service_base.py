@@ -6116,6 +6116,7 @@ class ServiceBase(RobovastInterface):
             # record predates the field. `read_campaign_mode` is the read-only fallback that
             # exists for exactly this, and "" is recorded when neither knows.
             mode=snap.mode or read_campaign_mode(campaign_dir) or "",
+            ended_at_stage=_stage_end_of(snap),
             num_runs=counts["num_runs"], num_passed=counts["num_passed"],
             num_failed=counts["num_failed"] + counts["num_errors"],
             num_composition_failed=counts.get("num_composition_failed", 0),
@@ -6397,3 +6398,11 @@ def _workspace_sha(spec) -> str:
         logger.debug("could not fingerprint workspace %s: %s", workspace_dir, err)
         return f"unreadable:{workspace_dir}"
     return digest.hexdigest()
+
+
+def _stage_end_of(snap) -> Optional[dict]:
+    """Where *snap*'s search ended, when it ended before its last stage (its ``stop`` says so)."""
+    stop = snap.stop or {}
+    if "stage" not in stop:
+        return None
+    return {k: stop.get(k) for k in ("stage", "idx", "of", "rule", "reason", "not_run")}

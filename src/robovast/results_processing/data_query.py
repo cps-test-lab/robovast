@@ -336,7 +336,7 @@ _TABLE_DESCRIPTIONS = {
         "START HERE for per-run and per-configuration questions. One row per run, joined: "
         "config_name, run_id, status, passed, duration_s, errors, failures, tests, "
         "start_time, failure_message, params_json, channels_json, objective, paramset_id, "
-        "batch, job_dir, sysinfo_json. Query unqualified: FROM run_view. Answers while the "
+        "batch, stage, job_dir, sysinfo_json. Query unqualified: FROM run_view. Answers while the "
         "campaign runs. "
         "ALWAYS filter with config_name, not run_id alone: run_id restarts at 0 in every "
         "configuration, so run_id alone matches one run per config and returns rows you "
@@ -359,6 +359,9 @@ _TABLE_DESCRIPTIONS = {
         "campaign, NULL on a store predating the batch table. It is a search's history over "
         "time: SELECT batch, COUNT(*), AVG(objective) FROM run_view GROUP BY 1 ORDER BY 1. "
         "Whether batch means anything is campaign.campaign.mode ('search' | 'batch'). "
+        "stage is the name of the search stage that proposed the configuration (a search "
+        "without stages has one, 'search'), NULL in batch mode; campaign.stage says what "
+        "each stage searched and selected. "
         "status='killed' marks a run whose job an operator stopped by hand (stop_job): it "
         "delivered no result and is NOT a trial failure, so exclude it from pass-rate "
         "statistics rather than counting it against the system under test — "
@@ -518,10 +521,24 @@ _TABLE_DESCRIPTIONS = {
         "-> 'scenario' ->> 'image' for "
         "a known path, but do NOT 'SELECT config_json' — it exceeds the per-cell limit and "
         "returns truncated. Use config_view to explore it."),
+    ("campaign", "stage"): (
+        "One row per stage of a search, in the file's order (idx); a search without stages has "
+        "one, named 'search'. over_json: the dimensions it searched; space_json: their domains "
+        "as searched (declared, or the region of the stage named in within); point_json: the "
+        "value it stood on for every other dimension. answer_json is the cell it selected "
+        "({rule, unit_id, values, objective}) and region_json the region it left ({rule, "
+        "cells, box}). outcome: not_run (the campaign ended before this stage), running, "
+        "done, condition (its answer or region found no cell, which ended the campaign: "
+        "answer_json/region_json then hold the rule and what it saw), stopped, error, "
+        "unproductive. stop_kind/stop_reason say what ended the stage; batches, evaluations "
+        "and runs what it spent. The cells of one stage: SELECT * FROM run_view WHERE "
+        "stage = 'name'."),
     ("campaign", "batch"): (
         "One row per search batch/iteration; idx is the iteration index — the "
-        "search history over time. You rarely need this table: run_view already "
-        "carries idx as its `batch` column, so no join is required. complete=1 once "
+        "search history over time, counted across the whole campaign. stage_id is the "
+        "campaign.stage that proposed it. You rarely need this table: run_view already "
+        "carries idx as its `batch` column and the stage's name as `stage`, so no join is "
+        "required. complete=1 once "
         "every unit of the batch is recorded; a batch without it is still running or was "
         "interrupted, so its units are not what it ended with."),
     ("campaign", "unit"): (

@@ -2169,6 +2169,8 @@ export interface components {
              * @default 0
              */
             n_units: number;
+            /** Stage */
+            stage: string | null;
         };
         /** Body_describe_world_workspaces__workspace_id__world_post */
         Body_describe_world_workspaces__workspace_id__world_post: {
@@ -2569,6 +2571,10 @@ export interface components {
              * @default
              */
             description: string;
+            /** Ended At Stage */
+            ended_at_stage: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Error
              * @default
@@ -4412,18 +4418,19 @@ export interface components {
          *     cannot. Read from ``campaign.db`` through the record directory, so it is live during a run
          *     and still there for a finished campaign after a service restart.
          *
+         *     A search runs in one or more stages, each with its own objective, so the trajectory is per
+         *     stage: ``stages`` lists them in the file's order and each batch names its stage. A search
+         *     without stages has one, named ``search``.
+         *
          *     ``unavailable`` is set instead of returning an empty ``batches`` list, because an empty list
-         *     reads as "measured, and there was nothing": ``batch_mode`` (not a search), ``multi_objective``
-         *     (more than one objective, so there is no scalar column to trend — the values are in
-         *     ``objectives_json``), ``no_store`` (nothing readable).
+         *     reads as "measured, and there was nothing": ``batch_mode`` (not a search), ``no_store``
+         *     (nothing readable). A stage with several objectives says so on its own entry.
          */
         SearchHistory: {
             /** Batches */
             batches: components["schemas"]["BatchObjective"][];
-            /** Direction */
-            direction: string | null;
-            /** Objective Name */
-            objective_name: string | null;
+            /** Stages */
+            stages: components["schemas"]["StageObjective"][];
             /** Unavailable */
             unavailable: string | null;
         };
@@ -4665,6 +4672,47 @@ export interface components {
             url: string | null;
         };
         /**
+         * StageObjective
+         * @description One stage of a search, as its history shows it: what it searched, and how it ended.
+         *
+         *     ``outcome`` is ``not_run`` for a stage the campaign ended before, ``condition`` for the stage
+         *     whose answer or region found nothing to stand on (``stop_reason`` names the rule), else
+         *     ``running``, ``done``, ``stopped``, ``error`` or ``unproductive``. ``unavailable`` is
+         *     ``multi_objective`` for a stage with several objectives, whose batches have no scalar to
+         *     trend.
+         */
+        StageObjective: {
+            /** Answer */
+            answer: {
+                [key: string]: unknown;
+            } | null;
+            /** Direction */
+            direction: string | null;
+            /** Idx */
+            idx: number;
+            /** Name */
+            name: string;
+            /** Objective Name */
+            objective_name: string | null;
+            /**
+             * Outcome
+             * @default not_run
+             */
+            outcome: string;
+            /** Over */
+            over: string[];
+            /** Region */
+            region: {
+                [key: string]: unknown;
+            } | null;
+            /** Stop Kind */
+            stop_kind: string | null;
+            /** Stop Reason */
+            stop_reason: string | null;
+            /** Unavailable */
+            unavailable: string | null;
+        };
+        /**
          * StagedArchive
          * @description Where an uploaded campaign archive landed on the service host.
          *
@@ -4757,6 +4805,10 @@ export interface components {
             runs: components["schemas"]["RunProgress"];
             /** Search Since */
             search_since: number | null;
+            /** Search Stage */
+            search_stage: {
+                [key: string]: unknown;
+            } | null;
             /** Share Error */
             share_error: string | null;
             /** Stage */
