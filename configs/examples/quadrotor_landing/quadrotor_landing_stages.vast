@@ -1,10 +1,8 @@
 version: 7
 metadata:
   name: quadrotor_landing_stages
-# A search in three stages, one file. Run with:
-#   vast workspace run <workspace> quadrotor_landing_stages.vast
-# wind traces where the landing turns into a coin flip; thrust searches the hardest thrust gain
-# on that wind; descent runs every descent rate there. Pilot it by lowering the stage budgets.
+# Three stages: the wind's coin-flip contour, the hardest thrust gain on it, every descent rate.
+# Run with: vast workspace run <workspace> quadrotor_landing_stages.vast
 execution:
   containers:
     scenario: {}
