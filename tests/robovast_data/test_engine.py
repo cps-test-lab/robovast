@@ -58,6 +58,14 @@ def test_a_run_scope_sees_and_builds_its_run_only(campaign):
     assert engine.arrow("SELECT count(*) AS n FROM run_view").column("n")[0].as_py() == 1
 
 
+def test_a_narrow_scope_on_a_campaign_with_no_runs_answers_empty(tmp_path):
+    root = tmp_path / "c"
+    root.mkdir()
+    write_store(root, {})
+    engine = Engine([Scope(str(root), "cfg", 0)], workers=1)
+    assert engine.arrow("SELECT config_name FROM runs").to_pylist() == []
+
+
 def test_several_campaigns_are_one_query_with_their_ids(tmp_path):
     first = nav_campaign(tmp_path / "c1")
     second = nav_campaign(tmp_path / "c2")
