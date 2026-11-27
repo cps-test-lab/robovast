@@ -71,6 +71,12 @@ whenever the robot did not arrive". Scaled by the range it can actually occupy (
 full-penetration contact reaches about -1.0 and the two failure modes are comparable, which
 is what lets an adversarial search prefer the dangerous one.
 
+**The sign is the verdict.** A recorded contact bounds the clearance at zero, and the trial's
+verdict bounds the arrival distance at the arrival radius -- a passed run's at most, a failed
+run's beyond -- so a negative margin is a failed run and a failed run has a negative margin.
+Both correct the input and leave the arithmetic continuous; neither puts a verdict into the
+score.
+
 **Aggregated worst-case across repetitions**, never averaged -- four clean crossings and
 one that clipped the doorway average to "clean", and on a QD archive averaging collapses
 the very spread the archive exists to map.
@@ -91,6 +97,11 @@ logger = logging.getLogger(__name__)
 #: so a passing run occupies a cell of its own rather than being absent from the archive:
 #: "where does it succeed" is as much of the map as "how does it fail".
 FAILURE_MODES = ['none', 'collision', 'timeout', 'goal_miss']
+
+#: The resolution NavMetrics writes the ground-truth distance at (four decimals, in metres):
+#: the smallest step by which a distance the verdict puts beyond the arrival radius can
+#: differ from it.
+_ARRIVAL_RESOLUTION = 1e-4
 
 
 def _row(run_dir: Path, filename: str) -> dict:
@@ -118,7 +129,9 @@ class NavExtract(Extractor):
         ``contact_threshold``  clearance [m] at which a crossing counts as unsafe
         ``arrival_radius``     [m]; ground-truth distance within which a track counts as
                                arrived. NOT nav2's ``xy_goal_tolerance`` -- see below
-        ``timeout``            [s]; matches the scenario's own ``timeout()``
+        ``timeout``            [s]; the trial's own timeout, counted on the recording's clock
+                               from the scenario's start; the time margin is what was left
+                               of it when the navigation ended (NavMetrics' ``nav_end_s``)
         ``clearance_scale``    [m]; the clearance available in the most permissive
                                configuration -- the SCALE the clearance margin is a
                                fraction of, not a threshold
@@ -208,7 +221,15 @@ class NavExtract(Extractor):
                 continue
 
             clearance = _f(row, 'min_clearance')
-            duration = _f(row, 'duration_s', timeout)
+            # None, not the timeout: a run whose navigation was not recorded has no duration
+            # and no end, and defaulting either to the timeout would score the time margin at
+            # exactly 0.0, the level a boundary search traces.
+            duration = _f(row, 'duration_s')
+            # The time margin reads when the navigation ENDED on the trial's clock, the one
+            # its timeout runs on from the scenario's start: a span measured against the
+            # timeout would credit the bring-up to the robot, and a run the timeout ended
+            # would read as having had time to spare.
+            nav_end = _f(row, 'nav_end_s')
             to_goal = _f(row, 'final_distance_to_goal')
             collided = bool(_f(row, 'collided', 0.0))
 
@@ -222,13 +243,33 @@ class NavExtract(Extractor):
             if collided and clearance is not None:
                 clearance = min(clearance, 0.0)
 
+            # The verdict bounds the arrival distance the same way. nav2 declares arrival
+            # against its own pose estimate and tolerance; the ground-truth distance at the
+            # last sample carries the localisation error and the settling after the recording
+            # closed, so a run nav2 declared arrived can end a little beyond the arrival
+            # radius and one it aborted a little inside it. The verdict is the arrival oracle
+            # as the contact monitor is the collision oracle: a passed run's distance is at
+            # most the radius, and a failed run's that did not collide -- it did not arrive,
+            # whether it gave up or ran out the clock -- is beyond it. Beyond by the pose
+            # track's own resolution, so a failed run's margin is strictly negative and a
+            # passed run's never is: the sign of the objective is the verdict.
+            if to_goal is not None:
+                if passed:
+                    to_goal = min(to_goal, goal_tol)
+                elif not collided:
+                    to_goal = max(to_goal, goal_tol + _ARRIVAL_RESOLUTION)
+            if passed and nav_end is not None:
+                # A passed run did not time out, whatever the clocks say about its end.
+                nav_end = min(nav_end, timeout)
+
             # One margin per way this can go wrong, each a fraction of a comparable
             # physical scale, so the worst of them is genuinely the closest to failing.
             # Sign still means pass/fail: the thresholds stay in the numerator.
             margins = []
             if clearance is not None:
                 margins.append((clearance - contact) / clearance_scale)
-            margins.append((timeout - duration) / timeout)
+            if nav_end is not None:
+                margins.append((timeout - nav_end) / timeout)
             if to_goal is not None:
                 margins.append((goal_tol - to_goal) / path_scale)
             # No floor, and this is the line that keeps the objective usable: a clamp
@@ -240,9 +281,10 @@ class NavExtract(Extractor):
 
             if clearance is not None:
                 clearances.append(clearance)
-            durations.append(duration)
+            if duration is not None:
+                durations.append(duration)
             recoveries.append(_f(row, 'recovery_count', 0.0))
-            modes.append(self._mode(passed, collided, duration, timeout, to_goal, goal_tol))
+            modes.append(self._mode(passed, collided, nav_end, timeout, to_goal, goal_tol))
 
         if not robustness:
             # Every run of this cell produced a verdict and no measurements. The cell RAN
@@ -282,6 +324,19 @@ class NavExtract(Extractor):
                 f"in *search.postprocessing*, not only in results_processing -- the search "
                 f"loop scores each batch before the campaign-level block ever runs.")
 
+        if not durations:
+            # Every run of this cell recorded a pose track and no navigation, which
+            # is the campaign's recording and not an unlucky draw: NavMetrics measures the
+            # duration from the first behaviour-tree transition, so without the tree's log the
+            # time margin is silently missing from every cell and a crossing that ran out the
+            # clock scores like a prompt one. The same refusal as a missing clearance, for the
+            # same reason.
+            raise ValueError(
+                f"{config_dir}: no run recorded a navigation duration, so the robustness margin "
+                f"cannot include the time term. NavMetrics takes the navigation's start from the "
+                f"behaviour-tree log: /behavior_tree_log recorded, and rosbags_nav2bt_to_csv and "
+                f"nav2_bt_tree listed in *search.postprocessing* before NavMetrics.")
+
         failures = sum(1 for r in runs if not read_test_result(r)['success'])
         return ExtractResult(
             objectives={
@@ -308,15 +363,16 @@ class NavExtract(Extractor):
         )
 
     @staticmethod
-    def _mode(passed, collided, duration, timeout, to_goal, goal_tol) -> str:
+    def _mode(passed, collided, nav_end, timeout, to_goal, goal_tol) -> str:
         """Which of the three ways this run went wrong, or ``none``.
 
         Ordered, because a run can satisfy more than one: a collision is what happened
-        even if the trial also ran long afterwards.
+        even if the trial also ran long afterwards. A timeout is a navigation still going
+        when the trial's clock ran out.
         """
         if collided:
             return 'collision'
-        if duration is not None and duration >= timeout * 0.99:
+        if not passed and nav_end is not None and nav_end >= timeout * 0.95:
             return 'timeout'
         if not passed or (to_goal is not None and to_goal > goal_tol):
             return 'goal_miss'

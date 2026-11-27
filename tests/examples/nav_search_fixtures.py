@@ -49,16 +49,22 @@ def write_verdict(run_dir: pathlib.Path, *, passed: bool):
 
 
 def write_metrics_row(run_dir: pathlib.Path, *, clearance, duration, to_goal, collided,
-                      recoveries=0):
-    """The per-run row ``NavMetrics`` leaves; an empty value is written as an empty cell."""
+                      recoveries=0, nav_start=10.0):
+    """The per-run row ``NavMetrics`` leaves; an empty value is written as an empty cell.
+
+    The navigation starts *nav_start* seconds into the recording and ends *duration* later,
+    which is what the time margin reads.
+    """
+    nav_end = "" if duration == "" else round(nav_start + duration, 3)
     with open(run_dir / "nav_metrics.csv", "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=[
             "min_clearance", "duration_s", "final_distance_to_goal", "collided",
-            "recovery_count"])
+            "recovery_count", "nav_start_s", "nav_end_s"])
         writer.writeheader()
         writer.writerow({"min_clearance": clearance, "duration_s": duration,
                          "final_distance_to_goal": to_goal,
-                         "collided": 1 if collided else 0, "recovery_count": recoveries})
+                         "collided": 1 if collided else 0, "recovery_count": recoveries,
+                         "nav_start_s": "" if duration == "" else nav_start, "nav_end_s": nav_end})
 
 
 def write_run(config_dir: pathlib.Path, index: int, *, clearance, duration, to_goal, collided,
